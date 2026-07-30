@@ -9,7 +9,7 @@ export function TerminalView({ active, containerRef }) {
         <div ref={containerRef} className="xterm-wrapper"></div>
       ) : (
         <div style={{flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8'}}>
-          Agent is currently inactive. Toggle the switch to start.
+          Agent is off. Flip the switch to start.
         </div>
       )}
     </div>
