@@ -38,6 +38,12 @@ const HERDR_CLI_TIMEOUT_MS = 5000;
 /** Time the agent's TUI gets to redraw after the interrupt, before we type. */
 const INTERRUPT_SETTLE_MS = 100;
 
+/** How much of an agent's terminal a tail returns when the caller doesn't say. */
+const TAIL_DEFAULT_LINES = 40;
+
+/** Ceiling on a tail, so one call can't drag a whole scrollback over the wire. */
+const TAIL_MAX_LINES = 200;
+
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -63,6 +69,35 @@ function toAgentStatus(value: unknown): HerdrAgentStatus {
   return HERDR_AGENT_STATUSES.includes(value as HerdrAgentStatus)
     ? (value as HerdrAgentStatus)
     : 'unknown';
+}
+
+function parseJson(text: string): any {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function clampTailLines(lines: unknown): number {
+  const requested = typeof lines === 'number' && Number.isFinite(lines)
+    ? Math.floor(lines)
+    : TAIL_DEFAULT_LINES;
+  return Math.min(Math.max(requested, 1), TAIL_MAX_LINES);
+}
+
+/**
+ * What herdr alone can tell us about an agent, with no session to consult.
+ * Unknown fields are explicitly null rather than absent: this is serialized
+ * to a client as JSON, where an undefined field would simply vanish and read
+ * as "the daemon didn't answer that" instead of "there is nothing to report".
+ */
+export interface HerdrAgentDescription {
+  agentName: string;
+  type: string | null;
+  workDir: string | null;
+  herdrStatus: HerdrAgentStatus;
 }
 
 export class HerdrBridge {
@@ -238,7 +273,9 @@ export class HerdrBridge {
    * One herdr CLI call, argv-level so nothing we pass through (agent names,
    * arbitrary message text) is ever handed to a shell. Returns herdr's parsed
    * JSON and throws with herdr's own message on failure — herdr reports errors
-   * both as a nonzero exit and as an `error` object on stdout.
+   * as a nonzero exit plus an `error` object, on stdout for some commands and
+   * on stderr for others, so both streams are worth reading before we fall
+   * back to quoting a raw payload at the caller.
    */
   private runHerdr(args: string[]): any {
     const result = spawnSync('herdr', args, {
@@ -251,18 +288,14 @@ export class HerdrBridge {
     }
 
     const stdout = (result.stdout ?? '').trim();
-    let json: any;
-    try {
-      json = stdout ? JSON.parse(stdout) : undefined;
-    } catch {
-      json = undefined;
-    }
+    const stderr = (result.stderr ?? '').trim();
+    const json = parseJson(stdout);
 
-    if (json?.error) {
-      throw new Error(json.error.message ?? `herdr reported ${json.error.code ?? 'an error'}`);
+    const reported = json?.error ?? parseJson(stderr)?.error;
+    if (reported) {
+      throw new Error(reported.message ?? `herdr reported ${reported.code ?? 'an error'}`);
     }
     if (result.status !== 0) {
-      const stderr = (result.stderr ?? '').trim();
       throw new Error(stderr || `herdr ${args.join(' ')} exited with code ${result.status}`);
     }
 
@@ -288,6 +321,81 @@ export class HerdrBridge {
       throw new Error(`Key '${key}' is ambiguous; it matches herdr agents: ${matches.join(', ')}`);
     }
     throw new Error(`No agent found for key '${key}'`);
+  }
+
+  /**
+   * The agent named by an address. A caller that knows the workspace type
+   * names the agent exactly, which is the only unambiguous form when several
+   * types share a key; a bare key keeps the resolve-by-suffix fallback.
+   */
+  private agentNameForAddress(key: string, type?: string): string {
+    const trimmedType = typeof type === 'string' ? type.trim() : '';
+    return trimmedType ? agentNameFor(trimmedType, key) : this.resolveAgentName(key);
+  }
+
+  /**
+   * The session for an address, if this daemon owns one. An explicit type has
+   * to match: a session for a different type is a different agent, and
+   * answering with it would silently ignore the address the caller gave.
+   */
+  public getSessionByAddress(key: string, type?: string): HerdrSession | undefined {
+    const session = this.getSessionByKey(key);
+    if (!session) return undefined;
+    const trimmedType = typeof type === 'string' ? type.trim() : '';
+    if (trimmedType && session.type !== trimmedType) return undefined;
+    return session;
+  }
+
+  /**
+   * Ask herdr directly about an agent. This is the answer for a key whose
+   * session died with a previous daemon: the pane outlives us, so its status
+   * and cwd are still there to be read. Throws when herdr has no such agent.
+   */
+  public describeAgent(key: string, type?: string): HerdrAgentDescription {
+    const agentName = this.agentNameForAddress(key, type);
+    const agent = this.runHerdr(['agent', 'get', agentName])?.result?.agent;
+    if (!agent) {
+      throw new Error(`No agent found for key '${key}'`);
+    }
+
+    return {
+      agentName,
+      type: typeFromAgentName(agentName, key) ?? null,
+      workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
+      herdrStatus: toAgentStatus(agent.agent_status)
+    };
+  }
+
+  /**
+   * The tail of an agent's terminal, as plain text. `recent-unwrapped` is the
+   * source that shows what actually scrolled past — including the frozen last
+   * frame of an agent whose process died, which is the state this exists to
+   * make visible. Never throws; the caller owes its client a response.
+   */
+  public tailAgent(
+    key: string,
+    type?: string,
+    lines?: number
+  ): { success: boolean; text?: string; truncated?: boolean; error?: string } {
+    try {
+      const agentName = this.agentNameForAddress(key, type);
+      const read = this.runHerdr([
+        'agent', 'read', agentName,
+        '--source', 'recent-unwrapped',
+        '--format', 'text',
+        '--lines', String(clampTailLines(lines))
+      ])?.result?.read;
+
+      if (!read || typeof read.text !== 'string') {
+        throw new Error(`herdr returned no readable output for agent '${agentName}'`);
+      }
+
+      return { success: true, text: read.text, truncated: read.truncated === true };
+    } catch (e: any) {
+      const error = e?.message ?? String(e);
+      console.error(`[HerdrBridge] Failed to tail agent for key '${key}':`, error);
+      return { success: false, error };
+    }
   }
 
   /**
@@ -337,9 +445,9 @@ export class HerdrBridge {
    * whatever is half-typed, type the message, submit it. Never throws — the
    * caller is a request handler that owes its client a response either way.
    */
-  public async sendToAgent(key: string, message: string): Promise<{ success: boolean; error?: string }> {
+  public async sendToAgent(key: string, message: string, type?: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const agentName = this.resolveAgentName(key);
+      const agentName = this.agentNameForAddress(key, type);
       const paneId = this.runHerdr(['agent', 'get', agentName])?.result?.agent?.pane_id;
       if (typeof paneId !== 'string' || !paneId) {
         throw new Error(`Agent '${agentName}' has no pane to send to`);

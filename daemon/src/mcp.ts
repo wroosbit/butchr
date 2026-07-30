@@ -150,12 +150,61 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "The workspace key of the agent to message (e.g., 'KAN-1')",
             },
+            type: {
+              type: "string",
+              description:
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against herdr's agent list.",
+            },
             message: {
               type: "string",
               description: "The message to type into the agent's terminal",
             },
           },
           required: ["key", "message"],
+        },
+      },
+      {
+        name: "butchr_tail_agent",
+        description:
+          "Reads the recent terminal output of an agent without attaching to it. Use this to find out what an agent is actually doing — or why it stopped — when its reported status alone is not enough.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            key: {
+              type: "string",
+              description: "The workspace key of the agent to read (e.g., 'KAN-1')",
+            },
+            type: {
+              type: "string",
+              description:
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against herdr's agent list.",
+            },
+            lines: {
+              type: "number",
+              description: "Optional. How many trailing lines to return (default 40, max 200)",
+            },
+          },
+          required: ["key"],
+        },
+      },
+      {
+        name: "butchr_agent_status",
+        description:
+          "Reports an agent's full state: session id, workspace type and key, url, creation time, session status, working directory, and herdr's own view of what the agent is doing. If the daemon has restarted and lost its session, the herdr-only fields are still returned with sessionless: true.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            key: {
+              type: "string",
+              description: "The workspace key of the agent to inspect (e.g., 'KAN-1')",
+            },
+            type: {
+              type: "string",
+              description:
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against herdr's agent list.",
+            },
+          },
+          required: ["key"],
         },
       },
       {
@@ -214,10 +263,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (name === "butchr_send_to_agent") {
-      const { key, message } = args as any;
+      const { key, type, message } = args as any;
       if (!key || !message) throw new Error("Missing required arguments: key, message");
 
-      const res = await callDaemonAPI('send_to_agent', { key, message });
+      const res = await callDaemonAPI('send_to_agent', { key, type, message });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false,
+      };
+    }
+
+    if (name === "butchr_tail_agent") {
+      const { key, type, lines } = args as any;
+      if (!key) throw new Error("Missing required argument: key");
+
+      const res = await callDaemonAPI('tail_agent', { key, type, lines });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false,
+      };
+    }
+
+    if (name === "butchr_agent_status") {
+      const { key, type } = args as any;
+      if (!key) throw new Error("Missing required argument: key");
+
+      const res = await callDaemonAPI('agent_status', { key, type });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
         isError: res?.success === false,
