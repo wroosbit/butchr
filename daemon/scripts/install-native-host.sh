@@ -4,14 +4,16 @@ set -e
 HOST_NAME="com.butchr.daemon"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DAEMON_DIR="$(dirname "$SCRIPT_DIR")"
-HOST_PATH="$DAEMON_DIR/bin/native-host.js"
+HOST_PATH="$DAEMON_DIR/bin/native-host.sh"
 
 TARGET_DIR_CHROME="$HOME/.config/google-chrome/NativeMessagingHosts"
 TARGET_DIR_CHROMIUM="$HOME/.config/chromium/NativeMessagingHosts"
 
 mkdir -p "$TARGET_DIR_CHROME" "$TARGET_DIR_CHROMIUM"
 
-# Create manifest template allowing all extensions in dev mode
+EXT_ID="${1:-bodmjkfblkomfikpkjljlhhffljdcgjp}"
+
+# Create manifest template allowing the specified extension ID
 cat << MANIFEST > "$TARGET_DIR_CHROME/$HOST_NAME.json"
 {
   "name": "$HOST_NAME",
@@ -19,7 +21,7 @@ cat << MANIFEST > "$TARGET_DIR_CHROME/$HOST_NAME.json"
   "path": "$HOST_PATH",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://*/"
+    "chrome-extension://$EXT_ID/"
   ]
 }
 MANIFEST

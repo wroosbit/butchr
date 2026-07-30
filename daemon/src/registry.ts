@@ -13,14 +13,16 @@ export class WorkspaceRegistry {
       name: 'Jira Task',
       urlPatterns: [
         /https?:\/\/[^\/]+\/browse\/([A-Z0-9]+-\d+)/i,
-        /https?:\/\/[^\/]+\/jira\/[^\/]+\/projects\/[^\/]+\/issues\/([A-Z0-9]+-\d+)/i
+        /https?:\/\/[^\/]+\/jira\/[^\/]+\/projects\/[^\/]+\/issues\/([A-Z0-9]+-\d+)/i,
+        /[\?&]selectedIssue=([A-Z0-9]+-\d+)/i
       ],
       keyExtractor: (url: string) => {
         const match = url.match(/\/browse\/([A-Z0-9]+-\d+)/i) || 
-                      url.match(/\/issues\/([A-Z0-9]+-\d+)/i);
+                      url.match(/\/issues\/([A-Z0-9]+-\d+)/i) ||
+                      url.match(/[\?&]selectedIssue=([A-Z0-9]+-\d+)/i);
         return match ? match[1].toUpperCase() : null;
       },
-      mcpServers: ['atlassian'],
+      mcpServers: ['atlassian', 'butchr'],
       promptTemplateFile: 'prompts/task.md'
     });
   }
