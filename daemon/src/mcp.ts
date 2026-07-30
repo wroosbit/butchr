@@ -136,6 +136,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "butchr_send_to_agent",
+        description:
+          "Sends a message to a running agent's terminal as if a human typed it: interrupts any partially typed input, types the message, and presses Enter. Use this to give a still-running agent new instructions (e.g. review feedback) without attaching to its terminal.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            key: {
+              type: "string",
+              description: "The workspace key of the agent to message (e.g., 'KAN-1')",
+            },
+            message: {
+              type: "string",
+              description: "The message to type into the agent's terminal",
+            },
+          },
+          required: ["key", "message"],
+        },
+      },
+      {
         name: "butchr_list_agents",
         description: "Lists all currently active agents",
         inputSchema: {
@@ -187,6 +206,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const res = await callDaemonAPI('deactivate_by_key', { key });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+      };
+    }
+
+    if (name === "butchr_send_to_agent") {
+      const { key, message } = args as any;
+      if (!key || !message) throw new Error("Missing required arguments: key, message");
+
+      const res = await callDaemonAPI('send_to_agent', { key, message });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false,
       };
     }
 

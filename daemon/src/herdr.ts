@@ -31,6 +31,16 @@ export type HerdrAgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknow
 
 const HERDR_AGENT_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 'done', 'unknown'];
 
+/** Ceiling on any single herdr CLI call, so a wedged herdr can't hang a caller. */
+const HERDR_CLI_TIMEOUT_MS = 5000;
+
+/** Time the agent's TUI gets to redraw after the interrupt, before we type. */
+const INTERRUPT_SETTLE_MS = 100;
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 /** The herdr agent a Butchr session drives. Sessions are keyed by workspace. */
 export function agentNameFor(type: string, key: string): string {
   return `butchr-${type}-${key.toLowerCase()}`;
@@ -201,6 +211,91 @@ export class HerdrBridge {
     }
 
     return statuses;
+  }
+
+  /**
+   * One herdr CLI call, argv-level so nothing we pass through (agent names,
+   * arbitrary message text) is ever handed to a shell. Returns herdr's parsed
+   * JSON and throws with herdr's own message on failure — herdr reports errors
+   * both as a nonzero exit and as an `error` object on stdout.
+   */
+  private runHerdr(args: string[]): any {
+    const result = spawnSync('herdr', args, {
+      encoding: 'utf8',
+      timeout: HERDR_CLI_TIMEOUT_MS
+    });
+
+    if (result.error) {
+      throw new Error(`herdr ${args.join(' ')} failed: ${result.error.message}`);
+    }
+
+    const stdout = (result.stdout ?? '').trim();
+    let json: any;
+    try {
+      json = stdout ? JSON.parse(stdout) : undefined;
+    } catch {
+      json = undefined;
+    }
+
+    if (json?.error) {
+      throw new Error(json.error.message ?? `herdr reported ${json.error.code ?? 'an error'}`);
+    }
+    if (result.status !== 0) {
+      const stderr = (result.stderr ?? '').trim();
+      throw new Error(stderr || `herdr ${args.join(' ')} exited with code ${result.status}`);
+    }
+
+    return json;
+  }
+
+  /**
+   * The herdr agent behind a workspace key. The in-memory session map is the
+   * fast path, but it dies with the daemon while the herdr pane outlives it —
+   * so fall back to matching herdr's own agent list, which is the case that
+   * matters most here (messaging an agent that has been running a while).
+   */
+  private resolveAgentName(key: string): string {
+    const session = this.getSessionByKey(key);
+    if (session) return agentNameFor(session.type, session.key);
+
+    const suffix = `-${key.toLowerCase()}`;
+    const matches = Array.from(this.listHerdrStatuses().keys())
+      .filter(name => name.startsWith('butchr-') && name.endsWith(suffix));
+
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      throw new Error(`Key '${key}' is ambiguous; it matches herdr agents: ${matches.join(', ')}`);
+    }
+    throw new Error(`No agent found for key '${key}'`);
+  }
+
+  /**
+   * Deliver a message to an agent's terminal the way a human would: clear
+   * whatever is half-typed, type the message, submit it. Never throws — the
+   * caller is a request handler that owes its client a response either way.
+   */
+  public async sendToAgent(key: string, message: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const agentName = this.resolveAgentName(key);
+      const paneId = this.runHerdr(['agent', 'get', agentName])?.result?.agent?.pane_id;
+      if (typeof paneId !== 'string' || !paneId) {
+        throw new Error(`Agent '${agentName}' has no pane to send to`);
+      }
+
+      // Exactly one Ctrl+C. It clears a partially typed line, but a second
+      // one is how Claude Code quits — which would kill the very agent we are
+      // trying to talk to.
+      this.runHerdr(['pane', 'send-keys', paneId, 'C-c']);
+      await delay(INTERRUPT_SETTLE_MS);
+      this.runHerdr(['pane', 'send-text', paneId, message]);
+      this.runHerdr(['pane', 'send-keys', paneId, 'Enter']);
+
+      return { success: true };
+    } catch (e: any) {
+      const error = e?.message ?? String(e);
+      console.error(`[HerdrBridge] Failed to send message to agent for key '${key}':`, error);
+      return { success: false, error };
+    }
   }
 
   public ensureDefaultSession(): HerdrSession {
