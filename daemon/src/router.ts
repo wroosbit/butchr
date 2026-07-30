@@ -63,6 +63,9 @@ export class MessageRouter {
       case 'deactivate_by_key':
         this.handleDeactivateByKey(data, respond);
         break;
+      case 'send_to_agent':
+        this.handleSendToAgent(data, respond);
+        break;
       case 'status':
         this.handleStatus(data, respond);
         break;
@@ -212,6 +215,32 @@ export class MessageRouter {
         error: 'Session not found'
       });
     }
+  }
+
+  /**
+   * Type a message into a running agent's terminal. The delivery is
+   * asynchronous (there is a settle delay between the interrupt and the
+   * text), so every outcome — including a rejection we never expect — has to
+   * be turned back into a response; the caller is blocked on one.
+   */
+  private handleSendToAgent(data: any, respond: Respond) {
+    const { key, message } = data;
+    const fail = (error: string) =>
+      respond({ action: 'send_to_agent_response', success: false, error });
+
+    if (typeof key !== 'string' || !key.trim()) {
+      fail('Missing or invalid key');
+      return;
+    }
+    if (typeof message !== 'string' || !message.trim()) {
+      fail('Missing or invalid message');
+      return;
+    }
+
+    this.herdrBridge.sendToAgent(key, message).then(
+      (result) => respond({ action: 'send_to_agent_response', key, ...result }),
+      (err) => fail(err?.message ?? String(err))
+    );
   }
 
   private handleReset(data: any, respond: Respond) {
