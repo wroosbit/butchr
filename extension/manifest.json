@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Butchr",
+  "version": "0.1.0",
+  "description": "Chrome Extension connecting web workspaces to Herdr agent terminal",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:9182/*",
+    "ws://127.0.0.1:9182/*"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js"
+  },
+  "action": {
+    "default_title": "Open Butchr Agent Control"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  }
+}
