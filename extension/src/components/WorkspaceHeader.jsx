@@ -15,7 +15,7 @@ export function WorkspaceHeader({ sessionData, active, handleToggle, handleReset
         >
           🗑️
         </button>
-        <span className="toggle-label">{active ? 'Active' : 'Activate'}</span>
+        <span className="toggle-label">{active ? 'On' : 'Off'}</span>
         <label className="switch">
           <input type="checkbox" checked={active} onChange={(e) => handleToggle(e.target.checked)} disabled={!daemonConnected} />
           <span className="slider round"></span>
