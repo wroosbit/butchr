@@ -21,75 +21,76 @@ export interface HerdrSession {
   onDataListeners: Array<(data: string) => void>;
 }
 
-function configureClaudeMcp(servers: string[]) {
-  const claudeConfigPath = path.join(os.homedir(), '.claude.json');
-  let config: any = {};
-  try {
-    if (fs.existsSync(claudeConfigPath)) {
-      config = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf8'));
-    }
-  } catch (e) {
-    console.error('Failed to read .claude.json', e);
-  }
-
-  if (!config.mcpServers) config.mcpServers = {};
-
+// MCP server definitions Butchr can attach to an agent workspace.
+// The official Atlassian MCP is a remote endpoint; mcp-remote bridges it
+// to stdio clients (OAuth browser flow on first use).
+function mcpServerDefinitions(servers: string[]): Record<string, any> {
+  const defs: Record<string, any> = {};
   if (servers.includes('atlassian')) {
-    config.mcpServers['atlassian'] = {
+    defs['atlassian'] = {
       command: 'npx',
-      args: ['-y', '@atlassian/mcp-server']
+      args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/sse']
     };
   }
-
   if (servers.includes('butchr')) {
-    config.mcpServers['butchr'] = {
+    defs['butchr'] = {
       command: 'node',
       args: [path.join(__dirname, 'mcp.js')]
     };
   }
+  return defs;
+}
+
+// Claude Code reads .mcp.json from the project root, and each session's
+// workDir is its project — so MCP config is scoped to the workspace instead
+// of being injected into the user's global ~/.claude.json.
+export function writeWorkspaceMcpConfig(workDir: string, servers: string[]): void {
+  const defs = mcpServerDefinitions(servers);
+  if (Object.keys(defs).length === 0) return;
+
+  const configPath = path.join(workDir, '.mcp.json');
+  let config: any = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (e) {
+      // Butchr owns this file; a corrupt one is replaced, not preserved.
+      console.error('[HerdrBridge] Replacing unparseable workspace .mcp.json', e);
+      config = {};
+    }
+  }
+  config.mcpServers = { ...config.mcpServers, ...defs };
 
   try {
-    fs.writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   } catch (e) {
-    console.error('Failed to write .claude.json', e);
+    console.error('[HerdrBridge] Failed to write workspace .mcp.json', e);
   }
 }
 
-function configureAgyMcp(servers: string[]) {
-  const agyConfigDir = path.join(os.homedir(), '.gemini', 'antigravity-cli');
-  const agyConfigPath = path.join(agyConfigDir, 'mcp.json');
-  let config: any = { mcpServers: {} };
-  try {
-    if (fs.existsSync(agyConfigPath)) {
+// The antigravity CLI has no project-scoped equivalent, so its global config
+// is merged into — and never written when the existing file cannot be parsed,
+// which would otherwise replace the user's config with just our entries.
+export function configureAgyMcp(servers: string[], configPath?: string): void {
+  const agyConfigPath = configPath ?? path.join(os.homedir(), '.gemini', 'antigravity-cli', 'mcp.json');
+  const agyConfigDir = path.dirname(agyConfigPath);
+  let config: any = {};
+  if (fs.existsSync(agyConfigPath)) {
+    try {
       config = JSON.parse(fs.readFileSync(agyConfigPath, 'utf8'));
+    } catch (e) {
+      console.error('[HerdrBridge] agy mcp.json exists but is unparseable; refusing to overwrite it', e);
+      return;
     }
-  } catch (e) {
-    console.error('Failed to read agy mcp.json', e);
   }
 
-  if (!config.mcpServers) config.mcpServers = {};
-
-  if (servers.includes('atlassian')) {
-    config.mcpServers['atlassian'] = {
-      command: 'npx',
-      args: ['-y', '@atlassian/mcp-server']
-    };
-  }
-
-  if (servers.includes('butchr')) {
-    config.mcpServers['butchr'] = {
-      command: 'node',
-      args: [path.join(__dirname, 'mcp.js')]
-    };
-  }
+  config.mcpServers = { ...config.mcpServers, ...mcpServerDefinitions(servers) };
 
   try {
-    if (!fs.existsSync(agyConfigDir)) {
-      fs.mkdirSync(agyConfigDir, { recursive: true });
-    }
+    fs.mkdirSync(agyConfigDir, { recursive: true });
     fs.writeFileSync(agyConfigPath, JSON.stringify(config, null, 2));
   } catch (e) {
-    console.error('Failed to write agy mcp.json', e);
+    console.error('[HerdrBridge] Failed to write agy mcp.json', e);
   }
 }
 
@@ -127,6 +128,12 @@ export class HerdrBridge {
   private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: string[]): void {
     const agentName = `butchr-${session.type}-${session.key.toLowerCase()}`;
 
+    // Workspace-scoped MCP config, written for every agent type: Claude picks
+    // up .mcp.json from its cwd, and the file documents the workspace either way.
+    if (mcpServers && mcpServers.length > 0) {
+      writeWorkspaceMcpConfig(session.workDir, mcpServers);
+    }
+
     if (initialPrompt) {
       const promptFile = path.join(session.workDir, '.butchr-prompt.md');
       try {
@@ -148,7 +155,6 @@ export class HerdrBridge {
       if (defaultAgent && defaultAgent !== 'shell') {
         const promptCmd = `Please read and follow the instructions in .butchr-prompt.md to begin.`;
         if (defaultAgent === 'claude') {
-          if (mcpServers) configureClaudeMcp(mcpServers);
           cmd = `claude --continue || claude -p "${promptCmd}"`;
         } else if (defaultAgent === 'anti-gravity') {
           if (mcpServers) configureAgyMcp(mcpServers);
