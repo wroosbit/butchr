@@ -13,17 +13,42 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
+    # Secrets referenced in `with:` are invisible to step-level `if:`; mapping
+    # this one into env lets the publish guard actually test it. Publish stays
+    # inert until the repo secrets are configured, then arms itself.
+    env:
+      CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: extension
+
+      - name: Build extension
+        run: npm run build
+        working-directory: extension
+
       - name: Package Chrome Extension
+        # Zip the *built* extension from extension/dist — manifest.json must
+        # sit at the zip root or the Web Store rejects the upload.
         run: |
           mkdir -p dist
-          cd extension
-          zip -r ../dist/butchr-extension.zip . -x "*.DS_Store"
+          cd extension/dist
+          zip -r ../../dist/butchr-extension.zip .
 
       - name: Upload & Publish to Chrome Web Store
+        # NOTE: the store rejects uploads that reuse an existing version —
+        # bump "version" in extension/public/manifest.json when releasing.
         if: env.CHROME_CLIENT_ID != ''
         uses: mnao305/chrome-extension-upload@v2.2.0
         with:
