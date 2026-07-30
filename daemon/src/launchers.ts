@@ -20,7 +20,7 @@ function mcpServerDefinitions(servers: string[]): Record<string, any> {
   if (servers.includes('atlassian')) {
     defs['atlassian'] = {
       command: which('npx') ?? 'npx',
-      args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/sse']
+      args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/mcp']
     };
   }
   if (servers.includes('butchr')) {
