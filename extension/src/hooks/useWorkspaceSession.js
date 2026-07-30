@@ -143,7 +143,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   };
 
   const handleReset = () => {
-    if (currentTab && confirm('Are you sure you want to reset this workspace? This will deactivate the agent and permanently delete all files in the workspace directory.')) {
+    if (currentTab && confirm('Are you sure you want to reset this workspace? This will turn the agent off and permanently delete all files in the workspace directory.')) {
       chrome.runtime.sendMessage({ type: 'RESET_BUTCHR', url: currentTab.url });
       setActive(false);
       setSessionData((prev) => ({ ...prev, sessionId: null }));
