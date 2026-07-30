@@ -49,8 +49,12 @@ jobs:
       - name: Upload & Publish to Chrome Web Store
         # NOTE: the store rejects uploads that reuse an existing version —
         # bump "version" in extension/public/manifest.json when releasing.
+        # NOTE: actions are resolved before step `if:` conditions are
+        # evaluated, so an invalid ref here fails the whole job even when the
+        # step would be skipped. Keep this pinned to a tag that exists —
+        # v-prefixed tags for this action start at v4.0.0.
         if: env.CHROME_CLIENT_ID != ''
-        uses: mnao305/chrome-extension-upload@v2.2.0
+        uses: mnao305/chrome-extension-upload@v6.0.0
         with:
           file-path: 'dist/butchr-extension.zip'
           extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
