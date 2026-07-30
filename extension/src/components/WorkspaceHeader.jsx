@@ -1,10 +1,16 @@
 import React from 'react';
 
-export function WorkspaceHeader({ sessionData, active, handleToggle, handleReset, daemonConnected }) {
+export function WorkspaceHeader({ sessionData, active, attached, handleToggle, handleReset, daemonConnected }) {
+  // The agent is running, we just don't hold a session for it yet. Worth
+  // saying so — but quietly, and never as a third toggle state: as far as the
+  // switch is concerned the agent is On, because it is.
+  const reattaching = active && !attached;
+
   return (
     <div className="workspace-header">
       <div className="ws-header-left">
         <span className="ws-type">{sessionData.type}</span> / <span className="ws-key key-highlight">{sessionData.key}</span>
+        {reattaching && <span className="ws-reattaching">reattaching…</span>}
       </div>
       <div className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <button 

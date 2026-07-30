@@ -1,6 +1,13 @@
 import { WorkspaceRegistry } from './registry.js';
 import { PromptLoader } from './prompt.js';
-import { HerdrBridge, HerdrSession, HerdrAgentStatus, agentNameFor, typeFromAgentName } from './herdr.js';
+import {
+  HerdrBridge,
+  HerdrSession,
+  HerdrAgentDescription,
+  HerdrAgentStatus,
+  agentNameFor,
+  typeFromAgentName
+} from './herdr.js';
 
 type Respond = (msg: any) => void;
 
@@ -455,33 +462,72 @@ export class MessageRouter {
     };
   }
 
+  /**
+   * Does an agent exist for this page, and are we attached to it?
+   *
+   * Two different truths, and conflating them is what made the toggle lie:
+   * `active` is the agent's own existence, which is herdr's and survives a
+   * daemon restart; `attached` is whether *this* daemon holds a session for
+   * it, which is ephemeral and dies with the process. A missing session used
+   * to answer `active: false` for an agent that was demonstrably still
+   * working, so a session miss now asks herdr before calling anything Off.
+   */
   private handleStatus(data: any, respond: Respond) {
     const resolved = this.registry.resolve(data.url);
-    if (resolved) {
-      const session = this.herdrBridge.getSessionByKey(resolved.key);
-      const agent = session
-        ? this.toAgentDto(session, this.herdrBridge.listHerdrStatuses())
-        : undefined;
-      respond({
-        action: 'status_response',
-        success: true,
-        supported: true,
-        type: resolved.config.type,
-        key: resolved.key,
-        active: !!session,
-        sessionId: agent?.sessionId,
-        status: agent?.status,
-        workDir: agent?.workDir,
-        createdAt: agent?.createdAt,
-        herdrStatus: agent?.herdrStatus
-      });
-    } else {
-      respond({
-        action: 'status_response',
-        success: true,
-        supported: false
-      });
+    if (!resolved) {
+      respond({ action: 'status_response', success: true, supported: false });
+      return;
     }
+
+    const base = {
+      action: 'status_response',
+      success: true,
+      supported: true,
+      type: resolved.config.type,
+      key: resolved.key
+    };
+
+    const session = this.herdrBridge.getSessionByKey(resolved.key);
+    if (session) {
+      const agent = this.toAgentDto(session, this.herdrBridge.listHerdrStatuses());
+      respond({
+        ...base,
+        active: true,
+        attached: true,
+        sessionId: agent.sessionId,
+        status: agent.status,
+        workDir: agent.workDir,
+        createdAt: agent.createdAt,
+        herdrStatus: agent.herdrStatus
+      });
+      return;
+    }
+
+    // The registry knows this page's type, so the agent can be named exactly
+    // rather than resolved by suffix. Not-found is the ordinary answer here,
+    // not a failure: it is precisely the case where the agent really is gone.
+    let described: HerdrAgentDescription | undefined;
+    try {
+      described = this.herdrBridge.describeAgent(resolved.key, resolved.config.type);
+    } catch {
+      described = undefined;
+    }
+
+    if (!described) {
+      respond({ ...base, active: false, attached: false });
+      return;
+    }
+
+    respond({
+      ...base,
+      active: true,
+      attached: false,
+      // Session-only fields stay absent — there is no session to describe,
+      // and herdr knows nothing about sessionId, createdAt or pty status.
+      // workDir is included only when herdr actually reported a cwd.
+      ...(described.workDir !== null ? { workDir: described.workDir } : {}),
+      herdrStatus: described.herdrStatus
+    });
   }
 
   private handleListAgents(data: any, respond: Respond) {

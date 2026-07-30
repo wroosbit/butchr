@@ -18,13 +18,22 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   const [pageStatus, setPageStatus] = useState('checking');
   const [statusError, setStatusError] = useState(null);
   const [active, setActive] = useState(false);
+  // Whether this daemon holds a session for the agent. `active` says the agent
+  // exists at all — it outlives the daemon, so the two come apart after a
+  // daemon restart, and only `active` may drive the On/Off toggle.
+  const [attached, setAttached] = useState(false);
   const [sessionData, setSessionData] = useState({});
 
   const respondedRef = useRef(false);
+  // One re-attach attempt per detached agent: the activate response arrives
+  // asynchronously, and re-firing on every render would spawn a stream of
+  // activates at an agent that is already being attached to.
+  const reattachSentRef = useRef(false);
 
   const retryStatus = useCallback(() => {
     if (!currentTab || !currentTab.url) return;
     respondedRef.current = false;
+    reattachSentRef.current = false;
     setPageStatus('checking');
     setStatusError(null);
     chrome.runtime.sendMessage({ type: 'CHECK_STATUS', url: currentTab.url });
@@ -34,6 +43,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   useEffect(() => {
     if (!currentTab || !currentTab.url) return;
     respondedRef.current = false;
+    reattachSentRef.current = false;
     setPageStatus('checking');
     setStatusError(null);
 
@@ -82,6 +92,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
             herdrStatus: payload.herdrStatus
           });
           setActive(!!payload.active);
+          setAttached(!!payload.attached);
         } else {
           setPageStatus('unsupported');
           setStatusError(null);
@@ -93,6 +104,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
         setPageStatus('error');
       } else if (payload.action === 'activate_response' && payload.sessionId) {
         setActive(true);
+        setAttached(true);
         setSessionData((prev) => ({
           ...prev,
           sessionId: payload.sessionId,
@@ -105,10 +117,16 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
         }));
         setActiveTabView('terminal');
       } else if (payload.action === 'deactivate_response' || payload.action === 'agent_deactivated_event' || payload.action === 'agent_reset_event') {
+        // A deactivate that failed left the agent running; flipping to Off
+        // would be the same lie this toggle exists to stop telling.
+        if (payload.action === 'deactivate_response' && payload.success === false) return;
+
         // Check if the event is for the current session (if it has type/key)
         setSessionData((prev) => {
           if (payload.key && prev.key && payload.key !== prev.key) return prev;
           setActive(false);
+          setAttached(false);
+          reattachSentRef.current = false;
           if (termRef.current && payload.action === 'agent_reset_event') {
             termRef.current.write('\r\n\x1b[31m[Workspace Reset by Agent]\x1b[0m\r\n');
           }
@@ -118,6 +136,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
         setSessionData((prev) => {
           if (payload.key && prev.key && payload.key !== prev.key) return prev;
           setActive(true);
+          setAttached(true);
           setActiveTabView('terminal');
           return {
             ...prev,
@@ -134,10 +153,37 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
   }, [currentTab, activeTabView, termRef]);
 
+  // An agent that exists but has no session in this daemon is one we simply
+  // haven't attached to yet — usually because the daemon restarted underneath
+  // it. Re-attaching on sight is what keeps that invisible: the agent is
+  // already running, so activate reuses the herdr pane rather than starting
+  // anything, and the user never sees a fresh-start flicker.
+  useEffect(() => {
+    if (pageStatus !== 'supported' || !active || attached) {
+      if (attached) reattachSentRef.current = false;
+      return;
+    }
+    if (!currentTab || !currentTab.url || reattachSentRef.current) return;
+
+    reattachSentRef.current = true;
+    chrome.runtime.sendMessage({ type: 'ACTIVATE_BUTCHR', url: currentTab.url, tabId: currentTab.id });
+  }, [pageStatus, active, attached, currentTab?.id, currentTab?.url]);
+
   const handleToggle = (isChecked) => {
-    if (!isChecked && sessionData.sessionId) {
-      chrome.runtime.sendMessage({ type: 'DEACTIVATE_BUTCHR', sessionId: sessionData.sessionId });
-    } else if (isChecked && currentTab) {
+    if (!isChecked) {
+      // Off means the agent ends, not just that we let go of it. Without a
+      // session there is no id to deactivate by, but the agent is still there
+      // — deactivate_by_key reaches the one that outlived the daemon.
+      if (sessionData.sessionId) {
+        chrome.runtime.sendMessage({ type: 'DEACTIVATE_BUTCHR', sessionId: sessionData.sessionId });
+      } else if (sessionData.key) {
+        chrome.runtime.sendMessage({
+          type: 'DEACTIVATE_BUTCHR_BY_KEY',
+          workspaceType: sessionData.type,
+          key: sessionData.key
+        });
+      }
+    } else if (currentTab) {
       chrome.runtime.sendMessage({ type: 'ACTIVATE_BUTCHR', url: currentTab.url, tabId: currentTab.id });
     }
   };
@@ -146,6 +192,8 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     if (currentTab && confirm('Are you sure you want to reset this workspace? This will turn the agent off and permanently delete all files in the workspace directory.')) {
       chrome.runtime.sendMessage({ type: 'RESET_BUTCHR', url: currentTab.url });
       setActive(false);
+      setAttached(false);
+      reattachSentRef.current = false;
       setSessionData((prev) => ({ ...prev, sessionId: null }));
       if (termRef.current) {
         termRef.current.write('\r\n\x1b[31m[Workspace Reset]\x1b[0m\r\n');
@@ -158,6 +206,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     statusError,
     supported: pageStatus === 'supported',
     active,
+    attached,
     sessionData,
     handleToggle,
     handleReset,
