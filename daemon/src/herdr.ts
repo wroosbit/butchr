@@ -13,7 +13,8 @@ export interface HerdrSession {
   sessionId: string;
   type: string;
   key: string;
-  url: string;
+  /** The page this session is bound to, when the caller knew it. */
+  url?: string;
   createdAt: Date;
   status: 'initializing' | 'active' | 'terminated';
   workDir: string;
@@ -52,21 +53,22 @@ export function agentNameFor(type: string, key: string): string {
   return `butchr-${type}-${key.toLowerCase()}`;
 }
 
+/**
+ * Inverse of agentNameFor. When an agent is resolved through the herdr-list
+ * fallback there is no session to read a type off of, but the name still
+ * carries one — enough to broadcast a complete event.
+ */
+export function typeFromAgentName(agentName: string, key: string): string | undefined {
+  const prefix = 'butchr-';
+  const suffix = `-${key.toLowerCase()}`;
+  if (!agentName.startsWith(prefix) || !agentName.endsWith(suffix)) return undefined;
+  return agentName.slice(prefix.length, agentName.length - suffix.length) || undefined;
+}
+
 function toAgentStatus(value: unknown): HerdrAgentStatus {
   return HERDR_AGENT_STATUSES.includes(value as HerdrAgentStatus)
     ? (value as HerdrAgentStatus)
     : 'unknown';
-}
-
-/**
- * The workspace type encoded in an agent name — the inverse of
- * `agentNameFor`. Used to answer "what type is this?" for an agent we found
- * through herdr rather than through a session.
- */
-function typeFromAgentName(agentName: string, key: string): string | null {
-  const suffix = `-${key.toLowerCase()}`;
-  if (!agentName.startsWith('butchr-') || !agentName.endsWith(suffix)) return null;
-  return agentName.slice('butchr-'.length, agentName.length - suffix.length) || null;
 }
 
 function parseJson(text: string): any {
@@ -85,7 +87,12 @@ function clampTailLines(lines: unknown): number {
   return Math.min(Math.max(requested, 1), TAIL_MAX_LINES);
 }
 
-/** What herdr alone can tell us about an agent, with no session to consult. */
+/**
+ * What herdr alone can tell us about an agent, with no session to consult.
+ * Unknown fields are explicitly null rather than absent: this is serialized
+ * to a client as JSON, where an undefined field would simply vanish and read
+ * as "the daemon didn't answer that" instead of "there is nothing to report".
+ */
 export interface HerdrAgentDescription {
   agentName: string;
   type: string | null;
@@ -96,7 +103,10 @@ export interface HerdrAgentDescription {
 export class HerdrBridge {
   private sessions: Map<string, HerdrSession> = new Map();
 
-  public spawnSession(type: string, key: string, url: string, promptContent: string, defaultAgent?: string, mcpServers?: string[]): HerdrSession {
+  // `url` is `string | undefined` rather than optional: it sits in front of
+  // required parameters, and callers who have no URL must pass nothing rather
+  // than a placeholder.
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[]): HerdrSession {
     const sessionId = `${type}-${key.toLowerCase()}-${Date.now()}`;
     const defaultWorkDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
 
@@ -345,7 +355,7 @@ export class HerdrBridge {
 
     return {
       agentName,
-      type: typeFromAgentName(agentName, key),
+      type: typeFromAgentName(agentName, key) ?? null,
       workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
       herdrStatus: toAgentStatus(agent.agent_status)
     };
@@ -380,6 +390,48 @@ export class HerdrBridge {
       const error = e?.message ?? String(e);
       console.error(`[HerdrBridge] Failed to tail agent for key '${key}':`, error);
       return { success: false, error };
+    }
+  }
+
+  /**
+   * Close the herdr pane an agent runs in. Returns false when herdr knows the
+   * agent but it has no pane (already closed); throws with herdr's own message
+   * when herdr is unreachable or does not know the agent at all.
+   */
+  private closePaneForAgent(agentName: string): boolean {
+    const paneId = this.runHerdr(['agent', 'get', agentName])?.result?.agent?.pane_id;
+    if (typeof paneId !== 'string' || !paneId) return false;
+
+    this.runHerdr(['pane', 'close', paneId]);
+    return true;
+  }
+
+  /**
+   * Tear down the agent behind a workspace key without needing a session. The
+   * session map dies with the daemon while the herdr pane outlives it, so both
+   * deactivate and reset resolve the agent through the same herdr-list
+   * fallback `sendToAgent` uses. Never throws — the caller is a request
+   * handler that owes its client a response either way.
+   */
+  public closeAgentByKey(key: string): { success: boolean; agentName?: string; error?: string } {
+    let agentName: string;
+    try {
+      agentName = this.resolveAgentName(key);
+    } catch (e: any) {
+      const error = e?.message ?? String(e);
+      console.error(`[HerdrBridge] Could not resolve an agent for key '${key}':`, error);
+      return { success: false, error };
+    }
+
+    try {
+      if (!this.closePaneForAgent(agentName)) {
+        return { success: false, agentName, error: `Agent '${agentName}' has no pane to close` };
+      }
+      return { success: true, agentName };
+    } catch (e: any) {
+      const error = e?.message ?? String(e);
+      console.error(`[HerdrBridge] Failed to close pane for agent '${agentName}':`, error);
+      return { success: false, agentName, error };
     }
   }
 
@@ -489,11 +541,7 @@ export class HerdrBridge {
 
     const agentName = agentNameFor(session.type, session.key);
     try {
-      const output = execSync(`herdr agent get ${agentName}`, { encoding: 'utf8' });
-      const json = JSON.parse(output);
-      if (json.result && json.result.agent && json.result.agent.pane_id) {
-        execSync(`herdr pane close ${json.result.agent.pane_id}`);
-      }
+      this.closePaneForAgent(agentName);
     } catch(e) {
       console.error('[HerdrBridge] Failed to close pane for agent', agentName, e);
     }

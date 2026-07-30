@@ -73,9 +73,13 @@ function Agents() {
                 <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '4px' }}>
                   🔑 {agent.key} <span style={{ backgroundColor: '#1e293b', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '8px' }}>{agent.type}</span>
                 </div>
-                <div style={{ fontSize: '12px', color: '#60a5fa', cursor: 'pointer', marginBottom: '4px' }} onClick={() => openTab(agent.url)}>
-                  🔗 {agent.url}
-                </div>
+                {/* Agents activated by key may have no page to link to; an
+                    empty clickable row is worse than no row at all. */}
+                {agent.url ? (
+                  <div style={{ fontSize: '12px', color: '#60a5fa', cursor: 'pointer', marginBottom: '4px' }} onClick={() => openTab(agent.url)}>
+                    🔗 {agent.url}
+                  </div>
+                ) : null}
                 <div style={{ fontSize: '12px', color: '#94a3b8' }}>Session: {agent.sessionId}</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
