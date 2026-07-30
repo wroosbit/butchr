@@ -18,10 +18,10 @@ function SidePanel() {
 
   const daemonConnected = useDaemonConnection(currentTab);
   
-  const { supported, active, sessionData, handleToggle, handleReset } = useWorkspaceSession(
-    currentTab, 
-    activeTabView, 
-    setActiveTabView, 
+  const { pageStatus, statusError, supported, active, sessionData, handleToggle, handleReset, retryStatus } = useWorkspaceSession(
+    currentTab,
+    activeTabView,
+    setActiveTabView,
     termRef
   );
 
@@ -55,7 +55,27 @@ function SidePanel() {
     <>
       <Header daemonConnected={daemonConnected} />
 
-      {!supported ? (
+      {pageStatus === 'checking' ? (
+        <div id="view-terminal" className="view-panel">
+          <div className="status-box status-checking">
+            <span className="spinner" aria-hidden="true"></span>
+            <span>Checking this page…</span>
+          </div>
+        </div>
+      ) : pageStatus === 'error' ? (
+        <div id="view-terminal" className="view-panel">
+          <div className="status-box status-error">
+            <div className="status-title">⚠️ Can’t reach the Butchr daemon</div>
+            <div className="status-detail">{statusError}</div>
+            <div className="status-hint">
+              This is a connection problem, not a problem with the page. Check
+              <code>~/.local/share/butchr/daemon.log</code> and
+              <code>/tmp/native-host-sh.log</code>.
+            </div>
+            <button className="btn btn-secondary btn-sm mt-10" onClick={retryStatus}>Retry</button>
+          </div>
+        </div>
+      ) : !supported ? (
         <div id="view-terminal" className="view-panel">
           <div className="warning-box">
             Current page does not match a supported Workspace Type. Navigate to a valid workspace to open a terminal.
