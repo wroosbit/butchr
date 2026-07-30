@@ -46,6 +46,18 @@ export function agentNameFor(type: string, key: string): string {
   return `butchr-${type}-${key.toLowerCase()}`;
 }
 
+/**
+ * Inverse of agentNameFor. When an agent is resolved through the herdr-list
+ * fallback there is no session to read a type off of, but the name still
+ * carries one — enough to broadcast a complete event.
+ */
+export function typeFromAgentName(agentName: string, key: string): string | undefined {
+  const prefix = 'butchr-';
+  const suffix = `-${key.toLowerCase()}`;
+  if (!agentName.startsWith(prefix) || !agentName.endsWith(suffix)) return undefined;
+  return agentName.slice(prefix.length, agentName.length - suffix.length) || undefined;
+}
+
 function toAgentStatus(value: unknown): HerdrAgentStatus {
   return HERDR_AGENT_STATUSES.includes(value as HerdrAgentStatus)
     ? (value as HerdrAgentStatus)
@@ -270,6 +282,48 @@ export class HerdrBridge {
   }
 
   /**
+   * Close the herdr pane an agent runs in. Returns false when herdr knows the
+   * agent but it has no pane (already closed); throws with herdr's own message
+   * when herdr is unreachable or does not know the agent at all.
+   */
+  private closePaneForAgent(agentName: string): boolean {
+    const paneId = this.runHerdr(['agent', 'get', agentName])?.result?.agent?.pane_id;
+    if (typeof paneId !== 'string' || !paneId) return false;
+
+    this.runHerdr(['pane', 'close', paneId]);
+    return true;
+  }
+
+  /**
+   * Tear down the agent behind a workspace key without needing a session. The
+   * session map dies with the daemon while the herdr pane outlives it, so both
+   * deactivate and reset resolve the agent through the same herdr-list
+   * fallback `sendToAgent` uses. Never throws — the caller is a request
+   * handler that owes its client a response either way.
+   */
+  public closeAgentByKey(key: string): { success: boolean; agentName?: string; error?: string } {
+    let agentName: string;
+    try {
+      agentName = this.resolveAgentName(key);
+    } catch (e: any) {
+      const error = e?.message ?? String(e);
+      console.error(`[HerdrBridge] Could not resolve an agent for key '${key}':`, error);
+      return { success: false, error };
+    }
+
+    try {
+      if (!this.closePaneForAgent(agentName)) {
+        return { success: false, agentName, error: `Agent '${agentName}' has no pane to close` };
+      }
+      return { success: true, agentName };
+    } catch (e: any) {
+      const error = e?.message ?? String(e);
+      console.error(`[HerdrBridge] Failed to close pane for agent '${agentName}':`, error);
+      return { success: false, agentName, error };
+    }
+  }
+
+  /**
    * Deliver a message to an agent's terminal the way a human would: clear
    * whatever is half-typed, type the message, submit it. Never throws — the
    * caller is a request handler that owes its client a response either way.
@@ -375,11 +429,7 @@ export class HerdrBridge {
 
     const agentName = agentNameFor(session.type, session.key);
     try {
-      const output = execSync(`herdr agent get ${agentName}`, { encoding: 'utf8' });
-      const json = JSON.parse(output);
-      if (json.result && json.result.agent && json.result.agent.pane_id) {
-        execSync(`herdr pane close ${json.result.agent.pane_id}`);
-      }
+      this.closePaneForAgent(agentName);
     } catch(e) {
       console.error('[HerdrBridge] Failed to close pane for agent', agentName, e);
     }
