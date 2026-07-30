@@ -125,9 +125,9 @@ You are an autonomous coding agent managed by **Herdr** for Jira Task: **{{KEY}}
 
 ## ✨ Core Features (V1 / MVP)
 
+- [x] **Chrome Native Messaging Bridge:** Secure IPC communication via `chrome.runtime.connectNative` over `stdio` (binary length-prefixed JSON), replacing open network sockets.
 - [ ] **Jira Page Recognition & Key Extractor:** Automatically parses Jira issue IDs from current active tab URL.
 - [ ] **Workspace Type Resolver:** Maps Jira URLs to the `task` Workspace Type.
-- [ ] **Local Daemon Bridge:** Secure WebSocket connection between Chrome Extension and local service (`127.0.0.1:9182`).
 - [ ] **Markdown Prompt Engine:** Reads `prompts/task.md` and interpolates variables (`{{KEY}}`, etc.).
 - [ ] **Atlassian MCP Integration:** Spawns Herdr agent configured with official Atlassian MCP tools for Jira issue interaction.
 - [ ] **Agent Terminal Pairing:** Spawns/attaches a Herdr agent terminal tab for the active Jira key.

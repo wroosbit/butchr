@@ -1,45 +1,36 @@
-let ws = null;
-let reconnectTimer = null;
+const HOST_NAME = 'com.butchr.daemon';
+let nativePort = null;
+let isConnected = false;
 
-function connectDaemon() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+function connectNativeHost() {
+  if (isConnected && nativePort) {
     return;
   }
 
   try {
-    ws = new WebSocket('ws://127.0.0.1:9182');
+    console.log(`[Butchr Ext] Connecting to Native Messaging Host: ${HOST_NAME}`);
+    nativePort = chrome.runtime.connectNative(HOST_NAME);
+    isConnected = true;
 
-    ws.onopen = () => {
-      console.log('[Butchr Ext] Connected to Local Daemon (127.0.0.1:9182)');
-      chrome.runtime.sendMessage({ type: 'DAEMON_STATUS', connected: true }).catch(() => {});
-    };
+    chrome.runtime.sendMessage({ type: 'DAEMON_STATUS', connected: true }).catch(() => {});
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log('[Butchr Ext] Message from Daemon:', data);
-      chrome.runtime.sendMessage({ type: 'DAEMON_RESPONSE', payload: data }).catch(() => {});
-    };
+    nativePort.onMessage.addListener((msg) => {
+      console.log('[Butchr Ext] Native message received:', msg);
+      chrome.runtime.sendMessage({ type: 'DAEMON_RESPONSE', payload: msg }).catch(() => {});
+    });
 
-    ws.onclose = () => {
-      console.log('[Butchr Ext] Daemon WebSocket disconnected. Retrying in 3s...');
+    nativePort.onDisconnect.addListener(() => {
+      const err = chrome.runtime.lastError;
+      console.warn('[Butchr Ext] Native port disconnected:', err ? err.message : 'Unknown reason');
+      isConnected = false;
+      nativePort = null;
       chrome.runtime.sendMessage({ type: 'DAEMON_STATUS', connected: false }).catch(() => {});
-      scheduleReconnect();
-    };
-
-    ws.onerror = (err) => {
-      console.error('[Butchr Ext] WebSocket error:', err);
-    };
+    });
   } catch (e) {
-    scheduleReconnect();
-  }
-}
-
-function scheduleReconnect() {
-  if (!reconnectTimer) {
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connectDaemon();
-    }, 3000);
+    console.error('[Butchr Ext] Failed to connect native host:', e);
+    isConnected = false;
+    nativePort = null;
+    chrome.runtime.sendMessage({ type: 'DAEMON_STATUS', connected: false }).catch(() => {});
   }
 }
 
@@ -49,34 +40,43 @@ chrome.action.onClicked.addListener((tab) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'ACTIVATE_BUTCHR') {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
         action: 'activate',
         url: message.url,
         tabId: message.tabId
-      }));
+      });
       sendResponse({ status: 'sent' });
     } else {
-      sendResponse({ status: 'error', error: 'Daemon not connected' });
+      sendResponse({ status: 'error', error: 'Native host not connected' });
     }
   } else if (message.type === 'CHECK_STATUS') {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
         action: 'status',
         url: message.url
-      }));
+      });
       sendResponse({ status: 'sent' });
     } else {
-      sendResponse({ status: 'error', error: 'Daemon not connected' });
+      sendResponse({ status: 'error', error: 'Native host not connected' });
     }
   } else if (message.type === 'FETCH_AGENTS') {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
         action: 'list_agents'
-      }));
+      });
       sendResponse({ status: 'sent' });
     } else {
-      sendResponse({ status: 'error', error: 'Daemon not connected' });
+      sendResponse({ status: 'error', error: 'Native host not connected' });
     }
   } else if (message.type === 'OPEN_TAB') {
     chrome.tabs.create({ url: message.url });
@@ -85,4 +85,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-connectDaemon();
+// Initial connection
+connectNativeHost();

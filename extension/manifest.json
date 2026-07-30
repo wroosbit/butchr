@@ -6,11 +6,8 @@
   "permissions": [
     "activeTab",
     "tabs",
-    "sidePanel"
-  ],
-  "host_permissions": [
-    "http://127.0.0.1:9182/*",
-    "ws://127.0.0.1:9182/*"
+    "sidePanel",
+    "nativeMessaging"
   ],
   "background": {
     "service_worker": "background/service_worker.js"
