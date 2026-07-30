@@ -1,8 +1,24 @@
 import { WorkspaceRegistry } from './registry.js';
 import { PromptLoader } from './prompt.js';
-import { HerdrBridge } from './herdr.js';
+import { HerdrBridge, HerdrSession, HerdrAgentStatus, agentNameFor } from './herdr.js';
 
 type Respond = (msg: any) => void;
+
+/**
+ * What the UI is told about a session. Sessions are never sent over the wire
+ * directly: they carry a ~100KB ptyBuffer and a live ptyProcess handle, and
+ * the Agents page polls list_agents every 2s.
+ */
+interface AgentDto {
+  sessionId: string;
+  type: string;
+  key: string;
+  url: string;
+  createdAt: string;
+  status: HerdrSession['status'];
+  workDir: string;
+  herdrStatus: HerdrAgentStatus;
+}
 
 export class MessageRouter {
   private activePtyListeners = new Map<string, () => void>();
@@ -236,10 +252,26 @@ export class MessageRouter {
     respond({ action: 'reset_response', success });
   }
 
+  private toAgentDto(session: HerdrSession, statuses: Map<string, HerdrAgentStatus>): AgentDto {
+    return {
+      sessionId: session.sessionId,
+      type: session.type,
+      key: session.key,
+      url: session.url,
+      createdAt: session.createdAt.toISOString(),
+      status: session.status,
+      workDir: session.workDir,
+      herdrStatus: statuses.get(agentNameFor(session.type, session.key)) ?? 'unknown'
+    };
+  }
+
   private handleStatus(data: any, respond: Respond) {
     const resolved = this.registry.resolve(data.url);
     if (resolved) {
       const session = this.herdrBridge.getSessionByKey(resolved.key);
+      const agent = session
+        ? this.toAgentDto(session, this.herdrBridge.listHerdrStatuses())
+        : undefined;
       respond({
         action: 'status_response',
         success: true,
@@ -247,10 +279,11 @@ export class MessageRouter {
         type: resolved.config.type,
         key: resolved.key,
         active: !!session,
-        sessionId: session?.sessionId,
-        status: session?.status,
-        workDir: session?.workDir,
-        createdAt: session?.createdAt?.toISOString()
+        sessionId: agent?.sessionId,
+        status: agent?.status,
+        workDir: agent?.workDir,
+        createdAt: agent?.createdAt,
+        herdrStatus: agent?.herdrStatus
       });
     } else {
       respond({
@@ -262,11 +295,11 @@ export class MessageRouter {
   }
 
   private handleListAgents(data: any, respond: Respond) {
-    const activeSessions = this.herdrBridge.listActiveSessions();
+    const statuses = this.herdrBridge.listHerdrStatuses();
     respond({
       action: 'list_agents_response',
       success: true,
-      agents: activeSessions
+      agents: this.herdrBridge.listActiveSessions().map(s => this.toAgentDto(s, statuses))
     });
   }
 

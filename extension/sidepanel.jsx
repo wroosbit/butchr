@@ -94,6 +94,7 @@ function SidePanel() {
                 <div className="card-title">Agent Session Details</div>
                 <div className="info-row"><span className="label">Session ID:</span><span className="value">{sessionData.sessionId || '-'}</span></div>
                 <div className="info-row"><span className="label">Status:</span><span className="value">{sessionData.status || '-'}</span></div>
+                <div className="info-row"><span className="label">Herdr State:</span><span className="value">{sessionData.herdrStatus || '-'}</span></div>
                 <div className="info-row"><span className="label">Created At:</span><span className="value">{sessionData.createdAt ? new Date(sessionData.createdAt).toLocaleString() : '-'}</span></div>
                 <div className="info-row"><span className="label" style={{minWidth: '70px'}}>Work Dir:</span><span className="value" style={{wordBreak: 'break-all', fontSize: '11px'}}>{sessionData.workDir || '-'}</span></div>
               </div>
