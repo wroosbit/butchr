@@ -84,7 +84,7 @@ You are an autonomous coding agent managed by **Herdr** for Jira Task: **{{KEY}}
 │   │   3. Send Activation Request to Local Daemon                       │   │
 │   └──────────────────────────────┬─────────────────────────────────┘   │
 └──────────────────────────────────┼─────────────────────────────────────┘
-                                   │ WebSocket / HTTP (localhost:9182)
+                                   │ Native Messaging (stdio, length-prefixed JSON)
 ┌──────────────────────────────────▼─────────────────────────────────────┐
 │                        LOCAL SERVICE LAYER                             │
 │                                                                        │
@@ -140,7 +140,7 @@ You are an autonomous coding agent managed by **Herdr** for Jira Task: **{{KEY}}
 ### Chrome Extension (Butchr)
 - **Framework:** Manifest V3 JavaScript/TypeScript
 - **UI:** Extension Popup / Sidepanel showing active Workspace Type (`task`), Key (`PROJ-1234`), and agent connection status.
-- **Communication:** WebSockets to Local Daemon (`ws://127.0.0.1:9182`).
+- **Communication:** Chrome Native Messaging (`chrome.runtime.connectNative`) to the Local Daemon over stdio.
 
 ### Local Service Daemon
 - **Runtime:** Node.js / TypeScript daemon process.
@@ -170,6 +170,6 @@ You are an autonomous coding agent managed by **Herdr** for Jira Task: **{{KEY}}
 - [ ] Implement Workspace Type registry in Local Daemon (`types.json` or code registry).
 - [ ] Build Jira URL key extractor regex in Chrome Extension (`/browse/([A-Z0-9]+-\d+)`).
 - [ ] Integrate Atlassian MCP server definitions into Herdr agent launcher.
-- [ ] Implement WebSocket protocol between extension and daemon (`ws://127.0.0.1:9182`).
+- [x] Implement Native Messaging protocol between extension and daemon (stdio, 4-byte LE length-prefixed JSON), plus a local HTTP API on `127.0.0.1:4040` (`POST /api`, `GET /events`) used by the Butchr MCP server.
 
 
