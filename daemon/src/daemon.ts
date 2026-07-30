@@ -7,6 +7,7 @@ import { PromptLoader } from './prompt.js';
 import { HerdrBridge } from './herdr.js';
 import { MessageRouter } from './router.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
+import { resolveUserPath, which } from './env.js';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
 // workspace registry. Clients (Chrome native-host proxies, the MCP server)
@@ -36,6 +37,17 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (err) => {
   log('Unhandled rejection:', err as any);
 });
+
+// Normalize PATH before anything spawns: this daemon outlives the client that
+// started it, and its environment is inherited by every herdr pane and agent.
+process.env.PATH = resolveUserPath();
+const herdrPath = which('herdr');
+log(`PATH resolved to: ${process.env.PATH}`);
+if (herdrPath) {
+  log(`herdr found at ${herdrPath}`);
+} else {
+  log('WARNING: herdr not found on PATH; agent sessions will fail to attach');
+}
 
 const registry = new WorkspaceRegistry();
 const promptLoader = new PromptLoader(repoRoot);
