@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,79 +20,6 @@ export interface HerdrSession {
   ptyProcess?: pty.IPty;
   ptyBuffer: string;
   onDataListeners: Array<(data: string) => void>;
-}
-
-// MCP server definitions Butchr can attach to an agent workspace.
-// The official Atlassian MCP is a remote endpoint; mcp-remote bridges it
-// to stdio clients (OAuth browser flow on first use).
-function mcpServerDefinitions(servers: string[]): Record<string, any> {
-  const defs: Record<string, any> = {};
-  if (servers.includes('atlassian')) {
-    defs['atlassian'] = {
-      command: 'npx',
-      args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/sse']
-    };
-  }
-  if (servers.includes('butchr')) {
-    defs['butchr'] = {
-      command: 'node',
-      args: [path.join(__dirname, 'mcp.js')]
-    };
-  }
-  return defs;
-}
-
-// Claude Code reads .mcp.json from the project root, and each session's
-// workDir is its project — so MCP config is scoped to the workspace instead
-// of being injected into the user's global ~/.claude.json.
-export function writeWorkspaceMcpConfig(workDir: string, servers: string[]): void {
-  const defs = mcpServerDefinitions(servers);
-  if (Object.keys(defs).length === 0) return;
-
-  const configPath = path.join(workDir, '.mcp.json');
-  let config: any = {};
-  if (fs.existsSync(configPath)) {
-    try {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    } catch (e) {
-      // Butchr owns this file; a corrupt one is replaced, not preserved.
-      console.error('[HerdrBridge] Replacing unparseable workspace .mcp.json', e);
-      config = {};
-    }
-  }
-  config.mcpServers = { ...config.mcpServers, ...defs };
-
-  try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  } catch (e) {
-    console.error('[HerdrBridge] Failed to write workspace .mcp.json', e);
-  }
-}
-
-// The antigravity CLI has no project-scoped equivalent, so its global config
-// is merged into — and never written when the existing file cannot be parsed,
-// which would otherwise replace the user's config with just our entries.
-export function configureAgyMcp(servers: string[], configPath?: string): void {
-  const agyConfigPath = configPath ?? path.join(os.homedir(), '.gemini', 'antigravity-cli', 'mcp.json');
-  const agyConfigDir = path.dirname(agyConfigPath);
-  let config: any = {};
-  if (fs.existsSync(agyConfigPath)) {
-    try {
-      config = JSON.parse(fs.readFileSync(agyConfigPath, 'utf8'));
-    } catch (e) {
-      console.error('[HerdrBridge] agy mcp.json exists but is unparseable; refusing to overwrite it', e);
-      return;
-    }
-  }
-
-  config.mcpServers = { ...config.mcpServers, ...mcpServerDefinitions(servers) };
-
-  try {
-    fs.mkdirSync(agyConfigDir, { recursive: true });
-    fs.writeFileSync(agyConfigPath, JSON.stringify(config, null, 2));
-  } catch (e) {
-    console.error('[HerdrBridge] Failed to write agy mcp.json', e);
-  }
 }
 
 export class HerdrBridge {
@@ -151,17 +79,9 @@ export class HerdrBridge {
     } catch(e) {}
 
     if (!agentExists) {
-      let cmd = 'bash';
-      if (defaultAgent && defaultAgent !== 'shell') {
-        const promptCmd = `Please read and follow the instructions in .butchr-prompt.md to begin.`;
-        if (defaultAgent === 'claude') {
-          cmd = `claude --continue || claude -p "${promptCmd}"`;
-        } else if (defaultAgent === 'anti-gravity') {
-          if (mcpServers) configureAgyMcp(mcpServers);
-          cmd = `agy --continue || agy -i "${promptCmd}"`;
-        } else {
-          cmd = defaultAgent;
-        }
+      const { launcher } = resolveLauncher(defaultAgent);
+      if (launcher.setup && mcpServers && mcpServers.length > 0) {
+        launcher.setup(session.workDir, mcpServers);
       }
 
       try {
@@ -169,7 +89,7 @@ export class HerdrBridge {
           'agent', 'start', agentName,
           '--cwd', session.workDir,
           '--',
-          'bash', '-c', cmd
+          'bash', '-c', launcher.command
         ]);
       } catch (e) {
         console.error('[HerdrBridge] Failed to start herdr agent', e);
@@ -201,14 +121,6 @@ export class HerdrBridge {
         console.log(`[HerdrBridge] PTY for session ${session.sessionId} exited with code ${exitCode}`);
         session.status = 'terminated';
       });
-      
-      // Send initial banner if it's a new session, or even if it's attached
-      if (!agentExists) {
-        setTimeout(() => {
-          ptyProcess.write(`# Herdr Agent Session ${session.key} initialized\n`);
-        }, 500);
-      }
-
     } catch (e) {
       console.error('[HerdrBridge] Failed to spawn PTY', e);
     }
