@@ -1,6 +1,6 @@
 import { WorkspaceRegistry } from './registry.js';
 import { PromptLoader } from './prompt.js';
-import { HerdrBridge, HerdrSession, HerdrAgentStatus, agentNameFor } from './herdr.js';
+import { HerdrBridge, HerdrSession, HerdrAgentStatus, agentNameFor, typeFromAgentName } from './herdr.js';
 
 type Respond = (msg: any) => void;
 
@@ -229,13 +229,28 @@ export class MessageRouter {
         success,
         sessionId: session.sessionId
       });
-    } else {
-      respond({
-        action: 'deactivate_response',
-        success: false,
-        error: 'Session not found'
+      return;
+    }
+
+    // No session, but the agent may well be alive: the session map dies with
+    // the daemon and the herdr pane does not. Close it through the fallback
+    // rather than telling the caller an obviously-running agent is gone.
+    const result = this.herdrBridge.closeAgentByKey(key);
+
+    if (result.success) {
+      this.broadcast({
+        action: 'agent_deactivated_event',
+        type: result.agentName ? typeFromAgentName(result.agentName, key) : undefined,
+        key
       });
     }
+
+    respond({
+      action: 'deactivate_response',
+      key,
+      success: result.success,
+      ...(result.error ? { error: result.error } : {})
+    });
   }
 
   /**
@@ -273,8 +288,12 @@ export class MessageRouter {
     const { config, key } = resolved;
     const session = this.herdrBridge.getSessionByKey(key);
 
+    // Same ordering rule as handleResetByKey: the agent goes first, whether we
+    // reach it through the session map or the herdr-list fallback.
     if (session) {
       this.herdrBridge.terminateSession(session.sessionId);
+    } else {
+      this.herdrBridge.closeAgentByKey(key);
     }
 
     const success = this.herdrBridge.resetWorkspace(config.type, key);
@@ -285,10 +304,23 @@ export class MessageRouter {
     const { type, key } = data;
     const session = this.herdrBridge.getSessionByKey(key);
 
+    // Tear the agent down *before* resetWorkspace deletes the directory it is
+    // running in. Without a session the agent is still reachable through the
+    // herdr-list fallback, and skipping that left the agent alive in a cwd
+    // that no longer exists.
+    let agentClosed = false;
+    let agentError: string | undefined;
+
     if (session) {
-      this.herdrBridge.terminateSession(session.sessionId);
+      agentClosed = this.herdrBridge.terminateSession(session.sessionId);
+    } else {
+      const result = this.herdrBridge.closeAgentByKey(key);
+      agentClosed = result.success;
+      agentError = result.error;
     }
 
+    // The workspace still goes away even if no agent was there to close —
+    // reset's job is to leave nothing behind.
     const success = this.herdrBridge.resetWorkspace(type, key);
 
     // Broadcast event so UI can update
@@ -296,10 +328,17 @@ export class MessageRouter {
       action: 'agent_reset_event',
       type,
       key,
-      success
+      success,
+      agentClosed
     });
 
-    respond({ action: 'reset_response', success });
+    respond({
+      action: 'reset_response',
+      success,
+      agentClosed,
+      ...(agentError ? { agentError } : {}),
+      ...(success ? {} : { error: agentError ?? `No workspace directory for ${type}/${key}` })
+    });
   }
 
   private toAgentDto(session: HerdrSession, statuses: Map<string, HerdrAgentStatus>): AgentDto {
