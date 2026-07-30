@@ -27,6 +27,7 @@ wss.on('connection', (ws: WebSocket) => {
         const resolved = registry.resolve(data.url);
         if (!resolved) {
           ws.send(JSON.stringify({
+            action: 'activate_response',
             success: false,
             error: 'Unsupported URL. No matching Workspace Type found.'
           }));
@@ -46,9 +47,11 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
         ws.send(JSON.stringify({
+          action: 'activate_response',
           success: true,
           type: config.type,
           key,
+          url: data.url,
           sessionId: session.sessionId,
           status: session.status,
           mcpServers: config.mcpServers
@@ -58,7 +61,7 @@ wss.on('connection', (ws: WebSocket) => {
         if (resolved) {
           const session = herdrBridge.getSessionByKey(resolved.key);
           ws.send(JSON.stringify({
-            action: 'status',
+            action: 'status_response',
             success: true,
             supported: true,
             type: resolved.config.type,
@@ -68,11 +71,18 @@ wss.on('connection', (ws: WebSocket) => {
           }));
         } else {
           ws.send(JSON.stringify({
-            action: 'status',
+            action: 'status_response',
             success: true,
             supported: false
           }));
         }
+      } else if (data.action === 'list_agents') {
+        const activeSessions = herdrBridge.listActiveSessions();
+        ws.send(JSON.stringify({
+          action: 'list_agents_response',
+          success: true,
+          agents: activeSessions
+        }));
       }
     } catch (err: any) {
       console.error('[Butchr Daemon] Error processing message:', err);

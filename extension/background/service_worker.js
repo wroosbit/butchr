@@ -69,6 +69,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       sendResponse({ status: 'error', error: 'Daemon not connected' });
     }
+  } else if (message.type === 'FETCH_AGENTS') {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'list_agents'
+      }));
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Daemon not connected' });
+    }
+  } else if (message.type === 'OPEN_TAB') {
+    chrome.tabs.create({ url: message.url });
+    sendResponse({ status: 'opened' });
   }
   return true;
 });
