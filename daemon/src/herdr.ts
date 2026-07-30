@@ -143,6 +143,14 @@ export class HerdrBridge {
       writeWorkspaceMcpConfig(session.workDir, mcpServers);
     }
 
+    // Agent-specific provisioning, also on every activation: it is idempotent,
+    // and a workspace reset out from under a live herdr agent would otherwise
+    // never get its settings back.
+    const { launcher: setupLauncher } = resolveLauncher(defaultAgent);
+    if (setupLauncher.setup) {
+      setupLauncher.setup(session.workDir, mcpServers ?? []);
+    }
+
     if (initialPrompt) {
       const promptFile = path.join(session.workDir, '.butchr-prompt.md');
       try {
@@ -161,9 +169,6 @@ export class HerdrBridge {
 
     if (!agentExists) {
       const { launcher } = resolveLauncher(defaultAgent);
-      if (launcher.setup && mcpServers && mcpServers.length > 0) {
-        launcher.setup(session.workDir, mcpServers);
-      }
 
       try {
         // The pane inherits the herdr *server's* environment, not ours — and
