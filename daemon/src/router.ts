@@ -20,6 +20,19 @@ interface AgentDto {
   herdrStatus: HerdrAgentStatus;
 }
 
+/**
+ * The addressing convention shared by every agent-targeted action: a key is
+ * required, a type is optional but must be meaningful when present. Returns
+ * the complaint, or null when the address is usable.
+ */
+function invalidAddress(key: unknown, type: unknown): string | null {
+  if (typeof key !== 'string' || !key.trim()) return 'Missing or invalid key';
+  if (type !== undefined && (typeof type !== 'string' || !type.trim())) {
+    return 'Invalid type: expected a non-empty string';
+  }
+  return null;
+}
+
 export class MessageRouter {
   private activePtyListeners = new Map<string, () => void>();
 
@@ -65,6 +78,12 @@ export class MessageRouter {
         break;
       case 'send_to_agent':
         this.handleSendToAgent(data, respond);
+        break;
+      case 'tail_agent':
+        this.handleTailAgent(data, respond);
+        break;
+      case 'agent_status':
+        this.handleAgentStatus(data, respond);
         break;
       case 'status':
         this.handleStatus(data, respond);
@@ -224,12 +243,13 @@ export class MessageRouter {
    * be turned back into a response; the caller is blocked on one.
    */
   private handleSendToAgent(data: any, respond: Respond) {
-    const { key, message } = data;
+    const { key, type, message } = data;
     const fail = (error: string) =>
       respond({ action: 'send_to_agent_response', success: false, error });
 
-    if (typeof key !== 'string' || !key.trim()) {
-      fail('Missing or invalid key');
+    const badAddress = invalidAddress(key, type);
+    if (badAddress) {
+      fail(badAddress);
       return;
     }
     if (typeof message !== 'string' || !message.trim()) {
@@ -237,10 +257,91 @@ export class MessageRouter {
       return;
     }
 
-    this.herdrBridge.sendToAgent(key, message).then(
+    this.herdrBridge.sendToAgent(key, message, type).then(
       (result) => respond({ action: 'send_to_agent_response', key, ...result }),
       (err) => fail(err?.message ?? String(err))
     );
+  }
+
+  /**
+   * The tail of an agent's terminal — how a supervisor finds out *why* an
+   * agent is in the state it reports, without attaching to its pane.
+   */
+  private handleTailAgent(data: any, respond: Respond) {
+    const { key, type, lines } = data;
+    const fail = (error: string) =>
+      respond({ action: 'tail_agent_response', success: false, error });
+
+    const badAddress = invalidAddress(key, type);
+    if (badAddress) {
+      fail(badAddress);
+      return;
+    }
+    if (lines !== undefined && (typeof lines !== 'number' || !Number.isFinite(lines))) {
+      fail('Invalid lines: expected a number');
+      return;
+    }
+
+    try {
+      respond({
+        action: 'tail_agent_response',
+        key,
+        ...this.herdrBridge.tailAgent(key, type, lines)
+      });
+    } catch (err: any) {
+      fail(err?.message ?? String(err));
+    }
+  }
+
+  /**
+   * Everything the sidepanel's Info tab shows, by address. A daemon restart
+   * empties the session map while the herdr pane keeps running, so a missing
+   * session degrades to herdr's own view (`sessionless: true`) rather than
+   * failing — an agent that outlived its daemon is exactly the one a
+   * supervisor most needs to inspect.
+   */
+  private handleAgentStatus(data: any, respond: Respond) {
+    const { key, type } = data;
+    const fail = (error: string) =>
+      respond({ action: 'agent_status_response', success: false, error });
+
+    const badAddress = invalidAddress(key, type);
+    if (badAddress) {
+      fail(badAddress);
+      return;
+    }
+
+    try {
+      const session = this.herdrBridge.getSessionByAddress(key, type);
+      if (session) {
+        respond({
+          action: 'agent_status_response',
+          success: true,
+          sessionless: false,
+          agentName: agentNameFor(session.type, session.key),
+          ...this.toAgentDto(session, this.herdrBridge.listHerdrStatuses())
+        });
+        return;
+      }
+
+      const described = this.herdrBridge.describeAgent(key, type);
+      respond({
+        action: 'agent_status_response',
+        success: true,
+        sessionless: true,
+        agentName: described.agentName,
+        sessionId: null,
+        type: described.type,
+        key,
+        url: null,
+        createdAt: null,
+        status: null,
+        workDir: described.workDir,
+        herdrStatus: described.herdrStatus
+      });
+    } catch (err: any) {
+      fail(err?.message ?? String(err));
+    }
   }
 
   private handleReset(data: any, respond: Respond) {
