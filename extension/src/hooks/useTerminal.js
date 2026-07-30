@@ -2,7 +2,16 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 
+// Gap between the two halves of the resize nudge. Long enough for the PTY to
+// see two distinct SIGWINCHes, short enough to be invisible to the user.
+const REPAINT_NUDGE_MS = 50;
+
 export function useTerminal(activeTabView, supported, active, sessionData, termRef, containerRef) {
+
+  // Set while a PTY_INIT sent after a reconnect is still in flight, so only a
+  // re-attach pays for the repaint nudge — the first init doesn't need it.
+  const reinitPendingRef = useRef(false);
+  const nudgeTimerRef = useRef(null);
 
   useEffect(() => {
     if (activeTabView === 'terminal' && supported && active && containerRef.current && !termRef.current) {
@@ -82,12 +91,49 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
 
   // Terminal I/O listener
   useEffect(() => {
+    // A re-init still owed to a session we've since left is moot.
+    reinitPendingRef.current = false;
+
+    // The replayed buffer is a rolling window, so it may start mid-stream,
+    // after the escape sequences that set the alternate screen up. Bracketing
+    // the rows with a one-off shrink makes the PTY deliver two SIGWINCHes,
+    // and a full-screen TUI redraws itself from scratch on the second.
+    const nudgeRepaint = () => {
+      const term = termRef.current;
+      if (!term || term.rows < 2) return;
+      const { cols, rows } = term;
+      chrome.runtime.sendMessage({ type: 'PTY_RESIZE', sessionId: sessionData.sessionId, cols, rows: rows - 1 });
+      clearTimeout(nudgeTimerRef.current);
+      nudgeTimerRef.current = setTimeout(() => {
+        if (!termRef.current) return;
+        chrome.runtime.sendMessage({ type: 'PTY_RESIZE', sessionId: sessionData.sessionId, cols, rows });
+      }, REPAINT_NUDGE_MS);
+    };
+
     const handleMessage = (message) => {
+      // A reconnect means a brand new daemon connection, which has no output
+      // listener registered for this session — without a fresh pty_init the
+      // PTY still takes input but nothing ever comes back.
+      if (message.type === 'DAEMON_STATUS') {
+        if (message.connected && termRef.current && sessionData.sessionId) {
+          reinitPendingRef.current = true;
+          chrome.runtime.sendMessage({ type: 'PTY_INIT', sessionId: sessionData.sessionId });
+        }
+        return;
+      }
+
       if (message.type === 'DAEMON_RESPONSE') {
         const payload = message.payload;
         if (payload.action === 'pty_init_response') {
-          if (termRef.current && payload.buffer && payload.sessionId === sessionData.sessionId) {
-            termRef.current.write(payload.buffer);
+          if (termRef.current && payload.sessionId === sessionData.sessionId) {
+            // Reset first: on a re-init the buffer repeats what is already on
+            // screen, and writing it over the old contents would double it.
+            termRef.current.reset();
+            if (payload.buffer) termRef.current.write(payload.buffer);
+            if (reinitPendingRef.current) {
+              reinitPendingRef.current = false;
+              nudgeRepaint();
+            }
           }
         } else if (payload.action === 'pty_output') {
           if (termRef.current && payload.data && payload.sessionId === sessionData.sessionId) {
@@ -98,7 +144,10 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
     };
 
     chrome.runtime.onMessage.addListener(handleMessage);
-    return () => chrome.runtime.onMessage.removeListener(handleMessage);
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleMessage);
+      clearTimeout(nudgeTimerRef.current);
+    };
   }, [sessionData.sessionId]);
 
 }

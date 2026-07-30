@@ -19,9 +19,28 @@ function sendNativeMessage(msg: any) {
   const lenBuf = Buffer.alloc(4);
   lenBuf.writeUInt32LE(jsonBuf.length, 0);
 
-  process.stdout.write(lenBuf);
-  process.stdout.write(jsonBuf);
+  // stdout is already gone once Chrome tears the port down; a write here
+  // would throw EPIPE and take the process out through uncaughtException.
+  try {
+    process.stdout.write(lenBuf);
+    process.stdout.write(jsonBuf);
+  } catch (err: any) {
+    console.error('Failed to write to Chrome: ' + err.message);
+  }
 }
+
+// --- Service worker keepalive --------------------------------------------
+
+// Chrome stops an MV3 service worker after ~30s without activity, which
+// closes the native port, kills this host, and drops the daemon connection
+// along with its PTY output listeners. Traffic on the port counts as
+// activity, so a periodic no-op message keeps the worker (and the terminal)
+// alive. The extension ignores actions it doesn't recognise.
+const HEARTBEAT_INTERVAL_MS = 20_000;
+
+const heartbeat = setInterval(() => sendNativeMessage({ action: 'ping' }), HEARTBEAT_INTERVAL_MS);
+// Never let the heartbeat alone hold the process open.
+heartbeat.unref();
 
 // --- Daemon link ---------------------------------------------------------
 
@@ -100,6 +119,7 @@ process.stdin.on('data', (chunk: Buffer) => {
 
 process.stdin.on('end', () => {
   console.log('Stdin closed. Native host exiting.');
+  clearInterval(heartbeat);
   if (daemonSocket) daemonSocket.end();
   process.exit(0);
 });
