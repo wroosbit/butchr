@@ -2,11 +2,13 @@ import React from 'react';
 
 export function TerminalView({ active, containerRef }) {
   return (
-    <div className="terminal-container" style={{flex: 1}}>
+    <div className="terminal-container">
       {active ? (
-        <div ref={containerRef} className="xterm-wrapper" style={{height: '100%'}}></div>
+        // Sizing is owned by flex (.xterm-wrapper is flex: 1; min-height: 0);
+        // an explicit height here would fight the fit addon's measurement.
+        <div ref={containerRef} className="xterm-wrapper"></div>
       ) : (
-        <div style={{height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8'}}>
+        <div style={{flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8'}}>
           Agent is currently inactive. Toggle the switch to start.
         </div>
       )}

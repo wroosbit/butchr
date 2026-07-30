@@ -20,14 +20,25 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(containerRef.current);
-      
-      setTimeout(() => {
-        if (termRef.current) fitAddon.fit();
-      }, 50);
 
-      const resizeObserver = new ResizeObserver(() => {
-        if (termRef.current) fitAddon.fit();
-      });
+      // fit() throws if the element has no layout yet (side panel still
+      // opening, or tab hidden); skip those frames rather than tearing down.
+      const safeFit = () => {
+        if (!termRef.current || !containerRef.current) return;
+        const { clientWidth, clientHeight } = containerRef.current;
+        if (clientWidth < 1 || clientHeight < 1) return;
+        try {
+          fitAddon.fit();
+        } catch {
+          // transient layout state; the ResizeObserver will fire again
+        }
+      };
+
+      // Fit after the browser has laid the panel out, not on a guessed delay.
+      const raf = requestAnimationFrame(safeFit);
+      const settleTimer = setTimeout(safeFit, 50);
+
+      const resizeObserver = new ResizeObserver(safeFit);
       resizeObserver.observe(containerRef.current);
       
       term.onData((data) => {
@@ -52,10 +63,11 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
       // Ask for PTY init
       chrome.runtime.sendMessage({ type: 'PTY_INIT', sessionId: sessionData.sessionId });
 
-      const onResize = () => fitAddon.fit();
-      window.addEventListener('resize', onResize);
+      window.addEventListener('resize', safeFit);
       return () => {
-        window.removeEventListener('resize', onResize);
+        cancelAnimationFrame(raf);
+        clearTimeout(settleTimer);
+        window.removeEventListener('resize', safeFit);
         resizeObserver.disconnect();
         term.dispose();
         termRef.current = null;

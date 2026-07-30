@@ -11,9 +11,15 @@
   --border-radius: 8px;
 }
 
+/* Applies to descendants too: .xterm-wrapper's padding must come out of its
+   flex-assigned height, not add to it. */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 html, body {
   height: 100vh;
-  box-sizing: border-box;
+  overflow: hidden;
 }
 
 body {
@@ -295,8 +301,12 @@ body {
   cursor: not-allowed;
 }
 
+/* min-height: 0 throughout: a flex item defaults to min-height: auto, which
+   refuses to shrink below its content, so the terminal would push the panel
+   taller than the viewport instead of being clipped to it. */
 .view-panel {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -304,6 +314,7 @@ body {
 
 #terminal-content {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -456,6 +467,7 @@ body {
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -536,6 +548,7 @@ body {
 
 .xterm-wrapper {
   flex: 1;
+  min-height: 0;
   padding: 6px;
   background: #090d16;
   overflow: hidden;
