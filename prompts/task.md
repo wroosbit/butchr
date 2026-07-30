@@ -26,4 +26,13 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
 - Execute the required code changes, feature additions, or bug fixes based on the Jira task description.
 - Run tests and linting to verify implementation correctness.
 - Post progress updates or completion status back to the Jira issue via Atlassian MCP tools.
-- Use the `gh` CLI for all GitHub-related operations (e.g. `gh pr create` to submit your work, or `gh pr checks` to verify CI).
+
+### 4. Submitting Work (Pull Request Only)
+**Never commit or push directly to `main`.** The default branch is protected; direct pushes are rejected. All work lands through a pull request.
+
+- Commit on your task branch (`butchr/{{KEY}}`, created with the worktree above).
+- Push the branch: `git push -u origin butchr/{{KEY}}`.
+- Open a PR with `gh pr create`, referencing **{{KEY}}** in the title and linking the Jira issue in the body.
+- Verify CI with `gh pr checks`; required checks must pass before the PR can merge. If a check fails, fix it and push again rather than trying to bypass it.
+- Use the `gh` CLI for all GitHub operations.
+- If you find yourself blocked by branch protection, that is the rule working as intended — open a PR; do not attempt to force-push, disable protection, or push to `main`.
