@@ -137,7 +137,7 @@ export class MessageRouter {
     const { type, key, defaultAgent } = data;
 
     // In a real scenario we'd look up the config from registry by type,
-    // but for now we'll assume it's a valid type since we only have 'task'
+    // but for now we'll assume it's a valid type since we only have 'jira-task'
     const promptTemplateFile = `prompts/${type}.md`;
     let session = this.herdrBridge.getSessionByKey(key);
 

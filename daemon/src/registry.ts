@@ -9,7 +9,7 @@ export class WorkspaceRegistry {
 
   private registerDefaults() {
     this.register({
-      type: 'task',
+      type: 'jira-task',
       name: 'Jira Task',
       urlPatterns: [
         /https?:\/\/[^\/]+\/browse\/([A-Z0-9]+-\d+)/i,
@@ -23,7 +23,7 @@ export class WorkspaceRegistry {
         return match ? match[1].toUpperCase() : null;
       },
       mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/task.md'
+      promptTemplateFile: 'prompts/jira-task.md'
     });
   }
 

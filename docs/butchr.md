@@ -26,15 +26,15 @@ Each Workspace Type configures:
 2. **MCP Tools:** Official or custom MCP toolsets attached to the agent environment.
 3. **Initial Prompt (`.md` file):** A dedicated Markdown file containing the initial prompt for the agent, making prompt engineering clean, versionable, and easy to iterate on.
 
-### 📌 Initial Supported Type: `task` (Jira)
+### 📌 Initial Supported Type: `jira-task` (Jira)
 
 | Parameter | Configuration |
 | :--- | :--- |
-| **Workspace Type** | `task` |
+| **Workspace Type** | `jira-task` |
 | **Target Platform** | Jira (`https://*.atlassian.net/browse/*` or `/jira/*`) |
 | **Entity Key** | Jira Work Item ID (e.g., `PROJ-1234`) |
 | **MCP Tools** | Official Atlassian MCP Server tools (e.g., Jira issue fetcher, comments, issue updater) |
-| **Initial Prompt File** | `prompts/task.md` |
+| **Initial Prompt File** | `prompts/jira-task.md` |
 
 ---
 
@@ -42,9 +42,9 @@ Each Workspace Type configures:
 
 All workspace initial prompts are stored as plain Markdown (`.md`) files in the local service configuration directory. This design allows users and developers to tweak, inspect, and refine agent prompts without recompiling code.
 
-### The `task` Prompt: [`prompts/task.md`](../prompts/task.md)
+### The `jira-task` Prompt: [`prompts/jira-task.md`](../prompts/jira-task.md)
 
-The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see that file rather than an embedded copy here, so the two cannot drift. In outline: the agent reads the Jira task via Atlassian MCP tools, maintains a shared clone cache under `~/code/<org>/<repo>` (fetch-only, safe for concurrent agents), creates a per-task git worktree **inside its workspace directory** on a `butchr/{{KEY}}` branch, does the work there, and reports back to Jira. Keeping all work inside the workspace is what makes workspace reset a full cleanup.
+The canonical prompt lives in [`prompts/jira-task.md`](../prompts/jira-task.md) — see that file rather than an embedded copy here, so the two cannot drift. In outline: the agent reads the Jira task via Atlassian MCP tools, maintains a shared clone cache under `~/code/<org>/<repo>` (fetch-only, safe for concurrent agents), creates a per-task git worktree **inside its workspace directory** on a `butchr/{{KEY}}` branch, does the work there, and reports back to Jira. Keeping all work inside the workspace is what makes workspace reset a full cleanup.
 
 ---
 
@@ -57,7 +57,7 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 │   ┌────────────────────────────────────────────────────────────────┐   │
 │   │                       Butchr Chrome Ext                        │   │
 │   │                                                                │   │
-│   │   1. Detect URL -> Matched Workspace Type (`task`)              │   │
+│   │   1. Detect URL -> Matched Workspace Type (`jira-task`)        │   │
 │   │   2. Extract Key (`PROJ-1234`)                                 │   │
 │   │   3. Send Activation Request to Local Daemon                       │   │
 │   └──────────────────────────────┬─────────────────────────────────┘   │
@@ -69,8 +69,8 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 │   ┌────────────────────────────────────────────────────────────────┐   │
 │   │                       Butchr Local Daemon                      │   │
 │   │                                                                │   │
-│   │   - Workspace Type Registry (`task`, etc.)                     │   │
-│   │   - Prompt File Loader (`prompts/task.md`)                     │   │
+│   │   - Workspace Type Registry (`jira-task`, etc.)                │   │
+│   │   - Prompt File Loader (`prompts/jira-task.md`)                │   │
 │   │   - MCP Configuration Manager (Atlassian MCP Server)           │   │
 │   │   - Herdr Session Spawner & Bridge                             │   │
 │   └──────────────────────────────┬─────────────────────────────────┘   │
@@ -85,7 +85,7 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 │   │   ┌────────────────────────────────────────────────────────┐   │   │
 │   │   │ Agent Instance (Key: PROJ-1234)                        │   │   │
 │   │   │  - Tools: Atlassian MCP, Terminal Execution, Git       │   │   │
-│   │   │  - Initial Prompt: Rendered `prompts/task.md`          │   │   │
+│   │   │  - Initial Prompt: Rendered `prompts/jira-task.md`     │   │   │
 │   │   └────────────────────────────────────────────────────────┘   │   │
 │   └────────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────────┘
@@ -105,8 +105,8 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 
 - [x] **Chrome Native Messaging Bridge:** Secure IPC communication via `chrome.runtime.connectNative` over `stdio` (binary length-prefixed JSON), replacing open network sockets.
 - [ ] **Jira Page Recognition & Key Extractor:** Automatically parses Jira issue IDs from current active tab URL.
-- [ ] **Workspace Type Resolver:** Maps Jira URLs to the `task` Workspace Type.
-- [ ] **Markdown Prompt Engine:** Reads `prompts/task.md` and interpolates variables (`{{KEY}}`, etc.).
+- [ ] **Workspace Type Resolver:** Maps Jira URLs to the `jira-task` Workspace Type.
+- [ ] **Markdown Prompt Engine:** Reads `prompts/jira-task.md` and interpolates variables (`{{KEY}}`, etc.).
 - [ ] **Atlassian MCP Integration:** Spawns Herdr agent configured with official Atlassian MCP tools for Jira issue interaction.
 - [ ] **Agent Terminal Pairing:** Spawns/attaches a Herdr agent terminal tab for the active Jira key.
 - [x] **Running Agents View:** Dedicated `Agents` tab in Butchr extension UI listing all active Herdr agent sessions with direct clickable links to open their target web pages in Chrome.
@@ -117,7 +117,7 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 
 ### Chrome Extension (Butchr)
 - **Framework:** Manifest V3 JavaScript/TypeScript
-- **UI:** Extension Popup / Sidepanel showing active Workspace Type (`task`), Key (`PROJ-1234`), and agent connection status.
+- **UI:** Extension Popup / Sidepanel showing active Workspace Type (`jira-task`), Key (`PROJ-1234`), and agent connection status.
 - **Communication:** Chrome Native Messaging (`chrome.runtime.connectNative`) to the Local Daemon over stdio.
 
 ### Local Service Daemon
@@ -134,17 +134,17 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 ## 🔄 Sequence Workflow: Activating Butchr on Jira
 
 1. **User Action:** User navigates to Jira issue `https://company.atlassian.net/browse/PROJ-1234` and clicks **Activate Butchr**.
-2. **Match & Extract:** Butchr Extension identifies domain as Jira, resolves Workspace Type to `task`, and extracts Key `PROJ-1234`.
-3. **Daemon Request:** Extension sends payload `{ type: "task", key: "PROJ-1234" }` to Local Daemon.
-4. **Prompt & MCP Load:** Local Daemon reads `prompts/task.md`, interpolates `{{KEY}} = "PROJ-1234"`, and attaches Atlassian MCP server config.
-5. **Herdr Spawn:** Local Daemon runs `herdr spawn --type=task --key=PROJ-1234 --prompt-file=prompts/task.md`.
+2. **Match & Extract:** Butchr Extension identifies domain as Jira, resolves Workspace Type to `jira-task`, and extracts Key `PROJ-1234`.
+3. **Daemon Request:** Extension sends payload `{ type: "jira-task", key: "PROJ-1234" }` to Local Daemon.
+4. **Prompt & MCP Load:** Local Daemon reads `prompts/jira-task.md`, interpolates `{{KEY}} = "PROJ-1234"`, and attaches Atlassian MCP server config.
+5. **Herdr Spawn:** Local Daemon runs `herdr spawn --type=jira-task --key=PROJ-1234 --prompt-file=prompts/jira-task.md`.
 6. **Agent Execution:** Herdr agent initializes, calls Atlassian MCP tools to read `PROJ-1234` details, and starts working on the task in terminal workspace.
 
 ---
 
 ## 📝 Next Steps & Implementation Checklist
 
-- [ ] Create `prompts/task.md` template for Jira task execution.
+- [ ] Create `prompts/jira-task.md` template for Jira task execution.
 - [ ] Implement Workspace Type registry in Local Daemon (`types.json` or code registry).
 - [ ] Build Jira URL key extractor regex in Chrome Extension (`/browse/([A-Z0-9]+-\d+)`).
 - [ ] Integrate Atlassian MCP server definitions into Herdr agent launcher.

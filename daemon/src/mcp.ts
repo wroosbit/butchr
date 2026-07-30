@@ -101,13 +101,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "butchr_activate_agent",
-        description: "Activates an agent for a specific workspace type and key (e.g. task and KAN-1)",
+        description: "Activates an agent for a specific workspace type and key (e.g. jira-task and KAN-1)",
         inputSchema: {
           type: "object",
           properties: {
             type: {
               type: "string",
-              description: "The workspace type (e.g., 'task')",
+              description: "The workspace type (e.g., 'jira-task')",
             },
             key: {
               type: "string",
@@ -152,7 +152,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             type: {
               type: "string",
-              description: "The workspace type (e.g., 'task')",
+              description: "The workspace type (e.g., 'jira-task')",
             },
             key: {
               type: "string",
