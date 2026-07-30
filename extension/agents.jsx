@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import '@launchpad-ui/components/style.css';
 import './sidepanel.css'; // Reuse basic styles if needed
 
+import { HerdrStateChip } from './src/components/HerdrStateChip.jsx';
+
 function Agents() {
   const [daemonConnected, setDaemonConnected] = useState(false);
   const [agents, setAgents] = useState([]);
@@ -76,9 +78,12 @@ function Agents() {
                 </div>
                 <div style={{ fontSize: '12px', color: '#94a3b8' }}>Session: {agent.sessionId}</div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#10b981' }}>
-                <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }}></span>
-                {agent.status}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <HerdrStateChip state={agent.herdrStatus} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#10b981' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }}></span>
+                  {agent.status}
+                </div>
               </div>
             </div>
           ))}

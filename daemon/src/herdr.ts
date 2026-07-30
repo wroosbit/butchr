@@ -22,6 +22,26 @@ export interface HerdrSession {
   onDataListeners: Array<(data: string) => void>;
 }
 
+/**
+ * herdr's own view of what an agent is doing, which is finer-grained than a
+ * session's active/terminated bookkeeping: 'blocked' means the agent is
+ * waiting on a human, which is the state a user most needs to see.
+ */
+export type HerdrAgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
+
+const HERDR_AGENT_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 'done', 'unknown'];
+
+/** The herdr agent a Butchr session drives. Sessions are keyed by workspace. */
+export function agentNameFor(type: string, key: string): string {
+  return `butchr-${type}-${key.toLowerCase()}`;
+}
+
+function toAgentStatus(value: unknown): HerdrAgentStatus {
+  return HERDR_AGENT_STATUSES.includes(value as HerdrAgentStatus)
+    ? (value as HerdrAgentStatus)
+    : 'unknown';
+}
+
 export class HerdrBridge {
   private sessions: Map<string, HerdrSession> = new Map();
 
@@ -54,7 +74,7 @@ export class HerdrBridge {
   }
 
   private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: string[]): void {
-    const agentName = `butchr-${session.type}-${session.key.toLowerCase()}`;
+    const agentName = agentNameFor(session.type, session.key);
 
     // Workspace-scoped MCP config, written for every agent type: Claude picks
     // up .mcp.json from its cwd, and the file documents the workspace either way.
@@ -148,6 +168,41 @@ export class HerdrBridge {
     return Array.from(this.sessions.values()).filter(s => s.status === 'active');
   }
 
+  /**
+   * Every agent herdr knows about, as name -> agent_status. herdr is an
+   * optional external binary, so an unavailable, slow, or unparseable herdr
+   * yields an empty map: callers fall back to 'unknown' rather than failing.
+   */
+  public listHerdrStatuses(): Map<string, HerdrAgentStatus> {
+    const statuses = new Map<string, HerdrAgentStatus>();
+
+    let output: string;
+    try {
+      output = execSync('herdr agent list', {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } catch (e) {
+      return statuses;
+    }
+
+    try {
+      const agents = JSON.parse(output)?.result?.agents;
+      if (!Array.isArray(agents)) return statuses;
+
+      for (const agent of agents) {
+        if (agent && typeof agent.name === 'string') {
+          statuses.set(agent.name, toAgentStatus(agent.agent_status));
+        }
+      }
+    } catch (e) {
+      console.error('[HerdrBridge] Could not parse `herdr agent list` output', e);
+    }
+
+    return statuses;
+  }
+
   public ensureDefaultSession(): HerdrSession {
     const active = this.listActiveSessions();
     if (active.length > 0) {
@@ -223,7 +278,7 @@ export class HerdrBridge {
       session.ptyProcess.kill();
     }
 
-    const agentName = `butchr-${session.type}-${session.key.toLowerCase()}`;
+    const agentName = agentNameFor(session.type, session.key);
     try {
       const output = execSync(`herdr agent get ${agentName}`, { encoding: 'utf8' });
       const json = JSON.parse(output);

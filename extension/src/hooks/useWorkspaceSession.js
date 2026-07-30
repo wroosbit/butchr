@@ -78,7 +78,8 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
             sessionId: payload.sessionId,
             status: payload.status,
             createdAt: payload.createdAt,
-            workDir: payload.workDir
+            workDir: payload.workDir,
+            herdrStatus: payload.herdrStatus
           });
           setActive(!!payload.active);
         } else {
@@ -97,7 +98,10 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           sessionId: payload.sessionId,
           status: payload.status,
           createdAt: payload.createdAt,
-          workDir: payload.workDir
+          workDir: payload.workDir,
+          // A state carried over from the previous session would describe an
+          // agent that no longer exists; the next status check fills this in.
+          herdrStatus: undefined
         }));
         setActiveTabView('terminal');
       } else if (payload.action === 'deactivate_response' || payload.action === 'agent_deactivated_event' || payload.action === 'agent_reset_event') {
@@ -108,7 +112,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           if (termRef.current && payload.action === 'agent_reset_event') {
             termRef.current.write('\r\n\x1b[31m[Workspace Reset by Agent]\x1b[0m\r\n');
           }
-          return { ...prev, sessionId: null };
+          return { ...prev, sessionId: null, herdrStatus: undefined };
         });
       } else if (payload.action === 'agent_activated_event') {
         setSessionData((prev) => {
