@@ -50,12 +50,21 @@ export function writeJsonLine(socket: net.Socket, msg: any): boolean {
 }
 
 export function spawnDaemon(): void {
+  ensureButchrDir();
   const daemonPath = path.join(__dirname, 'daemon.js');
-  const child = spawn(process.execPath, [daemonPath], {
-    detached: true,
-    stdio: 'ignore'
-  });
-  child.unref();
+  // Capture the child's stderr: a daemon that dies during module load (bad
+  // node version, missing dep) crashes before its own logger opens, and with
+  // stdio 'ignore' that failure would be completely invisible.
+  const errFd = fs.openSync(path.join(BUTCHR_DIR, 'daemon-spawn.err'), 'a');
+  try {
+    const child = spawn(process.execPath, [daemonPath], {
+      detached: true,
+      stdio: ['ignore', 'ignore', errFd]
+    });
+    child.unref();
+  } finally {
+    fs.closeSync(errFd);
+  }
 }
 
 // Connect to the daemon socket, optionally spawning the daemon on first
