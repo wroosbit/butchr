@@ -1,0 +1,41 @@
+name: Build & Publish Chrome Extension
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'extension/**'
+      - '.github/workflows/deploy-extension.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package Chrome Extension
+        run: |
+          mkdir -p dist
+          cd extension
+          zip -r ../dist/butchr-extension.zip . -x "*.DS_Store"
+
+      - name: Upload & Publish to Chrome Web Store
+        if: env.CHROME_CLIENT_ID != ''
+        uses: mnao305/chrome-extension-upload@v2.2.0
+        with:
+          file-path: 'dist/butchr-extension.zip'
+          extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
+          client-id: ${{ secrets.CHROME_CLIENT_ID }}
+          client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
+          refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          publish-target: 'default' # Or 'trustedTesters'
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: butchr-extension-zip
+          path: dist/butchr-extension.zip
