@@ -11,6 +11,11 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
         fontFamily: "'Fira Code', Consolas, Monaco, 'Courier New', monospace",
         fontSize: 12,
         lineHeight: 1.2,
+        // Only applies to the normal buffer: a full-screen TUI (herdr, an
+        // agent CLI) runs in the alternate screen, which by design keeps no
+        // scrollback and owns the wheel itself. This is what gives plain
+        // `shell` sessions usable history in a panel this small.
+        scrollback: 10000,
         theme: {
           background: '#090d16',
           foreground: '#f8fafc',
