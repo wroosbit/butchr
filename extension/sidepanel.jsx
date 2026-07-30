@@ -18,14 +18,14 @@ function SidePanel() {
 
   const daemonConnected = useDaemonConnection(currentTab);
   
-  const { pageStatus, statusError, supported, active, sessionData, handleToggle, handleReset, retryStatus } = useWorkspaceSession(
+  const { pageStatus, statusError, supported, active, attached, sessionData, handleToggle, handleReset, retryStatus } = useWorkspaceSession(
     currentTab,
     activeTabView,
     setActiveTabView,
     termRef
   );
 
-  useTerminal(activeTabView, supported, active, sessionData, termRef, containerRef);
+  useTerminal(activeTabView, supported, active && attached, sessionData, termRef, containerRef);
 
   useEffect(() => {
     // Listen to tab changes
@@ -104,16 +104,18 @@ function SidePanel() {
           {activeTabView === 'terminal' && (
             <div id="view-terminal" className="view-panel">
               <div id="terminal-content" style={{flex: 1, display: 'flex', flexDirection: 'column'}}>
-                <WorkspaceHeader 
-                  sessionData={sessionData} 
-                  active={active} 
-                  handleToggle={handleToggle} 
+                <WorkspaceHeader
+                  sessionData={sessionData}
+                  active={active}
+                  attached={attached}
+                  handleToggle={handleToggle}
                   handleReset={handleReset}
-                  daemonConnected={daemonConnected} 
+                  daemonConnected={daemonConnected}
                 />
-                <TerminalView 
-                  active={active} 
-                  containerRef={containerRef} 
+                <TerminalView
+                  active={active}
+                  attached={attached}
+                  containerRef={containerRef}
                 />
               </div>
             </div>

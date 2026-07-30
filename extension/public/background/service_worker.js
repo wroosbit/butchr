@@ -74,6 +74,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       sendResponse({ status: 'error', error: 'Native host not connected' });
     }
+  } else if (message.type === 'DEACTIVATE_BUTCHR_BY_KEY') {
+    // For an agent this daemon never attached to: it has no sessionId here,
+    // but herdr still knows it by key and can tear it down.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'deactivate_by_key',
+        type: message.workspaceType,
+        key: message.key
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
   } else if (message.type === 'RESET_BUTCHR') {
     if (!isConnected || !nativePort) {
       connectNativeHost();
