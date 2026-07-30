@@ -13,7 +13,8 @@ export interface HerdrSession {
   sessionId: string;
   type: string;
   key: string;
-  url: string;
+  /** The page this session is bound to, when the caller knew it. */
+  url?: string;
   createdAt: Date;
   status: 'initializing' | 'active' | 'terminated';
   workDir: string;
@@ -67,7 +68,10 @@ function toAgentStatus(value: unknown): HerdrAgentStatus {
 export class HerdrBridge {
   private sessions: Map<string, HerdrSession> = new Map();
 
-  public spawnSession(type: string, key: string, url: string, promptContent: string, defaultAgent?: string, mcpServers?: string[]): HerdrSession {
+  // `url` is `string | undefined` rather than optional: it sits in front of
+  // required parameters, and callers who have no URL must pass nothing rather
+  // than a placeholder.
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[]): HerdrSession {
     const sessionId = `${type}-${key.toLowerCase()}-${Date.now()}`;
     const defaultWorkDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
 

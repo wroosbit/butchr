@@ -113,6 +113,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "The workspace key (e.g., 'KAN-1')",
             },
+            url: {
+              type: "string",
+              description: "Optional. The page URL this agent is bound to, e.g. the Jira issue URL. Omit it if unknown — the agent is then shown without a link rather than with a fabricated one.",
+            },
             defaultAgent: {
               type: "string",
               description: "Optional. The default agent to launch (e.g. 'claude', 'anti-gravity')",
@@ -190,10 +194,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     if (name === "butchr_activate_agent") {
-      const { type, key, defaultAgent } = args as any;
+      const { type, key, url, defaultAgent } = args as any;
       if (!type || !key) throw new Error("Missing required arguments");
-      
-      const res = await callDaemonAPI('activate_by_key', { type, key, defaultAgent });
+
+      const res = await callDaemonAPI('activate_by_key', { type, key, url, defaultAgent });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
       };

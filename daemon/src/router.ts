@@ -13,7 +13,8 @@ interface AgentDto {
   sessionId: string;
   type: string;
   key: string;
-  url: string;
+  /** Absent when the session was activated by key without a known page URL. */
+  url?: string;
   createdAt: string;
   status: HerdrSession['status'];
   workDir: string;
@@ -139,6 +140,25 @@ export class MessageRouter {
   public handleActivateByKey(data: any, respond: Respond) {
     const { type, key, defaultAgent } = data;
 
+    // A key alone does not determine a URL: the registry maps URLs to keys,
+    // not the other way round. Callers who know the page URL pass it; for
+    // callers who don't, the session simply has no url. Never invent one —
+    // a fabricated link is worse than no link.
+    const url =
+      typeof data.url === 'string' && data.url.trim() ? data.url.trim() : undefined;
+
+    // The url is advisory: an explicit key always wins. A disagreement is
+    // worth a log line but not a rejection — the caller may legitimately be
+    // binding an agent to a page the registry doesn't recognise.
+    if (url) {
+      const resolved = this.registry.resolve(url);
+      if (resolved && resolved.key !== key) {
+        console.warn(
+          `activate_by_key: url ${url} resolves to key ${resolved.key}, but key ${key} was given; using ${key}`
+        );
+      }
+    }
+
     // In a real scenario we'd look up the config from registry by type,
     // but for now we'll assume it's a valid type since we only have 'task'
     const promptTemplateFile = `prompts/${type}.md`;
@@ -147,10 +167,10 @@ export class MessageRouter {
     if (!session) {
       const renderedPrompt = this.promptLoader.loadAndRender(promptTemplateFile, {
         KEY: key,
-        URL: `https://workspace.local/${type}/${key}`
+        URL: url ?? ''
       });
       // In a real scenario we'd look up config, but for now we hardcode defaults
-      session = this.herdrBridge.spawnSession(type, key, `https://workspace.local/${type}/${key}`, renderedPrompt, defaultAgent, ['atlassian', 'butchr']);
+      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, ['atlassian', 'butchr']);
     }
 
     this.broadcast({
@@ -166,6 +186,7 @@ export class MessageRouter {
       success: true,
       type,
       key,
+      url: session.url,
       sessionId: session.sessionId,
       status: session.status
     });
