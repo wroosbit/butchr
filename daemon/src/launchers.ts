@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { which } from './env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -12,15 +13,19 @@ const PROMPT_CMD = 'Please read and follow the instructions in .butchr-prompt.md
 // to stdio clients (OAuth browser flow on first use).
 function mcpServerDefinitions(servers: string[]): Record<string, any> {
   const defs: Record<string, any> = {};
+  // Absolute commands: the agent spawns these with the *pane's* PATH, which
+  // can be thinner than ours (a login-started herdr server has no nvm) and
+  // resolve `node`/`npx` to an ancient system install. The daemon rewrites
+  // this file on every activation, so the baked paths never go stale.
   if (servers.includes('atlassian')) {
     defs['atlassian'] = {
-      command: 'npx',
+      command: which('npx') ?? 'npx',
       args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/sse']
     };
   }
   if (servers.includes('butchr')) {
     defs['butchr'] = {
-      command: 'node',
+      command: process.execPath,
       args: [path.join(__dirname, 'mcp.js')]
     };
   }

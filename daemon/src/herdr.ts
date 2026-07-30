@@ -85,11 +85,16 @@ export class HerdrBridge {
       }
 
       try {
+        // The pane inherits the herdr *server's* environment, not ours — and
+        // that server is typically started at login with a thin PATH (no
+        // nvm). Inject the daemon's normalized PATH so the agent and every
+        // MCP server it spawns resolve the same tools we do. argv-level
+        // `env` avoids shell quoting entirely.
         spawnSync('herdr', [
           'agent', 'start', agentName,
           '--cwd', session.workDir,
           '--',
-          'bash', '-c', launcher.command
+          'env', `PATH=${process.env.PATH}`, 'bash', '-c', launcher.command
         ]);
       } catch (e) {
         console.error('[HerdrBridge] Failed to start herdr agent', e);
