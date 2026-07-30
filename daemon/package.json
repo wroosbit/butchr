@@ -2,12 +2,12 @@
   "name": "@butchr/daemon",
   "version": "0.1.0",
   "description": "Butchr local daemon service for Herdr agent orchestration",
-  "main": "dist/native-host.js",
+  "main": "dist/daemon.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/native-host.js",
-    "dev": "ts-node-esm src/native-host.ts"
+    "start": "node dist/daemon.js",
+    "dev": "ts-node-esm src/daemon.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

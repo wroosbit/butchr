@@ -170,6 +170,6 @@ You are an autonomous coding agent managed by **Herdr** for Jira Task: **{{KEY}}
 - [ ] Implement Workspace Type registry in Local Daemon (`types.json` or code registry).
 - [ ] Build Jira URL key extractor regex in Chrome Extension (`/browse/([A-Z0-9]+-\d+)`).
 - [ ] Integrate Atlassian MCP server definitions into Herdr agent launcher.
-- [x] Implement Native Messaging protocol between extension and daemon (stdio, 4-byte LE length-prefixed JSON), plus a local HTTP API on `127.0.0.1:4040` (`POST /api`, `GET /events`) used by the Butchr MCP server.
+- [x] Implement Native Messaging protocol between extension and daemon (stdio, 4-byte LE length-prefixed JSON). Chrome spawns a thin per-profile native-host proxy; a single long-lived daemon owns all sessions and listens on a Unix domain socket (`~/.local/share/butchr/butchr.sock`, NDJSON, id-correlated) used by both the proxies and the Butchr MCP server. The daemon is auto-spawned by the first client that needs it.
 
 
