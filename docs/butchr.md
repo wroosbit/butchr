@@ -42,31 +42,9 @@ Each Workspace Type configures:
 
 All workspace initial prompts are stored as plain Markdown (`.md`) files in the local service configuration directory. This design allows users and developers to tweak, inspect, and refine agent prompts without recompiling code.
 
-### Example Prompt: `prompts/task.md`
+### The `task` Prompt: [`prompts/task.md`](../prompts/task.md)
 
-```markdown
-# Task Agent System Prompt (Jira)
-
-You are an autonomous coding agent managed by **Herdr** for Jira Task: **{{KEY}}**.
-
-## 🚀 Execution Instructions
-
-### 1. Jira Task Retrieval
-- Use the official Atlassian MCP tools to read the Jira task **{{KEY}}** (summary, description, acceptance criteria, associated organization/repository info, and comments).
-
-### 2. Environment & Repository Setup
-- **Directory Verification:** Check if the `~/code` directory exists. If it does not exist, create it (`mkdir -p ~/code`).
-- **Repository Check & Clone:** Check if the required repository exists at `~/code/<org>/<repo>`. If it does not exist, clone it into `~/code/<org>/<repo>`.
-- **Git Worktree Creation:**
-  - Before starting work on the repository, ensure the `main` branch is up-to-date (`git checkout main && git pull origin main`).
-  - Create a new git worktree in `/` (e.g., `/<repo>-{{KEY}}`) off the updated `main` branch.
-
-### 3. Task Execution & Resolution
-- Change directory into the created worktree in `/`.
-- Execute the required code changes, feature additions, or bug fixes based on the Jira task description.
-- Run tests and linting to verify implementation correctness.
-- Post progress updates or completion status back to the Jira issue via Atlassian MCP tools.
-```
+The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see that file rather than an embedded copy here, so the two cannot drift. In outline: the agent reads the Jira task via Atlassian MCP tools, maintains a shared clone cache under `~/code/<org>/<repo>` (fetch-only, safe for concurrent agents), creates a per-task git worktree **inside its workspace directory** on a `butchr/{{KEY}}` branch, does the work there, and reports back to Jira. Keeping all work inside the workspace is what makes workspace reset a full cleanup.
 
 ---
 
