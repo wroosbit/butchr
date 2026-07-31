@@ -25,6 +25,27 @@ export class WorkspaceRegistry {
       mcpServers: ['atlassian', 'butchr'],
       promptTemplateFile: 'prompts/task.md'
     });
+
+    // Registered after `task` on purpose: resolve() returns the first match,
+    // and a board URL carrying &selectedIssue=KAN-5 is an opened issue — a
+    // task context — not a board one. Task must get first refusal.
+    //
+    // There is a single board manager, so the key is the constant 'work'
+    // rather than anything derived from the URL: every board page activates
+    // the same agent.
+    this.register({
+      type: 'manage',
+      name: 'Board Manager',
+      urlPatterns: [
+        /https?:\/\/[^\/]+\/jira\/software\/projects\/[^\/]+\/boards\/\d+/i
+      ],
+      keyExtractor: (url: string) =>
+        /https?:\/\/[^\/]+\/jira\/software\/projects\/[^\/]+\/boards\/\d+/i.test(url)
+          ? 'work'
+          : null,
+      mcpServers: ['atlassian', 'butchr'],
+      promptTemplateFile: 'prompts/manage.md'
+    });
   }
 
   public register(config: WorkspaceTypeConfig) {
