@@ -37,17 +37,55 @@ is the step most likely to be the reason nothing works.
 
 ## 1. Prerequisites
 
-```bash
-node --version    # >= 18. The daemon is ESM TypeScript; 20 LTS is what CI uses.
-git --version
-```
-
-**herdr** — not on any package index; install from its own site:
+**node >= 18.** CI uses 20, so use 20. Ubuntu 24.04's `apt install nodejs`
+gives 18.19, which is past end-of-life; NodeSource is the shorter path:
 
 ```bash
-curl -fsSL https://herdr.dev/install.sh | sh
-herdr --version   # this document was written against 0.6.4
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node --version    # v20.x
 ```
+
+`nvm` works too. Whatever you use, the daemon records the resolved `node` path
+in its systemd unit at install time, so re-run `install-service.sh` after
+changing node versions.
+
+**git.** Any version.
+
+**herdr — and you must pin it to the 0.6.x line.**
+
+> **This is the one prerequisite you cannot get from the obvious command.**
+> `https://herdr.dev/install.sh` installs the latest release, which is 0.7.5,
+> and **Butchr does not work with it.** herdr 0.7 redesigned `agent start`: it
+> attaches a named agent kind to an existing pane (`--kind`, `--pane`) instead
+> of creating one, and it dropped `--cwd`, `--tab`, `--no-focus` and the
+> trailing `-- <command>`. `daemon/src/herdr.ts` passes all of those, so on
+> 0.7.x **every** activation fails with `unknown option: --cwd`. Found by
+> following this document on a clean machine (KAN-33); porting the spawn path
+> to the new API is tracked separately.
+
+Install the pinned build directly:
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL -o ~/.local/bin/herdr \
+  https://github.com/herdrdev/herdr/releases/download/v0.6.4/herdr-linux-x86_64
+chmod +x ~/.local/bin/herdr
+```
+
+Then **open a new shell** — Ubuntu's `~/.profile` adds `~/.local/bin` to `PATH`
+only if the directory existed when the shell started, so in the session that
+just created it, `herdr` is not yet findable:
+
+```bash
+herdr --version   # herdr 0.6.4
+```
+
+If it still is not found: `export PATH="$HOME/.local/bin:$PATH"`.
+
+Do **not** run `herdr update` — it will pull 0.7.x and break activation.
+`butchr-doctor` (step 7) fails on a wrong herdr line, and so does the daemon's
+startup log, so this cannot go wrong silently.
 
 **Chrome or Chromium.** The extension is Manifest V3 and is loaded unpacked;
 publishing to the Web Store is out of scope.

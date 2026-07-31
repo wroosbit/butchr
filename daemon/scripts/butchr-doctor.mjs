@@ -94,11 +94,32 @@ const ago = (ms) => {
 
 // --- 2. herdr ------------------------------------------------------------
 
+// Kept in step with SUPPORTED_HERDR_MAJOR_MINOR in daemon/src/herdr-health.ts.
+// Not imported from it: this script must run against a clone that has not been
+// built, and dist/ is where that constant would have to come from.
+const SUPPORTED_HERDR = '0.6';
+const HERDR_PIN_URL =
+  'https://github.com/herdrdev/herdr/releases/download/v0.6.4/herdr-linux-x86_64';
+
 const herdrVersion = tryExec('herdr', ['--version']);
-if (herdrVersion) {
-  pass('herdr binary', herdrVersion);
+if (!herdrVersion) {
+  fail('herdr binary', `not on PATH. See docs/SETUP.md — and note that herdr.dev/install.sh installs the latest, which is not the ${SUPPORTED_HERDR}.x line Butchr needs.`);
 } else {
-  fail('herdr binary', 'not on PATH. Install: curl -fsSL https://herdr.dev/install.sh | sh');
+  const m = /(\d+)\.(\d+)/.exec(herdrVersion);
+  const line = m ? `${m[1]}.${m[2]}` : null;
+  if (line === SUPPORTED_HERDR) {
+    pass('herdr binary', herdrVersion);
+  } else if (line === null) {
+    warn('herdr binary', `${herdrVersion} — could not read a version number from that.`);
+  } else {
+    fail(
+      'herdr binary',
+      `${herdrVersion}. Butchr's spawn path is written against the ${SUPPORTED_HERDR}.x line.\n` +
+      `herdr 0.7 redesigned 'agent start' (--kind/--pane, no --cwd), so activation fails\n` +
+      `with "unknown option: --cwd". Install the pinned build:\n` +
+      `  curl -fsSL -o ~/.local/bin/herdr ${HERDR_PIN_URL} && chmod +x ~/.local/bin/herdr`
+    );
+  }
 }
 
 // --- 3. herdr server, and the fd ceiling that is the whole point ---------

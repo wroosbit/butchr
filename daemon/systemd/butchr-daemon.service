@@ -15,6 +15,11 @@ Documentation=https://github.com/wroosbit/butchr/blob/main/docs/SETUP.md
 # would drag the daemon down every time herdr restarts.
 Wants=herdr.service
 After=herdr.service
+# Start rate limiting lives in [Unit], not [Service] — systemd ignores it with
+# "Unknown key name" in the wrong section, which it says once in the journal
+# and never again. Caught on the clean-machine run.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -34,8 +39,6 @@ ExecStart=@@NODE@@ @@REPO@@/daemon/dist/daemon.js
 # crash-looping service.
 Restart=on-failure
 RestartSec=2
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # The daemon itself holds few descriptors — one pty per attached sidepanel —
 # so this is headroom, not the fix for the pane ceiling. The limit that

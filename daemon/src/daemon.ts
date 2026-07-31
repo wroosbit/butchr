@@ -10,7 +10,8 @@ import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
-import { readFdUsage, isFdCeilingUnraised, describeFdCeiling } from './herdr-health.js';
+import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
+import { execFileSync } from 'child_process';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
 // workspace registry. Clients (Chrome native-host proxies, the MCP server)
@@ -48,6 +49,21 @@ const herdrPath = which('herdr');
 log(`PATH resolved to: ${process.env.PATH}`);
 if (herdrPath) {
   log(`herdr found at ${herdrPath}`);
+  // Which herdr, not just whether there is one: 0.7 changed `agent start`
+  // incompatibly, and without this the only symptom is `unknown option: --cwd`
+  // on every activation.
+  try {
+    const version = execFileSync(herdrPath, ['--version'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    log(`herdr version: ${version.trim()}`);
+    const versionWarning = checkHerdrVersion(version);
+    if (versionWarning) log(`WARNING: ${versionWarning}`);
+  } catch (e: any) {
+    log(`Could not read herdr's version: ${e?.message ?? String(e)}`);
+  }
 } else {
   log('WARNING: herdr not found on PATH; agent sessions will fail to attach');
 }

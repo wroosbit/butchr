@@ -12,6 +12,9 @@
 Description=herdr — terminal workspace/session manager (headless server)
 Documentation=https://herdr.dev
 After=network.target
+# [Unit], not [Service] — systemd ignores these in [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -19,8 +22,6 @@ Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=@@HERDR@@ server
 Restart=always
 RestartSec=2
-StartLimitIntervalSec=60
-StartLimitBurst=10
 SyslogIdentifier=herdr
 
 [Install]

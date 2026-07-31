@@ -214,6 +214,56 @@ export function isFdPressureHigh(p: FdUsage): boolean {
 }
 
 /**
+ * The herdr line Butchr's spawn path is written against.
+ *
+ * herdr 0.7.0 redesigned `agent start`: it no longer creates a pane, it
+ * attaches a *named agent kind* to an existing one (`--kind`/`--pane`), and it
+ * dropped `--cwd`, `--tab`, `--no-focus` and the trailing `-- <argv>` command.
+ * `startAgentInOwnTab` in herdr.ts passes all of those, so on 0.7.x every
+ * activation dies with `unknown option: --cwd` — found on the KAN-33
+ * clean-machine run, where the current installer hands a new user 0.7.5.
+ *
+ * Adapting the spawn path to the new API is real work in a contended file and
+ * is tracked separately. What belongs here is that the incompatibility names
+ * itself, rather than surfacing as a stray getopt error.
+ */
+export const SUPPORTED_HERDR_MAJOR_MINOR = '0.6';
+
+/** `herdr --version` output → a comparable `[major, minor]`, or undefined. */
+export function parseHerdrVersion(versionOutput: string): [number, number] | undefined {
+  const match = /(\d+)\.(\d+)(?:\.\d+)?/.exec(versionOutput);
+  if (!match) return undefined;
+  return [Number(match[1]), Number(match[2])];
+}
+
+/**
+ * A warning when herdr is a line Butchr cannot drive, or undefined when it is
+ * fine (or unreadable — an unknown version is not evidence of a problem, and
+ * refusing to run on one would break every future release).
+ */
+export function checkHerdrVersion(versionOutput: string): string | undefined {
+  const parsed = parseHerdrVersion(versionOutput);
+  if (!parsed) return undefined;
+
+  const [major, minor] = parsed;
+  const [wantMajor, wantMinor] = SUPPORTED_HERDR_MAJOR_MINOR.split('.').map(Number);
+  if (major === wantMajor && minor === wantMinor) return undefined;
+
+  if (major > wantMajor || (major === wantMajor && minor > wantMinor)) {
+    return (
+      `herdr ${versionOutput.trim()} is newer than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr's spawn path ` +
+      `is written against. herdr 0.7 redesigned 'agent start' — it takes --kind/--pane and no longer ` +
+      `accepts --cwd — so every activation will fail with 'unknown option: --cwd'. Install ${SUPPORTED_HERDR_MAJOR_MINOR}.4: ` +
+      `see docs/SETUP.md, prerequisites.`
+    );
+  }
+  return (
+    `herdr ${versionOutput.trim()} is older than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr is written ` +
+    `against; agent spawning may not work. See docs/SETUP.md, prerequisites.`
+  );
+}
+
+/**
  * Turn herdr's spawn error into something diagnosable.
  *
  * The message herdr gives is kept verbatim and first — it is the ground truth,
