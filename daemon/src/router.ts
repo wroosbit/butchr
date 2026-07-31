@@ -8,6 +8,7 @@ import {
   agentNameFor,
   typeFromAgentName
 } from './herdr.js';
+import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
 
 type Respond = (msg: any) => void;
 
@@ -140,6 +141,18 @@ export class MessageRouter {
       session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers);
     }
 
+    if (session.spawnError) {
+      respond({
+        action: 'activate_response',
+        success: false,
+        type: config.type,
+        key,
+        url: data.url,
+        error: session.spawnError
+      });
+      return;
+    }
+
     this.broadcast({
       action: 'agent_activated_event',
       type: config.type,
@@ -197,6 +210,23 @@ export class MessageRouter {
       });
       // In a real scenario we'd look up config, but for now we hardcode defaults
       session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, ['atlassian', 'butchr']);
+    }
+
+    // A spawn herdr refused is the one case where activate can say for certain
+    // that no agent exists. Reporting it as a failure here is not KAN-23's
+    // post-spawn existence check — that still has to be added, for the case
+    // where herdr reports success and the agent is nevertheless absent — but
+    // an error herdr handed us must never be answered with success: true.
+    if (session.spawnError) {
+      respond({
+        action: 'activate_response',
+        success: false,
+        type,
+        key,
+        url,
+        error: session.spawnError
+      });
+      return;
     }
 
     this.broadcast({
@@ -532,10 +562,33 @@ export class MessageRouter {
 
   private handleListAgents(data: any, respond: Respond) {
     const statuses = this.herdrBridge.listHerdrStatuses();
+
+    // Descriptor headroom, reported where someone looking at agents will see
+    // it. On KAN-24 the herdr server's fd usage was invisible until spawning
+    // broke, and the only way to learn it was to read /proc by hand. Expressed
+    // in panes because that is the unit the reader can act on — "room for 12
+    // more agents" is a decision, "62000 descriptors" is trivia.
+    const usage = readFdUsage();
+
     respond({
       action: 'list_agents_response',
       success: true,
-      agents: this.herdrBridge.listActiveSessions().map(s => this.toAgentDto(s, statuses))
+      agents: this.herdrBridge.listActiveSessions().map(s => this.toAgentDto(s, statuses)),
+      ...(usage ? {
+        herdrHealth: {
+          pid: usage.pid,
+          openFds: usage.openFds,
+          softLimit: usage.softLimit,
+          headroomPanes: usage.headroomPanes,
+          fdPressure: Math.round(usage.ratio * 100) / 100,
+          ...(isFdPressureHigh(usage) ? {
+            warning:
+              `herdr server is using ${Math.round(usage.ratio * 100)}% of its open-file soft limit ` +
+              `(${usage.openFds}/${usage.softLimit}); room for about ${usage.headroomPanes} more panes ` +
+              `at ${PTMX_FDS_PER_PANE} descriptors each. Close idle agents.`
+          } : {})
+        }
+      } : {})
     });
   }
 
