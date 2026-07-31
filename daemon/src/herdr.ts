@@ -98,6 +98,33 @@ export function agentNameFor(type: string, key: string): string {
 }
 
 /**
+ * The one directory tree Butchr owns and may therefore destroy. Every
+ * workspace is created under it (see `initPty`), and reset refuses to delete
+ * anything that does not resolve to a place strictly inside it.
+ */
+export function workspacesRoot(): string {
+  return path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces');
+}
+
+/** Where a workspace of this type and key lives. Must match `initPty`. */
+export function workspaceDirFor(type: string, key: string): string {
+  return path.join(workspacesRoot(), type, key.toLowerCase());
+}
+
+/**
+ * Whether `target` sits strictly below `root` — the root itself is not
+ * "inside" it, because deleting the root would take every workspace with it.
+ *
+ * `path.relative` rather than a `startsWith` prefix test: the latter says yes
+ * to `/…/workspaces-old` for root `/…/workspaces`, and both paths must
+ * already be real (symlinks resolved) for either test to mean anything.
+ */
+function isStrictlyInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
  * Inverse of agentNameFor. When an agent is resolved through the herdr-list
  * fallback there is no session to read a type off of, but the name still
  * carries one — enough to broadcast a complete event.
@@ -625,17 +652,61 @@ export class HerdrBridge {
     return this.spawnSession('default', 'workspace', 'local', 'Default shell session');
   }
 
-  public resetWorkspace(type: string, key: string): boolean {
-    const workDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
+  /**
+   * Delete a workspace directory, and nothing else. This is a recursive
+   * delete, so the containment check in front of it is the only thing standing
+   * between a malformed key (`../..`), a symlinked workspace, or some future
+   * caller that invents its own workspace location, and an `rm -rf` pointed
+   * somewhere Butchr does not own. Refusals return an error rather than
+   * falling through: there is no path here that deletes an unvalidated target.
+   *
+   * `error` is set only when the delete was *refused*; a workspace that was
+   * already gone reports `success: false` with no error, as before.
+   */
+  public resetWorkspace(type: string, key: string): { success: boolean; error?: string } {
+    const root = workspacesRoot();
+    const workDir = workspaceDirFor(type, key);
+
+    const refuse = (reason: string) => {
+      const error =
+        `Refusing to reset workspace '${type}/${key}': ${reason}. ` +
+        `Only directories strictly inside '${root}' may be deleted.`;
+      console.error(`[HerdrBridge] ${error}`);
+      return { success: false, error };
+    };
+
+    // Lexical check first, so a traversal key is rejected by name even when it
+    // points at nothing — the answer must not depend on what happens to exist.
+    if (!isStrictlyInside(root, workDir)) {
+      return refuse(`'${workDir}' is not inside the workspaces root`);
+    }
+
     try {
-      if (fs.existsSync(workDir)) {
-        fs.rmSync(workDir, { recursive: true, force: true });
-        return true;
+      if (!fs.existsSync(workDir)) {
+        return { success: false }; // Already gone
       }
-      return false; // Already gone
-    } catch (e) {
-      console.error('[HerdrBridge] Failed to reset workspace:', e);
-      return false;
+
+      // Then the real check. A symlink at (or above) the workspace passes the
+      // lexical test while pointing anywhere on the filesystem, so both sides
+      // are resolved before they are compared.
+      let realRoot: string;
+      let realTarget: string;
+      try {
+        realRoot = fs.realpathSync(root);
+        realTarget = fs.realpathSync(workDir);
+      } catch (e: any) {
+        return refuse(`'${workDir}' could not be resolved (${e?.message ?? String(e)})`);
+      }
+      if (!isStrictlyInside(realRoot, realTarget)) {
+        return refuse(`'${workDir}' resolves to '${realTarget}', outside the workspaces root`);
+      }
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+      return { success: true };
+    } catch (e: any) {
+      const error = `Failed to reset workspace '${workDir}': ${e?.message ?? String(e)}`;
+      console.error('[HerdrBridge]', error);
+      return { success: false, error };
     }
   }
 
