@@ -6,6 +6,8 @@ import { WorkspaceRegistry } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { HerdrBridge } from './herdr.js';
 import { MessageRouter } from './router.js';
+import { JiraIssueTypeService } from './jira.js';
+import { CredentialStore } from './credentials.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 
@@ -49,9 +51,21 @@ if (herdrPath) {
   log('WARNING: herdr not found on PATH; agent sessions will fail to attach');
 }
 
-const registry = new WorkspaceRegistry();
+// Jira access exists for exactly one question — is this issue a Task or a
+// Story? — and is strictly read-only. The service never throws and always
+// answers within its own timeout, so the registry can depend on it without
+// activation ever being able to hang or fail on Jira's account.
+const jira = new JiraIssueTypeService(new CredentialStore());
+const registry = new WorkspaceRegistry((key) => jira.getIssueTypeName(key));
 const promptLoader = new PromptLoader(repoRoot);
 const herdrBridge = new HerdrBridge();
+
+const credentialStatus = jira.status();
+log(
+  credentialStatus.configured
+    ? `Jira credential configured for ${credentialStatus.email} @ ${credentialStatus.siteUrl} (stored in ${credentialStatus.storage})`
+    : 'No Jira credential configured; Jira issue URLs will all resolve to type `task`'
+);
 const connections = new Set<net.Socket>();
 
 const broadcast = (msg: any) => {
@@ -59,6 +73,17 @@ const broadcast = (msg: any) => {
     writeJsonLine(conn, msg);
   }
 };
+
+// A PTY that dies takes the terminal with it, and the client has no other way
+// to find out: output simply stops. Announcing it is what lets the sidepanel
+// show a disconnected state instead of a frozen last frame.
+herdrBridge.setSessionEndedListener((event) => {
+  log(
+    `Session ended: ${event.sessionId} (${event.type}/${event.key}) ` +
+    `reason=${event.reason} exitCode=${event.exitCode}`
+  );
+  broadcast({ action: 'agent_detached_event', ...event });
+});
 
 const server = net.createServer((socket) => {
   connections.add(socket);
@@ -71,7 +96,8 @@ const server = net.createServer((socket) => {
     promptLoader,
     herdrBridge,
     (msg) => writeJsonLine(socket, msg),
-    broadcast
+    broadcast,
+    jira
   );
 
   onJsonLines(

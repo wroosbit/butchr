@@ -36,6 +36,77 @@ Each Workspace Type configures:
 | **MCP Tools** | Official Atlassian MCP Server tools (e.g., Jira issue fetcher, comments, issue updater) |
 | **Initial Prompt File** | `prompts/task.md` |
 
+### 📌 Type: `story` (Jira)
+
+Same URLs, same key format, different prompt — `prompts/story.md`.
+
+| Parameter | Configuration |
+| :--- | :--- |
+| **Workspace Type** | `story` |
+| **URL Patterns** | *(none)* — see below |
+| **Entity Key** | Jira Work Item ID |
+| **MCP Tools** | Official Atlassian MCP Server tools |
+| **Initial Prompt File** | `prompts/story.md` |
+
+### 🔎 Why Jira types need a lookup
+
+A Jira issue URL does not carry the issue's type: `…/browse/KAN-5` is
+byte-identical whether `KAN-5` is a **Task** or a **Story**. URL matching alone
+therefore cannot choose between the `task` and `story` workspace types.
+
+So `story` deliberately registers **no URL patterns**. Every Jira issue URL
+matches `task` first, and that match is then *refined* by asking Jira for the
+issue's real `issuetype`:
+
+```
+URL ──match──> task (provisional) ──ask Jira──> issuetype name ──map──> task | story
+```
+
+The mapping lives in one place in `daemon/src/registry.ts`, as data:
+
+| Jira issue type | Workspace type |
+| :--- | :--- |
+| `Story` | `story` |
+| `Task`, `Bug`, `Epic`, `Subtask`, anything unrecognised | `task` |
+| *lookup unavailable or failed* | `task` |
+
+**Resolution is asynchronous** as a result (`registry.resolve()` returns a
+Promise). Board-URL handling and its precedence are unchanged: a bare board URL
+is still `manage`, and a board URL carrying `&selectedIssue=KEY` is still an
+opened issue and still wins over `manage` — it simply now resolves to `task` or
+`story` per the lookup.
+
+### 🔐 The Jira credential, and degrading without one
+
+The lookup needs read access to Jira, which the daemon did not previously have.
+The user supplies an **Atlassian API token** (site URL + account email + token)
+on the extension's **Settings** page. Design constraints, all deliberate:
+
+- **Read-only, one operation.** `daemon/src/jira.ts` can fetch an issue's type
+  and validate a credential. There are no write methods, and none should be
+  added: agents already hold their own scoped interactive auth for writes.
+  Prefer a **scoped** token limited to `read:jira-work` over a classic
+  full-permission one.
+- **The token travels user → settings UI → daemon and stops.** The daemon
+  stores it in the OS keyring where one is available (libsecret / `secret-tool`,
+  secret passed on stdin, never argv), otherwise in a `0600` file. The
+  extension keeps only *configured / not configured* and a way to clear it.
+- **Write-only field.** The token is never rendered back, not even masked.
+- **Validated at submit time** with one cheap authenticated read
+  (`/rest/api/3/myself`), so a wrong token fails visibly then, rather than
+  silently months later as a mysterious fallback to `task`.
+- **Everything degrades to `task`.** No token, expired token, rate limit,
+  network down, 404, timeout, unknown type — all resolve to `task` within a
+  hard ~2s timeout, and activation succeeds exactly as before. A user who never
+  configures a credential notices nothing except that Stories open as `task`
+  workspaces. Successful lookups are cached per issue key, and a failure starts
+  a short cooldown so an unreachable Jira costs the timeout once rather than on
+  every tab change.
+
+`JiraTransport` is the seam for replacing token auth with OAuth 2.0 3LO later:
+the client depends on *something that can authenticate a Jira read*, not on a
+token string.
+
 ---
 
 ## 📄 Prompt Templates (`prompts/*.md`)
@@ -45,6 +116,26 @@ All workspace initial prompts are stored as plain Markdown (`.md`) files in the 
 ### The `task` Prompt: [`prompts/task.md`](../prompts/task.md)
 
 The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see that file rather than an embedded copy here, so the two cannot drift. In outline: the agent reads the Jira task via Atlassian MCP tools, maintains a shared clone cache under `~/code/<org>/<repo>` (fetch-only, safe for concurrent agents), creates a per-task git worktree **inside its workspace directory** on a `butchr/{{KEY}}` branch, does the work there, and reports back to Jira. Keeping all work inside the workspace is what makes workspace reset a full cleanup.
+
+### The `story` Prompt: [`prompts/story.md`](../prompts/story.md)
+
+A story agent **decomposes; it never builds**. It reads the story, reads the
+repository (read-only — no branch, no commit, no PR), and files the set of Jira
+Tasks that deliver the story, each one well-formed enough for an agent to
+execute unattended.
+
+**Tasks implement stories.** Story and Task sit at the same hierarchy level in a
+team-managed project, so a task cannot be a *child* of a story; the relationship
+is recorded as an `Implements` issue link (task → story) plus an explicit line
+in each task's description. Where a site has no `Implements` link type
+configured, the agent falls back to `Blocks` and reports that it did.
+
+It does **not** activate agents for the tasks it files — agent lifecycle belongs
+to the board manager (`prompts/manage.md`). Its handoff is the filed, linked
+ticket on the board.
+
+Nothing in the daemon depends on any of this: the prompt is read from disk at
+activation, so it is the human's to iterate on.
 
 ---
 
@@ -69,8 +160,9 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 │   ┌────────────────────────────────────────────────────────────────┐   │
 │   │                       Butchr Local Daemon                      │   │
 │   │                                                                │   │
-│   │   - Workspace Type Registry (`task`, etc.)                     │   │
+│   │   - Workspace Type Registry (`task`, `story`, `manage`)        │   │
 │   │   - Prompt File Loader (`prompts/task.md`)                     │   │
+│   │   - Read-only Jira client (issue type -> workspace type)       │   │
 │   │   - MCP Configuration Manager (Atlassian MCP Server)           │   │
 │   │   - Herdr Session Spawner & Bridge                             │   │
 │   └──────────────────────────────┬─────────────────────────────────┘   │

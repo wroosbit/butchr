@@ -1,16 +1,22 @@
 import React from 'react';
 
-export function WorkspaceHeader({ sessionData, active, attached, handleToggle, handleReset, daemonConnected }) {
+export function WorkspaceHeader({ sessionData, active, attached, detachReason, handleToggle, handleReset, daemonConnected }) {
   // The agent is running, we just don't hold a session for it yet. Worth
   // saying so — but quietly, and never as a third toggle state: as far as the
   // switch is concerned the agent is On, because it is.
-  const reattaching = active && !attached;
+  //
+  // A terminal that died under us is not this: it is reported in the panel
+  // body, and calling it 'reattaching' here would promise a recovery that is
+  // not in progress.
+  const reattaching = active && !attached && !detachReason;
+  const disconnected = active && !!detachReason;
 
   return (
     <div className="workspace-header">
       <div className="ws-header-left">
         <span className="ws-type">{sessionData.type}</span> / <span className="ws-key key-highlight">{sessionData.key}</span>
         {reattaching && <span className="ws-reattaching">reattaching…</span>}
+        {disconnected && <span className="ws-disconnected">disconnected</span>}
       </div>
       <div className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <button 

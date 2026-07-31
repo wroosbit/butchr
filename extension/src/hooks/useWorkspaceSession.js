@@ -23,6 +23,11 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   // daemon restart, and only `active` may drive the On/Off toggle.
   const [attached, setAttached] = useState(false);
   const [sessionData, setSessionData] = useState({});
+  // Why the terminal stopped, when the daemon told us. Distinct from
+  // `attached === false`, which also covers the ordinary "haven't attached
+  // yet" case: this one means a terminal we *were* watching died, and it is
+  // the difference between a pane that is thinking and a pane that is dead.
+  const [detachReason, setDetachReason] = useState(null);
 
   const respondedRef = useRef(false);
   // One re-attach attempt per detached agent: the activate response arrives
@@ -34,6 +39,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     if (!currentTab || !currentTab.url) return;
     respondedRef.current = false;
     reattachSentRef.current = false;
+    setDetachReason(null);
     setPageStatus('checking');
     setStatusError(null);
     chrome.runtime.sendMessage({ type: 'CHECK_STATUS', url: currentTab.url });
@@ -44,6 +50,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     if (!currentTab || !currentTab.url) return;
     respondedRef.current = false;
     reattachSentRef.current = false;
+    setDetachReason(null);
     setPageStatus('checking');
     setStatusError(null);
 
@@ -93,6 +100,9 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           });
           setActive(!!payload.active);
           setAttached(!!payload.attached);
+          // A fresh answer from the daemon supersedes any remembered death:
+          // if it says we are attached, the terminal is live again.
+          if (payload.attached) setDetachReason(null);
         } else {
           setPageStatus('unsupported');
           setStatusError(null);
@@ -102,9 +112,19 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
         respondedRef.current = true;
         setStatusError(payload.error || 'The daemon returned an error.');
         setPageStatus('error');
+      } else if (payload.action === 'agent_detached_event') {
+        // The PTY behind this terminal died. The agent itself may well still
+        // be running, so `active` is left alone — only the attach is gone.
+        setSessionData((prev) => {
+          if (payload.key && prev.key && payload.key !== prev.key) return prev;
+          setAttached(false);
+          setDetachReason(payload.reason === 'taken-over' ? 'taken-over' : 'exited');
+          return prev;
+        });
       } else if (payload.action === 'activate_response' && payload.sessionId) {
         setActive(true);
         setAttached(true);
+        setDetachReason(null);
         setSessionData((prev) => ({
           ...prev,
           sessionId: payload.sessionId,
@@ -126,6 +146,8 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           if (payload.key && prev.key && payload.key !== prev.key) return prev;
           setActive(false);
           setAttached(false);
+          // Off is a deliberate stop, not a failure worth reporting as one.
+          setDetachReason(null);
           reattachSentRef.current = false;
           if (termRef.current && payload.action === 'agent_reset_event') {
             termRef.current.write('\r\n\x1b[31m[Workspace Reset by Agent]\x1b[0m\r\n');
@@ -137,6 +159,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           if (payload.key && prev.key && payload.key !== prev.key) return prev;
           setActive(true);
           setAttached(true);
+          setDetachReason(null);
           setActiveTabView('terminal');
           return {
             ...prev,
@@ -165,9 +188,24 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     }
     if (!currentTab || !currentTab.url || reattachSentRef.current) return;
 
+    // A terminal that died under us is not the same as one we never attached
+    // to. Re-attaching on sight would race whatever killed it — and if the
+    // attach is refused, we would land right back here and spin. The user
+    // gets a visible state and a Reconnect button instead.
+    if (detachReason) return;
+
     reattachSentRef.current = true;
     chrome.runtime.sendMessage({ type: 'ACTIVATE_BUTCHR', url: currentTab.url, tabId: currentTab.id });
-  }, [pageStatus, active, attached, currentTab?.id, currentTab?.url]);
+  }, [pageStatus, active, attached, detachReason, currentTab?.id, currentTab?.url]);
+
+  // Deliberate re-attach after a death we reported. Clearing the reason first
+  // is what re-arms the automatic path if this attempt does not land.
+  const handleReconnect = useCallback(() => {
+    if (!currentTab || !currentTab.url) return;
+    setDetachReason(null);
+    reattachSentRef.current = false;
+    chrome.runtime.sendMessage({ type: 'ACTIVATE_BUTCHR', url: currentTab.url, tabId: currentTab.id });
+  }, [currentTab]);
 
   const handleToggle = (isChecked) => {
     if (!isChecked) {
@@ -207,9 +245,11 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     supported: pageStatus === 'supported',
     active,
     attached,
+    detachReason,
     sessionData,
     handleToggle,
     handleReset,
+    handleReconnect,
     retryStatus
   };
 }
