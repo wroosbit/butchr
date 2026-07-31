@@ -8,7 +8,8 @@
     "tabs",
     "sidePanel",
     "nativeMessaging",
-    "storage"
+    "storage",
+    "clipboardWrite"
   ],
   "background": {
     "service_worker": "background/service_worker.js"

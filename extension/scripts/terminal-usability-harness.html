@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<!--
+  Manual bench for the terminal's selection and link handling (KAN-17).
+
+  Run:  cd extension && npx vite
+        open http://localhost:5173/scripts/terminal-usability-harness.html
+
+  It mounts the real TerminalView and useTerminal against a stubbed daemon, so
+  what you are poking at is the shipping code path, not a mock of it. The
+  scenario buffer turns on the alternate screen and the same mouse tracking
+  modes a live herdr turns on (1000/1002/1003/1015/1006) — that is the state in
+  which drag-select stops working, and the only state worth testing in.
+
+  Not part of the extension build: vite.config.js lists its inputs explicitly,
+  so nothing here reaches dist/.
+
+  app-sidepanel matches sidepanel.html so the viewport-locking rules apply.
+-->
+<html lang="en" class="app-sidepanel">
+<head>
+  <meta charset="UTF-8">
+  <title>Terminal usability harness</title>
+  <link rel="stylesheet" href="/sidepanel.css">
+  <link rel="stylesheet" href="/node_modules/xterm/css/xterm.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/scripts/terminal-usability-harness.jsx"></script>
+</body>
+</html>

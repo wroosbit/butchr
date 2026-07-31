@@ -572,6 +572,28 @@ html.app-sidepanel #root {
   height: 100%;
 }
 
+/* Standing hint under the pane, and where the copy result lands. flex: 0 0 auto
+   so it never competes with .xterm-wrapper for height; nowrap + ellipsis so a
+   narrow panel clips it rather than stealing a second row from the terminal.
+   The full text lives in the title attribute. */
+.terminal-hint {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  background: #0f172a;
+  border-top: 1px solid #1e293b;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.terminal-hint-notice {
+  color: var(--success);
+}
+
 .xterm-screen {
   padding: 4px;
 }
