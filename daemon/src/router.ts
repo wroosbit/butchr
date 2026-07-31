@@ -12,6 +12,13 @@ import {
   typeFromAgentName
 } from './herdr.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
+import {
+  Capacity,
+  capacityRefusal,
+  describeCapacity,
+  readCapacity,
+  summarizeCapacity
+} from './capacity.js';
 
 type Respond = (msg: any) => void;
 
@@ -81,12 +88,53 @@ interface UnbackedPane {
  * required, a type is optional but must be meaningful when present. Returns
  * the complaint, or null when the address is usable.
  */
+/**
+ * The capacity numbers as they go over the wire.
+ *
+ * Flat and named rather than nested, because the caller most likely to read
+ * this is a language model deciding whether to staff another agent, and the
+ * fields it needs — `headroom`, `atCapacity`, `summary` — should not be at the
+ * end of a path. `summary` is the same figures in a sentence: a caller that
+ * ignores every number still cannot ignore that one.
+ */
+function capacityDto(c: Capacity) {
+  return {
+    cap: c.cap,
+    running: c.running,
+    headroom: c.headroom,
+    atCapacity: c.atCapacity,
+    capBoundBy: c.capBoundBy,
+    headroomBoundBy: c.headroomBoundBy,
+    cores: c.machine.cores,
+    load1: Math.round(c.machine.load1 * 100) / 100,
+    totalMb: Math.round(c.machine.totalBytes / (1024 * 1024)),
+    availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
+    agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
+    agentCores: c.cost.cores,
+    capByCpu: c.capByCpu,
+    capByMemory: c.capByMemory,
+    headroomByCap: c.headroomByCap,
+    headroomByLoad: c.headroomByLoad,
+    headroomByMemory: c.headroomByMemory,
+    summary: summarizeCapacity(c)
+  };
+}
+
 function invalidAddress(key: unknown, type: unknown): string | null {
   if (typeof key !== 'string' || !key.trim()) return 'Missing or invalid key';
   if (type !== undefined && (typeof type !== 'string' || !type.trim())) {
     return 'Invalid type: expected a non-empty string';
   }
   return null;
+}
+
+/** What {@link MessageRouter.capacityGate} decided, and why. */
+interface CapacityGateResult {
+  capacity: Capacity;
+  /** The refusal to send back, or null when the activation may proceed. */
+  refusal: string | null;
+  /** Set when it may proceed only because the caller deliberately said so. */
+  overrode: { at: string; derivation: string } | null;
 }
 
 export class MessageRouter {
@@ -162,6 +210,9 @@ export class MessageRouter {
       case 'list_agents':
         this.handleListAgents(data, respond);
         break;
+      case 'capacity':
+        this.handleCapacity(data, respond);
+        break;
       case 'jira_credential_status':
         void guard(this.handleJiraCredentialStatus(respond), 'jira_credential_status');
         break;
@@ -190,6 +241,40 @@ export class MessageRouter {
     }
   }
 
+  /**
+   * Whether the machine can carry another agent, checked before spawning one.
+   *
+   * Only consulted when a *new* agent would be created: re-attaching to an
+   * agent that is already running costs the machine nothing, and refusing that
+   * would be refusing to look at work already in flight.
+   *
+   * An override is honoured — a cap that cannot be exceeded on purpose is a
+   * cap people work around — but it is recorded rather than waved through.
+   * Someone reading the log later should be able to see that the machine was
+   * over-staffed deliberately, and what the numbers were at the time.
+   */
+  private capacityGate(what: string, override: unknown): CapacityGateResult {
+    const capacity = readCapacity(this.surveyAgents().agents.length);
+    if (!capacity.atCapacity) return { capacity, refusal: null, overrode: null };
+
+    if (!override) {
+      return { capacity, refusal: capacityRefusal(capacity, what), overrode: null };
+    }
+
+    const at = new Date().toISOString();
+    const derivation = describeCapacity(capacity);
+    console.warn(
+      `[capacity] override: starting ${what} past capacity at ${at}\n${derivation}`
+    );
+    this.broadcast({
+      action: 'capacity_override_event',
+      what,
+      at,
+      capacity: capacityDto(capacity)
+    });
+    return { capacity, refusal: null, overrode: { at, derivation } };
+  }
+
   private async handleActivate(data: any, respond: Respond) {
     const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
@@ -208,7 +293,21 @@ export class MessageRouter {
     });
 
     let session = this.herdrBridge.getSessionByKey(key);
+    let gate: CapacityGateResult | null = null;
     if (!session) {
+      gate = this.capacityGate(`${config.type}/${key}`, data.override);
+      if (gate.refusal) {
+        respond({
+          action: 'activate_response',
+          success: false,
+          type: config.type,
+          key,
+          url: data.url,
+          error: gate.refusal,
+          capacity: capacityDto(gate.capacity)
+        });
+        return;
+      }
       session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers);
     }
 
@@ -243,7 +342,8 @@ export class MessageRouter {
       status: session.status,
       workDir: session.workDir,
       createdAt: session.createdAt.toISOString(),
-      mcpServers: config.mcpServers
+      mcpServers: config.mcpServers,
+      ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
     });
   }
 
@@ -276,8 +376,25 @@ export class MessageRouter {
     const promptTemplateFile = config?.promptTemplateFile ?? `prompts/${type}.md`;
     const mcpServers = config?.mcpServers ?? ['atlassian', 'butchr'];
     let session = this.herdrBridge.getSessionByKey(key);
+    let gate: CapacityGateResult | null = null;
 
     if (!session) {
+      // Before the prompt is even rendered: the cheapest refusal is the one
+      // that happens before any work is done for an agent that will not exist.
+      gate = this.capacityGate(`${type}/${key}`, data.override);
+      if (gate.refusal) {
+        respond({
+          action: 'activate_response',
+          success: false,
+          type,
+          key,
+          url,
+          error: gate.refusal,
+          capacity: capacityDto(gate.capacity)
+        });
+        return;
+      }
+
       const renderedPrompt = this.promptLoader.loadAndRender(promptTemplateFile, {
         KEY: key,
         URL: url ?? ''
@@ -317,7 +434,8 @@ export class MessageRouter {
       key,
       url: session.url,
       sessionId: session.sessionId,
-      status: session.status
+      status: session.status,
+      ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
     });
   }
 
@@ -779,6 +897,65 @@ export class MessageRouter {
    * dropping them would repeat the mistake this handler exists to fix.
    */
   private handleListAgents(data: any, respond: Respond) {
+    const { agents, unbackedPanes } = this.surveyAgents();
+
+    // Descriptor headroom, reported where someone looking at agents will see
+    // it. On KAN-24 the herdr server's fd usage was invisible until spawning
+    // broke, and the only way to learn it was to read /proc by hand. Expressed
+    // in panes because that is the unit the reader can act on — "room for 12
+    // more agents" is a decision, "62000 descriptors" is trivia.
+    const usage = readFdUsage();
+
+    // CPU and memory headroom, for the same reason and in the same place. A
+    // supervisor reading this list is about to decide whether to staff another
+    // agent; this is the number that decision needs.
+    const capacity = readCapacity(agents.length);
+
+    respond({
+      action: 'list_agents_response',
+      success: true,
+      agents,
+      unbackedPanes,
+      capacity: capacityDto(capacity),
+      ...(usage ? {
+        herdrHealth: {
+          pid: usage.pid,
+          openFds: usage.openFds,
+          softLimit: usage.softLimit,
+          headroomPanes: usage.headroomPanes,
+          fdPressure: Math.round(usage.ratio * 100) / 100,
+          ...(isFdPressureHigh(usage) ? {
+            warning:
+              `herdr server is using ${Math.round(usage.ratio * 100)}% of its open-file soft limit ` +
+              `(${usage.openFds}/${usage.softLimit}); room for about ${usage.headroomPanes} more panes ` +
+              `at ${PTMX_FDS_PER_PANE} descriptors each. Close idle agents.`
+          } : {})
+        }
+      } : {})
+    });
+  }
+
+  /** `butchr_capacity`: how many more agents this machine can carry. */
+  private handleCapacity(data: any, respond: Respond) {
+    const capacity = readCapacity(this.surveyAgents().agents.length);
+    respond({
+      action: 'capacity_response',
+      success: true,
+      ...capacityDto(capacity),
+      derivation: describeCapacity(capacity)
+    });
+  }
+
+  /**
+   * The agent census, shared by `list_agents` and by everything that needs to
+   * know how many agents are already running before starting another.
+   *
+   * herdr is the source of existence, not our session map — see
+   * handleListAgents for why. Split out so the capacity check counts exactly
+   * what the list reports; two answers to "how many agents are running" is one
+   * answer too many.
+   */
+  private surveyAgents(): { agents: ListedAgent[]; unbackedPanes: UnbackedPane[] } {
     const herdrAgents = this.herdrBridge.listHerdrAgents();
     const byName = new Map<string, HerdrAgentRecord>(herdrAgents.map(a => [a.name, a]));
     const statuses = new Map(herdrAgents.map(a => [a.name, a.herdrStatus]));
@@ -843,34 +1020,7 @@ export class MessageRouter {
       });
     }
 
-    // Descriptor headroom, reported where someone looking at agents will see
-    // it. On KAN-24 the herdr server's fd usage was invisible until spawning
-    // broke, and the only way to learn it was to read /proc by hand. Expressed
-    // in panes because that is the unit the reader can act on — "room for 12
-    // more agents" is a decision, "62000 descriptors" is trivia.
-    const usage = readFdUsage();
-
-    respond({
-      action: 'list_agents_response',
-      success: true,
-      agents,
-      unbackedPanes,
-      ...(usage ? {
-        herdrHealth: {
-          pid: usage.pid,
-          openFds: usage.openFds,
-          softLimit: usage.softLimit,
-          headroomPanes: usage.headroomPanes,
-          fdPressure: Math.round(usage.ratio * 100) / 100,
-          ...(isFdPressureHigh(usage) ? {
-            warning:
-              `herdr server is using ${Math.round(usage.ratio * 100)}% of its open-file soft limit ` +
-              `(${usage.openFds}/${usage.softLimit}); room for about ${usage.headroomPanes} more panes ` +
-              `at ${PTMX_FDS_PER_PANE} descriptors each. Close idle agents.`
-          } : {})
-        }
-      } : {})
-    });
+    return { agents, unbackedPanes };
   }
 
   private handlePtyInit(data: any, respond: Respond) {
