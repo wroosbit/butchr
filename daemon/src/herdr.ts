@@ -44,6 +44,28 @@ const TAIL_DEFAULT_LINES = 40;
 /** Ceiling on a tail, so one call can't drag a whole scrollback over the wire. */
 const TAIL_MAX_LINES = 200;
 
+/**
+ * What herdr prints to the attach it is evicting. We match on it to tell the
+ * user *why* their terminal stopped, rather than showing a dead pane and
+ * letting them guess.
+ */
+const TAKEOVER_NOTICE = 'terminal attach taken over';
+
+/** How much of the tail of a dead PTY we search for herdr's parting message. */
+const EXIT_REASON_SCAN_CHARS = 2000;
+
+/** Why a session's PTY is no longer streaming. */
+export type SessionEndReason = 'taken-over' | 'exited';
+
+/** Told to the UI when a PTY dies, so a dead terminal never renders as a live one. */
+export interface SessionEndedEvent {
+  type: string;
+  key: string;
+  sessionId: string;
+  reason: SessionEndReason;
+  exitCode: number;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -103,10 +125,49 @@ export interface HerdrAgentDescription {
 export class HerdrBridge {
   private sessions: Map<string, HerdrSession> = new Map();
 
+  /** Set by the daemon so a dying PTY can be announced to connected clients. */
+  private sessionEndedListener?: (event: SessionEndedEvent) => void;
+
+  public setSessionEndedListener(listener: (event: SessionEndedEvent) => void): void {
+    this.sessionEndedListener = listener;
+  }
+
+  /**
+   * A session of ours that is currently attached to this agent's terminal.
+   *
+   * herdr allows exactly one terminal attach per terminal, so this is the
+   * question that decides whether a new attach may use `--takeover`: an
+   * attach we already own is a live sidepanel, and stealing it is the KAN-16
+   * freeze. A session with no `ptyProcess` never got one (pty.spawn threw) and
+   * holds nothing.
+   */
+  private liveAttachFor(agentName: string): HerdrSession | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.status !== 'active' || !session.ptyProcess) continue;
+      if (agentNameFor(session.type, session.key) === agentName) return session;
+    }
+    return undefined;
+  }
+
   // `url` is `string | undefined` rather than optional: it sits in front of
   // required parameters, and callers who have no URL must pass nothing rather
   // than a placeholder.
   public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[]): HerdrSession {
+    // One attach per agent, enforced here rather than in each caller. The
+    // routers dedupe by key alone, which misses a second workspace *type* on
+    // the same key, and the MCP server and the sidepanel's re-attach path can
+    // both ask to activate the same agent at once. A second attach would evict
+    // the first, so the only safe answer is the session we already have.
+    const agentName = agentNameFor(type, key);
+    const existing = this.liveAttachFor(agentName);
+    if (existing) {
+      console.log(
+        `[HerdrBridge] Reusing live session ${existing.sessionId} for ${agentName}; ` +
+        `refusing to open a second attach that would evict it`
+      );
+      return existing;
+    }
+
     const sessionId = `${type}-${key.toLowerCase()}-${Date.now()}`;
     const defaultWorkDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
 
@@ -187,14 +248,32 @@ export class HerdrBridge {
       }
     }
 
+    // `--takeover` evicts whoever already holds this agent's terminal attach,
+    // and the evicted client is killed outright — which is exactly how a live
+    // sidepanel froze. The guard in spawnSession is what actually prevents
+    // that, so by the time we get here nothing of ours is attached and this
+    // resolves to true; it is kept as a second line of defence for any future
+    // caller that reaches initPty another way, and because the log line below
+    // is the record of which attach asked for what.
+    //
+    // Taking over remains right when the incumbent is not ours: an attach
+    // orphaned by a daemon that died without cleaning up would otherwise
+    // strand the agent unreachable forever.
+    const takeover = !this.liveAttachFor(agentName);
+    const attachArgs = ['agent', 'attach', agentName, ...(takeover ? ['--takeover'] : [])];
+    console.log(
+      `[HerdrBridge] Attaching session ${session.sessionId} to ${agentName} ` +
+      `(takeover=${takeover}): herdr ${attachArgs.join(' ')}`
+    );
+
     try {
-      const ptyProcess = pty.spawn('herdr', ['agent', 'attach', agentName, '--takeover'], {
+      const ptyProcess = pty.spawn('herdr', attachArgs, {
         name: 'xterm-256color',
         cols: 80,
         rows: 24,
         cwd: session.workDir,
-        env: { 
-          ...process.env, 
+        env: {
+          ...process.env,
           TERM: 'xterm-256color',
           BUTCHR_WORKSPACE_TYPE: session.type,
           BUTCHR_WORKSPACE_KEY: session.key
@@ -209,10 +288,32 @@ export class HerdrBridge {
       });
 
       ptyProcess.onExit(({ exitCode }) => {
-        console.log(`[HerdrBridge] PTY for session ${session.sessionId} exited with code ${exitCode}`);
+        // herdr's parting line is the only place the cause is recorded, so
+        // read it off the buffer before anything else claims the exit.
+        const tail = session.ptyBuffer.slice(-EXIT_REASON_SCAN_CHARS);
+        const reason: SessionEndReason = tail.includes(TAKEOVER_NOTICE) ? 'taken-over' : 'exited';
+
+        console.log(
+          `[HerdrBridge] PTY for session ${session.sessionId} (${agentName}) ` +
+          `exited with code ${exitCode}; reason=${reason}`
+        );
         session.status = 'terminated';
+
+        // Tell the clients. Without this the sidepanel keeps rendering the
+        // last frame it received and looks like an agent that is merely quiet.
+        this.sessionEndedListener?.({
+          type: session.type,
+          key: session.key,
+          sessionId: session.sessionId,
+          reason,
+          exitCode
+        });
       });
     } catch (e) {
+      // No PTY means no attach: leaving the session 'active' would make
+      // liveAttachFor claim an attach that does not exist, and every later
+      // activate would be refused in favour of this dead session.
+      session.status = 'terminated';
       console.error('[HerdrBridge] Failed to spawn PTY', e);
     }
   }
