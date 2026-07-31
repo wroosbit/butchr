@@ -119,12 +119,23 @@ The canonical prompt lives in [`prompts/task.md`](../prompts/task.md) — see th
 
 ### The `story` Prompt: [`prompts/story.md`](../prompts/story.md)
 
-⚠️ **Placeholder.** What a story agent should do differently from a task agent
-has not been specified, so `prompts/story.md` is currently a near-copy of
-`prompts/task.md` carrying an explicit notice to that effect. Prompt files are
-the human's to iterate on — the same convention `prompts/manage.md` follows —
-and nothing in the daemon needs to change when it is rewritten; the prompt is
-read from disk at activation.
+A story agent **decomposes; it never builds**. It reads the story, reads the
+repository (read-only — no branch, no commit, no PR), and files the set of Jira
+Tasks that deliver the story, each one well-formed enough for an agent to
+execute unattended.
+
+**Tasks implement stories.** Story and Task sit at the same hierarchy level in a
+team-managed project, so a task cannot be a *child* of a story; the relationship
+is recorded as an `Implements` issue link (task → story) plus an explicit line
+in each task's description. Where a site has no `Implements` link type
+configured, the agent falls back to `Blocks` and reports that it did.
+
+It does **not** activate agents for the tasks it files — agent lifecycle belongs
+to the board manager (`prompts/manage.md`). Its handoff is the filed, linked
+ticket on the board.
+
+Nothing in the daemon depends on any of this: the prompt is read from disk at
+activation, so it is the human's to iterate on.
 
 ---
 
