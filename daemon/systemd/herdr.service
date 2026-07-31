@@ -1,0 +1,28 @@
+# herdr headless server — systemd USER unit.
+#
+# TEMPLATE, substituted by daemon/scripts/install-service.sh.
+#
+# Installed ONLY when the user has no herdr.service of their own. herdr is not
+# this project's software and someone running it already has their own opinion
+# about how it starts; the installer never overwrites an existing unit. What it
+# does install unconditionally is the drop-in that raises LimitNOFILE
+# (herdr.service.d/10-butchr-nofile.conf), which is additive and safe either
+# way.
+[Unit]
+Description=herdr — terminal workspace/session manager (headless server)
+Documentation=https://herdr.dev
+After=network.target
+# [Unit], not [Service] — systemd ignores these in [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@@HERDR@@ server
+Restart=always
+RestartSec=2
+SyslogIdentifier=herdr
+
+[Install]
+WantedBy=default.target
