@@ -1,0 +1,48 @@
+# Butchr local daemon — systemd USER unit.
+#
+# TEMPLATE. The @@ tokens are substituted with absolute paths by
+# daemon/scripts/install-service.sh before the file is copied into
+# ~/.config/systemd/user/. Do not point systemd at this file in place.
+#
+# Named butchr-daemon, not butchr: an unrelated project of the same name ships
+# a `butchr.service` user unit, and installing over it would silently replace
+# someone else's service. The daemon this repo builds is always butchr-daemon.
+[Unit]
+Description=Butchr local daemon (Chrome native-messaging bridge to herdr)
+Documentation=https://github.com/wroosbit/butchr/blob/main/docs/SETUP.md
+# herdr owns the panes the daemon attaches to. The daemon starts fine without
+# it and logs a warning, so this is a soft Wants + After — not a Requires that
+# would drag the daemon down every time herdr restarts.
+Wants=herdr.service
+After=herdr.service
+
+[Service]
+Type=simple
+WorkingDirectory=@@REPO@@
+# The daemon reads prompts/*.md relative to the repo root and re-resolves PATH
+# at startup from the login shell, but the user manager's own PATH is minimal
+# and is what the shell probe falls back to. Spell out where tools live.
+Environment=PATH=@@NODE_BIN_DIR@@:%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@@NODE@@ @@REPO@@/daemon/dist/daemon.js
+
+# on-failure, deliberately not always. The daemon exits 0 in two situations
+# that must stay exited: a deliberate SIGTERM, and losing the race for the
+# socket to a daemon a Chrome native host already auto-spawned (see
+# connectToDaemon in daemon/src/ipc.ts — the loser detects the winner and
+# exits cleanly). Restart=always would relaunch that loser every RestartSec
+# until the start limit stopped the unit, turning a correct no-op into a
+# crash-looping service.
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# The daemon itself holds few descriptors — one pty per attached sidepanel —
+# so this is headroom, not the fix for the pane ceiling. The limit that
+# matters is herdr's; see herdr.service.d/10-butchr-nofile.conf.
+LimitNOFILE=65536:1048576
+
+SyslogIdentifier=butchr-daemon
+
+[Install]
+WantedBy=default.target

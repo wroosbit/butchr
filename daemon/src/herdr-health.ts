@@ -32,6 +32,41 @@ export const PTMX_FDS_PER_PANE = 5;
  */
 export const FD_PRESSURE_WARN_RATIO = 0.75;
 
+/**
+ * The default open-file soft limit on Linux, which is also `FD_SETSIZE` — the
+ * largest descriptor `select(2)` can represent. A herdr server left here is
+ * capped at {@link PTMX_FDS_PER_PANE} descriptors per pane, i.e. ~205 panes,
+ * after which every `agent start` fails.
+ *
+ * Setup raises it (`daemon/systemd/10-butchr-nofile.conf`). This constant
+ * exists so a machine that *did not* get that far says so at startup instead
+ * of discovering it as an outage — which is exactly how it went the first
+ * time (KAN-24, KAN-33).
+ */
+export const FD_SETSIZE = 1024;
+
+/**
+ * True when herdr is running on the stock ceiling, i.e. setup's fd step was
+ * never applied or was lost to a restart. Distinct from
+ * {@link isFdPressureHigh}: that fires when the limit is nearly *reached*,
+ * this fires the moment the limit is known to be too low, whether or not
+ * anything is close to it yet.
+ */
+export function isFdCeilingUnraised(usage: FdUsage): boolean {
+  return usage.softLimit <= FD_SETSIZE;
+}
+
+/** One line naming the ceiling in panes, and where the permanent fix lives. */
+export function describeFdCeiling(usage: FdUsage): string {
+  return (
+    `herdr server (pid ${usage.pid}) has an open-file soft limit of ${usage.softLimit}, the stock default. ` +
+    `At ${PTMX_FDS_PER_PANE} descriptors per pane that caps it at ~${Math.floor(usage.softLimit / PTMX_FDS_PER_PANE)} ` +
+    `panes, after which every 'herdr agent start' fails. Raise it permanently with ` +
+    `daemon/scripts/install-service.sh (see docs/SETUP.md), or for the running server: ` +
+    `prlimit --pid ${usage.pid} --nofile=65536:1048576`
+  );
+}
+
 /** How close the herdr server is to its open-file ceiling. */
 export interface FdUsage {
   pid: number;

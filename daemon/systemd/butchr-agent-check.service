@@ -1,0 +1,22 @@
+# Periodic herdr agent/cost check — the timer's payload.
+#
+# TEMPLATE, substituted by daemon/scripts/install-service.sh.
+#
+# Replaces the unversioned crontab entry and ~/.local/share/butchr/bin script
+# the board manager wrote as a stopgap (KAN-24). Same check, now in the repo
+# and versioned with the code it watches.
+[Unit]
+Description=Butchr — check herdr agents for unexpected cost and fd pressure
+Documentation=https://github.com/wroosbit/butchr/blob/main/docs/SETUP.md
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@@PYTHON@@ @@REPO@@/daemon/scripts/check-herdr-agents.py
+# The check exits 2 when something wants a human's attention. That is its
+# entire purpose, so it must not be recorded as a service failure — otherwise
+# every REVIEW turns the unit red and the signal is lost in the noise.
+SuccessExitStatus=0 2
+StandardOutput=append:%h/.local/share/butchr/herdr-watch.log
+StandardError=append:%h/.local/share/butchr/herdr-watch.log
+SyslogIdentifier=butchr-agent-check
