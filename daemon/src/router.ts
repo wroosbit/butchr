@@ -1,5 +1,6 @@
 import { WorkspaceRegistry } from './registry.js';
 import { PromptLoader } from './prompt.js';
+import { JiraIssueTypeService } from './jira.js';
 import {
   HerdrBridge,
   HerdrSession,
@@ -49,7 +50,8 @@ export class MessageRouter {
     private promptLoader: PromptLoader,
     private herdrBridge: HerdrBridge,
     private send: (msg: any) => void,
-    private broadcast: (msg: any) => void = send
+    private broadcast: (msg: any) => void = send,
+    private jira?: JiraIssueTypeService
   ) {}
 
   public handle(data: any) {
@@ -65,18 +67,32 @@ export class MessageRouter {
       if (data.id !== undefined) this.send({ ...msg, id: data.id });
     };
 
+    // Resolution reaches the network now, so the handlers that use it are
+    // async. A rejected handler promise would otherwise escape the try/catch
+    // the daemon wraps this call in and surface as an unhandled rejection,
+    // leaving the caller waiting on a response that never comes.
+    const guard = (p: Promise<void>, action: string) =>
+      p.catch((err: any) => {
+        console.error(`Handler error in ${action}:`, err?.message ?? String(err));
+        respond({
+          action: `${action}_response`,
+          success: false,
+          error: err?.message ?? String(err)
+        });
+      });
+
     switch (data.action) {
       case 'reset':
-        this.handleReset(data, respond);
+        void guard(this.handleReset(data, respond), 'reset');
         break;
       case 'reset_by_key':
         this.handleResetByKey(data, respond);
         break;
       case 'activate':
-        this.handleActivate(data, respond);
+        void guard(this.handleActivate(data, respond), 'activate');
         break;
       case 'activate_by_key':
-        this.handleActivateByKey(data, respond);
+        void guard(this.handleActivateByKey(data, respond), 'activate');
         break;
       case 'deactivate':
         this.handleDeactivate(data, respond);
@@ -94,10 +110,19 @@ export class MessageRouter {
         this.handleAgentStatus(data, respond);
         break;
       case 'status':
-        this.handleStatus(data, respond);
+        void guard(this.handleStatus(data, respond), 'status');
         break;
       case 'list_agents':
         this.handleListAgents(data, respond);
+        break;
+      case 'jira_credential_status':
+        this.handleJiraCredentialStatus(respond);
+        break;
+      case 'set_jira_credential':
+        void guard(this.handleSetJiraCredential(data, respond), 'set_jira_credential');
+        break;
+      case 'clear_jira_credential':
+        void guard(this.handleClearJiraCredential(respond), 'clear_jira_credential');
         break;
       case 'pty_init':
         this.handlePtyInit(data, respond);
@@ -118,8 +143,8 @@ export class MessageRouter {
     }
   }
 
-  private handleActivate(data: any, respond: Respond) {
-    const resolved = this.registry.resolve(data.url);
+  private async handleActivate(data: any, respond: Respond) {
+    const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
       respond({
         action: 'activate_response',
@@ -163,7 +188,7 @@ export class MessageRouter {
     });
   }
 
-  public handleActivateByKey(data: any, respond: Respond) {
+  public async handleActivateByKey(data: any, respond: Respond) {
     const { type, key, defaultAgent } = data;
 
     // A key alone does not determine a URL: the registry maps URLs to keys,
@@ -177,7 +202,7 @@ export class MessageRouter {
     // worth a log line but not a rejection — the caller may legitimately be
     // binding an agent to a page the registry doesn't recognise.
     if (url) {
-      const resolved = this.registry.resolve(url);
+      const resolved = await this.registry.resolve(url);
       if (resolved && resolved.key !== key) {
         console.warn(
           `activate_by_key: url ${url} resolves to key ${resolved.key}, but key ${key} was given; using ${key}`
@@ -185,9 +210,12 @@ export class MessageRouter {
       }
     }
 
-    // In a real scenario we'd look up the config from registry by type,
-    // but for now we'll assume it's a valid type since we only have 'task'
-    const promptTemplateFile = `prompts/${type}.md`;
+    // Prefer the registered config so a type's prompt file and MCP servers
+    // come from one place. An unregistered type still works on the old
+    // convention — callers may address a type this daemon doesn't know.
+    const config = this.registry.get(type);
+    const promptTemplateFile = config?.promptTemplateFile ?? `prompts/${type}.md`;
+    const mcpServers = config?.mcpServers ?? ['atlassian', 'butchr'];
     let session = this.herdrBridge.getSessionByKey(key);
 
     if (!session) {
@@ -195,8 +223,7 @@ export class MessageRouter {
         KEY: key,
         URL: url ?? ''
       });
-      // In a real scenario we'd look up config, but for now we hardcode defaults
-      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, ['atlassian', 'butchr']);
+      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, mcpServers);
     }
 
     this.broadcast({
@@ -387,8 +414,8 @@ export class MessageRouter {
     }
   }
 
-  private handleReset(data: any, respond: Respond) {
-    const resolved = this.registry.resolve(data.url);
+  private async handleReset(data: any, respond: Respond) {
+    const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
       respond({ action: 'reset_response', success: false, error: 'Unsupported URL' });
       return;
@@ -472,8 +499,8 @@ export class MessageRouter {
    * to answer `active: false` for an agent that was demonstrably still
    * working, so a session miss now asks herdr before calling anything Off.
    */
-  private handleStatus(data: any, respond: Respond) {
-    const resolved = this.registry.resolve(data.url);
+  private async handleStatus(data: any, respond: Respond) {
+    const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
       respond({ action: 'status_response', success: true, supported: false });
       return;
@@ -527,6 +554,95 @@ export class MessageRouter {
       // workDir is included only when herdr actually reported a cwd.
       ...(described.workDir !== null ? { workDir: described.workDir } : {}),
       herdrStatus: described.herdrStatus
+    });
+  }
+
+  // --- Atlassian credential -------------------------------------------------
+  //
+  // The token's whole journey is: settings UI → native messaging → here →
+  // CredentialStore. It never travels back. These handlers answer with
+  // configured/not-configured and a validation verdict, never with the value,
+  // so there is nothing for the extension to retain even by accident.
+
+  private handleJiraCredentialStatus(respond: Respond) {
+    respond({
+      action: 'jira_credential_status_response',
+      success: true,
+      available: !!this.jira,
+      ...(this.jira ? this.jira.status() : { configured: false })
+    });
+  }
+
+  private async handleSetJiraCredential(data: any, respond: Respond) {
+    const fail = (error: string) =>
+      respond({ action: 'set_jira_credential_response', success: false, valid: false, error });
+
+    if (!this.jira) {
+      fail('This daemon has no Jira credential support.');
+      return;
+    }
+
+    const siteUrl = typeof data.siteUrl === 'string' ? data.siteUrl.trim() : '';
+    const email = typeof data.email === 'string' ? data.email.trim() : '';
+    const token = typeof data.token === 'string' ? data.token : '';
+
+    if (!siteUrl || !email || !token) {
+      fail('Site URL, account email and API token are all required.');
+      return;
+    }
+
+    // Normalise before storing: a trailing slash would double up in every
+    // request path, and a bare hostname needs a scheme to be fetchable.
+    const normalisedSite = (/^https?:\/\//i.test(siteUrl) ? siteUrl : `https://${siteUrl}`)
+      .replace(/\/+$/, '');
+
+    let parsed: URL;
+    try {
+      parsed = new URL(normalisedSite);
+    } catch {
+      fail('That does not look like a valid site URL.');
+      return;
+    }
+    if (parsed.pathname !== '/' && parsed.pathname !== '') {
+      fail('Enter just the site address, e.g. https://yoursite.atlassian.net');
+      return;
+    }
+
+    const result = await this.jira.setCredential({
+      siteUrl: parsed.origin,
+      email,
+      token
+    });
+
+    // Note what is *not* here: the token, and any echo of the request. The
+    // response carries a verdict and the non-secret site/account only.
+    console.log(
+      `jira: credential submitted for ${email} @ ${parsed.origin} — ` +
+        (result.valid ? `valid, stored in ${result.storage}` : `rejected (${result.error})`)
+    );
+
+    respond({
+      action: 'set_jira_credential_response',
+      success: true,
+      valid: result.valid,
+      ...(result.error ? { error: result.error } : {}),
+      ...(result.accountName ? { accountName: result.accountName } : {}),
+      ...(result.storage ? { storage: result.storage } : {}),
+      status: this.jira.status()
+    });
+  }
+
+  private async handleClearJiraCredential(respond: Respond) {
+    if (!this.jira) {
+      respond({ action: 'clear_jira_credential_response', success: false, error: 'unsupported' });
+      return;
+    }
+    await this.jira.clearCredential();
+    console.log('jira: credential cleared');
+    respond({
+      action: 'clear_jira_credential_response',
+      success: true,
+      status: this.jira.status()
     });
   }
 
