@@ -92,12 +92,42 @@ on the extension's **Settings** page. Design constraints, all deliberate:
   secret passed on stdin, never argv), otherwise in a `0600` file. The
   extension keeps only *configured / not configured* and a way to clear it.
 - **Write-only field.** The token is never rendered back, not even masked.
-- **Validated at submit time** with one cheap authenticated read
-  (`/rest/api/3/myself`), so a wrong token fails visibly then, rather than
-  silently months later as a mysterious fallback to `task`.
+- **The storage backend is disclosed before the token is typed,** not after it
+  has been handed over. Which backend you get depends on whether a working
+  keyring is present, which is invisible from outside the machine; the settings
+  page probes for it and says which one this machine will use, with the file
+  path when it is the file.
+- **Validated at submit time,** so a wrong token fails visibly then rather than
+  silently months later as a mysterious fallback to `task`. Two reads, and the
+  order matters: `/rest/api/3/myself` for the account name, then — only if that
+  returns 401/403 — `/rest/api/3/project/search` for the verdict. `/myself`
+  needs `read:jira-user`, which is *not* the scope this page asks for, so
+  treating it as the verdict rejected correctly-scoped tokens (KAN-31). The
+  work probe runs under `read:jira-work`, which is what Butchr's one real
+  operation actually needs.
+- **A rejection says which leg refused it.** `TokenJiraTransport` tries the
+  scoped-token gateway (`api.atlassian.com/ex/jira/{cloudId}`) and falls back
+  to the site host; the cloud-ID lookup before either is unauthenticated. Each
+  leg is recorded — endpoint, status, Atlassian's own wording, trace id — and
+  the message names the decisive one. "Could not reach your site", "the token
+  authenticated but lacks `read:jira-work`", and "your site rejected this email
+  and token" are different diagnoses with different fixes, and collapsing them
+  into a single 401 is what made the original report undebuggable.
+- **Nothing derived from the token reaches a message, a log line, or a
+  response.** Every string built from a response is scrubbed of the raw token,
+  the Basic-auth base64, its percent-encoding, and a leading slice (for a host
+  that echoes back a *truncated* token) — and scrubbed **before** it is
+  truncated for display, since truncating first defeats whole-value matching.
+  `daemon/scripts/verify-jira-credential-diagnostics.mjs` and
+  `verify-jira-log-hygiene.mjs` prove both properties against stubs, with no
+  real credential.
 - **Everything degrades to `task`.** No token, expired token, rate limit,
   network down, 404, timeout, unknown type — all resolve to `task` within a
-  hard ~2s timeout, and activation succeeds exactly as before. A user who never
+  hard ~2s timeout, and activation succeeds exactly as before. (Validation is
+  the exception: it runs once, interactively, with a spinner the user asked
+  for, so it gets a much longer deadline. Holding it to the background budget
+  reported "Atlassian did not respond" for credentials that were merely on a
+  slow link.) A user who never
   configures a credential notices nothing except that Stories open as `task`
   workspaces. Successful lookups are cached per issue key, and a failure starts
   a short cooldown so an unreachable Jira costs the timeout once rather than on
