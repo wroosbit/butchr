@@ -271,7 +271,8 @@ $ nm ~/.local/bin/herdr | grep -icE '\b(p?select|_newselect)\b'
 
 **Zero `select`-family calls in 32,303 syscalls.** herdr's readiness syscall is
 `poll(2)`, which takes an explicit array of descriptor numbers and has no
-`FD_SETSIZE` limit at all.
+`FD_SETSIZE` limit at all. Repeated independently on a container with no other
+herdr on it: 0 select-family calls in 8,177 syscalls, 461 `poll`.
 
 The honest limits of that evidence: it covers the workload above on 0.6.4, and
 the binary is statically linked so a dependency could in principle call

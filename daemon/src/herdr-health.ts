@@ -249,16 +249,18 @@ export function checkHerdrVersion(versionOutput: string): string | undefined {
   const [wantMajor, wantMinor] = SUPPORTED_HERDR_MAJOR_MINOR.split('.').map(Number);
   if (major === wantMajor && minor === wantMinor) return undefined;
 
+  // `herdr --version` already prints "herdr 0.7.5", so the name is not
+  // prepended — doing so produced "herdr herdr 0.7.5" in the daemon log.
   if (major > wantMajor || (major === wantMajor && minor > wantMinor)) {
     return (
-      `herdr ${versionOutput.trim()} is newer than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr's spawn path ` +
+      `${versionOutput.trim()} is newer than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr's spawn path ` +
       `is written against. herdr 0.7 redesigned 'agent start' — it takes --kind/--pane and no longer ` +
       `accepts --cwd — so every activation will fail with 'unknown option: --cwd'. Install ${SUPPORTED_HERDR_MAJOR_MINOR}.4: ` +
       `see docs/SETUP.md, prerequisites.`
     );
   }
   return (
-    `herdr ${versionOutput.trim()} is older than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr is written ` +
+    `${versionOutput.trim()} is older than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr is written ` +
     `against; agent spawning may not work. See docs/SETUP.md, prerequisites.`
   );
 }
