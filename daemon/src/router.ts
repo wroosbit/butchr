@@ -117,7 +117,7 @@ export class MessageRouter {
         this.handleListAgents(data, respond);
         break;
       case 'jira_credential_status':
-        this.handleJiraCredentialStatus(respond);
+        void guard(this.handleJiraCredentialStatus(respond), 'jira_credential_status');
         break;
       case 'set_jira_credential':
         void guard(this.handleSetJiraCredential(data, respond), 'set_jira_credential');
@@ -594,12 +594,25 @@ export class MessageRouter {
   // configured/not-configured and a validation verdict, never with the value,
   // so there is nothing for the extension to retain even by accident.
 
-  private handleJiraCredentialStatus(respond: Respond) {
+  private async handleJiraCredentialStatus(respond: Respond) {
+    if (!this.jira) {
+      respond({
+        action: 'jira_credential_status_response',
+        success: true,
+        available: false,
+        configured: false
+      });
+      return;
+    }
+    // `storageTarget` runs a keyring probe, which is why this handler is async
+    // now. It is what lets the settings page say where the token will land
+    // before the user types it, rather than after it has already gone.
     respond({
       action: 'jira_credential_status_response',
       success: true,
-      available: !!this.jira,
-      ...(this.jira ? this.jira.status() : { configured: false })
+      available: true,
+      ...this.jira.status(),
+      storageTarget: await this.jira.storageTarget()
     });
   }
 
@@ -645,10 +658,29 @@ export class MessageRouter {
     });
 
     // Note what is *not* here: the token, and any echo of the request. The
-    // response carries a verdict and the non-secret site/account only.
+    // response carries a verdict, the non-secret site/account, and the record
+    // of which endpoints were tried — every field of which is built from a URL,
+    // a status code, or Atlassian's own response text, and each of those is
+    // scrubbed of every encoded form of the token before it leaves the
+    // transport.
+    //
+    // The log gets the diagnosis and the leg trail, not just "rejected". The
+    // whole reason this ticket exists is that a rejection which says only that
+    // it happened cannot be acted on — and that is as true of the log as of
+    // the UI.
     console.log(
       `jira: credential submitted for ${email} @ ${parsed.origin} — ` +
-        (result.valid ? `valid, stored in ${result.storage}` : `rejected (${result.error})`)
+        (result.valid
+          ? `valid, stored in ${result.storage}`
+          : `rejected (${result.diagnosis ?? 'unknown'})`) +
+        (result.legs?.length
+          ? `; legs: ${result.legs
+              .map(
+                (l) =>
+                  `${l.leg}=${l.failure ?? l.status}${l.traceId ? ` trace:${l.traceId}` : ''}`
+              )
+              .join(' ')}`
+          : '')
     );
 
     respond({
@@ -656,6 +688,9 @@ export class MessageRouter {
       success: true,
       valid: result.valid,
       ...(result.error ? { error: result.error } : {}),
+      ...(result.diagnosis ? { diagnosis: result.diagnosis } : {}),
+      ...(result.legs?.length ? { legs: result.legs } : {}),
+      ...(result.note ? { note: result.note } : {}),
       ...(result.accountName ? { accountName: result.accountName } : {}),
       ...(result.storage ? { storage: result.storage } : {}),
       status: this.jira.status()

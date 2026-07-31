@@ -53,14 +53,18 @@ function JiraCredentialCard() {
         // needed, whether or not it was accepted.
         setToken('');
         if (msg.valid) {
+          const where = `Stored in ${msg.storage === 'keyring' ? 'the OS keyring' : 'a 0600 file'}.`;
+          const who = msg.accountName ? `Verified as ${msg.accountName}. ` : 'Credential verified. ';
           setResult({
             ok: true,
-            text: msg.accountName
-              ? `Verified as ${msg.accountName}. Stored in the ${msg.storage === 'keyring' ? 'OS keyring' : 'a 0600 file'}.`
-              : 'Credential verified and stored.'
+            text: who + where + (msg.note ? `\n\n${msg.note}` : '')
           });
-          if (msg.status) setStatus({ ...msg.status, available: true });
+          if (msg.status) setStatus((prev) => ({ ...prev, ...msg.status, available: true }));
         } else {
+          // `msg.error` is now several lines: a diagnosis, then the endpoints
+          // that were tried and what each said. Rendered verbatim — the whole
+          // point is that the user can read which leg failed and act on it,
+          // and that is lost if it gets flattened to a first sentence.
           setResult({ ok: false, text: msg.error || 'The credential was rejected.' });
         }
         return;
@@ -99,6 +103,7 @@ function JiraCredentialCard() {
   };
 
   const configured = !!(status && status.configured);
+  const storageTarget = status && status.storageTarget;
 
   return (
     <div
@@ -200,9 +205,10 @@ function JiraCredentialCard() {
           >
             id.atlassian.com
           </a>
-          . Choose a <strong>scoped</strong> token with only <code>read:jira-work</code> — Butchr
-          never writes to Jira. The token goes straight to the local daemon and is never stored in
-          the browser or shown again.
+          . Choose a <strong>scoped</strong> token with <code>read:jira-work</code> — Butchr never
+          writes to Jira. Adding <code>read:jira-user</code> is optional and only lets this page
+          greet you by name. The token goes straight to the local daemon and is never stored in the
+          browser or shown again.
         </div>
         <input
           id="jira-token"
@@ -213,6 +219,39 @@ function JiraCredentialCard() {
           onChange={(e) => setToken(e.target.value)}
           style={inputStyle}
         />
+        {/*
+          Where the secret will land, said before it is typed rather than in the
+          success message afterwards. Which backend you get depends on whether a
+          working OS keyring is present, which the user cannot see — and once the
+          token has been submitted, being told where it went is no longer a
+          choice they can make.
+        */}
+        {storageTarget && (
+          <div
+            style={{
+              marginTop: '10px',
+              padding: '10px 12px',
+              borderRadius: '6px',
+              background: '#0b1220',
+              border: '1px solid #334155',
+              fontSize: '13px',
+              color: '#94a3b8'
+            }}
+          >
+            <strong style={{ color: '#e2e8f0' }}>
+              {storageTarget.storage === 'keyring'
+                ? 'This will be stored in your OS keyring.'
+                : 'This will be stored in a file, not your OS keyring.'}
+            </strong>{' '}
+            {storageTarget.reason}
+            {storageTarget.path && (
+              <>
+                {' '}
+                Path: <code style={{ wordBreak: 'break-all' }}>{storageTarget.path}</code>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -236,6 +275,11 @@ function JiraCredentialCard() {
           style={{
             marginTop: '12px',
             fontSize: '14px',
+            lineHeight: 1.5,
+            // The diagnosis is a paragraph followed by one bullet per endpoint
+            // tried. Newlines are the structure, so they have to survive.
+            whiteSpace: 'pre-line',
+            wordBreak: 'break-word',
             color: result.ok ? '#10b981' : '#f87171'
           }}
         >
