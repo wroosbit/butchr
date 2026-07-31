@@ -149,6 +149,35 @@ export function typeFromAgentName(agentName: string, key: string): string | unde
   return agentName.slice(prefix.length, agentName.length - suffix.length) || undefined;
 }
 
+/** A workspace address recovered from an agent name alone. */
+export interface AgentAddress {
+  type: string;
+  key: string;
+}
+
+/**
+ * Full inverse of agentNameFor, for the case where not even the key is known:
+ * enumerating herdr's agents and working out which workspace each one is.
+ *
+ * `butchr-<type>-<key>` is split at the *first* dash after the prefix, because
+ * workspace types are single tokens (`task`, `manage`, `story`, `default`)
+ * while keys routinely contain dashes (`kan-28`). That is a convention, not a
+ * guarantee, so the parse is only trusted when it rebuilds the name it came
+ * from — a name this daemon could never have produced yields null rather than
+ * a guessed address that later calls would fail to resolve.
+ */
+export function addressFromAgentName(agentName: string): AgentAddress | null {
+  const prefix = 'butchr-';
+  if (!agentName.startsWith(prefix)) return null;
+
+  const rest = agentName.slice(prefix.length);
+  const split = rest.indexOf('-');
+  if (split <= 0 || split >= rest.length - 1) return null;
+
+  const address = { type: rest.slice(0, split), key: rest.slice(split + 1) };
+  return agentNameFor(address.type, address.key) === agentName ? address : null;
+}
+
 function toAgentStatus(value: unknown): HerdrAgentStatus {
   return HERDR_AGENT_STATUSES.includes(value as HerdrAgentStatus)
     ? (value as HerdrAgentStatus)
@@ -180,6 +209,23 @@ function clampTailLines(lines: unknown): number {
 export interface HerdrAgentDescription {
   agentName: string;
   type: string | null;
+  workDir: string | null;
+  herdrStatus: HerdrAgentStatus;
+}
+
+/**
+ * One entry of `herdr agent list` — herdr's own record of a pane, independent
+ * of anything this daemon remembers.
+ *
+ * `agentRuntime` is herdr's `agent` field: the CLI it launched in the pane
+ * (`claude`), absent for a pane running a bare shell. It is the only evidence
+ * available for whether a `butchr-*` name has an agent behind it at all, which
+ * is what separates a live agent from one of the shell panes left over on the
+ * board. Absent stays null; nothing is inferred from the name.
+ */
+export interface HerdrAgentRecord {
+  name: string;
+  agentRuntime: string | null;
   workDir: string | null;
   herdrStatus: HerdrAgentStatus;
 }
@@ -549,13 +595,15 @@ export class HerdrBridge {
   }
 
   /**
-   * Every agent herdr knows about, as name -> agent_status. herdr is an
-   * optional external binary, so an unavailable, slow, or unparseable herdr
-   * yields an empty map: callers fall back to 'unknown' rather than failing.
+   * Every agent herdr knows about. herdr is an optional external binary, so an
+   * unavailable, slow, or unparseable herdr yields an empty list: callers
+   * degrade rather than fail.
+   *
+   * An empty list therefore means "herdr told us nothing", which is not the
+   * same claim as "there are no agents" — callers that report to a human must
+   * not turn one into the other.
    */
-  public listHerdrStatuses(): Map<string, HerdrAgentStatus> {
-    const statuses = new Map<string, HerdrAgentStatus>();
-
+  public listHerdrAgents(): HerdrAgentRecord[] {
     let output: string;
     try {
       output = execSync('herdr agent list', {
@@ -564,23 +612,33 @@ export class HerdrBridge {
         stdio: ['ignore', 'pipe', 'ignore']
       });
     } catch (e) {
-      return statuses;
+      return [];
     }
 
     try {
       const agents = JSON.parse(output)?.result?.agents;
-      if (!Array.isArray(agents)) return statuses;
+      if (!Array.isArray(agents)) return [];
 
-      for (const agent of agents) {
-        if (agent && typeof agent.name === 'string') {
-          statuses.set(agent.name, toAgentStatus(agent.agent_status));
-        }
-      }
+      return agents
+        .filter((agent: any) => agent && typeof agent.name === 'string')
+        .map((agent: any) => ({
+          name: agent.name as string,
+          agentRuntime: typeof agent.agent === 'string' && agent.agent ? agent.agent : null,
+          workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
+          herdrStatus: toAgentStatus(agent.agent_status)
+        }));
     } catch (e) {
       console.error('[HerdrBridge] Could not parse `herdr agent list` output', e);
+      return [];
     }
+  }
 
-    return statuses;
+  /**
+   * The same view as {@link listHerdrAgents}, keyed by name, for callers that
+   * only want to decorate something they already have with a status.
+   */
+  public listHerdrStatuses(): Map<string, HerdrAgentStatus> {
+    return new Map(this.listHerdrAgents().map(agent => [agent.name, agent.herdrStatus]));
   }
 
   /**
