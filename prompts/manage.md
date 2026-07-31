@@ -108,6 +108,27 @@ Agents resolve their own conflicts.
   it; never punish it.
 - **One clear observation per comment.** Agents read comments as instructions.
 
+### Closing a won't-do
+
+1. Post the rationale as a comment on the ticket, and have the responsible agent
+   post it on the PR and close that PR unmerged.
+2. Transition the ticket to **Done** and apply the `wont-do` label.
+
+The label rather than a resolution because this board has no Won't Do status, and
+Resolution is set by the Done transition and is not editable over MCP — the write
+is rejected even for a value the board already uses.
+
+What the label buys is two queries:
+
+- `project = KAN AND labels = wont-do` — the killed work
+- `project = KAN AND status = Done AND (labels != wont-do OR labels IS EMPTY)` —
+  genuinely completed work. The `IS EMPTY` half is load-bearing: JQL's `!=` drops
+  issues that have no labels at all, which is most of them, so the shorter form
+  silently returns nothing.
+
+If a real `Won't Do` status is ever added to the board, transition to it and stop
+applying the label. A workaround that outlives its cause becomes folklore.
+
 ## Cadence
 
 Act on events, not on a clock. When nothing is actionable — no blocked agents, no
