@@ -507,8 +507,8 @@ export class MessageRouter {
       this.herdrBridge.closeAgentByKey(key);
     }
 
-    const success = this.herdrBridge.resetWorkspace(config.type, key);
-    respond({ action: 'reset_response', success });
+    const { success, error } = this.herdrBridge.resetWorkspace(config.type, key);
+    respond({ action: 'reset_response', success, ...(error ? { error } : {}) });
   }
 
   public handleResetByKey(data: any, respond: Respond) {
@@ -531,8 +531,9 @@ export class MessageRouter {
     }
 
     // The workspace still goes away even if no agent was there to close —
-    // reset's job is to leave nothing behind.
-    const success = this.herdrBridge.resetWorkspace(type, key);
+    // reset's job is to leave nothing behind. Unless the target isn't ours to
+    // delete, in which case `resetError` says which path was refused and why.
+    const { success, error: resetError } = this.herdrBridge.resetWorkspace(type, key);
 
     // Broadcast event so UI can update
     this.broadcast({
@@ -548,7 +549,9 @@ export class MessageRouter {
       success,
       agentClosed,
       ...(agentError ? { agentError } : {}),
-      ...(success ? {} : { error: agentError ?? `No workspace directory for ${type}/${key}` })
+      // A refusal outranks the agent's complaint: it is the reason the reset
+      // did not happen, and the caller needs to see the path that was rejected.
+      ...(success ? {} : { error: resetError ?? agentError ?? `No workspace directory for ${type}/${key}` })
     });
   }
 
