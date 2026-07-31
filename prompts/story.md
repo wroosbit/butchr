@@ -8,9 +8,13 @@ what we want" and "here is the concrete work" — and that is the whole job.
 
 **Claim it first.** Before you read the repo or file anything, assign **{{KEY}}**
 to yourself and transition it to **In Progress**, both via the Atlassian MCP and
-both idempotent. Note that agents reach Jira through the human's account, so the
-assignee records only that *someone* picked this up — never which agent; your
-comments and `butchr_list_agents` are what identify you.
+both idempotent. You open no pull request, so your equivalent hand-off is the
+filed decomposition: once the tasks are created, linked and reported on the
+story, transition it to **In Review** so the board shows what is waiting on a
+reviewer — closing the story stays governed by *Definition of done* below. Note
+that agents reach Jira through the human's account, so the assignee records only
+that *someone* picked this up — never which agent; your comments and
+`butchr_list_agents` are what identify you.
 
 ## You decompose; you never build
 
