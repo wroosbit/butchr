@@ -1,4 +1,4 @@
-import { WorkspaceRegistry } from './registry.js';
+import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { JiraIssueTypeService } from './jira.js';
 import {
@@ -14,6 +14,7 @@ import {
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
 import {
   Capacity,
+  capacityReason,
   capacityRefusal,
   describeCapacity,
   readCapacity,
@@ -101,10 +102,16 @@ function capacityDto(c: Capacity) {
   return {
     cap: c.cap,
     running: c.running,
+    supervisors: c.supervisors,
     headroom: c.headroom,
     atCapacity: c.atCapacity,
     capBoundBy: c.capBoundBy,
     headroomBoundBy: c.headroomBoundBy,
+    // The one sentence a UI with a single line to spare can render. Sent on
+    // every capacity payload rather than only on refusals, because the panel
+    // that has to explain a refused toggle should not have to parse the reason
+    // out of a paragraph of derivation.
+    reason: capacityReason(c),
     cores: c.machine.cores,
     load1: Math.round(c.machine.load1 * 100) / 100,
     totalMb: Math.round(c.machine.totalBytes / (1024 * 1024)),
@@ -246,15 +253,31 @@ export class MessageRouter {
    *
    * Only consulted when a *new* agent would be created: re-attaching to an
    * agent that is already running costs the machine nothing, and refusing that
-   * would be refusing to look at work already in flight.
+   * would be refusing to look at work already in flight. The caller's own
+   * `getSessionByKey` miss is not enough to establish that, because the
+   * session map dies with the daemon while the herdr pane does not — so
+   * `alreadyRunning` asks herdr, and every re-attach after a daemon restart
+   * skips the gate. Without it the panel could not get back to agents it was
+   * already supervising, and precisely when the machine was busiest.
    *
    * An override is honoured — a cap that cannot be exceeded on purpose is a
    * cap people work around — but it is recorded rather than waved through.
    * Someone reading the log later should be able to see that the machine was
    * over-staffed deliberately, and what the numbers were at the time.
    */
-  private capacityGate(what: string, override: unknown): CapacityGateResult {
-    const capacity = readCapacity(this.surveyAgents().agents.length);
+  private capacityGate(
+    what: string,
+    override: unknown,
+    agentName?: string
+  ): CapacityGateResult {
+    const { agents } = this.surveyAgents();
+
+    if (agentName && agents.some((a) => a.agentName === agentName)) {
+      // Already alive and already counted. Starting nothing costs nothing.
+      return { capacity: this.capacityOf(agents), refusal: null, overrode: null };
+    }
+
+    const capacity = this.capacityOf(agents);
     if (!capacity.atCapacity) return { capacity, refusal: null, overrode: null };
 
     if (!override) {
@@ -295,7 +318,11 @@ export class MessageRouter {
     let session = this.herdrBridge.getSessionByKey(key);
     let gate: CapacityGateResult | null = null;
     if (!session) {
-      gate = this.capacityGate(`${config.type}/${key}`, data.override);
+      gate = this.capacityGate(
+        `${config.type}/${key}`,
+        data.override,
+        agentNameFor(config.type, key)
+      );
       if (gate.refusal) {
         respond({
           action: 'activate_response',
@@ -303,7 +330,14 @@ export class MessageRouter {
           type: config.type,
           key,
           url: data.url,
+          // `error` is the whole refusal, for the log and for MCP callers.
+          // `refusedBy`, `reason` and `derivation` are the same thing split
+          // into the pieces a UI can lay out — the sidepanel showed none of
+          // this and the user met a dead switch. See KAN-36.
           error: gate.refusal,
+          refusedBy: 'capacity',
+          reason: capacityReason(gate.capacity),
+          derivation: describeCapacity(gate.capacity),
           capacity: capacityDto(gate.capacity)
         });
         return;
@@ -381,7 +415,7 @@ export class MessageRouter {
     if (!session) {
       // Before the prompt is even rendered: the cheapest refusal is the one
       // that happens before any work is done for an agent that will not exist.
-      gate = this.capacityGate(`${type}/${key}`, data.override);
+      gate = this.capacityGate(`${type}/${key}`, data.override, agentNameFor(type, key));
       if (gate.refusal) {
         respond({
           action: 'activate_response',
@@ -390,6 +424,9 @@ export class MessageRouter {
           key,
           url,
           error: gate.refusal,
+          refusedBy: 'capacity',
+          reason: capacityReason(gate.capacity),
+          derivation: describeCapacity(gate.capacity),
           capacity: capacityDto(gate.capacity)
         });
         return;
@@ -909,7 +946,7 @@ export class MessageRouter {
     // CPU and memory headroom, for the same reason and in the same place. A
     // supervisor reading this list is about to decide whether to staff another
     // agent; this is the number that decision needs.
-    const capacity = readCapacity(agents.length);
+    const capacity = this.capacityOf(agents);
 
     respond({
       action: 'list_agents_response',
@@ -937,7 +974,7 @@ export class MessageRouter {
 
   /** `butchr_capacity`: how many more agents this machine can carry. */
   private handleCapacity(data: any, respond: Respond) {
-    const capacity = readCapacity(this.surveyAgents().agents.length);
+    const capacity = this.capacityOf(this.surveyAgents().agents);
     respond({
       action: 'capacity_response',
       success: true,
@@ -955,6 +992,42 @@ export class MessageRouter {
    * what the list reports; two answers to "how many agents are running" is one
    * answer too many.
    */
+  /**
+   * The capacity model applied to a census, with the manager set aside.
+   *
+   * Every capacity answer in this daemon goes through here, so `running` means
+   * the same thing in the refusal, in `list_agents` and in `butchr_capacity`.
+   * KAN-34 passed `agents.length` at each call site and the board manager was
+   * silently one of them — on a 4-core machine that was half the budget spent
+   * on the supervisor, and the user could never start a second task agent.
+   */
+  private capacityOf(agents: ListedAgent[]): Capacity {
+    let fleet = 0;
+    let supervisors = 0;
+
+    for (const entry of agents) {
+      // Not everything `list_agents` reports costs an agent's worth of
+      // machine. The daemon opens a bare shell for itself
+      // (`ensureDefaultSession`), and it appears in that list because we hold a
+      // session for it — which is the right answer to "what can I attach to"
+      // and the wrong one to "what is this machine carrying". On a 4-core box
+      // it was silently occupying one of two slots.
+      //
+      // The test is whether the entry is a workspace type this daemon starts
+      // agents into, or whether herdr can see an agent runtime behind the pane.
+      // Either is enough; a registered type does not wait for herdr to notice
+      // a freshly spawned agent, and a runtime catches anything the registry
+      // has not heard of.
+      const registered = entry.type !== null && this.registry.get(entry.type) !== undefined;
+      if (!registered && entry.agentRuntime === null) continue;
+
+      if (isSupervisorType(entry.type)) supervisors++;
+      else fleet++;
+    }
+
+    return readCapacity(fleet, supervisors);
+  }
+
   private surveyAgents(): { agents: ListedAgent[]; unbackedPanes: UnbackedPane[] } {
     const herdrAgents = this.herdrBridge.listHerdrAgents();
     const byName = new Map<string, HerdrAgentRecord>(herdrAgents.map(a => [a.name, a]));

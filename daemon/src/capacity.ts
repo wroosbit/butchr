@@ -10,13 +10,25 @@ import * as os from 'os';
  * instrument that noticed was a human saying the desktop felt slow.
  *
  * Everything here is arithmetic over figures read from the machine, so the
- * answer travels: the same code on a 64-core box says 50, not 2. The
+ * answer travels: the same code on a 64-core box says 73, not 2. The
  * arithmetic is deliberately simple and deliberately explained — a cap nobody
  * can follow is a cap people route around.
  *
  * The costs below are calibrated against that incident and are meant to be
  * re-measured, which is why they are constants with names rather than magic
- * numbers, and why every one of them has an environment override.
+ * numbers, why every one of them has an environment override, and why
+ * `scripts/measure-agent-cost.mjs` exists to produce the evidence.
+ *
+ * KAN-36 corrected two things about the first version, both discovered the
+ * same way — a human found the product unusable and no instrument had noticed:
+ *
+ *   - The cap counts *task* agents. The board manager is always-on
+ *     infrastructure, so its share is reserved off the top like herdr's rather
+ *     than spent from the same budget as the work. Counting it left a 4-core
+ *     machine able to run exactly one task agent, forever.
+ *   - An agent is a process tree, not a process. The MCP servers every agent
+ *     starts are most of the difference between 480 MB and the 650 MB one
+ *     actually holds.
  */
 
 export const GIB = 1024 ** 3;
@@ -31,25 +43,42 @@ export interface AgentCost {
 }
 
 /**
- * Measured on 2026-07-31, and the two figures come from different evidence.
+ * Measured on 2026-07-31, re-measured the same evening with
+ * `scripts/measure-agent-cost.mjs`, which exists so the next argument with
+ * these numbers can be settled with evidence.
  *
- * `residentBytes` is direct: claude agents measured 429–526 MB resident, so
- * 480 MB is the middle of the observed range. Memory is the dimension that
- * kills rather than slows, so rounding up inside the range is the safe error.
+ * `residentBytes` went up, and the reason is the correction: 480 MB was the
+ * `claude` process, and an agent is not a process. Every agent also carries
+ * its MCP servers — an `npm exec mcp-remote` for Atlassian and a node process
+ * for butchr — which the morning's measurement never looked at. Measured over
+ * the whole tree: 654, 658 and 679 MB across three live agents, of which the
+ * claude process itself was 424–443 MB. 650 MB is the bottom of that range,
+ * and memory is the dimension that kills rather than slows.
  *
- * `cores` is *not* the 0.15–0.25 of a core the claude process itself burns.
- * An agent is the claude process plus everything it starts — tsc, npm, git,
- * ripgrep, subagents — and the load average is what the human actually felt.
- * Seven agents produced a load of 11.3, i.e. ~1.6 load units each once the
- * machine was already thrashing. Calibrating on that number alone would say a
- * 4-core box carries one agent; the ticket's own conclusion, from the same
- * afternoon, is that it comfortably carries 2–3. One core per active agent is
- * the figure that reproduces that, and it sits between the process's own
- * share and its thrashing-inflated share. Re-measure it before trusting it.
+ * `cores` is neither of the two numbers that can be measured directly, and
+ * that is the whole difficulty. Measured CPU is 0.15 cores per agent tree over
+ * 90 seconds (0.02–0.24 across three agents), because most of an agent's life
+ * is spent waiting on an API; calibrating on that says a 4-core box carries
+ * sixteen, and the human who filed KAN-34 had already found out what seven
+ * feels like. The load average is the other extreme: seven agents produced a
+ * load of 11.3, ~1.6 each, but that is a queue length, and it inflates as the
+ * machine gets worse — each of those seven was mostly waiting on the other
+ * six. Calibrating on 1.6 says a 4-core box carries one.
+ *
+ * So it is calibrated on the configuration that was *observed to be fine*.
+ * Manager plus two task agents sat at a load of 2.6–2.9 on four cores, with
+ * the desktop responsive. Three agents against a budget of 4 cores − 1 held
+ * back for the human − 0.5 for herdr = 2.5 gives 0.83 each; 0.75 is that
+ * rounded to a figure that divides cleanly and leaves a little slack, and it
+ * reproduces exactly the fleet this machine was seen to carry. It sits well
+ * above the ~0.3 cores an agent actually spends and well below its
+ * thrashing-inflated share, which is the range a divisor in a load-average
+ * budget has to live in. Re-measure it before trusting it — that is what the
+ * script is for.
  */
 export const MEASURED_AGENT_COST: AgentCost = {
-  residentBytes: 480 * MIB,
-  cores: 1.0
+  residentBytes: 650 * MIB,
+  cores: 0.75
 };
 
 /**
@@ -62,6 +91,39 @@ export const MEASURED_AGENT_COST: AgentCost = {
  * subtracting it there would charge for it twice.
  */
 export const HERDR_OVERHEAD_CORES = 0.5;
+
+/**
+ * Supervisor agents whose cost is reserved off the top instead of counted
+ * against the cap.
+ *
+ * KAN-34 said the board manager "counts toward the total; it is a claude
+ * process like any other", which is true about the process and wrong about the
+ * cap. The cap answers "how much work may this machine be given"; the manager
+ * is not work, it is the thing that hands work out. It is present whenever
+ * Butchr is being used at all, exactly like herdr. Counting it meant a 4-core
+ * machine with a cap of 2 could run one task agent and refuse every activation
+ * after it — a cap that did not protect the machine, it prevented the product
+ * from being used.
+ *
+ * The fix is not to stop charging for the manager. It really does hold a core
+ * and half a gigabyte, and a cap that pretended otherwise would over-commit
+ * the machine by an agent. It is to charge for it in the place where
+ * ever-present overhead is already charged — subtracted from the budget, like
+ * {@link HERDR_OVERHEAD_CORES} — so that `cap` becomes the number the user can
+ * act on: how many *task* agents they may start.
+ *
+ * The reservation is unconditional rather than conditional on a manager
+ * actually running, for the same reason herdr's is: the cap is a static
+ * property of the hardware, quoted in the portability table and computed for
+ * machines nobody here owns. A cap that grew by one whenever the manager
+ * restarted would be a cap nobody could predict, and holding a slot the
+ * manager is not currently using errs toward leaving the desktop usable —
+ * which is the error this whole file exists to make.
+ *
+ * Override with BUTCHR_SUPERVISOR_AGENTS, including to 0 for a fleet that runs
+ * no manager at all.
+ */
+export const SUPERVISOR_AGENTS = 1;
 
 /** What the machine looks like right now, or what we pretend it looks like. */
 export interface MachineFacts {
@@ -105,8 +167,10 @@ export interface Capacity {
   machine: MachineFacts;
   cost: AgentCost;
   reservedForHuman: { cores: number; bytes: number };
+  /** What {@link SUPERVISOR_AGENTS} costs, held back before agents are counted. */
+  reservedForSupervisor: { agents: number; cores: number; bytes: number };
 
-  /** Concurrent agents this hardware supports, load aside. */
+  /** Concurrent *task* agents this hardware supports, load aside. */
   cap: number;
   capByCpu: number;
   capByMemory: number;
@@ -114,8 +178,14 @@ export interface Capacity {
   /** Set when BUTCHR_MAX_AGENTS overrode the derivation. */
   configuredCap: number | null;
 
-  /** Agents alive right now, the manager's own included. */
+  /** Task agents alive right now. Supervisors are not among them. */
   running: number;
+  /**
+   * Supervisors alive right now. Reported, never counted: their share is
+   * already reserved off the top, and charging for them twice is what made a
+   * 4-core machine refuse the user's second agent.
+   */
+  supervisors: number;
 
   /** How many more can be started right now. Never negative. */
   headroom: number;
@@ -132,6 +202,10 @@ export interface CapacityOptions {
   cost?: AgentCost;
   /** A cap the operator set by hand, bypassing the derivation entirely. */
   configuredCap?: number | null;
+  /** How many supervisor slots to reserve. Defaults to {@link SUPERVISOR_AGENTS}. */
+  supervisorAgents?: number;
+  /** Supervisors observed running. Reported only; it changes no arithmetic. */
+  supervisorsRunning?: number;
 }
 
 /**
@@ -148,17 +222,22 @@ export function computeCapacity(
 ): Capacity {
   const cost = options.cost ?? MEASURED_AGENT_COST;
   const configuredCap = options.configuredCap ?? null;
+  const supervisorAgents = options.supervisorAgents ?? SUPERVISOR_AGENTS;
 
   const reservedCores = humanReserveCores(machine.cores);
   const reservedBytes = humanReserveBytes(machine.totalBytes);
+  // A supervisor is an agent and costs what an agent costs. What differs is
+  // where it is charged: to the budget, not to the cap. See SUPERVISOR_AGENTS.
+  const supervisorCores = supervisorAgents * cost.cores;
+  const supervisorBytes = supervisorAgents * cost.residentBytes;
 
   // Static cap: what the hardware supports with nothing else assumed. herdr's
-  // share comes off here because the load average cannot be consulted for a
-  // machine that is not this one.
-  const cpuBudget = machine.cores - reservedCores - HERDR_OVERHEAD_CORES;
+  // and the supervisor's shares come off here because the load average cannot
+  // be consulted for a machine that is not this one.
+  const cpuBudget = machine.cores - reservedCores - HERDR_OVERHEAD_CORES - supervisorCores;
   const capByCpu = Math.floor(Math.max(0, cpuBudget) / cost.cores);
   const capByMemory = Math.floor(
-    Math.max(0, machine.totalBytes - reservedBytes) / cost.residentBytes
+    Math.max(0, machine.totalBytes - reservedBytes - supervisorBytes) / cost.residentBytes
   );
 
   let cap: number;
@@ -185,9 +264,12 @@ export function computeCapacity(
   // about either.
   const headroomByCap = Math.max(0, cap - running);
 
-  // The load average already includes every agent, herdr, and whatever the
-  // human is running, so this is the one term that distinguishes three idle
-  // agents from three that are compiling.
+  // The load average already includes every agent, the supervisor, herdr, and
+  // whatever the human is running, so this is the one term that distinguishes
+  // three idle agents from three that are compiling — and the one place the
+  // supervisor is *not* deducted separately, because it is already in there.
+  // The same is true of availableBytes below: a running supervisor's memory is
+  // memory the kernel has already stopped offering.
   //
   // It is a 1-minute average, so it lags: two agents started seconds apart are
   // both invisible to it. That is exactly the gap the count term covers, which
@@ -215,12 +297,18 @@ export function computeCapacity(
     machine,
     cost,
     reservedForHuman: { cores: reservedCores, bytes: reservedBytes },
+    reservedForSupervisor: {
+      agents: supervisorAgents,
+      cores: supervisorCores,
+      bytes: supervisorBytes
+    },
     cap,
     capByCpu,
     capByMemory,
     capBoundBy,
     configuredCap,
     running,
+    supervisors: options.supervisorsRunning ?? 0,
     headroom,
     headroomByCap,
     headroomByLoad,
@@ -267,12 +355,14 @@ export function readMachineFacts(): MachineFacts {
   };
 }
 
-function envNumber(name: string): number | undefined {
+function envNumber(name: string, allowZero = false): number | undefined {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return undefined;
   const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    console.warn(`${name}=${raw} is not a positive number; ignoring it`);
+  if (!Number.isFinite(value) || (allowZero ? value < 0 : value <= 0)) {
+    console.warn(
+      `${name}=${raw} is not a ${allowZero ? 'non-negative' : 'positive'} number; ignoring it`
+    );
     return undefined;
   }
   return value;
@@ -282,9 +372,11 @@ function envNumber(name: string): number | undefined {
  * Operator overrides, because someone who has re-measured their own hardware
  * should not have to argue with figures taken on a laptop in July 2026.
  *
- *   BUTCHR_MAX_AGENTS     — set the cap outright, skipping the derivation
- *   BUTCHR_AGENT_MEMORY_MB — resident cost of one agent
- *   BUTCHR_AGENT_CORES    — load-average cost of one active agent
+ *   BUTCHR_MAX_AGENTS        — set the cap outright, skipping the derivation
+ *   BUTCHR_AGENT_MEMORY_MB   — resident cost of one agent
+ *   BUTCHR_AGENT_CORES       — load-average cost of one active agent
+ *   BUTCHR_SUPERVISOR_AGENTS — supervisor slots reserved off the top; 0 for a
+ *                              fleet that runs no board manager
  */
 export function optionsFromEnv(): CapacityOptions {
   const memoryMb = envNumber('BUTCHR_AGENT_MEMORY_MB');
@@ -294,13 +386,23 @@ export function optionsFromEnv(): CapacityOptions {
       residentBytes: memoryMb !== undefined ? memoryMb * MIB : MEASURED_AGENT_COST.residentBytes,
       cores: cores ?? MEASURED_AGENT_COST.cores
     },
-    configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null
+    configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null,
+    supervisorAgents: envNumber('BUTCHR_SUPERVISOR_AGENTS', true) ?? SUPERVISOR_AGENTS
   };
 }
 
-/** Capacity of this machine, with `running` agents already on it. */
-export function readCapacity(running: number): Capacity {
-  return computeCapacity(readMachineFacts(), running, optionsFromEnv());
+/**
+ * Capacity of this machine, with `running` task agents already on it.
+ *
+ * `supervisors` is how many board managers were found running. It is passed so
+ * the report can say so, not so the arithmetic can charge for them — their
+ * share is reserved whether they are up or not.
+ */
+export function readCapacity(running: number, supervisors = 0): Capacity {
+  return computeCapacity(readMachineFacts(), running, {
+    ...optionsFromEnv(),
+    supervisorsRunning: supervisors
+  });
 }
 
 const gib = (bytes: number) => `${(bytes / GIB).toFixed(1)} GiB`;
@@ -327,23 +429,35 @@ export function describeCapacity(c: Capacity): string {
   lines.push(
     `reserved for you: ${c.reservedForHuman.cores} core(s), ${gib(c.reservedForHuman.bytes)}`
   );
+  const sup = c.reservedForSupervisor;
+  if (sup.agents > 0) {
+    lines.push(
+      `reserved for the board manager: ${sup.agents} agent slot(s) — ` +
+      `${sup.cores} core(s), ${gib(sup.bytes)}. It is always-on infrastructure, ` +
+      `so it is subtracted here rather than counted against the cap below.`
+    );
+  }
 
   if (c.capBoundBy === 'configured') {
-    lines.push(`cap: ${c.cap} agents (set by BUTCHR_MAX_AGENTS, derivation skipped)`);
+    lines.push(`cap: ${c.cap} task agents (set by BUTCHR_MAX_AGENTS, derivation skipped)`);
   } else {
     lines.push(
-      `cap: ${c.cap} agents — ` +
+      `cap: ${c.cap} task agents — ` +
       `CPU allows ${c.capByCpu} ((${m.cores} cores − ${c.reservedForHuman.cores} reserved ` +
-      `− ${HERDR_OVERHEAD_CORES} for herdr) ÷ ${c.cost.cores} core/agent), ` +
-      `memory allows ${c.capByMemory} ((${gib(m.totalBytes)} − ${gib(c.reservedForHuman.bytes)}) ` +
-      `÷ ${Math.round(c.cost.residentBytes / MIB)} MB/agent)` +
+      `− ${HERDR_OVERHEAD_CORES} for herdr − ${sup.cores} for the manager) ` +
+      `÷ ${c.cost.cores} core/agent), ` +
+      `memory allows ${c.capByMemory} ((${gib(m.totalBytes)} − ${gib(c.reservedForHuman.bytes)} ` +
+      `− ${gib(sup.bytes)}) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB/agent)` +
       (c.capBoundBy === 'floor'
         ? '; both said 0, floored to 1 because a machine that can run nothing is not a useful answer'
         : `; bound by ${c.capBoundBy}`)
     );
   }
 
-  lines.push(`running: ${c.running} agent(s)`);
+  lines.push(
+    `running: ${c.running} task agent(s)` +
+    (c.supervisors > 0 ? `, plus ${c.supervisors} board manager (not counted)` : '')
+  );
   lines.push(
     `headroom: ${c.headroom} more — ` +
     `count allows ${c.headroomByCap} (${c.cap} cap − ${c.running} running), ` +
@@ -360,25 +474,45 @@ export function describeCapacity(c: Capacity): string {
 /** One line for callers that only have room for one. */
 export function summarizeCapacity(c: Capacity): string {
   return (
-    `${c.running}/${c.cap} agents, room for ${c.headroom} more ` +
+    `${c.running}/${c.cap} task agents, room for ${c.headroom} more ` +
     `(${c.machine.cores} cores, load ${c.machine.load1.toFixed(2)}, ` +
     `${gib(c.machine.availableBytes)} available; bound by ${c.headroomBoundBy})`
   );
 }
 
+/**
+ * The one sentence that says why there is no room, without the arithmetic
+ * behind it.
+ *
+ * Separate from {@link capacityRefusal} because the sidepanel has a line, not
+ * a page: the panel shows this and puts the full derivation behind a
+ * disclosure, while an MCP caller and the log get the whole thing. Both are
+ * built from the same numbers, so they cannot drift into disagreeing.
+ */
+export function capacityReason(c: Capacity): string {
+  if (c.headroomBoundBy === 'load') {
+    return (
+      `the load average is ${c.machine.load1.toFixed(2)}, against the ` +
+      `${(c.machine.cores - c.reservedForHuman.cores).toFixed(1)} cores this machine ` +
+      `leaves to agents`
+    );
+  }
+  if (c.headroomBoundBy === 'memory') {
+    return (
+      `only ${gib(c.machine.availableBytes)} of memory is available, and ` +
+      `${gib(c.reservedForHuman.bytes)} of that is held back for you`
+    );
+  }
+  return (
+    `${c.running} task agent${c.running === 1 ? ' is' : 's are'} already running ` +
+    `against a cap of ${c.cap}`
+  );
+}
+
 /** Why an activation was refused, with the arithmetic that refused it. */
 export function capacityRefusal(c: Capacity, what: string): string {
-  const reason =
-    c.headroomBoundBy === 'load'
-      ? `load average ${c.machine.load1.toFixed(2)} already exceeds the ` +
-        `${(c.machine.cores - c.reservedForHuman.cores).toFixed(1)} cores available to agents`
-      : c.headroomBoundBy === 'memory'
-        ? `only ${gib(c.machine.availableBytes)} is available and ` +
-          `${gib(c.reservedForHuman.bytes)} of it is reserved`
-        : `${c.running} agents are already running against a cap of ${c.cap}`;
-
   return (
-    `Refusing to activate ${what}: no capacity — ${reason}.\n` +
+    `Refusing to activate ${what}: no capacity — ${capacityReason(c)}.\n` +
     `${describeCapacity(c)}\n` +
     `Deactivate an agent to make room, or pass override: true to start it anyway ` +
     `(the override is recorded with these numbers).`
