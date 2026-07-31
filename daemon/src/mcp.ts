@@ -209,7 +209,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "butchr_list_agents",
-        description: "Lists all currently active agents",
+        description:
+          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents.",
         inputSchema: {
           type: "object",
           properties: {},

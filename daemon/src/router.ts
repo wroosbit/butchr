@@ -5,7 +5,9 @@ import {
   HerdrBridge,
   HerdrSession,
   HerdrAgentDescription,
+  HerdrAgentRecord,
   HerdrAgentStatus,
+  addressFromAgentName,
   agentNameFor,
   typeFromAgentName
 } from './herdr.js';
@@ -28,6 +30,50 @@ interface AgentDto {
   status: HerdrSession['status'];
   workDir: string;
   herdrStatus: HerdrAgentStatus;
+}
+
+/**
+ * One row of `list_agents`. Two kinds of entry share this shape, and the
+ * difference between them is the point of the field that names it:
+ *
+ * - `sessionless: false` — this daemon holds the agent's terminal attach, so
+ *   every field is populated from the session it owns.
+ * - `sessionless: true` — the agent is alive in herdr but no session of ours
+ *   describes it, which is every surviving agent after a daemon restart. The
+ *   session-only fields are null because there is no session, not because the
+ *   agent is impaired.
+ *
+ * Nulls are explicit rather than omitted, for the reason HerdrAgentDescription
+ * gives: over JSON an absent field reads as "not answered", and these are
+ * answered — with nothing.
+ */
+interface ListedAgent {
+  sessionless: boolean;
+  agentName: string;
+  sessionId: string | null;
+  type: string | null;
+  key: string;
+  url: string | null;
+  createdAt: string | null;
+  status: HerdrSession['status'] | null;
+  workDir: string | null;
+  herdrStatus: HerdrAgentStatus;
+  /** herdr's own `agent` field: the CLI running in the pane, null for a shell. */
+  agentRuntime: string | null;
+}
+
+/**
+ * A `butchr-*` pane that is not an agent by any test we can apply: herdr
+ * reports no agent running in it and this daemon holds no session for it.
+ * Reported separately rather than dropped — see handleListAgents.
+ */
+interface UnbackedPane {
+  agentName: string;
+  type: string;
+  key: string;
+  workDir: string | null;
+  herdrStatus: HerdrAgentStatus;
+  reason: string;
 }
 
 /**
@@ -461,8 +507,8 @@ export class MessageRouter {
       this.herdrBridge.closeAgentByKey(key);
     }
 
-    const success = this.herdrBridge.resetWorkspace(config.type, key);
-    respond({ action: 'reset_response', success });
+    const { success, error } = this.herdrBridge.resetWorkspace(config.type, key);
+    respond({ action: 'reset_response', success, ...(error ? { error } : {}) });
   }
 
   public handleResetByKey(data: any, respond: Respond) {
@@ -485,8 +531,9 @@ export class MessageRouter {
     }
 
     // The workspace still goes away even if no agent was there to close —
-    // reset's job is to leave nothing behind.
-    const success = this.herdrBridge.resetWorkspace(type, key);
+    // reset's job is to leave nothing behind. Unless the target isn't ours to
+    // delete, in which case `resetError` says which path was refused and why.
+    const { success, error: resetError } = this.herdrBridge.resetWorkspace(type, key);
 
     // Broadcast event so UI can update
     this.broadcast({
@@ -502,7 +549,9 @@ export class MessageRouter {
       success,
       agentClosed,
       ...(agentError ? { agentError } : {}),
-      ...(success ? {} : { error: agentError ?? `No workspace directory for ${type}/${key}` })
+      // A refusal outranks the agent's complaint: it is the reason the reset
+      // did not happen, and the caller needs to see the path that was rejected.
+      ...(success ? {} : { error: resetError ?? agentError ?? `No workspace directory for ${type}/${key}` })
     });
   }
 
@@ -711,8 +760,88 @@ export class MessageRouter {
     });
   }
 
+  /**
+   * Everything running, from herdr's view unioned with our own.
+   *
+   * The session map is emptied by a daemon restart while the herdr panes keep
+   * running, so a list built from sessions alone answers "nothing is running"
+   * for a board full of working agents — and that is the reading a supervisor
+   * acts on. herdr is therefore the source of existence here, exactly as it
+   * already is for `agent_status`, `deactivate` and `reset`; sessions only add
+   * what herdr cannot know (session id, bound url, creation time).
+   *
+   * An entry counts as an agent when *either* test passes: this daemon holds a
+   * live session for it, or herdr reports an agent runtime behind its pane.
+   * What fails both is a `butchr-*` name with a bare shell behind it and no
+   * session of ours — nothing to message, tail or supervise. Those are kept
+   * out of `agents`, because a supervisor counting the list must get a number
+   * it can act on, and reported under `unbackedPanes`, because silently
+   * dropping them would repeat the mistake this handler exists to fix.
+   */
   private handleListAgents(data: any, respond: Respond) {
-    const statuses = this.herdrBridge.listHerdrStatuses();
+    const herdrAgents = this.herdrBridge.listHerdrAgents();
+    const byName = new Map<string, HerdrAgentRecord>(herdrAgents.map(a => [a.name, a]));
+    const statuses = new Map(herdrAgents.map(a => [a.name, a.herdrStatus]));
+
+    const agents: ListedAgent[] = [];
+    const attached = new Set<string>();
+
+    for (const session of this.herdrBridge.listActiveSessions()) {
+      const agentName = agentNameFor(session.type, session.key);
+      attached.add(agentName);
+      const dto = this.toAgentDto(session, statuses);
+      agents.push({
+        sessionless: false,
+        agentName,
+        sessionId: dto.sessionId,
+        type: dto.type,
+        key: dto.key,
+        url: dto.url ?? null,
+        createdAt: dto.createdAt,
+        status: dto.status,
+        workDir: dto.workDir,
+        herdrStatus: dto.herdrStatus,
+        agentRuntime: byName.get(agentName)?.agentRuntime ?? null
+      });
+    }
+
+    const unbackedPanes: UnbackedPane[] = [];
+
+    for (const record of herdrAgents) {
+      if (attached.has(record.name)) continue;
+      const address = addressFromAgentName(record.name);
+      if (!address) continue; // Not one of ours; herdr hosts more than Butchr.
+
+      if (!record.agentRuntime) {
+        unbackedPanes.push({
+          agentName: record.name,
+          type: address.type,
+          key: address.key,
+          workDir: record.workDir,
+          herdrStatus: record.herdrStatus,
+          reason:
+            'herdr reports no agent running in this pane and this daemon holds no session for it'
+        });
+        continue;
+      }
+
+      // Session-only fields are null, not invented. There is no session id to
+      // report, no url the agent was bound to and no creation time we saw —
+      // filling them in to match the attached shape would be a fabrication.
+      agents.push({
+        sessionless: true,
+        agentName: record.name,
+        sessionId: null,
+        type: address.type,
+        key: address.key,
+        url: null,
+        createdAt: null,
+        status: null,
+        workDir: record.workDir,
+        herdrStatus: record.herdrStatus,
+        agentRuntime: record.agentRuntime
+      });
+    }
 
     // Descriptor headroom, reported where someone looking at agents will see
     // it. On KAN-24 the herdr server's fd usage was invisible until spawning
@@ -724,7 +853,8 @@ export class MessageRouter {
     respond({
       action: 'list_agents_response',
       success: true,
-      agents: this.herdrBridge.listActiveSessions().map(s => this.toAgentDto(s, statuses)),
+      agents,
+      unbackedPanes,
       ...(usage ? {
         herdrHealth: {
           pid: usage.pid,
