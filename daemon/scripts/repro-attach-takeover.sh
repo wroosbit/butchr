@@ -65,9 +65,13 @@ else
 fi
 
 # `script` gives each attach a real TTY, the same thing node-pty gives the
-# daemon's attach. Without one, herdr's client refuses to run.
+# daemon's attach. The `stty` is not optional: run from a non-interactive
+# shell, script's pty inherits no window size, the herdr client reports 0x0,
+# and herdr resizes the workspace layout to match — after which every later
+# `herdr agent start` fails with `ghostty error -2`. Size it like the daemon
+# does (80x24) so a diagnostic script cannot wreck the session it runs in.
 echo "== attach #1 (the incumbent, stands in for the sidepanel's PTY) =="
-script -q -c "herdr agent attach $AGENT --takeover" /dev/null >"$FIRST_LOG" 2>&1 &
+script -q -c "stty rows 24 cols 80; herdr agent attach $AGENT --takeover" /dev/null >"$FIRST_LOG" 2>&1 &
 FIRST_PID=$!
 sleep 2
 
@@ -79,7 +83,7 @@ fi
 echo "attach #1 is live (pid $FIRST_PID)"
 
 echo "== attach #2 at the same agent (herdr agent attach $AGENT $TAKEOVER_ARG) =="
-script -q -c "herdr agent attach $AGENT $TAKEOVER_ARG" /dev/null >"$SECOND_LOG" 2>&1 &
+script -q -c "stty rows 24 cols 80; herdr agent attach $AGENT $TAKEOVER_ARG" /dev/null >"$SECOND_LOG" 2>&1 &
 SECOND_PID=$!
 sleep 3
 
