@@ -622,6 +622,17 @@ html.app-sidepanel #root {
   font-style: italic;
 }
 
+/* The terminal died rather than merely not being attached yet. Deliberately
+   louder than .ws-reattaching: this one is a failure, and the whole point of
+   showing it is that a frozen pane looks fine. */
+.ws-disconnected {
+  color: #f87171;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .btn-sm {
   padding: 4px 10px;
   font-size: 12px;
