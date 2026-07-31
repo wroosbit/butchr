@@ -32,6 +32,63 @@ export function workspaceTypeForJiraIssueType(issueTypeName: string | null): str
 /** Asks Jira for an issue's type name. Must never throw; null means unknown. */
 export type IssueTypeLookup = (key: string) => Promise<string | null>;
 
+/**
+ * Project-level views that sit directly under `/projects/<KEY>/`.
+ *
+ * Every one of these shows the project as a whole with no issue selected —
+ * the same context a board is — so they all produce the same manager. A board
+ * is one project view among many, not the only one.
+ *
+ * This is an allowlist rather than "anything that is not /settings" on
+ * purpose. Jira is a single-page app: its server answers 200 for *any* path
+ * under `/projects/<KEY>/`, including ones that render "page not found"
+ * client-side. An open-ended pattern would therefore spawn a manager for a
+ * mistyped or retired URL. The cost is that a view Atlassian adds later needs
+ * a line here — a reviewable line, which is the better half of the trade.
+ *
+ * Project **settings** is deliberately absent: administering a project is a
+ * different context from working it.
+ */
+const MANAGE_PROJECT_VIEWS = [
+  'backlog',
+  'list',
+  'summary',
+  'timeline',
+  'calendar',
+  'issues',
+  'pages',
+  'forms',
+  'goals',
+  'code',
+  'deployments',
+  'reports'
+];
+
+/**
+ * Anchored at the scheme, unlike the issue patterns above. Those extract a key
+ * from a substring and are harmless when a URL merely contains a Jira link;
+ * this one decides that a page *is* the whole project, so it should only ever
+ * say yes about the URL itself and not about one quoted inside a query string.
+ */
+const MANAGE_URL_PATTERNS = [
+  // The board, and the backlog that hangs off it in team-managed projects.
+  /^https?:\/\/[^\/]+\/jira\/software\/projects\/[^\/?#]+\/boards\/\d+(?:\/backlog)?(?:[\/?#]|$)/i,
+  new RegExp(
+    `^https?://[^/]+/jira/software/projects/[^/?#]+/(?:${MANAGE_PROJECT_VIEWS.join('|')})(?:[/?#]|$)`,
+    'i'
+  )
+];
+
+/**
+ * The trailing `(?:[/?#]|$)` in both patterns is what keeps the query string
+ * irrelevant: `/list` and `/list?jql=<anything>` match identically, exactly as
+ * `/boards/2` and `/boards/2?filter=&groupBy=none` always have. It also stops
+ * a view name from matching a longer segment that merely starts with it.
+ */
+function isManageUrl(url: string): boolean {
+  return MANAGE_URL_PATTERNS.some((pattern) => pattern.test(url));
+}
+
 export class WorkspaceRegistry {
   private types: Map<string, WorkspaceTypeConfig> = new Map();
 
@@ -68,22 +125,21 @@ export class WorkspaceRegistry {
     });
 
     // Registered after `task` on purpose: resolve() returns the first match,
-    // and a board URL carrying &selectedIssue=KAN-5 is an opened issue — a
-    // task context — not a board one. Task must get first refusal.
+    // and a project URL carrying &selectedIssue=KAN-5 is an opened issue — a
+    // task context — not a project one. Task must get first refusal. That
+    // holds on every view below, not just the board, because the
+    // selectedIssue pattern is view-agnostic.
     //
-    // There is a single board manager, so the key is the constant 'work'
-    // rather than anything derived from the URL: every board page activates
-    // the same agent.
+    // There is a single manager, so the key is the constant 'work' rather
+    // than anything derived from the URL: every project view activates the
+    // same agent. Note this ignores the project too — see KAN-26 for why that
+    // is a latent collision across multiple projects, deliberately left alone
+    // here because `manage/work` is live on disk.
     this.register({
       type: 'manage',
-      name: 'Board Manager',
-      urlPatterns: [
-        /https?:\/\/[^\/]+\/jira\/software\/projects\/[^\/]+\/boards\/\d+/i
-      ],
-      keyExtractor: (url: string) =>
-        /https?:\/\/[^\/]+\/jira\/software\/projects\/[^\/]+\/boards\/\d+/i.test(url)
-          ? 'work'
-          : null,
+      name: 'Project Manager',
+      urlPatterns: MANAGE_URL_PATTERNS,
+      keyExtractor: (url: string) => (isManageUrl(url) ? 'work' : null),
       mcpServers: ['atlassian', 'butchr'],
       promptTemplateFile: 'prompts/manage.md'
     });
