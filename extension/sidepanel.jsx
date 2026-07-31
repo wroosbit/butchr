@@ -30,7 +30,7 @@ function SidePanel() {
     termRef
   );
 
-  useTerminal(activeTabView, supported, active && attached, sessionData, termRef, containerRef);
+  const { copyNotice } = useTerminal(activeTabView, supported, active && attached, sessionData, termRef, containerRef);
 
   useEffect(() => {
     // Listen to tab changes
@@ -131,6 +131,7 @@ function SidePanel() {
                   detachReason={detachReason}
                   containerRef={containerRef}
                   onReconnect={handleReconnect}
+                  copyNotice={copyNotice}
                 />
               </div>
             </div>
