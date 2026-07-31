@@ -187,6 +187,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
     }
     sendResponse({ status: 'sent' });
+  } else if (message.type === 'GET_JIRA_CREDENTIAL_STATUS') {
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({ action: 'jira_credential_status' });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
+  } else if (message.type === 'SET_JIRA_CREDENTIAL') {
+    // The one message that carries a secret. It is forwarded straight to the
+    // daemon and nothing here keeps a copy: not in a variable, not in
+    // chrome.storage, and — deliberately — not in a console.log. The daemon's
+    // reply is a verdict plus non-secret status, never the token.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'set_jira_credential',
+        siteUrl: message.siteUrl,
+        email: message.email,
+        token: message.token
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
+  } else if (message.type === 'CLEAR_JIRA_CREDENTIAL') {
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({ action: 'clear_jira_credential' });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
   } else if (message.type === 'OPEN_TAB') {
     chrome.tabs.create({ url: message.url });
     sendResponse({ status: 'opened' });
