@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
+import { diagnoseSpawnFailure } from './herdr-health.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +22,13 @@ export interface HerdrSession {
   ptyProcess?: pty.IPty;
   ptyBuffer: string;
   onDataListeners: Array<(data: string) => void>;
+  /**
+   * Set when `herdr agent start` failed, to herdr's own message plus whatever
+   * we can say about the cause. Its presence is the difference between "this
+   * agent is quiet" and "this agent was never created": callers report it
+   * instead of claiming an activation that did not happen.
+   */
+  spawnError?: string;
 }
 
 /**
@@ -34,6 +42,20 @@ const HERDR_AGENT_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 
 
 /** Ceiling on any single herdr CLI call, so a wedged herdr can't hang a caller. */
 const HERDR_CLI_TIMEOUT_MS = 5000;
+
+/** An Error from {@link HerdrBridge.runHerdr}, carrying herdr's own error code. */
+interface HerdrCliError extends Error {
+  herdrCode?: string;
+}
+
+/**
+ * herdr's code for "an agent by that name already exists". Starting an agent
+ * is meant to be idempotent here — initPty checks for the agent first — but
+ * the check and the start are two calls, so a concurrent activation can win
+ * the race between them. That is a no-op, not a failure: the agent the caller
+ * asked for exists either way.
+ */
+const AGENT_NAME_TAKEN = 'agent_name_taken';
 
 /** Time the agent's TUI gets to redraw after the interrupt, before we type. */
 const INTERRUPT_SETTLE_MS = 100;
@@ -237,14 +259,34 @@ export class HerdrBridge {
         // nvm). Inject the daemon's normalized PATH so the agent and every
         // MCP server it spawns resolve the same tools we do. argv-level
         // `env` avoids shell quoting entirely.
-        spawnSync('herdr', [
+        //
+        // Routed through runHerdr so a refusal is raised rather than dropped.
+        // This call used to be a bare spawnSync whose result was discarded, so
+        // a failed spawn was indistinguishable from a successful one: we went
+        // straight on to attach to an agent that did not exist, and the
+        // session was reported active. That is the silent false success in
+        // KAN-24, and the reason `ghostty error -2` read as a mystery.
+        this.runHerdr([
           'agent', 'start', agentName,
           '--cwd', session.workDir,
           '--',
           'env', `PATH=${process.env.PATH}`, 'bash', '-c', launcher.command
         ]);
-      } catch (e) {
-        console.error('[HerdrBridge] Failed to start herdr agent', e);
+      } catch (e: any) {
+        if ((e as HerdrCliError)?.herdrCode === AGENT_NAME_TAKEN) {
+          // Someone created it between our check and our start. Attach to it.
+          console.log(`[HerdrBridge] Agent ${agentName} already existed; attaching to it`);
+        } else {
+          session.spawnError = diagnoseSpawnFailure(e?.message ?? String(e));
+          // 'terminated' rather than 'active': there is no agent to attach to,
+          // and a session left active would advertise a terminal that can never
+          // produce output.
+          session.status = 'terminated';
+          console.error(
+            `[HerdrBridge] Could not start herdr agent ${agentName}: ${session.spawnError}`
+          );
+          return;
+        }
       }
     }
 
@@ -394,7 +436,12 @@ export class HerdrBridge {
 
     const reported = json?.error ?? parseJson(stderr)?.error;
     if (reported) {
-      throw new Error(reported.message ?? `herdr reported ${reported.code ?? 'an error'}`);
+      const error: HerdrCliError =
+        new Error(reported.message ?? `herdr reported ${reported.code ?? 'an error'}`);
+      // herdr's machine-readable code, kept alongside the message so callers
+      // can distinguish kinds of failure without matching on prose.
+      if (typeof reported.code === 'string') error.herdrCode = reported.code;
+      throw error;
     }
     if (result.status !== 0) {
       throw new Error(stderr || `herdr ${args.join(' ')} exited with code ${result.status}`);

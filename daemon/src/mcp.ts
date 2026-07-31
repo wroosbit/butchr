@@ -249,8 +249,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const res = await callDaemonAPI('activate_by_key', { type, key, url, defaultAgent });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        // The sibling tools already flag their failures this way. Without it a
+        // failed activation arrives as ordinary text, which is exactly how a
+        // caller ends up believing an agent exists that does not.
+        isError: res?.success === false,
       };
-    } 
+    }
     
     if (name === "butchr_deactivate_agent") {
       const { key } = args as any;
