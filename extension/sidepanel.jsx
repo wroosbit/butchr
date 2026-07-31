@@ -18,7 +18,7 @@ function SidePanel() {
 
   const daemonConnected = useDaemonConnection(currentTab);
   
-  const { pageStatus, statusError, supported, active, attached, sessionData, handleToggle, handleReset, retryStatus } = useWorkspaceSession(
+  const { pageStatus, statusError, supported, active, attached, detachReason, sessionData, handleToggle, handleReset, handleReconnect, retryStatus } = useWorkspaceSession(
     currentTab,
     activeTabView,
     setActiveTabView,
@@ -108,6 +108,7 @@ function SidePanel() {
                   sessionData={sessionData}
                   active={active}
                   attached={attached}
+                  detachReason={detachReason}
                   handleToggle={handleToggle}
                   handleReset={handleReset}
                   daemonConnected={daemonConnected}
@@ -115,7 +116,9 @@ function SidePanel() {
                 <TerminalView
                   active={active}
                   attached={attached}
+                  detachReason={detachReason}
                   containerRef={containerRef}
+                  onReconnect={handleReconnect}
                 />
               </div>
             </div>

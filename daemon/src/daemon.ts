@@ -74,6 +74,17 @@ const broadcast = (msg: any) => {
   }
 };
 
+// A PTY that dies takes the terminal with it, and the client has no other way
+// to find out: output simply stops. Announcing it is what lets the sidepanel
+// show a disconnected state instead of a frozen last frame.
+herdrBridge.setSessionEndedListener((event) => {
+  log(
+    `Session ended: ${event.sessionId} (${event.type}/${event.key}) ` +
+    `reason=${event.reason} exitCode=${event.exitCode}`
+  );
+  broadcast({ action: 'agent_detached_event', ...event });
+});
+
 const server = net.createServer((socket) => {
   connections.add(socket);
   log(`Client connected (${connections.size} total)`);
