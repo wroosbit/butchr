@@ -17,11 +17,6 @@
   box-sizing: border-box;
 }
 
-html, body {
-  height: 100vh;
-  overflow: hidden;
-}
-
 body {
   margin: 0;
   padding: 8px;
@@ -29,11 +24,30 @@ body {
   color: var(--text-main);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   font-size: 14px;
+}
+
+/* Everything below pins the app to the viewport so the terminal is clipped into
+   a fixed-height box instead of pushing the panel taller than it. That is right
+   for the side panel and wrong everywhere else — options.jsx and agents.jsx
+   import this same stylesheet for its shared widgets (.card, .btn, .badge…),
+   and Vite hoists it into a chunk those full-tab pages load. Unscoped, the
+   `overflow: hidden` clamped Settings to exactly one viewport with no way to
+   reach the bottom (KAN-29).
+
+   Keep anything viewport-locking behind .app-sidepanel — set on <html> in
+   sidepanel.html. Full-tab pages must scroll with the document. */
+html.app-sidepanel,
+html.app-sidepanel body {
+  height: 100vh;
+  overflow: hidden;
+}
+
+html.app-sidepanel body {
   display: flex;
   flex-direction: column;
 }
 
-#root {
+html.app-sidepanel #root {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -606,6 +620,17 @@ body {
   font-size: 11px;
   font-weight: 400;
   font-style: italic;
+}
+
+/* The terminal died rather than merely not being attached yet. Deliberately
+   louder than .ws-reattaching: this one is a failure, and the whole point of
+   showing it is that a frozen pane looks fine. */
+.ws-disconnected {
+  color: #f87171;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .btn-sm {
