@@ -35,9 +35,15 @@ done
 die() { echo "error: $*" >&2; exit 1; }
 say() { echo "  $*"; }
 
+# Not $USER. It is set by login shells and by nothing else — `docker exec`, a
+# systemd ExecStart, and a cron job all leave it unset, and under `set -u` that
+# aborts the install halfway through, after the units are written but before
+# linger and enable. Found doing exactly that on the clean-machine run.
+WHOAMI="$(id -un)"
+
 [ "$(uname -s)" = "Linux" ] || die "systemd --user units are Linux-only; this is $(uname -s). See docs/SETUP.md for the manual alternative."
 command -v systemctl >/dev/null 2>&1 || die "systemctl not found — this machine does not use systemd. Start the daemon yourself: node $REPO/daemon/dist/daemon.js"
-systemctl --user show-environment >/dev/null 2>&1 || die "no systemd --user manager for $USER. Log in on a normal desktop/ssh session and try again."
+systemctl --user show-environment >/dev/null 2>&1 || die "no systemd --user manager for $WHOAMI. Log in on a normal desktop/ssh session and try again."
 
 NODE="$(command -v node || true)"
 [ -n "$NODE" ] || die "node not found on PATH. See docs/SETUP.md — prerequisites."
@@ -98,14 +104,14 @@ echo
 systemctl --user daemon-reload
 
 # --- linger: the reason any of this survives a reboot ---------------------
-if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)" = "yes" ]; then
+if [ "$(loginctl show-user "$WHOAMI" -p Linger --value 2>/dev/null || echo no)" = "yes" ]; then
   say "linger: already enabled"
 else
-  if loginctl enable-linger "$USER" 2>/dev/null; then
+  if loginctl enable-linger "$WHOAMI" 2>/dev/null; then
     say "linger: enabled (the user manager now starts at boot without a login)"
   else
     echo "  WARNING: could not enable linger. Without it these units start only"
-    echo "           after you log in. Run: sudo loginctl enable-linger $USER"
+    echo "           after you log in. Run: sudo loginctl enable-linger $WHOAMI"
   fi
 fi
 
