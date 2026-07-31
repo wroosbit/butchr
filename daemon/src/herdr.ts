@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
+import { diagnoseSpawnFailure } from './herdr-health.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +22,13 @@ export interface HerdrSession {
   ptyProcess?: pty.IPty;
   ptyBuffer: string;
   onDataListeners: Array<(data: string) => void>;
+  /**
+   * Set when `herdr agent start` failed, to herdr's own message plus whatever
+   * we can say about the cause. Its presence is the difference between "this
+   * agent is quiet" and "this agent was never created": callers report it
+   * instead of claiming an activation that did not happen.
+   */
+  spawnError?: string;
 }
 
 /**
@@ -34,6 +42,20 @@ const HERDR_AGENT_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 
 
 /** Ceiling on any single herdr CLI call, so a wedged herdr can't hang a caller. */
 const HERDR_CLI_TIMEOUT_MS = 5000;
+
+/** An Error from {@link HerdrBridge.runHerdr}, carrying herdr's own error code. */
+interface HerdrCliError extends Error {
+  herdrCode?: string;
+}
+
+/**
+ * herdr's code for "an agent by that name already exists". Starting an agent
+ * is meant to be idempotent here — initPty checks for the agent first — but
+ * the check and the start are two calls, so a concurrent activation can win
+ * the race between them. That is a no-op, not a failure: the agent the caller
+ * asked for exists either way.
+ */
+const AGENT_NAME_TAKEN = 'agent_name_taken';
 
 /** Time the agent's TUI gets to redraw after the interrupt, before we type. */
 const INTERRUPT_SETTLE_MS = 100;
@@ -73,6 +95,33 @@ function delay(ms: number): Promise<void> {
 /** The herdr agent a Butchr session drives. Sessions are keyed by workspace. */
 export function agentNameFor(type: string, key: string): string {
   return `butchr-${type}-${key.toLowerCase()}`;
+}
+
+/**
+ * The one directory tree Butchr owns and may therefore destroy. Every
+ * workspace is created under it (see `initPty`), and reset refuses to delete
+ * anything that does not resolve to a place strictly inside it.
+ */
+export function workspacesRoot(): string {
+  return path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces');
+}
+
+/** Where a workspace of this type and key lives. Must match `initPty`. */
+export function workspaceDirFor(type: string, key: string): string {
+  return path.join(workspacesRoot(), type, key.toLowerCase());
+}
+
+/**
+ * Whether `target` sits strictly below `root` — the root itself is not
+ * "inside" it, because deleting the root would take every workspace with it.
+ *
+ * `path.relative` rather than a `startsWith` prefix test: the latter says yes
+ * to `/…/workspaces-old` for root `/…/workspaces`, and both paths must
+ * already be real (symlinks resolved) for either test to mean anything.
+ */
+function isStrictlyInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 /**
@@ -237,14 +286,34 @@ export class HerdrBridge {
         // nvm). Inject the daemon's normalized PATH so the agent and every
         // MCP server it spawns resolve the same tools we do. argv-level
         // `env` avoids shell quoting entirely.
-        spawnSync('herdr', [
+        //
+        // Routed through runHerdr so a refusal is raised rather than dropped.
+        // This call used to be a bare spawnSync whose result was discarded, so
+        // a failed spawn was indistinguishable from a successful one: we went
+        // straight on to attach to an agent that did not exist, and the
+        // session was reported active. That is the silent false success in
+        // KAN-24, and the reason `ghostty error -2` read as a mystery.
+        this.runHerdr([
           'agent', 'start', agentName,
           '--cwd', session.workDir,
           '--',
           'env', `PATH=${process.env.PATH}`, 'bash', '-c', launcher.command
         ]);
-      } catch (e) {
-        console.error('[HerdrBridge] Failed to start herdr agent', e);
+      } catch (e: any) {
+        if ((e as HerdrCliError)?.herdrCode === AGENT_NAME_TAKEN) {
+          // Someone created it between our check and our start. Attach to it.
+          console.log(`[HerdrBridge] Agent ${agentName} already existed; attaching to it`);
+        } else {
+          session.spawnError = diagnoseSpawnFailure(e?.message ?? String(e));
+          // 'terminated' rather than 'active': there is no agent to attach to,
+          // and a session left active would advertise a terminal that can never
+          // produce output.
+          session.status = 'terminated';
+          console.error(
+            `[HerdrBridge] Could not start herdr agent ${agentName}: ${session.spawnError}`
+          );
+          return;
+        }
       }
     }
 
@@ -394,7 +463,12 @@ export class HerdrBridge {
 
     const reported = json?.error ?? parseJson(stderr)?.error;
     if (reported) {
-      throw new Error(reported.message ?? `herdr reported ${reported.code ?? 'an error'}`);
+      const error: HerdrCliError =
+        new Error(reported.message ?? `herdr reported ${reported.code ?? 'an error'}`);
+      // herdr's machine-readable code, kept alongside the message so callers
+      // can distinguish kinds of failure without matching on prose.
+      if (typeof reported.code === 'string') error.herdrCode = reported.code;
+      throw error;
     }
     if (result.status !== 0) {
       throw new Error(stderr || `herdr ${args.join(' ')} exited with code ${result.status}`);
@@ -578,17 +652,61 @@ export class HerdrBridge {
     return this.spawnSession('default', 'workspace', 'local', 'Default shell session');
   }
 
-  public resetWorkspace(type: string, key: string): boolean {
-    const workDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
+  /**
+   * Delete a workspace directory, and nothing else. This is a recursive
+   * delete, so the containment check in front of it is the only thing standing
+   * between a malformed key (`../..`), a symlinked workspace, or some future
+   * caller that invents its own workspace location, and an `rm -rf` pointed
+   * somewhere Butchr does not own. Refusals return an error rather than
+   * falling through: there is no path here that deletes an unvalidated target.
+   *
+   * `error` is set only when the delete was *refused*; a workspace that was
+   * already gone reports `success: false` with no error, as before.
+   */
+  public resetWorkspace(type: string, key: string): { success: boolean; error?: string } {
+    const root = workspacesRoot();
+    const workDir = workspaceDirFor(type, key);
+
+    const refuse = (reason: string) => {
+      const error =
+        `Refusing to reset workspace '${type}/${key}': ${reason}. ` +
+        `Only directories strictly inside '${root}' may be deleted.`;
+      console.error(`[HerdrBridge] ${error}`);
+      return { success: false, error };
+    };
+
+    // Lexical check first, so a traversal key is rejected by name even when it
+    // points at nothing — the answer must not depend on what happens to exist.
+    if (!isStrictlyInside(root, workDir)) {
+      return refuse(`'${workDir}' is not inside the workspaces root`);
+    }
+
     try {
-      if (fs.existsSync(workDir)) {
-        fs.rmSync(workDir, { recursive: true, force: true });
-        return true;
+      if (!fs.existsSync(workDir)) {
+        return { success: false }; // Already gone
       }
-      return false; // Already gone
-    } catch (e) {
-      console.error('[HerdrBridge] Failed to reset workspace:', e);
-      return false;
+
+      // Then the real check. A symlink at (or above) the workspace passes the
+      // lexical test while pointing anywhere on the filesystem, so both sides
+      // are resolved before they are compared.
+      let realRoot: string;
+      let realTarget: string;
+      try {
+        realRoot = fs.realpathSync(root);
+        realTarget = fs.realpathSync(workDir);
+      } catch (e: any) {
+        return refuse(`'${workDir}' could not be resolved (${e?.message ?? String(e)})`);
+      }
+      if (!isStrictlyInside(realRoot, realTarget)) {
+        return refuse(`'${workDir}' resolves to '${realTarget}', outside the workspaces root`);
+      }
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+      return { success: true };
+    } catch (e: any) {
+      const error = `Failed to reset workspace '${workDir}': ${e?.message ?? String(e)}`;
+      console.error('[HerdrBridge]', error);
+      return { success: false, error };
     }
   }
 
