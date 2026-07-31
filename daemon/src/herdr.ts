@@ -79,6 +79,19 @@ const EXIT_REASON_SCAN_CHARS = 2000;
 /** Why a session's PTY is no longer streaming. */
 export type SessionEndReason = 'taken-over' | 'exited';
 
+/**
+ * A tab opened for one agent to live in. The terminal id is carried alongside
+ * the tab id because it is the only handle here that stays valid: herdr's tab
+ * and pane ids are positions in lists that compact whenever anything earlier
+ * closes, while a terminal id belongs to the terminal for as long as it runs.
+ */
+interface AgentTab {
+  tabId: string;
+  workspaceId: string;
+  /** The shell `herdr tab create` opens the tab on, which the agent replaces. */
+  placeholderTerminalId: string;
+}
+
 /** Told to the UI when a PTY dies, so a dead terminal never renders as a live one. */
 export interface SessionEndedEvent {
   type: string;
@@ -244,6 +257,140 @@ export class HerdrBridge {
     return session;
   }
 
+  /**
+   * Start `agentName` in a herdr tab of its own, running `argv`.
+   *
+   * `herdr agent start` with no placement flags splits whatever pane is
+   * current, so every agent landed in the one tab the human happened to be on.
+   * Panes in a rendered tab are sized by the app's split layout, which divides
+   * the terminal between them — at seven agents each pane was about four
+   * columns wide and `agent read` came back one word per line, unreadable
+   * exactly when a large fleet is what you need to supervise.
+   *
+   * A tab is the unit that fixes this because the app only lays out the tab it
+   * is *rendering*. An agent sitting in a background tab keeps whatever size
+   * its last attach asked for — the 80x24 the `pty.spawn` in {@link initPty}
+   * requests — no matter how many other agents exist. That is the
+   * width-independence being bought here, and it is why this is a tab rather
+   * than a wider split.
+   *
+   * herdr has no "start in a new tab" flag, so the tab is made first and the
+   * agent placed into it. `tab create` opens the tab on a placeholder shell and
+   * `agent start --tab` splits that, so the agent would get half a tab and
+   * twice the file descriptors; {@link closeTabPlaceholder} takes the
+   * placeholder back out again. What remains is one pane per agent, the same
+   * cost as before, and herdr closes the tab on its own once that last pane
+   * exits — so finished agents leave nothing behind.
+   */
+  private startAgentInOwnTab(agentName: string, workDir: string, argv: string[]): void {
+    const start = (placement: string[]) => this.runHerdr([
+      'agent', 'start', agentName,
+      '--cwd', workDir,
+      ...placement,
+      // Spawning is a background event; the human is usually reading something
+      // else. herdr already defaults this way, but a default that flipped
+      // would yank the screen away on every activation, so it is stated.
+      '--no-focus',
+      '--',
+      ...argv
+    ]);
+
+    const tab = this.createAgentTab(agentName, workDir);
+    if (!tab) {
+      // No tab is a cosmetic loss; no agent is a broken activation. Spawn the
+      // agent the old way rather than fail over where it gets drawn.
+      start([]);
+      return;
+    }
+
+    try {
+      try {
+        start(['--tab', tab.tabId]);
+      } catch (e: any) {
+        // The name being taken means the agent exists already — the caller
+        // handles that, and retrying would start a second one.
+        if ((e as HerdrCliError)?.herdrCode === AGENT_NAME_TAKEN) throw e;
+
+        // Tab ids are positional and renumber whenever an earlier tab closes,
+        // so the id we were just handed can go stale between the two calls.
+        // Ours is always the newest and therefore the highest-numbered, so a
+        // renumber can only leave it dangling — herdr answers
+        // `agent_placement_not_found` and never resolves it to somebody else's
+        // tab. Falling back keeps the spawn working through that race.
+        console.error(
+          `[HerdrBridge] Could not place ${agentName} in tab ${tab.tabId} ` +
+          `(${e?.message ?? String(e)}); starting it in herdr's default placement instead`
+        );
+        start([]);
+      }
+    } finally {
+      // Also on the failure paths: an abandoned tab would otherwise sit there
+      // holding a shell nobody asked for.
+      this.closeTabPlaceholder(tab);
+    }
+  }
+
+  /**
+   * Open a tab for an agent, labelled with the agent's name so the human can
+   * tell the fleet apart at a glance. Returns undefined rather than throwing —
+   * every caller can still spawn without one.
+   */
+  private createAgentTab(agentName: string, cwd: string): AgentTab | undefined {
+    try {
+      const result = this.runHerdr([
+        'tab', 'create', '--cwd', cwd, '--label', agentName, '--no-focus'
+      ])?.result;
+
+      const tabId = result?.tab?.tab_id;
+      const workspaceId = result?.root_pane?.workspace_id;
+      const placeholderTerminalId = result?.root_pane?.terminal_id;
+      if (typeof tabId !== 'string' || typeof workspaceId !== 'string' || typeof placeholderTerminalId !== 'string') {
+        throw new Error('herdr tab create returned no usable tab');
+      }
+
+      return { tabId, workspaceId, placeholderTerminalId };
+    } catch (e: any) {
+      console.error(
+        `[HerdrBridge] Could not create a tab for ${agentName} (${e?.message ?? String(e)}); ` +
+        `it will share whichever tab herdr picks`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Close the shell `tab create` opened the tab on, leaving the agent alone in
+   * it (or, when the agent went elsewhere, leaving an empty tab that herdr
+   * then closes itself).
+   *
+   * The placeholder is found by terminal id, not by the pane id `tab create`
+   * reported. Pane ids are positions in a list that compacts every time any
+   * pane anywhere in the workspace closes — an agent finishing two tabs over
+   * silently renumbers everything after it — while terminal ids are stable for
+   * the life of the terminal. Re-resolving immediately before the close is
+   * what keeps this from closing some other agent's pane.
+   */
+  private closeTabPlaceholder(tab: AgentTab): void {
+    try {
+      const panes = this.runHerdr(['pane', 'list', '--workspace', tab.workspaceId])?.result?.panes;
+      const placeholder = Array.isArray(panes)
+        ? panes.find((pane: any) => pane?.terminal_id === tab.placeholderTerminalId)
+        : undefined;
+
+      // Already gone: the human closed it, or the tab never survived.
+      if (typeof placeholder?.pane_id !== 'string') return;
+
+      this.runHerdr(['pane', 'close', placeholder.pane_id]);
+    } catch (e: any) {
+      // A stranded placeholder costs one idle shell, which is not worth
+      // failing an otherwise good activation over.
+      console.error(
+        `[HerdrBridge] Could not close the placeholder pane in tab ${tab.tabId}: ` +
+        `${e?.message ?? String(e)}`
+      );
+    }
+  }
+
   private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: string[]): void {
     const agentName = agentNameFor(session.type, session.key);
 
@@ -293,10 +440,7 @@ export class HerdrBridge {
         // straight on to attach to an agent that did not exist, and the
         // session was reported active. That is the silent false success in
         // KAN-24, and the reason `ghostty error -2` read as a mystery.
-        this.runHerdr([
-          'agent', 'start', agentName,
-          '--cwd', session.workDir,
-          '--',
+        this.startAgentInOwnTab(agentName, session.workDir, [
           'env', `PATH=${process.env.PATH}`, 'bash', '-c', launcher.command
         ]);
       } catch (e: any) {
