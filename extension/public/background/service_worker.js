@@ -54,7 +54,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           action: 'activate',
           url: message.url,
           tabId: message.tabId,
-          defaultAgent: result.defaultAgent || 'shell'
+          defaultAgent: result.defaultAgent || 'shell',
+          // Only ever set by the "Start anyway" button on a capacity refusal.
+          // Forwarded rather than defaulted so an ordinary activate carries no
+          // override at all, and the daemon's record of one means a person
+          // asked for it.
+          ...(message.override ? { override: true } : {})
         });
         sendResponse({ status: 'sent' });
       });

@@ -277,6 +277,69 @@ html.app-sidepanel #root {
   width: auto;
 }
 
+/* A refused activation, shown under the toggle that refused. It has more to
+   say than the other status boxes — a sentence, the figures behind it and the
+   derivation — so it is scrollable rather than allowed to push the terminal
+   off the panel. */
+.activation-refusal {
+  flex-shrink: 0;
+  max-height: 45%;
+  overflow-y: auto;
+}
+
+/* The numbers, laid out so they can be read at a glance and wrap on a narrow
+   panel instead of overflowing it. */
+.capacity-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-bottom: 8px;
+}
+
+.capacity-figures span {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.capacity-figures b {
+  color: var(--text-main);
+}
+
+/* Collapsed by default: the sentence and the figures are the answer, and the
+   arithmetic is for whoever wants to check it rather than trust it. */
+.refusal-derivation {
+  margin-top: 8px;
+}
+
+.refusal-derivation summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.refusal-derivation pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.refusal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .spinner {
   width: 12px;
   height: 12px;

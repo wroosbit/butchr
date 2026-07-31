@@ -29,6 +29,21 @@ export function workspaceTypeForJiraIssueType(issueTypeName: string | null): str
   );
 }
 
+/**
+ * Workspace types that are infrastructure rather than work.
+ *
+ * The board manager is present whenever Butchr is being used at all, and it
+ * hands work out rather than being work. The capacity model reserves its share
+ * off the top instead of counting it against the cap — see SUPERVISOR_AGENTS
+ * in capacity.ts for the argument. This set is what tells the two apart, and
+ * it lives here because this is where workspace types are defined.
+ */
+export const SUPERVISOR_WORKSPACE_TYPES: ReadonlySet<string> = new Set(['manage']);
+
+export function isSupervisorType(type: string | null | undefined): boolean {
+  return typeof type === 'string' && SUPERVISOR_WORKSPACE_TYPES.has(type);
+}
+
 /** Asks Jira for an issue's type name. Must never throw; null means unknown. */
 export type IssueTypeLookup = (key: string) => Promise<string | null>;
 

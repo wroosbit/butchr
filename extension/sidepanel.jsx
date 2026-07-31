@@ -8,6 +8,7 @@ import { useTerminal } from './src/hooks/useTerminal.js';
 import { Header } from './src/components/Header.jsx';
 import { WorkspaceHeader } from './src/components/WorkspaceHeader.jsx';
 import { TerminalView } from './src/components/TerminalView.jsx';
+import { ActivationRefusal } from './src/components/ActivationRefusal.jsx';
 
 function SidePanel() {
   const [currentTab, setCurrentTab] = useState(null);
@@ -18,7 +19,11 @@ function SidePanel() {
 
   const daemonConnected = useDaemonConnection(currentTab);
   
-  const { pageStatus, statusError, supported, active, attached, detachReason, sessionData, handleToggle, handleReset, handleReconnect, retryStatus } = useWorkspaceSession(
+  const {
+    pageStatus, statusError, supported, active, attached, detachReason, activateError,
+    sessionData, handleToggle, handleReset, handleReconnect, handleOverrideActivate,
+    dismissActivateError, retryStatus
+  } = useWorkspaceSession(
     currentTab,
     activeTabView,
     setActiveTabView,
@@ -112,6 +117,13 @@ function SidePanel() {
                   handleToggle={handleToggle}
                   handleReset={handleReset}
                   daemonConnected={daemonConnected}
+                />
+                {/* Directly beneath the switch that refused, because that is
+                    where the user is looking when nothing happens. */}
+                <ActivationRefusal
+                  refusal={activateError}
+                  onOverride={handleOverrideActivate}
+                  onDismiss={dismissActivateError}
                 />
                 <TerminalView
                   active={active}

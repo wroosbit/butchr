@@ -28,6 +28,10 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   // yet" case: this one means a terminal we *were* watching died, and it is
   // the difference between a pane that is thinking and a pane that is dead.
   const [detachReason, setDetachReason] = useState(null);
+  // Why the last attempt to start this agent was refused, when the daemon told
+  // us. It always did; nothing here listened, so the switch flipped back in
+  // silence and the user had a dead control rather than a capacity limit.
+  const [activateError, setActivateError] = useState(null);
 
   const respondedRef = useRef(false);
   // One re-attach attempt per detached agent: the activate response arrives
@@ -40,6 +44,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     respondedRef.current = false;
     reattachSentRef.current = false;
     setDetachReason(null);
+    setActivateError(null);
     setPageStatus('checking');
     setStatusError(null);
     chrome.runtime.sendMessage({ type: 'CHECK_STATUS', url: currentTab.url });
@@ -51,6 +56,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     respondedRef.current = false;
     reattachSentRef.current = false;
     setDetachReason(null);
+    setActivateError(null);
     setPageStatus('checking');
     setStatusError(null);
 
@@ -121,10 +127,37 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           setDetachReason(payload.reason === 'taken-over' ? 'taken-over' : 'exited');
           return prev;
         });
+      } else if (payload.action === 'activate_response' && payload.success === false) {
+        // The refusal the panel used to throw away. Ordered before the success
+        // branch because a refused activate carries no sessionId and would
+        // otherwise match nothing at all — which is exactly what happened.
+        //
+        // `active` is deliberately left alone. A capacity refusal means no
+        // agent was started, and the switch is already showing Off; a refusal
+        // on a re-attach means the agent is running and saying otherwise would
+        // be the lie this toggle has twice been fixed for telling.
+        setSessionData((prev) => {
+          if (payload.key && prev.key && payload.key !== prev.key) return prev;
+          setActivateError({
+            refusedBy: payload.refusedBy ?? null,
+            reason:
+              payload.reason ??
+              payload.error ??
+              'The daemon refused to start this agent and gave no reason.',
+            derivation: payload.derivation ?? null,
+            capacity: payload.capacity ?? null
+          });
+          // This attempt is finished. Re-arm the automatic re-attach so that
+          // closing an agent and coming back is not suppressed by a flag left
+          // set by an attempt that never landed.
+          reattachSentRef.current = false;
+          return prev;
+        });
       } else if (payload.action === 'activate_response' && payload.sessionId) {
         setActive(true);
         setAttached(true);
         setDetachReason(null);
+        setActivateError(null);
         setSessionData((prev) => ({
           ...prev,
           sessionId: payload.sessionId,
@@ -148,6 +181,9 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           setAttached(false);
           // Off is a deliberate stop, not a failure worth reporting as one.
           setDetachReason(null);
+          // An agent going away is the thing that makes room, so a capacity
+          // refusal from before it did is no longer describing this machine.
+          setActivateError(null);
           reattachSentRef.current = false;
           if (termRef.current && payload.action === 'agent_reset_event') {
             termRef.current.write('\r\n\x1b[31m[Workspace Reset by Agent]\x1b[0m\r\n');
@@ -160,6 +196,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           setActive(true);
           setAttached(true);
           setDetachReason(null);
+          setActivateError(null);
           setActiveTabView('terminal');
           return {
             ...prev,
@@ -203,11 +240,35 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   const handleReconnect = useCallback(() => {
     if (!currentTab || !currentTab.url) return;
     setDetachReason(null);
+    setActivateError(null);
     reattachSentRef.current = false;
     chrome.runtime.sendMessage({ type: 'ACTIVATE_BUTCHR', url: currentTab.url, tabId: currentTab.id });
   }, [currentTab]);
 
+  /**
+   * Start the agent past a capacity refusal, deliberately.
+   *
+   * The daemon has always accepted this and records it with the figures at the
+   * time; what was missing was any way to say it from the panel. A refusal
+   * whose own advice ("pass override: true") cannot be followed from where it
+   * is displayed is only half-visible.
+   */
+  const handleOverrideActivate = useCallback(() => {
+    if (!currentTab || !currentTab.url) return;
+    setActivateError(null);
+    reattachSentRef.current = false;
+    chrome.runtime.sendMessage({
+      type: 'ACTIVATE_BUTCHR',
+      url: currentTab.url,
+      tabId: currentTab.id,
+      override: true
+    });
+  }, [currentTab]);
+
+  const dismissActivateError = useCallback(() => setActivateError(null), []);
+
   const handleToggle = (isChecked) => {
+    setActivateError(null);
     if (!isChecked) {
       // Off means the agent ends, not just that we let go of it. Without a
       // session there is no id to deactivate by, but the agent is still there
@@ -246,10 +307,13 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     active,
     attached,
     detachReason,
+    activateError,
     sessionData,
     handleToggle,
     handleReset,
     handleReconnect,
+    handleOverrideActivate,
+    dismissActivateError,
     retryStatus
   };
 }
