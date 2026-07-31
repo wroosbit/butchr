@@ -1,10 +1,10 @@
 import * as pty from 'node-pty';
-import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
+import { WORKSPACES_ROOT, isInsideWorkspacesRoot, resolveWorkDir } from './workspaces.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -106,16 +106,19 @@ export class HerdrBridge {
   // `url` is `string | undefined` rather than optional: it sits in front of
   // required parameters, and callers who have no URL must pass nothing rather
   // than a placeholder.
-  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[]): HerdrSession {
+  // `configuredWorkDir` is the workspace type's `workDir` override, already
+  // read off its config by the caller; omitted, the session gets the usual
+  // per-key directory under the workspaces root.
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[], configuredWorkDir?: string): HerdrSession {
     const sessionId = `${type}-${key.toLowerCase()}-${Date.now()}`;
-    const defaultWorkDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
+    const workDir = resolveWorkDir(type, key, configuredWorkDir);
 
-    if (!fs.existsSync(defaultWorkDir)) {
-      fs.mkdirSync(defaultWorkDir, { recursive: true });
+    if (!fs.existsSync(workDir)) {
+      fs.mkdirSync(workDir, { recursive: true });
     }
 
-    console.log(`[HerdrBridge] Spawning PTY session: ${sessionId} in ${defaultWorkDir}`);
-    
+    console.log(`[HerdrBridge] Spawning PTY session: ${sessionId} in ${workDir}`);
+
     const session: HerdrSession = {
       sessionId,
       type,
@@ -123,7 +126,7 @@ export class HerdrBridge {
       url,
       createdAt: new Date(),
       status: 'active',
-      workDir: defaultWorkDir,
+      workDir,
       ptyBuffer: '',
       onDataListeners: []
     };
@@ -477,17 +480,42 @@ export class HerdrBridge {
     return this.spawnSession('default', 'workspace', 'local', 'Default shell session');
   }
 
-  public resetWorkspace(type: string, key: string): boolean {
-    const workDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
+  /**
+   * Why a reset must not proceed, or null when it may. Callers check this
+   * *before* tearing the agent down: a refused reset has to be a no-op, not a
+   * killed agent followed by an error.
+   */
+  public resetRefusal(type: string, key: string, configuredWorkDir?: string): string | null {
+    const workDir = resolveWorkDir(type, key, configuredWorkDir);
+    if (isInsideWorkspacesRoot(workDir)) return null;
+    return `Refusing to reset '${workDir}': only directories strictly inside ${WORKSPACES_ROOT} can be deleted`;
+  }
+
+  /**
+   * Delete a workspace directory. The guard is not a formality: types may set
+   * a `workDir` of their own, `manage` sets it to `~`, and a reset that took
+   * the configured directory on trust would `rm -rf` the user's home. Nothing
+   * outside the workspaces root is ever deleted — including the root itself,
+   * whose removal would take every other agent's workspace with it.
+   */
+  public resetWorkspace(type: string, key: string, configuredWorkDir?: string): { success: boolean; error?: string } {
+    const refusal = this.resetRefusal(type, key, configuredWorkDir);
+    if (refusal) {
+      console.error(`[HerdrBridge] ${refusal}`);
+      return { success: false, error: refusal };
+    }
+
+    const workDir = resolveWorkDir(type, key, configuredWorkDir);
     try {
-      if (fs.existsSync(workDir)) {
-        fs.rmSync(workDir, { recursive: true, force: true });
-        return true;
+      if (!fs.existsSync(workDir)) {
+        return { success: false, error: `No workspace directory at ${workDir}` };
       }
-      return false; // Already gone
-    } catch (e) {
+      fs.rmSync(workDir, { recursive: true, force: true });
+      return { success: true };
+    } catch (e: any) {
+      const error = e?.message ?? String(e);
       console.error('[HerdrBridge] Failed to reset workspace:', e);
-      return false;
+      return { success: false, error };
     }
   }
 

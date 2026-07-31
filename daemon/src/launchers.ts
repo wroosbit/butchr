@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { which } from './env.js';
+import { WORKSPACES_ROOT, isInsideWorkspacesRoot } from './workspaces.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -179,7 +180,23 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
     // --permission-mode backs up the settings file on the --continue path,
     // where a resumed session could otherwise carry a stale mode forward.
     command: `claude --permission-mode bypassPermissions --continue || claude --permission-mode bypassPermissions "${PROMPT_CMD}"`,
+    // Provisioning is only safe on a directory Butchr owns. Both halves reach
+    // outside the workspace when the workDir does: `configureClaudeSettings`
+    // would write bypassPermissions into the user's own
+    // `~/.claude/settings.local.json`, and `trustClaudeWorkspace` records trust
+    // in ~/.claude.json against a key whose check walks parent directories —
+    // trusting `~` trusts every project the user ever opens. The
+    // --permission-mode flag above still carries the mode into the agent's own
+    // session, so an unprovisioned pane costs a one-time trust/MCP prompt and
+    // nothing more.
     setup: (workDir) => {
+      if (!isInsideWorkspacesRoot(workDir)) {
+        console.log(
+          `[Launchers] Skipping claude provisioning for '${workDir}': outside ${WORKSPACES_ROOT}. ` +
+          'The agent may prompt once for folder trust and MCP server approval.'
+        );
+        return;
+      }
       configureClaudeSettings(workDir);
       trustClaudeWorkspace(workDir);
     }

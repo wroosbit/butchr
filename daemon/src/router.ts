@@ -137,7 +137,7 @@ export class MessageRouter {
 
     let session = this.herdrBridge.getSessionByKey(key);
     if (!session) {
-      session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers);
+      session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers, config.workDir);
     }
 
     this.broadcast({
@@ -185,9 +185,14 @@ export class MessageRouter {
       }
     }
 
-    // In a real scenario we'd look up the config from registry by type,
-    // but for now we'll assume it's a valid type since we only have 'task'
-    const promptTemplateFile = `prompts/${type}.md`;
+    // The registered type is the same config the URL path would have used —
+    // prompt, MCP servers and workDir all come from it, so an agent activated
+    // by key is indistinguishable from one activated by page. An unregistered
+    // type still works on the old conventions rather than being rejected:
+    // callers may name a type this daemon does not know.
+    const config = this.registry.get(type);
+    const promptTemplateFile = config?.promptTemplateFile ?? `prompts/${type}.md`;
+    const mcpServers = config?.mcpServers ?? ['atlassian', 'butchr'];
     let session = this.herdrBridge.getSessionByKey(key);
 
     if (!session) {
@@ -195,8 +200,7 @@ export class MessageRouter {
         KEY: key,
         URL: url ?? ''
       });
-      // In a real scenario we'd look up config, but for now we hardcode defaults
-      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, ['atlassian', 'butchr']);
+      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, mcpServers, config?.workDir);
     }
 
     this.broadcast({
@@ -394,6 +398,15 @@ export class MessageRouter {
       return;
     }
     const { config, key } = resolved;
+
+    // Refuse before touching anything: a reset that cannot delete the
+    // directory must not kill the agent living in it either.
+    const refusal = this.herdrBridge.resetRefusal(config.type, key, config.workDir);
+    if (refusal) {
+      respond({ action: 'reset_response', success: false, error: refusal });
+      return;
+    }
+
     const session = this.herdrBridge.getSessionByKey(key);
 
     // Same ordering rule as handleResetByKey: the agent goes first, whether we
@@ -404,12 +417,40 @@ export class MessageRouter {
       this.herdrBridge.closeAgentByKey(key);
     }
 
-    const success = this.herdrBridge.resetWorkspace(config.type, key);
-    respond({ action: 'reset_response', success });
+    const result = this.herdrBridge.resetWorkspace(config.type, key, config.workDir);
+    respond({
+      action: 'reset_response',
+      success: result.success,
+      ...(result.error ? { error: result.error } : {})
+    });
   }
 
   public handleResetByKey(data: any, respond: Respond) {
     const { type, key } = data;
+    const config = this.registry.get(type);
+
+    // The guard runs first and unconditionally, for every type: `manage` runs
+    // in `~`, and a reset there would delete the user's home directory. A
+    // refusal leaves the agent running — there is no workspace to put it back
+    // into, so tearing it down would only lose work.
+    const refusal = this.herdrBridge.resetRefusal(type, key, config?.workDir);
+    if (refusal) {
+      this.broadcast({
+        action: 'agent_reset_event',
+        type,
+        key,
+        success: false,
+        agentClosed: false
+      });
+      respond({
+        action: 'reset_response',
+        success: false,
+        agentClosed: false,
+        error: refusal
+      });
+      return;
+    }
+
     const session = this.herdrBridge.getSessionByKey(key);
 
     // Tear the agent down *before* resetWorkspace deletes the directory it is
@@ -429,23 +470,23 @@ export class MessageRouter {
 
     // The workspace still goes away even if no agent was there to close —
     // reset's job is to leave nothing behind.
-    const success = this.herdrBridge.resetWorkspace(type, key);
+    const result = this.herdrBridge.resetWorkspace(type, key, config?.workDir);
 
     // Broadcast event so UI can update
     this.broadcast({
       action: 'agent_reset_event',
       type,
       key,
-      success,
+      success: result.success,
       agentClosed
     });
 
     respond({
       action: 'reset_response',
-      success,
+      success: result.success,
       agentClosed,
       ...(agentError ? { agentError } : {}),
-      ...(success ? {} : { error: agentError ?? `No workspace directory for ${type}/${key}` })
+      ...(result.success ? {} : { error: result.error ?? agentError ?? `No workspace directory for ${type}/${key}` })
     });
   }
 

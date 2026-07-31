@@ -32,6 +32,13 @@ jobs:
         run: npx tsc --noEmit
         working-directory: daemon
 
+      # A step in the existing job rather than a new job: the required checks
+      # are named after jobs, and adding one would leave every open PR blocked
+      # on a check its branch cannot report.
+      - name: Unit tests
+        run: npm test
+        working-directory: daemon
+
   extension-build:
     name: extension-build
     runs-on: ubuntu-latest

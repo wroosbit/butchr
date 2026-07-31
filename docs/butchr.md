@@ -25,6 +25,7 @@ Each Workspace Type configures:
 1. **URL Matching & Key Extraction:** Rule to identify if a page matches the type and extract its unique key.
 2. **MCP Tools:** Official or custom MCP toolsets attached to the agent environment.
 3. **Initial Prompt (`.md` file):** A dedicated Markdown file containing the initial prompt for the agent, making prompt engineering clean, versionable, and easy to iterate on.
+4. **Working Directory (optional `workDir`):** Where the agent runs. Types get a disposable per-key directory under `~/.local/share/butchr/workspaces/<type>/<key>` by default; a type may override it. `manage` sets `workDir: '~'` so the board manager operates from the user's real environment rather than an empty scratch workspace. See [Running outside the workspaces root](#running-outside-the-workspaces-root).
 
 ### 📌 Initial Supported Type: `task` (Jira)
 
@@ -35,6 +36,15 @@ Each Workspace Type configures:
 | **Entity Key** | Jira Work Item ID (e.g., `PROJ-1234`) |
 | **MCP Tools** | Official Atlassian MCP Server tools (e.g., Jira issue fetcher, comments, issue updater) |
 | **Initial Prompt File** | `prompts/task.md` |
+
+### Running outside the workspaces root
+
+A type with a `workDir` outside `~/.local/share/butchr/workspaces/` — today only `manage`, which runs in `~` — disarms two behaviors that are safe only inside the tree Butchr owns. Both are guarded on a shared realpath-normalized prefix check (`daemon/src/workspaces.ts`):
+
+- **Reset refuses.** `resetWorkspace` deletes only directories *strictly* inside the workspaces root — not the root itself, and not a path that escapes it via `..` or a symlink. Unguarded, resetting the `manage` workspace would `rm -rf` the user's home directory. The refusal is evaluated *before* the agent is torn down, so a refused reset is a no-op rather than a killed agent plus an error. The guard applies to every type, on both `reset` and `reset_by_key`.
+- **Claude auto-provisioning is skipped.** `configureClaudeSettings` would write `bypassPermissions` into the user's own `~/.claude/settings.local.json`, and `trustClaudeWorkspace` records folder trust in `~/.claude.json` under a key whose check walks *parent* directories — so trusting `~` would silently trust every project the user ever opens. The claude launcher's `setup` hook no-ops (with a log line) outside the root. The `--permission-mode bypassPermissions` flag on the launcher command still carries the mode into the agent's own session; the cost is a one-time trust/MCP prompt in that pane.
+
+Writing `.butchr-prompt.md` and the merge-safe `.mcp.json` into `~` is deliberate: the first documents the manager, the second gives home-launched sessions the Butchr tools.
 
 ---
 

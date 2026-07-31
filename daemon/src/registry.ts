@@ -44,12 +44,26 @@ export class WorkspaceRegistry {
           ? 'work'
           : null,
       mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/manage.md'
+      promptTemplateFile: 'prompts/manage.md',
+      // The manager coordinates agents rather than editing a checkout, so it
+      // runs in the user's home instead of an empty scratch workspace. This
+      // puts it outside the tree Butchr owns, which is what makes the reset
+      // guard and the provisioning skip in launchers.ts load-bearing.
+      workDir: '~'
     });
   }
 
   public register(config: WorkspaceTypeConfig) {
     this.types.set(config.type, config);
+  }
+
+  /**
+   * The registered type by name. Callers that address a workspace by type and
+   * key — rather than by page URL — need this to reach the same prompt, MCP
+   * servers and workDir the URL path would have used.
+   */
+  public get(type: string): WorkspaceTypeConfig | undefined {
+    return this.types.get(type);
   }
 
   public resolve(url: string): { config: WorkspaceTypeConfig; key: string } | null {
