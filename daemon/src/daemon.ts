@@ -12,6 +12,8 @@ import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } 
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport } from './staleness.js';
 import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
+import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
+import { reconcileAgents } from './reconcile.js';
 import { execFileSync } from 'child_process';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
@@ -95,6 +97,12 @@ const registry = new WorkspaceRegistry((key) => jira.getIssueTypeName(key));
 const promptLoader = new PromptLoader(repoRoot);
 const herdrBridge = new HerdrBridge();
 
+// The one piece of state that outlives the machine. Everything else here —
+// the session map, herdr's panes, the extension's view — dies in a power cut,
+// which is why a reboot used to destroy the fleet with nothing to say about it.
+// See agent-registry.ts for why it is an fsync'd append-only log.
+const agentRegistry = new AgentRegistry();
+
 const credentialStatus = jira.status();
 log(
   credentialStatus.configured
@@ -148,7 +156,8 @@ const server = net.createServer((socket) => {
     (msg) => writeJsonLine(socket, msg),
     broadcast,
     jira,
-    { repoRoot, daemonStartedAt }
+    { repoRoot, daemonStartedAt },
+    agentRegistry
   );
 
   onJsonLines(
@@ -203,11 +212,126 @@ server.on('error', (err: any) => {
   });
 });
 
+/**
+ * A router with nowhere to answer, for the daemon's own use.
+ *
+ * Reconciliation and the loss sweep are not requests — nobody is connected at
+ * boot, which is the whole difficulty this ticket is about — but they need to
+ * do exactly what a request would. Rather than duplicating activation, they get
+ * a router whose per-request `send` goes nowhere while broadcasts still reach
+ * whatever clients turn up later.
+ */
+const daemonRouter = new MessageRouter(
+  registry,
+  promptLoader,
+  herdrBridge,
+  () => {},
+  broadcast,
+  jira,
+  { repoRoot, daemonStartedAt },
+  agentRegistry
+);
+
+/**
+ * How long between checks that the fleet still matches the registry.
+ *
+ * Not a restart loop: this only *reports*. An agent that dies mid-afternoon is
+ * a different decision from one that was killed by a power cut, with different
+ * failure modes, and KAN-21 asks for the loss to be surfaced rather than
+ * guessed at. Restoring is startup's job.
+ */
+const MISSING_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * The detectability half. Silent loss is what made KAN-21's outage expensive —
+ * the board read healthy for twenty minutes while nothing was running — so a
+ * missing agent is announced to every connected client, which is what the
+ * sidepanel and the Agents page render and what `butchr_list_agents` reports on
+ * every poll. It is deliberately not just a log line.
+ *
+ * Only *newly* missing agents are announced. An agent that has been gone for an
+ * hour is still reported in `list_agents` on every request, but re-broadcasting
+ * it twice a minute forever would train everyone to ignore the event.
+ */
+const announcedMissing = new Set<string>();
+
+function sweepForMissingAgents() {
+  let missing;
+  try {
+    missing = daemonRouter.findMissingAgents();
+  } catch (e: any) {
+    log('Missing-agent sweep failed:', e?.message ?? String(e));
+    return;
+  }
+
+  const names = new Set(missing.map((agent) => agent.agentName));
+  for (const name of announcedMissing) {
+    if (!names.has(name)) announcedMissing.delete(name);
+  }
+
+  for (const agent of missing) {
+    if (announcedMissing.has(agent.agentName)) continue;
+    announcedMissing.add(agent.agentName);
+    log(
+      `AGENT LOST: ${agent.agentName} (${agent.type}/${agent.key}) is recorded as active ` +
+      `since ${agent.since} but herdr has no such agent. Workspace: ${agent.workDir}`
+    );
+    broadcast({ action: 'agent_lost_event', ...agent });
+  }
+}
+
+let started = false;
+
 function onListen() {
   try {
     fs.chmodSync(SOCKET_PATH, 0o600);
   } catch {}
   log(`Butchr daemon listening on ${SOCKET_PATH} (pid ${process.pid})`);
+
+  // A stale-socket retry calls this twice; restoration must happen once.
+  if (started) return;
+  started = true;
+
+  log(`Agent registry: ${REGISTRY_PATH}`);
+
+  // Restoration runs after the socket is listening, not before: an activation
+  // takes minutes for a fleet, and a daemon that answered nothing until it
+  // finished would look exactly like a daemon that never came up.
+  //
+  // `reboot` rather than `daemon-restart` because that is what this daemon
+  // starting means in the case the ticket is about, and because it is the
+  // framing an agent needs to read: the machine went away, not just its
+  // supervisor. A restored agent is told to check the repository and the
+  // workspace for what it already did either way.
+  void reconcileAgents({
+    registry: agentRegistry,
+    herdrBridge,
+    router: daemonRouter,
+    cause: 'reboot',
+    log
+  })
+    .then((result) => {
+      const restored = result.outcomes.filter((o) => o.result === 'restored');
+      const failed = result.outcomes.filter((o) => o.result === 'failed');
+      const idle = restored.filter((o) => o.resumedConversation && o.nudged === false);
+      log(
+        `[reconcile] Done: ${result.expected} expected, ` +
+        `${restored.length} restored, ` +
+        `${result.outcomes.filter((o) => o.result === 'already-running').length} already running, ` +
+        `${failed.length} failed.` +
+        (idle.length
+          ? ` ${idle.length} restored agent(s) could not be told to carry on and may be idle: ` +
+            idle.map((o) => o.agentName).join(', ')
+          : '')
+      );
+      // Whatever restoration could not bring back is a loss, and is announced
+      // by the same sweep that watches for losses later.
+      sweepForMissingAgents();
+    })
+    .catch((err) => log('[reconcile] Reconciliation failed:', err));
+
+  const sweep = setInterval(sweepForMissingAgents, MISSING_SWEEP_INTERVAL_MS);
+  sweep.unref();
 }
 
 const shutdown = () => {

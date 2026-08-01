@@ -212,6 +212,12 @@ and runs `loginctl enable-linger $USER`, which is what makes the user manager
 start at boot rather than at your first login. Without linger, none of this
 comes back after an unattended reboot.
 
+Getting the daemon back is half of surviving a reboot; getting the *agents* back
+is the other half, and it happens automatically once the daemon is up. See
+[resumption.md](resumption.md) for the registry it reads, what it does with an
+agent whose conversation could not be restored, and how a loss that could not be
+repaired is reported.
+
 The unit is called **`butchr-daemon`**, not `butchr`. An unrelated project of
 the same name ships a `butchr.service` user unit, and this machine had one; the
 installer will not overwrite a unit it did not write.

@@ -226,7 +226,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_list_agents",
         description:
-          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents.",
+          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -344,6 +344,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const res = await callDaemonAPI('list_agents');
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        // isError when an agent is missing, for the reason the staleness check
+        // does the same: a supervisor skimming tool output for problems must
+        // not skim past this one. A silently-stopped agent leaves its ticket
+        // reading In Progress, which is the failure KAN-21 exists to end.
+        isError: res?.success === false || (Array.isArray(res?.missingAgents) && res.missingAgents.length > 0),
       };
     }
 
