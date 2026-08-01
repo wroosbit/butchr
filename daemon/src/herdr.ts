@@ -79,6 +79,19 @@ const EXIT_REASON_SCAN_CHARS = 2000;
 /** Why a session's PTY is no longer streaming. */
 export type SessionEndReason = 'taken-over' | 'exited';
 
+/**
+ * A tab opened for one agent to live in. The terminal id is carried alongside
+ * the tab id because it is the only handle here that stays valid: herdr's tab
+ * and pane ids are positions in lists that compact whenever anything earlier
+ * closes, while a terminal id belongs to the terminal for as long as it runs.
+ */
+interface AgentTab {
+  tabId: string;
+  workspaceId: string;
+  /** The shell `herdr tab create` opens the tab on, which the agent replaces. */
+  placeholderTerminalId: string;
+}
+
 /** Told to the UI when a PTY dies, so a dead terminal never renders as a live one. */
 export interface SessionEndedEvent {
   type: string;
@@ -98,6 +111,33 @@ export function agentNameFor(type: string, key: string): string {
 }
 
 /**
+ * The one directory tree Butchr owns and may therefore destroy. Every
+ * workspace is created under it (see `initPty`), and reset refuses to delete
+ * anything that does not resolve to a place strictly inside it.
+ */
+export function workspacesRoot(): string {
+  return path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces');
+}
+
+/** Where a workspace of this type and key lives. Must match `initPty`. */
+export function workspaceDirFor(type: string, key: string): string {
+  return path.join(workspacesRoot(), type, key.toLowerCase());
+}
+
+/**
+ * Whether `target` sits strictly below `root` — the root itself is not
+ * "inside" it, because deleting the root would take every workspace with it.
+ *
+ * `path.relative` rather than a `startsWith` prefix test: the latter says yes
+ * to `/…/workspaces-old` for root `/…/workspaces`, and both paths must
+ * already be real (symlinks resolved) for either test to mean anything.
+ */
+function isStrictlyInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
  * Inverse of agentNameFor. When an agent is resolved through the herdr-list
  * fallback there is no session to read a type off of, but the name still
  * carries one — enough to broadcast a complete event.
@@ -107,6 +147,35 @@ export function typeFromAgentName(agentName: string, key: string): string | unde
   const suffix = `-${key.toLowerCase()}`;
   if (!agentName.startsWith(prefix) || !agentName.endsWith(suffix)) return undefined;
   return agentName.slice(prefix.length, agentName.length - suffix.length) || undefined;
+}
+
+/** A workspace address recovered from an agent name alone. */
+export interface AgentAddress {
+  type: string;
+  key: string;
+}
+
+/**
+ * Full inverse of agentNameFor, for the case where not even the key is known:
+ * enumerating herdr's agents and working out which workspace each one is.
+ *
+ * `butchr-<type>-<key>` is split at the *first* dash after the prefix, because
+ * workspace types are single tokens (`task`, `manage`, `story`, `default`)
+ * while keys routinely contain dashes (`kan-28`). That is a convention, not a
+ * guarantee, so the parse is only trusted when it rebuilds the name it came
+ * from — a name this daemon could never have produced yields null rather than
+ * a guessed address that later calls would fail to resolve.
+ */
+export function addressFromAgentName(agentName: string): AgentAddress | null {
+  const prefix = 'butchr-';
+  if (!agentName.startsWith(prefix)) return null;
+
+  const rest = agentName.slice(prefix.length);
+  const split = rest.indexOf('-');
+  if (split <= 0 || split >= rest.length - 1) return null;
+
+  const address = { type: rest.slice(0, split), key: rest.slice(split + 1) };
+  return agentNameFor(address.type, address.key) === agentName ? address : null;
 }
 
 function toAgentStatus(value: unknown): HerdrAgentStatus {
@@ -140,6 +209,23 @@ function clampTailLines(lines: unknown): number {
 export interface HerdrAgentDescription {
   agentName: string;
   type: string | null;
+  workDir: string | null;
+  herdrStatus: HerdrAgentStatus;
+}
+
+/**
+ * One entry of `herdr agent list` — herdr's own record of a pane, independent
+ * of anything this daemon remembers.
+ *
+ * `agentRuntime` is herdr's `agent` field: the CLI it launched in the pane
+ * (`claude`), absent for a pane running a bare shell. It is the only evidence
+ * available for whether a `butchr-*` name has an agent behind it at all, which
+ * is what separates a live agent from one of the shell panes left over on the
+ * board. Absent stays null; nothing is inferred from the name.
+ */
+export interface HerdrAgentRecord {
+  name: string;
+  agentRuntime: string | null;
   workDir: string | null;
   herdrStatus: HerdrAgentStatus;
 }
@@ -217,6 +303,140 @@ export class HerdrBridge {
     return session;
   }
 
+  /**
+   * Start `agentName` in a herdr tab of its own, running `argv`.
+   *
+   * `herdr agent start` with no placement flags splits whatever pane is
+   * current, so every agent landed in the one tab the human happened to be on.
+   * Panes in a rendered tab are sized by the app's split layout, which divides
+   * the terminal between them — at seven agents each pane was about four
+   * columns wide and `agent read` came back one word per line, unreadable
+   * exactly when a large fleet is what you need to supervise.
+   *
+   * A tab is the unit that fixes this because the app only lays out the tab it
+   * is *rendering*. An agent sitting in a background tab keeps whatever size
+   * its last attach asked for — the 80x24 the `pty.spawn` in {@link initPty}
+   * requests — no matter how many other agents exist. That is the
+   * width-independence being bought here, and it is why this is a tab rather
+   * than a wider split.
+   *
+   * herdr has no "start in a new tab" flag, so the tab is made first and the
+   * agent placed into it. `tab create` opens the tab on a placeholder shell and
+   * `agent start --tab` splits that, so the agent would get half a tab and
+   * twice the file descriptors; {@link closeTabPlaceholder} takes the
+   * placeholder back out again. What remains is one pane per agent, the same
+   * cost as before, and herdr closes the tab on its own once that last pane
+   * exits — so finished agents leave nothing behind.
+   */
+  private startAgentInOwnTab(agentName: string, workDir: string, argv: string[]): void {
+    const start = (placement: string[]) => this.runHerdr([
+      'agent', 'start', agentName,
+      '--cwd', workDir,
+      ...placement,
+      // Spawning is a background event; the human is usually reading something
+      // else. herdr already defaults this way, but a default that flipped
+      // would yank the screen away on every activation, so it is stated.
+      '--no-focus',
+      '--',
+      ...argv
+    ]);
+
+    const tab = this.createAgentTab(agentName, workDir);
+    if (!tab) {
+      // No tab is a cosmetic loss; no agent is a broken activation. Spawn the
+      // agent the old way rather than fail over where it gets drawn.
+      start([]);
+      return;
+    }
+
+    try {
+      try {
+        start(['--tab', tab.tabId]);
+      } catch (e: any) {
+        // The name being taken means the agent exists already — the caller
+        // handles that, and retrying would start a second one.
+        if ((e as HerdrCliError)?.herdrCode === AGENT_NAME_TAKEN) throw e;
+
+        // Tab ids are positional and renumber whenever an earlier tab closes,
+        // so the id we were just handed can go stale between the two calls.
+        // Ours is always the newest and therefore the highest-numbered, so a
+        // renumber can only leave it dangling — herdr answers
+        // `agent_placement_not_found` and never resolves it to somebody else's
+        // tab. Falling back keeps the spawn working through that race.
+        console.error(
+          `[HerdrBridge] Could not place ${agentName} in tab ${tab.tabId} ` +
+          `(${e?.message ?? String(e)}); starting it in herdr's default placement instead`
+        );
+        start([]);
+      }
+    } finally {
+      // Also on the failure paths: an abandoned tab would otherwise sit there
+      // holding a shell nobody asked for.
+      this.closeTabPlaceholder(tab);
+    }
+  }
+
+  /**
+   * Open a tab for an agent, labelled with the agent's name so the human can
+   * tell the fleet apart at a glance. Returns undefined rather than throwing —
+   * every caller can still spawn without one.
+   */
+  private createAgentTab(agentName: string, cwd: string): AgentTab | undefined {
+    try {
+      const result = this.runHerdr([
+        'tab', 'create', '--cwd', cwd, '--label', agentName, '--no-focus'
+      ])?.result;
+
+      const tabId = result?.tab?.tab_id;
+      const workspaceId = result?.root_pane?.workspace_id;
+      const placeholderTerminalId = result?.root_pane?.terminal_id;
+      if (typeof tabId !== 'string' || typeof workspaceId !== 'string' || typeof placeholderTerminalId !== 'string') {
+        throw new Error('herdr tab create returned no usable tab');
+      }
+
+      return { tabId, workspaceId, placeholderTerminalId };
+    } catch (e: any) {
+      console.error(
+        `[HerdrBridge] Could not create a tab for ${agentName} (${e?.message ?? String(e)}); ` +
+        `it will share whichever tab herdr picks`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Close the shell `tab create` opened the tab on, leaving the agent alone in
+   * it (or, when the agent went elsewhere, leaving an empty tab that herdr
+   * then closes itself).
+   *
+   * The placeholder is found by terminal id, not by the pane id `tab create`
+   * reported. Pane ids are positions in a list that compacts every time any
+   * pane anywhere in the workspace closes — an agent finishing two tabs over
+   * silently renumbers everything after it — while terminal ids are stable for
+   * the life of the terminal. Re-resolving immediately before the close is
+   * what keeps this from closing some other agent's pane.
+   */
+  private closeTabPlaceholder(tab: AgentTab): void {
+    try {
+      const panes = this.runHerdr(['pane', 'list', '--workspace', tab.workspaceId])?.result?.panes;
+      const placeholder = Array.isArray(panes)
+        ? panes.find((pane: any) => pane?.terminal_id === tab.placeholderTerminalId)
+        : undefined;
+
+      // Already gone: the human closed it, or the tab never survived.
+      if (typeof placeholder?.pane_id !== 'string') return;
+
+      this.runHerdr(['pane', 'close', placeholder.pane_id]);
+    } catch (e: any) {
+      // A stranded placeholder costs one idle shell, which is not worth
+      // failing an otherwise good activation over.
+      console.error(
+        `[HerdrBridge] Could not close the placeholder pane in tab ${tab.tabId}: ` +
+        `${e?.message ?? String(e)}`
+      );
+    }
+  }
+
   private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: string[]): void {
     const agentName = agentNameFor(session.type, session.key);
 
@@ -266,10 +486,7 @@ export class HerdrBridge {
         // straight on to attach to an agent that did not exist, and the
         // session was reported active. That is the silent false success in
         // KAN-24, and the reason `ghostty error -2` read as a mystery.
-        this.runHerdr([
-          'agent', 'start', agentName,
-          '--cwd', session.workDir,
-          '--',
+        this.startAgentInOwnTab(agentName, session.workDir, [
           'env', `PATH=${process.env.PATH}`, 'bash', '-c', launcher.command
         ]);
       } catch (e: any) {
@@ -378,13 +595,15 @@ export class HerdrBridge {
   }
 
   /**
-   * Every agent herdr knows about, as name -> agent_status. herdr is an
-   * optional external binary, so an unavailable, slow, or unparseable herdr
-   * yields an empty map: callers fall back to 'unknown' rather than failing.
+   * Every agent herdr knows about. herdr is an optional external binary, so an
+   * unavailable, slow, or unparseable herdr yields an empty list: callers
+   * degrade rather than fail.
+   *
+   * An empty list therefore means "herdr told us nothing", which is not the
+   * same claim as "there are no agents" — callers that report to a human must
+   * not turn one into the other.
    */
-  public listHerdrStatuses(): Map<string, HerdrAgentStatus> {
-    const statuses = new Map<string, HerdrAgentStatus>();
-
+  public listHerdrAgents(): HerdrAgentRecord[] {
     let output: string;
     try {
       output = execSync('herdr agent list', {
@@ -393,23 +612,33 @@ export class HerdrBridge {
         stdio: ['ignore', 'pipe', 'ignore']
       });
     } catch (e) {
-      return statuses;
+      return [];
     }
 
     try {
       const agents = JSON.parse(output)?.result?.agents;
-      if (!Array.isArray(agents)) return statuses;
+      if (!Array.isArray(agents)) return [];
 
-      for (const agent of agents) {
-        if (agent && typeof agent.name === 'string') {
-          statuses.set(agent.name, toAgentStatus(agent.agent_status));
-        }
-      }
+      return agents
+        .filter((agent: any) => agent && typeof agent.name === 'string')
+        .map((agent: any) => ({
+          name: agent.name as string,
+          agentRuntime: typeof agent.agent === 'string' && agent.agent ? agent.agent : null,
+          workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
+          herdrStatus: toAgentStatus(agent.agent_status)
+        }));
     } catch (e) {
       console.error('[HerdrBridge] Could not parse `herdr agent list` output', e);
+      return [];
     }
+  }
 
-    return statuses;
+  /**
+   * The same view as {@link listHerdrAgents}, keyed by name, for callers that
+   * only want to decorate something they already have with a status.
+   */
+  public listHerdrStatuses(): Map<string, HerdrAgentStatus> {
+    return new Map(this.listHerdrAgents().map(agent => [agent.name, agent.herdrStatus]));
   }
 
   /**
@@ -625,17 +854,61 @@ export class HerdrBridge {
     return this.spawnSession('default', 'workspace', 'local', 'Default shell session');
   }
 
-  public resetWorkspace(type: string, key: string): boolean {
-    const workDir = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces', type, key.toLowerCase());
+  /**
+   * Delete a workspace directory, and nothing else. This is a recursive
+   * delete, so the containment check in front of it is the only thing standing
+   * between a malformed key (`../..`), a symlinked workspace, or some future
+   * caller that invents its own workspace location, and an `rm -rf` pointed
+   * somewhere Butchr does not own. Refusals return an error rather than
+   * falling through: there is no path here that deletes an unvalidated target.
+   *
+   * `error` is set only when the delete was *refused*; a workspace that was
+   * already gone reports `success: false` with no error, as before.
+   */
+  public resetWorkspace(type: string, key: string): { success: boolean; error?: string } {
+    const root = workspacesRoot();
+    const workDir = workspaceDirFor(type, key);
+
+    const refuse = (reason: string) => {
+      const error =
+        `Refusing to reset workspace '${type}/${key}': ${reason}. ` +
+        `Only directories strictly inside '${root}' may be deleted.`;
+      console.error(`[HerdrBridge] ${error}`);
+      return { success: false, error };
+    };
+
+    // Lexical check first, so a traversal key is rejected by name even when it
+    // points at nothing — the answer must not depend on what happens to exist.
+    if (!isStrictlyInside(root, workDir)) {
+      return refuse(`'${workDir}' is not inside the workspaces root`);
+    }
+
     try {
-      if (fs.existsSync(workDir)) {
-        fs.rmSync(workDir, { recursive: true, force: true });
-        return true;
+      if (!fs.existsSync(workDir)) {
+        return { success: false }; // Already gone
       }
-      return false; // Already gone
-    } catch (e) {
-      console.error('[HerdrBridge] Failed to reset workspace:', e);
-      return false;
+
+      // Then the real check. A symlink at (or above) the workspace passes the
+      // lexical test while pointing anywhere on the filesystem, so both sides
+      // are resolved before they are compared.
+      let realRoot: string;
+      let realTarget: string;
+      try {
+        realRoot = fs.realpathSync(root);
+        realTarget = fs.realpathSync(workDir);
+      } catch (e: any) {
+        return refuse(`'${workDir}' could not be resolved (${e?.message ?? String(e)})`);
+      }
+      if (!isStrictlyInside(realRoot, realTarget)) {
+        return refuse(`'${workDir}' resolves to '${realTarget}', outside the workspaces root`);
+      }
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+      return { success: true };
+    } catch (e: any) {
+      const error = `Failed to reset workspace '${workDir}': ${e?.message ?? String(e)}`;
+      console.error('[HerdrBridge]', error);
+      return { success: false, error };
     }
   }
 

@@ -49,6 +49,23 @@ export interface CredentialStatus {
   storage?: CredentialStorage;
 }
 
+/**
+ * Where a credential submitted right now would land — answered *before* the
+ * user types one.
+ *
+ * The backend is chosen at save time by probing the machine, so it is not
+ * knowable from configuration; it has to be asked. Reporting it only in the
+ * success message told the user where their secret had gone, which is a
+ * different thing from letting them decide whether to send it.
+ */
+export interface StorageTarget {
+  storage: CredentialStorage;
+  /** Absolute path, when the file backend would be used. Not a secret. */
+  path?: string;
+  /** Why this backend and not the other, in the user's terms. */
+  reason: string;
+}
+
 interface Metadata {
   siteUrl: string;
   email: string;
@@ -167,6 +184,29 @@ export class CredentialStore {
       siteUrl: meta.siteUrl,
       email: meta.email,
       storage: meta.storage
+    };
+  }
+
+  /**
+   * Which backend a `save` would use right now, and why.
+   *
+   * Runs the same `keyringAvailable` probe `save` does, so the answer is the
+   * one the user will actually get rather than an assumption about the
+   * platform — `secret-tool` present but no secret service running is a real
+   * and common state, and it silently produces the file backend.
+   */
+  public async storageTarget(): Promise<StorageTarget> {
+    if (await keyringAvailable()) {
+      return {
+        storage: 'keyring',
+        reason: 'The OS keyring is available, so the token goes there.'
+      };
+    }
+    return {
+      storage: 'file',
+      path: METADATA_FILE,
+      reason:
+        'No OS keyring is available on this machine — either secret-tool (libsecret) is not installed or no secret service is running — so the token is written to a file readable only by you (mode 0600).'
     };
   }
 

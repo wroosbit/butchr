@@ -100,11 +100,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
+        name: "butchr_capacity",
+        description:
+          "Reports how many concurrent agents this machine can carry and how many more can be started right now. The cap is derived from the machine's own cores and memory, so it differs between machines; headroom additionally accounts for the current load average, so a fleet that is compiling reports less room than the same fleet idle. Ask this before activating, not after the machine is on its knees.",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+      {
         name: "butchr_activate_agent",
-        description: "Activates an agent for a specific workspace type and key (e.g. task and KAN-1)",
+        description:
+          "Activates an agent for a specific workspace type and key (e.g. task and KAN-1). Refused when the machine is already at capacity — see butchr_capacity — unless override is set.",
         inputSchema: {
           type: "object",
           properties: {
+            override: {
+              type: "boolean",
+              description:
+                "Optional. Start the agent even when the machine is at capacity. The refusal it bypasses is recorded with the load and memory figures at the time. Use it deliberately, not reflexively: the cap exists because a human noticed the desktop had become unusable.",
+            },
             type: {
               type: "string",
               description: "The workspace type (e.g., 'task')",
@@ -209,7 +225,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "butchr_list_agents",
-        description: "Lists all currently active agents",
+        description:
+          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -258,11 +275,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
+    if (name === "butchr_capacity") {
+      const res = await callDaemonAPI('capacity');
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false,
+      };
+    }
+
     if (name === "butchr_activate_agent") {
-      const { type, key, url, defaultAgent } = args as any;
+      const { type, key, url, defaultAgent, override } = args as any;
       if (!type || !key) throw new Error("Missing required arguments");
 
-      const res = await callDaemonAPI('activate_by_key', { type, key, url, defaultAgent });
+      const res = await callDaemonAPI('activate_by_key', { type, key, url, defaultAgent, override });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
         // The sibling tools already flag their failures this way. Without it a

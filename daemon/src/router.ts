@@ -1,16 +1,26 @@
-import { WorkspaceRegistry } from './registry.js';
+import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { JiraIssueTypeService } from './jira.js';
 import {
   HerdrBridge,
   HerdrSession,
   HerdrAgentDescription,
+  HerdrAgentRecord,
   HerdrAgentStatus,
+  addressFromAgentName,
   agentNameFor,
   typeFromAgentName
 } from './herdr.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
 import { getStalenessReport, StalenessReport } from './staleness.js';
+import {
+  Capacity,
+  capacityReason,
+  capacityRefusal,
+  describeCapacity,
+  readCapacity,
+  summarizeCapacity
+} from './capacity.js';
 
 type Respond = (msg: any) => void;
 
@@ -32,16 +42,107 @@ interface AgentDto {
 }
 
 /**
+ * One row of `list_agents`. Two kinds of entry share this shape, and the
+ * difference between them is the point of the field that names it:
+ *
+ * - `sessionless: false` — this daemon holds the agent's terminal attach, so
+ *   every field is populated from the session it owns.
+ * - `sessionless: true` — the agent is alive in herdr but no session of ours
+ *   describes it, which is every surviving agent after a daemon restart. The
+ *   session-only fields are null because there is no session, not because the
+ *   agent is impaired.
+ *
+ * Nulls are explicit rather than omitted, for the reason HerdrAgentDescription
+ * gives: over JSON an absent field reads as "not answered", and these are
+ * answered — with nothing.
+ */
+interface ListedAgent {
+  sessionless: boolean;
+  agentName: string;
+  sessionId: string | null;
+  type: string | null;
+  key: string;
+  url: string | null;
+  createdAt: string | null;
+  status: HerdrSession['status'] | null;
+  workDir: string | null;
+  herdrStatus: HerdrAgentStatus;
+  /** herdr's own `agent` field: the CLI running in the pane, null for a shell. */
+  agentRuntime: string | null;
+}
+
+/**
+ * A `butchr-*` pane that is not an agent by any test we can apply: herdr
+ * reports no agent running in it and this daemon holds no session for it.
+ * Reported separately rather than dropped — see handleListAgents.
+ */
+interface UnbackedPane {
+  agentName: string;
+  type: string;
+  key: string;
+  workDir: string | null;
+  herdrStatus: HerdrAgentStatus;
+  reason: string;
+}
+
+/**
  * The addressing convention shared by every agent-targeted action: a key is
  * required, a type is optional but must be meaningful when present. Returns
  * the complaint, or null when the address is usable.
  */
+/**
+ * The capacity numbers as they go over the wire.
+ *
+ * Flat and named rather than nested, because the caller most likely to read
+ * this is a language model deciding whether to staff another agent, and the
+ * fields it needs — `headroom`, `atCapacity`, `summary` — should not be at the
+ * end of a path. `summary` is the same figures in a sentence: a caller that
+ * ignores every number still cannot ignore that one.
+ */
+function capacityDto(c: Capacity) {
+  return {
+    cap: c.cap,
+    running: c.running,
+    supervisors: c.supervisors,
+    headroom: c.headroom,
+    atCapacity: c.atCapacity,
+    capBoundBy: c.capBoundBy,
+    headroomBoundBy: c.headroomBoundBy,
+    // The one sentence a UI with a single line to spare can render. Sent on
+    // every capacity payload rather than only on refusals, because the panel
+    // that has to explain a refused toggle should not have to parse the reason
+    // out of a paragraph of derivation.
+    reason: capacityReason(c),
+    cores: c.machine.cores,
+    load1: Math.round(c.machine.load1 * 100) / 100,
+    totalMb: Math.round(c.machine.totalBytes / (1024 * 1024)),
+    availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
+    agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
+    agentCores: c.cost.cores,
+    capByCpu: c.capByCpu,
+    capByMemory: c.capByMemory,
+    headroomByCap: c.headroomByCap,
+    headroomByLoad: c.headroomByLoad,
+    headroomByMemory: c.headroomByMemory,
+    summary: summarizeCapacity(c)
+  };
+}
+
 function invalidAddress(key: unknown, type: unknown): string | null {
   if (typeof key !== 'string' || !key.trim()) return 'Missing or invalid key';
   if (type !== undefined && (typeof type !== 'string' || !type.trim())) {
     return 'Invalid type: expected a non-empty string';
   }
   return null;
+}
+
+/** What {@link MessageRouter.capacityGate} decided, and why. */
+interface CapacityGateResult {
+  capacity: Capacity;
+  /** The refusal to send back, or null when the activation may proceed. */
+  refusal: string | null;
+  /** Set when it may proceed only because the caller deliberately said so. */
+  overrode: { at: string; derivation: string } | null;
 }
 
 export class MessageRouter {
@@ -132,8 +233,11 @@ export class MessageRouter {
       case 'staleness_check':
         this.handleStalenessCheck(data, respond);
         break;
+      case 'capacity':
+        this.handleCapacity(data, respond);
+        break;
       case 'jira_credential_status':
-        this.handleJiraCredentialStatus(respond);
+        void guard(this.handleJiraCredentialStatus(respond), 'jira_credential_status');
         break;
       case 'set_jira_credential':
         void guard(this.handleSetJiraCredential(data, respond), 'set_jira_credential');
@@ -160,6 +264,56 @@ export class MessageRouter {
     }
   }
 
+  /**
+   * Whether the machine can carry another agent, checked before spawning one.
+   *
+   * Only consulted when a *new* agent would be created: re-attaching to an
+   * agent that is already running costs the machine nothing, and refusing that
+   * would be refusing to look at work already in flight. The caller's own
+   * `getSessionByKey` miss is not enough to establish that, because the
+   * session map dies with the daemon while the herdr pane does not — so
+   * `alreadyRunning` asks herdr, and every re-attach after a daemon restart
+   * skips the gate. Without it the panel could not get back to agents it was
+   * already supervising, and precisely when the machine was busiest.
+   *
+   * An override is honoured — a cap that cannot be exceeded on purpose is a
+   * cap people work around — but it is recorded rather than waved through.
+   * Someone reading the log later should be able to see that the machine was
+   * over-staffed deliberately, and what the numbers were at the time.
+   */
+  private capacityGate(
+    what: string,
+    override: unknown,
+    agentName?: string
+  ): CapacityGateResult {
+    const { agents } = this.surveyAgents();
+
+    if (agentName && agents.some((a) => a.agentName === agentName)) {
+      // Already alive and already counted. Starting nothing costs nothing.
+      return { capacity: this.capacityOf(agents), refusal: null, overrode: null };
+    }
+
+    const capacity = this.capacityOf(agents);
+    if (!capacity.atCapacity) return { capacity, refusal: null, overrode: null };
+
+    if (!override) {
+      return { capacity, refusal: capacityRefusal(capacity, what), overrode: null };
+    }
+
+    const at = new Date().toISOString();
+    const derivation = describeCapacity(capacity);
+    console.warn(
+      `[capacity] override: starting ${what} past capacity at ${at}\n${derivation}`
+    );
+    this.broadcast({
+      action: 'capacity_override_event',
+      what,
+      at,
+      capacity: capacityDto(capacity)
+    });
+    return { capacity, refusal: null, overrode: { at, derivation } };
+  }
+
   private async handleActivate(data: any, respond: Respond) {
     const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
@@ -178,7 +332,32 @@ export class MessageRouter {
     });
 
     let session = this.herdrBridge.getSessionByKey(key);
+    let gate: CapacityGateResult | null = null;
     if (!session) {
+      gate = this.capacityGate(
+        `${config.type}/${key}`,
+        data.override,
+        agentNameFor(config.type, key)
+      );
+      if (gate.refusal) {
+        respond({
+          action: 'activate_response',
+          success: false,
+          type: config.type,
+          key,
+          url: data.url,
+          // `error` is the whole refusal, for the log and for MCP callers.
+          // `refusedBy`, `reason` and `derivation` are the same thing split
+          // into the pieces a UI can lay out — the sidepanel showed none of
+          // this and the user met a dead switch. See KAN-36.
+          error: gate.refusal,
+          refusedBy: 'capacity',
+          reason: capacityReason(gate.capacity),
+          derivation: describeCapacity(gate.capacity),
+          capacity: capacityDto(gate.capacity)
+        });
+        return;
+      }
       session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers);
     }
 
@@ -213,7 +392,8 @@ export class MessageRouter {
       status: session.status,
       workDir: session.workDir,
       createdAt: session.createdAt.toISOString(),
-      mcpServers: config.mcpServers
+      mcpServers: config.mcpServers,
+      ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
     });
   }
 
@@ -246,8 +426,28 @@ export class MessageRouter {
     const promptTemplateFile = config?.promptTemplateFile ?? `prompts/${type}.md`;
     const mcpServers = config?.mcpServers ?? ['atlassian', 'butchr'];
     let session = this.herdrBridge.getSessionByKey(key);
+    let gate: CapacityGateResult | null = null;
 
     if (!session) {
+      // Before the prompt is even rendered: the cheapest refusal is the one
+      // that happens before any work is done for an agent that will not exist.
+      gate = this.capacityGate(`${type}/${key}`, data.override, agentNameFor(type, key));
+      if (gate.refusal) {
+        respond({
+          action: 'activate_response',
+          success: false,
+          type,
+          key,
+          url,
+          error: gate.refusal,
+          refusedBy: 'capacity',
+          reason: capacityReason(gate.capacity),
+          derivation: describeCapacity(gate.capacity),
+          capacity: capacityDto(gate.capacity)
+        });
+        return;
+      }
+
       const renderedPrompt = this.promptLoader.loadAndRender(promptTemplateFile, {
         KEY: key,
         URL: url ?? ''
@@ -287,7 +487,8 @@ export class MessageRouter {
       key,
       url: session.url,
       sessionId: session.sessionId,
-      status: session.status
+      status: session.status,
+      ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
     });
   }
 
@@ -477,8 +678,8 @@ export class MessageRouter {
       this.herdrBridge.closeAgentByKey(key);
     }
 
-    const success = this.herdrBridge.resetWorkspace(config.type, key);
-    respond({ action: 'reset_response', success });
+    const { success, error } = this.herdrBridge.resetWorkspace(config.type, key);
+    respond({ action: 'reset_response', success, ...(error ? { error } : {}) });
   }
 
   public handleResetByKey(data: any, respond: Respond) {
@@ -501,8 +702,9 @@ export class MessageRouter {
     }
 
     // The workspace still goes away even if no agent was there to close —
-    // reset's job is to leave nothing behind.
-    const success = this.herdrBridge.resetWorkspace(type, key);
+    // reset's job is to leave nothing behind. Unless the target isn't ours to
+    // delete, in which case `resetError` says which path was refused and why.
+    const { success, error: resetError } = this.herdrBridge.resetWorkspace(type, key);
 
     // Broadcast event so UI can update
     this.broadcast({
@@ -518,7 +720,9 @@ export class MessageRouter {
       success,
       agentClosed,
       ...(agentError ? { agentError } : {}),
-      ...(success ? {} : { error: agentError ?? `No workspace directory for ${type}/${key}` })
+      // A refusal outranks the agent's complaint: it is the reason the reset
+      // did not happen, and the caller needs to see the path that was rejected.
+      ...(success ? {} : { error: resetError ?? agentError ?? `No workspace directory for ${type}/${key}` })
     });
   }
 
@@ -610,12 +814,25 @@ export class MessageRouter {
   // configured/not-configured and a validation verdict, never with the value,
   // so there is nothing for the extension to retain even by accident.
 
-  private handleJiraCredentialStatus(respond: Respond) {
+  private async handleJiraCredentialStatus(respond: Respond) {
+    if (!this.jira) {
+      respond({
+        action: 'jira_credential_status_response',
+        success: true,
+        available: false,
+        configured: false
+      });
+      return;
+    }
+    // `storageTarget` runs a keyring probe, which is why this handler is async
+    // now. It is what lets the settings page say where the token will land
+    // before the user types it, rather than after it has already gone.
     respond({
       action: 'jira_credential_status_response',
       success: true,
-      available: !!this.jira,
-      ...(this.jira ? this.jira.status() : { configured: false })
+      available: true,
+      ...this.jira.status(),
+      storageTarget: await this.jira.storageTarget()
     });
   }
 
@@ -661,10 +878,29 @@ export class MessageRouter {
     });
 
     // Note what is *not* here: the token, and any echo of the request. The
-    // response carries a verdict and the non-secret site/account only.
+    // response carries a verdict, the non-secret site/account, and the record
+    // of which endpoints were tried — every field of which is built from a URL,
+    // a status code, or Atlassian's own response text, and each of those is
+    // scrubbed of every encoded form of the token before it leaves the
+    // transport.
+    //
+    // The log gets the diagnosis and the leg trail, not just "rejected". The
+    // whole reason this ticket exists is that a rejection which says only that
+    // it happened cannot be acted on — and that is as true of the log as of
+    // the UI.
     console.log(
       `jira: credential submitted for ${email} @ ${parsed.origin} — ` +
-        (result.valid ? `valid, stored in ${result.storage}` : `rejected (${result.error})`)
+        (result.valid
+          ? `valid, stored in ${result.storage}`
+          : `rejected (${result.diagnosis ?? 'unknown'})`) +
+        (result.legs?.length
+          ? `; legs: ${result.legs
+              .map(
+                (l) =>
+                  `${l.leg}=${l.failure ?? l.status}${l.traceId ? ` trace:${l.traceId}` : ''}`
+              )
+              .join(' ')}`
+          : '')
     );
 
     respond({
@@ -672,6 +908,9 @@ export class MessageRouter {
       success: true,
       valid: result.valid,
       ...(result.error ? { error: result.error } : {}),
+      ...(result.diagnosis ? { diagnosis: result.diagnosis } : {}),
+      ...(result.legs?.length ? { legs: result.legs } : {}),
+      ...(result.note ? { note: result.note } : {}),
       ...(result.accountName ? { accountName: result.accountName } : {}),
       ...(result.storage ? { storage: result.storage } : {}),
       status: this.jira.status()
@@ -712,8 +951,26 @@ export class MessageRouter {
     respond({ action: 'staleness_check_response', success: true, ...report });
   }
 
+  /**
+   * Everything running, from herdr's view unioned with our own.
+   *
+   * The session map is emptied by a daemon restart while the herdr panes keep
+   * running, so a list built from sessions alone answers "nothing is running"
+   * for a board full of working agents — and that is the reading a supervisor
+   * acts on. herdr is therefore the source of existence here, exactly as it
+   * already is for `agent_status`, `deactivate` and `reset`; sessions only add
+   * what herdr cannot know (session id, bound url, creation time).
+   *
+   * An entry counts as an agent when *either* test passes: this daemon holds a
+   * live session for it, or herdr reports an agent runtime behind its pane.
+   * What fails both is a `butchr-*` name with a bare shell behind it and no
+   * session of ours — nothing to message, tail or supervise. Those are kept
+   * out of `agents`, because a supervisor counting the list must get a number
+   * it can act on, and reported under `unbackedPanes`, because silently
+   * dropping them would repeat the mistake this handler exists to fix.
+   */
   private handleListAgents(data: any, respond: Respond) {
-    const statuses = this.herdrBridge.listHerdrStatuses();
+    const { agents, unbackedPanes } = this.surveyAgents();
 
     // Descriptor headroom, reported where someone looking at agents will see
     // it. On KAN-24 the herdr server's fd usage was invisible until spawning
@@ -721,6 +978,11 @@ export class MessageRouter {
     // in panes because that is the unit the reader can act on — "room for 12
     // more agents" is a decision, "62000 descriptors" is trivia.
     const usage = readFdUsage();
+
+    // CPU and memory headroom, for the same reason and in the same place. A
+    // supervisor reading this list is about to decide whether to staff another
+    // agent; this is the number that decision needs.
+    const capacity = this.capacityOf(agents);
 
     // Staleness rides along on the poll the Agents page is already making, so
     // the banner can appear without a second request and without the page
@@ -731,7 +993,9 @@ export class MessageRouter {
     respond({
       action: 'list_agents_response',
       success: true,
-      agents: this.herdrBridge.listActiveSessions().map(s => this.toAgentDto(s, statuses)),
+      agents,
+      unbackedPanes,
+      capacity: capacityDto(capacity),
       ...(staleness ? { staleness } : {}),
       ...(usage ? {
         herdrHealth: {
@@ -749,6 +1013,130 @@ export class MessageRouter {
         }
       } : {})
     });
+  }
+
+  /** `butchr_capacity`: how many more agents this machine can carry. */
+  private handleCapacity(data: any, respond: Respond) {
+    const capacity = this.capacityOf(this.surveyAgents().agents);
+    respond({
+      action: 'capacity_response',
+      success: true,
+      ...capacityDto(capacity),
+      derivation: describeCapacity(capacity)
+    });
+  }
+
+  /**
+   * The agent census, shared by `list_agents` and by everything that needs to
+   * know how many agents are already running before starting another.
+   *
+   * herdr is the source of existence, not our session map — see
+   * handleListAgents for why. Split out so the capacity check counts exactly
+   * what the list reports; two answers to "how many agents are running" is one
+   * answer too many.
+   */
+  /**
+   * The capacity model applied to a census, with the manager set aside.
+   *
+   * Every capacity answer in this daemon goes through here, so `running` means
+   * the same thing in the refusal, in `list_agents` and in `butchr_capacity`.
+   * KAN-34 passed `agents.length` at each call site and the board manager was
+   * silently one of them — on a 4-core machine that was half the budget spent
+   * on the supervisor, and the user could never start a second task agent.
+   */
+  private capacityOf(agents: ListedAgent[]): Capacity {
+    let fleet = 0;
+    let supervisors = 0;
+
+    for (const entry of agents) {
+      // Not everything `list_agents` reports costs an agent's worth of
+      // machine. The daemon opens a bare shell for itself
+      // (`ensureDefaultSession`), and it appears in that list because we hold a
+      // session for it — which is the right answer to "what can I attach to"
+      // and the wrong one to "what is this machine carrying". On a 4-core box
+      // it was silently occupying one of two slots.
+      //
+      // The test is whether the entry is a workspace type this daemon starts
+      // agents into, or whether herdr can see an agent runtime behind the pane.
+      // Either is enough; a registered type does not wait for herdr to notice
+      // a freshly spawned agent, and a runtime catches anything the registry
+      // has not heard of.
+      const registered = entry.type !== null && this.registry.get(entry.type) !== undefined;
+      if (!registered && entry.agentRuntime === null) continue;
+
+      if (isSupervisorType(entry.type)) supervisors++;
+      else fleet++;
+    }
+
+    return readCapacity(fleet, supervisors);
+  }
+
+  private surveyAgents(): { agents: ListedAgent[]; unbackedPanes: UnbackedPane[] } {
+    const herdrAgents = this.herdrBridge.listHerdrAgents();
+    const byName = new Map<string, HerdrAgentRecord>(herdrAgents.map(a => [a.name, a]));
+    const statuses = new Map(herdrAgents.map(a => [a.name, a.herdrStatus]));
+
+    const agents: ListedAgent[] = [];
+    const attached = new Set<string>();
+
+    for (const session of this.herdrBridge.listActiveSessions()) {
+      const agentName = agentNameFor(session.type, session.key);
+      attached.add(agentName);
+      const dto = this.toAgentDto(session, statuses);
+      agents.push({
+        sessionless: false,
+        agentName,
+        sessionId: dto.sessionId,
+        type: dto.type,
+        key: dto.key,
+        url: dto.url ?? null,
+        createdAt: dto.createdAt,
+        status: dto.status,
+        workDir: dto.workDir,
+        herdrStatus: dto.herdrStatus,
+        agentRuntime: byName.get(agentName)?.agentRuntime ?? null
+      });
+    }
+
+    const unbackedPanes: UnbackedPane[] = [];
+
+    for (const record of herdrAgents) {
+      if (attached.has(record.name)) continue;
+      const address = addressFromAgentName(record.name);
+      if (!address) continue; // Not one of ours; herdr hosts more than Butchr.
+
+      if (!record.agentRuntime) {
+        unbackedPanes.push({
+          agentName: record.name,
+          type: address.type,
+          key: address.key,
+          workDir: record.workDir,
+          herdrStatus: record.herdrStatus,
+          reason:
+            'herdr reports no agent running in this pane and this daemon holds no session for it'
+        });
+        continue;
+      }
+
+      // Session-only fields are null, not invented. There is no session id to
+      // report, no url the agent was bound to and no creation time we saw —
+      // filling them in to match the attached shape would be a fabrication.
+      agents.push({
+        sessionless: true,
+        agentName: record.name,
+        sessionId: null,
+        type: address.type,
+        key: address.key,
+        url: null,
+        createdAt: null,
+        status: null,
+        workDir: record.workDir,
+        herdrStatus: record.herdrStatus,
+        agentRuntime: record.agentRuntime
+      });
+    }
+
+    return { agents, unbackedPanes };
   }
 
   private handlePtyInit(data: any, respond: Respond) {

@@ -32,6 +32,41 @@ export const PTMX_FDS_PER_PANE = 5;
  */
 export const FD_PRESSURE_WARN_RATIO = 0.75;
 
+/**
+ * The default open-file soft limit on Linux, which is also `FD_SETSIZE` — the
+ * largest descriptor `select(2)` can represent. A herdr server left here is
+ * capped at {@link PTMX_FDS_PER_PANE} descriptors per pane, i.e. ~205 panes,
+ * after which every `agent start` fails.
+ *
+ * Setup raises it (`daemon/systemd/10-butchr-nofile.conf`). This constant
+ * exists so a machine that *did not* get that far says so at startup instead
+ * of discovering it as an outage — which is exactly how it went the first
+ * time (KAN-24, KAN-33).
+ */
+export const FD_SETSIZE = 1024;
+
+/**
+ * True when herdr is running on the stock ceiling, i.e. setup's fd step was
+ * never applied or was lost to a restart. Distinct from
+ * {@link isFdPressureHigh}: that fires when the limit is nearly *reached*,
+ * this fires the moment the limit is known to be too low, whether or not
+ * anything is close to it yet.
+ */
+export function isFdCeilingUnraised(usage: FdUsage): boolean {
+  return usage.softLimit <= FD_SETSIZE;
+}
+
+/** One line naming the ceiling in panes, and where the permanent fix lives. */
+export function describeFdCeiling(usage: FdUsage): string {
+  return (
+    `herdr server (pid ${usage.pid}) has an open-file soft limit of ${usage.softLimit}, the stock default. ` +
+    `At ${PTMX_FDS_PER_PANE} descriptors per pane that caps it at ~${Math.floor(usage.softLimit / PTMX_FDS_PER_PANE)} ` +
+    `panes, after which every 'herdr agent start' fails. Raise it permanently with ` +
+    `daemon/scripts/install-service.sh (see docs/SETUP.md), or for the running server: ` +
+    `prlimit --pid ${usage.pid} --nofile=65536:1048576`
+  );
+}
+
 /** How close the herdr server is to its open-file ceiling. */
 export interface FdUsage {
   pid: number;
@@ -176,6 +211,58 @@ export function describeFdPressure(p: FdPressure): string {
 /** True when fd usage is high enough to be worth reporting on its own. */
 export function isFdPressureHigh(p: FdUsage): boolean {
   return p.ratio >= FD_PRESSURE_WARN_RATIO;
+}
+
+/**
+ * The herdr line Butchr's spawn path is written against.
+ *
+ * herdr 0.7.0 redesigned `agent start`: it no longer creates a pane, it
+ * attaches a *named agent kind* to an existing one (`--kind`/`--pane`), and it
+ * dropped `--cwd`, `--tab`, `--no-focus` and the trailing `-- <argv>` command.
+ * `startAgentInOwnTab` in herdr.ts passes all of those, so on 0.7.x every
+ * activation dies with `unknown option: --cwd` — found on the KAN-33
+ * clean-machine run, where the current installer hands a new user 0.7.5.
+ *
+ * Adapting the spawn path to the new API is real work in a contended file and
+ * is tracked separately. What belongs here is that the incompatibility names
+ * itself, rather than surfacing as a stray getopt error.
+ */
+export const SUPPORTED_HERDR_MAJOR_MINOR = '0.6';
+
+/** `herdr --version` output → a comparable `[major, minor]`, or undefined. */
+export function parseHerdrVersion(versionOutput: string): [number, number] | undefined {
+  const match = /(\d+)\.(\d+)(?:\.\d+)?/.exec(versionOutput);
+  if (!match) return undefined;
+  return [Number(match[1]), Number(match[2])];
+}
+
+/**
+ * A warning when herdr is a line Butchr cannot drive, or undefined when it is
+ * fine (or unreadable — an unknown version is not evidence of a problem, and
+ * refusing to run on one would break every future release).
+ */
+export function checkHerdrVersion(versionOutput: string): string | undefined {
+  const parsed = parseHerdrVersion(versionOutput);
+  if (!parsed) return undefined;
+
+  const [major, minor] = parsed;
+  const [wantMajor, wantMinor] = SUPPORTED_HERDR_MAJOR_MINOR.split('.').map(Number);
+  if (major === wantMajor && minor === wantMinor) return undefined;
+
+  // `herdr --version` already prints "herdr 0.7.5", so the name is not
+  // prepended — doing so produced "herdr herdr 0.7.5" in the daemon log.
+  if (major > wantMajor || (major === wantMajor && minor > wantMinor)) {
+    return (
+      `${versionOutput.trim()} is newer than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr's spawn path ` +
+      `is written against. herdr 0.7 redesigned 'agent start' — it takes --kind/--pane and no longer ` +
+      `accepts --cwd — so every activation will fail with 'unknown option: --cwd'. Install ${SUPPORTED_HERDR_MAJOR_MINOR}.4: ` +
+      `see docs/SETUP.md, prerequisites.`
+    );
+  }
+  return (
+    `${versionOutput.trim()} is older than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr is written ` +
+    `against; agent spawning may not work. See docs/SETUP.md, prerequisites.`
+  );
 }
 
 /**

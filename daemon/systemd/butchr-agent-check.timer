@@ -1,0 +1,16 @@
+# Runs butchr-agent-check.service every 5 minutes — the interval the crontab
+# stopgap used, kept so the behaviour is unchanged by the move into the repo.
+[Unit]
+Description=Butchr — periodic herdr agent/cost check
+Documentation=https://github.com/wroosbit/butchr/blob/main/docs/SETUP.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# A machine that was asleep or off should get one check on the way back rather
+# than skipping the missed window silently.
+Persistent=true
+Unit=butchr-agent-check.service
+
+[Install]
+WantedBy=timers.target

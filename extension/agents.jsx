@@ -89,13 +89,20 @@ function Agents() {
                     🔗 {agent.url}
                   </div>
                 ) : null}
-                <div style={{ fontSize: '12px', color: '#94a3b8' }}>Session: {agent.sessionId}</div>
+                {/* A surviving agent has no session to name after a daemon
+                    restart. Say that, rather than printing "Session: null". */}
+                <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                  {agent.sessionless ? `Not attached — ${agent.agentName}` : `Session: ${agent.sessionId}`}
+                </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <HerdrStateChip state={agent.herdrStatus} />
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#10b981' }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }}></span>
-                  {agent.status}
+                {/* herdrStatus above is the agent's own state and is known
+                    either way; this dot is only about our attach, so it goes
+                    grey rather than green when there is no session behind it. */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: agent.sessionless ? '#94a3b8' : '#10b981' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: agent.sessionless ? '#64748b' : '#10b981' }}></span>
+                  {agent.sessionless ? 'detached' : agent.status}
                 </div>
               </div>
             </div>
