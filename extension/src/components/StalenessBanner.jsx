@@ -66,8 +66,11 @@ function Row({ item, palette }) {
   );
 }
 
-export function StalenessBanner({ staleness }) {
-  const [expanded, setExpanded] = useState(false);
+// `defaultExpanded` exists so the details state can be rendered without a click
+// — scripts/render-staleness-banner.mjs uses it to show both states. The page
+// never passes it.
+export function StalenessBanner({ staleness, defaultExpanded = false }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   if (!staleness || !Array.isArray(staleness.items)) return null;
 

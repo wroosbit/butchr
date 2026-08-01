@@ -19,6 +19,11 @@
 //   node scripts/screenshot-staleness-banner.mjs /tmp/kan30-payload.json /tmp/shots
 //
 // Writes collapsed.png and expanded.png (the banner's two states).
+//
+// Needs a browser that will actually render. Headless Chrome and headless
+// Firefox both fail to produce a frame at all in some sandboxes (agent
+// containers among them); when that happens use render-staleness-banner.mjs,
+// which renders the same component with react-dom/server and needs no browser.
 
 import { createServer } from 'http';
 import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';

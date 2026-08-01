@@ -7,12 +7,14 @@
 // derived from os.homedir(), so a temp HOME gives this daemon its own socket
 // and its own log, and the live daemon at ~/.local/share/butchr is untouched.
 //
-// Usage: node daemon/scripts/verify-staleness-over-socket.mjs [repoToClone] [--dump <file>]
+// Usage: node daemon/scripts/verify-staleness-over-socket.mjs [repoToClone] [--dump <file>] [--clean]
 //
 //   --dump <file>  write the exact list_agents_response received to <file>.
-//                  extension/scripts/screenshot-staleness-banner.mjs renders
-//                  that file, so the screenshot is of real daemon output rather
+//                  extension/scripts/render-staleness-banner.mjs renders that
+//                  file, so the surfacing proof is of real daemon output rather
 //                  than of a hand-written fixture.
+//   --clean        leave the clone level with origin/main, to show the same
+//                  daemon reporting a healthy install and saying nothing.
 //
 // Run it after `npm run build` in daemon/.
 
@@ -38,7 +40,10 @@ const daemonDir = path.resolve(scriptDir, '..');
 const argv = process.argv.slice(2);
 const dumpIdx = argv.indexOf('--dump');
 const dumpPath = dumpIdx === -1 ? null : argv[dumpIdx + 1];
-const positional = argv.filter((a, i) => i !== dumpIdx && i !== dumpIdx + 1);
+const clean = argv.includes('--clean');
+const positional = argv.filter(
+  (a, i) => i !== dumpIdx && i !== dumpIdx + 1 && !a.startsWith('--')
+);
 const sourceRepo = positional[0] ?? path.resolve(daemonDir, '..');
 
 if (!existsSync(path.join(daemonDir, 'dist', 'daemon.js'))) {
@@ -84,7 +89,7 @@ run('git', ['clone', '--quiet', sourceRepo, repo]);
 run('git', ['-C', repo, 'checkout', '--quiet', '-B', 'main', 'origin/main']);
 run('git', ['-C', repo, 'remote', 'set-head', 'origin', 'main']);
 run('git', ['-C', repo, 'fetch', '--quiet', 'origin']);
-run('git', ['-C', repo, 'reset', '--hard', '--quiet', 'origin/main~2']);
+if (!clean) run('git', ['-C', repo, 'reset', '--hard', '--quiet', 'origin/main~2']);
 cpSync(path.join(daemonDir, 'dist'), path.join(repo, 'daemon', 'dist'), { recursive: true });
 // Symlinked, not copied: node-pty is a native module, and a tree installed with
 // `npm ci --ignore-scripts` (as CI and typechecking do) has no compiled
