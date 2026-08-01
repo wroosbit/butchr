@@ -258,6 +258,52 @@ router and against a real herdr respectively.
 
 ---
 
+## ✅ What `success` means on the agent-lifecycle responses
+
+`success: true` is a claim about the world, not a report that a command was
+issued, and every response on this surface is held to that.
+
+**`activate` verifies the agent exists before it says so.** It used to answer
+`success: true` with a plausible session id for an agent that had never been
+created (KAN-23). KAN-24 closed the half of that where herdr *told* us the
+spawn failed and the answer was discarded; what remained was herdr reporting
+success and leaving no agent behind. So after the spawn, activate looks: it
+polls `herdr agent list` — the same census `list_agents` reports from, so the
+two can never disagree — until the agent appears, and only then records the
+activation, broadcasts it and answers. Successful responses carry
+`verified: true`.
+
+The wait is bounded: at most 5s of polling every 250ms, plus the 5s ceiling on
+the census call in flight. In the ordinary case it costs one call, because an
+agent herdr has started is listable immediately.
+
+**A failure says which kind it is.** An agent herdr answered about and does not
+have is *absent*: `success: false`, and the session is torn down so the next
+activate is free to try again rather than being handed a dead one. A herdr that
+did not answer at all is *unverifiable*: also `success: false`, because an
+unverified activation must not be reported as a verified one — but nothing is
+torn down, since silence is not evidence that a working agent is gone.
+
+**The siblings were audited for the same pattern.** `deactivate` had it: the
+pane close was wrapped in a try/catch that logged the failure and swallowed it,
+so a stand-down herdr had refused was answered `success: true` while the agent
+carried on working. It now reports the refusal, and the
+`agent_deactivated_event` is not broadcast for a teardown that did not happen —
+an agent or pane herdr does not *have* still counts as success, because that is
+what the caller asked for. `reset` and `send` were already state-derived and
+needed no change; `reset` by URL now reports `agentClosed` alongside the delete,
+which the by-key path already did.
+
+`node daemon/scripts/verify-activate-verified-existence.mjs` proves all of it
+against a real herdr on a private socket: the happy path with the agent present
+in `list_agents`, an injected spawn that herdr reports as successful and never
+performs, the timeout bound, the unverifiable case leaving a live agent alone,
+and the deactivate refusal. The failure is injected by a `herdr` shim that
+intercepts one subcommand and passes every other call to the real binary, so
+the absence being reported is a real one.
+
+---
+
 ## 🕰️ Is this the code that was merged?
 
 Merging a PR changes nothing on the machine: the clone is not pulled, `dist/`

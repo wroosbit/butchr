@@ -105,11 +105,19 @@ function stubHerdr(running, { statuses = {}, workDirs = {} } = {}) {
       }))
     }),
     listHerdrAgents: () => bridge.listHerdrAgentsChecked().agents,
+    // The post-spawn existence check (KAN-23), answered from the same list the
+    // census is built from — which is the rule the real one follows.
+    confirmAgentPresent: async (agentName) =>
+      alive.includes(agentName)
+        ? { present: true, waitedMs: 0, checks: 1 }
+        : { present: false, reason: 'absent', waitedMs: 0, checks: 1,
+            error: `stub herdr has no agent '${agentName}'` },
+    abandonSession: () => {},
     listHerdrStatuses: () => new Map(bridge.listHerdrAgents().map((a) => [a.name, a.herdrStatus])),
     listActiveSessions: () => [],
     getSessionByKey: () => undefined,
     getSessionByAddress: () => undefined,
-    terminateSession: () => true,
+    terminateSession: () => ({ success: true }),
     closeAgentByKey: (key) => {
       const i = alive.findIndex((n) => n.endsWith(`-${key.toLowerCase()}`));
       if (i === -1) return { success: false, error: `No agent found for key '${key}'` };

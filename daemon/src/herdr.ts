@@ -65,6 +65,40 @@ const HERDR_AGENT_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 
 /** Ceiling on any single herdr CLI call, so a wedged herdr can't hang a caller. */
 const HERDR_CLI_TIMEOUT_MS = 5000;
 
+/**
+ * How long {@link HerdrBridge.confirmAgentPresent} keeps asking before it
+ * declares a just-spawned agent absent.
+ *
+ * `herdr agent start` is synchronous — it returns once the pane exists — so a
+ * successful spawn is normally in the census on the first ask and this costs
+ * one CLI call. The wait exists for the gap between herdr acknowledging the
+ * start and the agent being listable, not as a retry budget; five seconds is
+ * far longer than that gap has ever been observed to be, and short enough that
+ * a caller blocked on an activation is not left wondering.
+ */
+const AGENT_CONFIRM_TIMEOUT_MS = 5000;
+
+/** Gap between census checks while waiting for a spawned agent to appear. */
+const AGENT_CONFIRM_POLL_MS = 250;
+
+/**
+ * Whether an agent actually exists, asked after a spawn herdr did not complain
+ * about. The two failures are kept apart because they license different
+ * actions: `absent` is evidence there is nothing there, and the session may be
+ * torn down on the strength of it; `unverifiable` is the absence of evidence —
+ * herdr did not answer — and nothing may be concluded, least of all that the
+ * agent is dead.
+ */
+export type AgentPresence =
+  | { present: true; waitedMs: number; checks: number }
+  | {
+      present: false;
+      reason: 'absent' | 'unverifiable';
+      error: string;
+      waitedMs: number;
+      checks: number;
+    };
+
 /** An Error from {@link HerdrBridge.runHerdr}, carrying herdr's own error code. */
 interface HerdrCliError extends Error {
   herdrCode?: string;
@@ -78,6 +112,17 @@ interface HerdrCliError extends Error {
  * asked for exists either way.
  */
 const AGENT_NAME_TAKEN = 'agent_name_taken';
+
+/**
+ * herdr's codes for "there is no such agent" and "there is no such pane".
+ *
+ * For a teardown these are the request already being satisfied, not a failure:
+ * what the caller asked for is that the agent stop existing, and herdr saying
+ * it does not exist is that. Every other error means we do not know what
+ * happened, which is a different answer and must not be reported as this one.
+ */
+const AGENT_NOT_FOUND = 'agent_not_found';
+const PANE_NOT_FOUND = 'pane_not_found';
 
 /** Time the agent's TUI gets to redraw after the interrupt, before we type. */
 const INTERRUPT_SETTLE_MS = 100;
@@ -627,11 +672,22 @@ export class HerdrBridge {
           exitCode
         });
       });
-    } catch (e) {
+    } catch (e: any) {
       // No PTY means no attach: leaving the session 'active' would make
       // liveAttachFor claim an attach that does not exist, and every later
       // activate would be refused in favour of this dead session.
       session.status = 'terminated';
+      // And recorded as a spawn failure, because that is what the caller has
+      // to be told. Marking the session terminated without it produced the
+      // second false success in KAN-23: activate checks `spawnError` alone, so
+      // an attach that threw was answered with `success: true` and, in the
+      // same object, `status: "terminated"` — a response that contradicted
+      // itself and a session id that could never carry any output. The agent
+      // itself may well be running; what failed is our route to it, and the
+      // message says so rather than claiming nothing started.
+      session.spawnError =
+        `Agent '${agentName}' could not be attached to: ${e?.message ?? String(e)}. ` +
+        `The agent may be running in herdr, but this activation produced no usable terminal.`;
       console.error('[HerdrBridge] Failed to spawn PTY', e);
     }
   }
@@ -707,6 +763,105 @@ export class HerdrBridge {
     } catch (e) {
       console.error('[HerdrBridge] Could not parse `herdr agent list` output', e);
       return { reachable: false, agents: [] };
+    }
+  }
+
+  /**
+   * Does this agent exist? Asked after a spawn, before anyone is told the
+   * activation succeeded.
+   *
+   * A spawn herdr refuses is reported through `spawnError`, and that covers
+   * only the failures herdr *tells* us about. The failure this exists for is
+   * the other one: herdr acknowledges the start and no agent is there
+   * afterwards — the KAN-23 false success, where `success: true` and a
+   * plausible session id were returned for an agent that never existed. The
+   * response is a factual claim about the world, so it is checked against the
+   * world before it is made.
+   *
+   * The world here is {@link listHerdrAgentsChecked} — the same census
+   * `list_agents` reports from, deliberately, so that activate and the fleet
+   * list can never disagree about whether an agent exists.
+   *
+   * Bounded by `timeoutMs` of polling: the wait cannot exceed it, and the last
+   * census in flight is itself capped by the 5s timeout inside
+   * listHerdrAgentsChecked, so the whole call is bounded by the two added
+   * together. It never throws — a caller owes its client an answer.
+   */
+  public async confirmAgentPresent(
+    agentName: string,
+    timeoutMs: number = AGENT_CONFIRM_TIMEOUT_MS
+  ): Promise<AgentPresence> {
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    let checks = 0;
+    let reachable = false;
+
+    for (;;) {
+      const census = this.listHerdrAgentsChecked();
+      checks++;
+      reachable = census.reachable;
+
+      if (reachable && census.agents.some(agent => agent.name === agentName)) {
+        return { present: true, waitedMs: Date.now() - startedAt, checks };
+      }
+
+      if (Date.now() + AGENT_CONFIRM_POLL_MS >= deadline) break;
+      await delay(AGENT_CONFIRM_POLL_MS);
+    }
+
+    const waitedMs = Date.now() - startedAt;
+    // Which of the two failures this is turns on whether herdr answered at
+    // all. An unreachable herdr produces an empty census, and reading that as
+    // "the agent is not there" would be the same mistake in the other
+    // direction: a confident claim with nothing behind it.
+    return reachable
+      ? {
+          present: false,
+          reason: 'absent',
+          waitedMs,
+          checks,
+          error:
+            `herdr reported no error starting agent '${agentName}', but the agent was not in ` +
+            `\`herdr agent list\` ${waitedMs}ms and ${checks} checks later. No agent is running ` +
+            `for this activation. Check ~/.config/herdr/herdr-server.log for the pane.spawn line ` +
+            `covering this attempt.`
+        }
+      : {
+          present: false,
+          reason: 'unverifiable',
+          waitedMs,
+          checks,
+          error:
+            `Could not confirm agent '${agentName}' exists: herdr did not answer ` +
+            `\`agent list\` within ${waitedMs}ms (${checks} attempts). The agent may or may not ` +
+            `be running — this is an unverified activation, not a failed one, and nothing has ` +
+            `been torn down. Check that the herdr server is up before retrying.`
+        };
+  }
+
+  /**
+   * Give up on a session whose agent is known not to exist.
+   *
+   * Without this the failure is sticky rather than merely reported: a session
+   * left `active` is what {@link getSessionByKey} and {@link liveAttachFor}
+   * answer with, so the next activate would be handed this dead session and
+   * refuse to spawn a real one — the caller could never retry its way out.
+   *
+   * The pane is deliberately *not* closed. This is only ever called when herdr
+   * has told us there is no such agent, so there is nothing to close; and
+   * calling it on weaker evidence must not destroy somebody's working agent.
+   * Our own terminal attach is killed because it is ours and it leads nowhere.
+   */
+  public abandonSession(sessionId: string, error: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    session.spawnError = error;
+    session.status = 'terminated';
+    try {
+      session.ptyProcess?.kill();
+    } catch (e) {
+      console.error(`[HerdrBridge] Could not kill the PTY for abandoned session ${sessionId}`, e);
     }
   }
 
@@ -1060,22 +1215,46 @@ export class HerdrBridge {
     };
   }
 
-  public terminateSession(sessionId: string): boolean {
+  /**
+   * Tear down a session and the agent behind it.
+   *
+   * The result is the outcome, not the attempt. This used to return a bare
+   * `true` for any session it had heard of: the pane close was wrapped in a
+   * try/catch that logged the failure and swallowed it, so a stand-down herdr
+   * had refused — or never received, because the server was down — was
+   * answered `success: true` while the agent carried on working. That is the
+   * KAN-23 defect on the other side of the switch, and it is the one place the
+   * audit of activate's siblings found it.
+   *
+   * An agent or pane herdr does not have is still a success: the caller asked
+   * for the agent to be gone and it is. Anything else is reported.
+   */
+  public terminateSession(sessionId: string): { success: boolean; error?: string } {
     const session = this.sessions.get(sessionId);
-    if (!session) return false;
+    if (!session) return { success: false, error: `No session '${sessionId}' to terminate` };
 
     if (session.ptyProcess) {
       session.ptyProcess.kill();
     }
 
     const agentName = agentNameFor(session.type, session.key);
+    let error: string | undefined;
     try {
       this.closePaneForAgent(agentName);
-    } catch(e) {
-      console.error('[HerdrBridge] Failed to close pane for agent', agentName, e);
+    } catch (e: any) {
+      const code = (e as HerdrCliError)?.herdrCode;
+      if (code !== AGENT_NOT_FOUND && code !== PANE_NOT_FOUND) {
+        error =
+          `Could not close the pane for agent '${agentName}': ${e?.message ?? String(e)}. ` +
+          `This daemon's terminal attach is gone, but the agent may still be running.`;
+        console.error(`[HerdrBridge] ${error}`);
+      }
     }
 
+    // Terminated either way: our PTY is dead, so the session cannot be used
+    // again whatever herdr did with the pane. What the caller is told about
+    // the *agent* is the returned error, which is a different question.
     session.status = 'terminated';
-    return true;
+    return error ? { success: false, error } : { success: true };
   }
 }
