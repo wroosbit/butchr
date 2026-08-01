@@ -24,6 +24,14 @@ const DETACH_COPY = {
   exited: {
     title: 'Terminal disconnected',
     detail: 'The terminal attach ended. The agent itself may still be running — this panel just lost its view of it.'
+  },
+  // Reached only after the panel has already tried the automatic fix once: it
+  // asked for a fresh session and that one was refused too. Says what the
+  // daemon said rather than dressing it up, because at this point the honest
+  // thing to report is that the panel does not know why.
+  'stale-session': {
+    title: 'Terminal session not recognised',
+    detail: 'The daemon does not recognise the terminal session this panel asked for, and asking again did not help. The agent itself may still be running. Reconnect to try once more.'
   }
 };
 

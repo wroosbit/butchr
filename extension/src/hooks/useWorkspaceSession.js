@@ -5,6 +5,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 // approaching this means the native host or daemon is not healthy.
 const STATUS_TIMEOUT_MS = 5000;
 
+// Every reply that can carry "I do not have that session". Any of them is the
+// same fact about our session id, so they are handled in one place.
+const PTY_REPLIES = new Set(['pty_init_response', 'pty_input_response', 'pty_resize_response']);
+
 /**
  * pageStatus is an explicit state machine rather than a `supported` boolean,
  * so "we haven't heard back yet" and "the daemon says this page isn't
@@ -38,11 +42,20 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   // asynchronously, and re-firing on every render would spawn a stream of
   // activates at an agent that is already being attached to.
   const reattachSentRef = useRef(false);
+  // One automatic recovery per rejected session id. A daemon that refuses our
+  // pty_init because it has never heard of the session (KAN-25 — it used to
+  // answer with an arbitrary one instead) is recoverable: ask for the workspace
+  // again and attach to whatever session it names now. Only once, though. If
+  // the id we get back is refused too, re-asking is not going to fix it, and
+  // repeating the round trip is the retry loop a bare rejection would otherwise
+  // invite. The second refusal stops and says so.
+  const staleInitRecoveredRef = useRef(false);
 
   const retryStatus = useCallback(() => {
     if (!currentTab || !currentTab.url) return;
     respondedRef.current = false;
     reattachSentRef.current = false;
+    staleInitRecoveredRef.current = false;
     setDetachReason(null);
     setActivateError(null);
     setPageStatus('checking');
@@ -55,6 +68,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     if (!currentTab || !currentTab.url) return;
     respondedRef.current = false;
     reattachSentRef.current = false;
+    staleInitRecoveredRef.current = false;
     setDetachReason(null);
     setActivateError(null);
     setPageStatus('checking');
@@ -199,6 +213,40 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           }
           return { ...prev, sessionId: null, herdrStatus: undefined };
         });
+      } else if (PTY_REPLIES.has(payload.action)) {
+        // The terminal half of a pty_init reply is useTerminal's. The session
+        // id is this hook's, and a daemon that does not recognise it is telling
+        // us ours is dead — almost always because the daemon restarted after
+        // issuing it.
+        //
+        // All three PTY replies, not just init: the daemon outlives nothing and
+        // the native host hides its restart from us, so the first thing to meet
+        // a new daemon is usually whatever the user did next — a keystroke, a
+        // panel resize — not the re-init. Learning it from a refused keystroke
+        // is the same news arriving by a different route.
+        if (payload.success !== false) {
+          // A working attach. Whatever went stale before is over.
+          staleInitRecoveredRef.current = false;
+          return;
+        }
+        setSessionData((prev) => {
+          if (!prev.sessionId || payload.sessionId !== prev.sessionId) return prev;
+          setAttached(false);
+          if (staleInitRecoveredRef.current) {
+            // Refused twice with no working attach in between. Stop, and put
+            // the reason on screen with a Reconnect button, rather than
+            // trading requests with the daemon behind a blank panel.
+            setDetachReason('stale-session');
+          } else {
+            // Dropping the id is the recovery. `active && !attached` with no
+            // detachReason is precisely the state the re-attach effect below
+            // exists for: it re-resolves the workspace from the tab's URL and
+            // activate answers with a session this daemon actually holds.
+            staleInitRecoveredRef.current = true;
+            reattachSentRef.current = false;
+          }
+          return { ...prev, sessionId: null, herdrStatus: undefined };
+        });
       } else if (payload.action === 'agent_activated_event') {
         setSessionData((prev) => {
           if (payload.key && prev.key && payload.key !== prev.key) return prev;
@@ -251,6 +299,9 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     setDetachReason(null);
     setActivateError(null);
     reattachSentRef.current = false;
+    // A person asked for this one, so the automatic recovery is theirs to
+    // spend again — the count exists to stop the panel spinning on its own.
+    staleInitRecoveredRef.current = false;
     chrome.runtime.sendMessage({ type: 'ACTIVATE_BUTCHR', url: currentTab.url, tabId: currentTab.id });
   }, [currentTab]);
 
