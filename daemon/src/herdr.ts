@@ -943,14 +943,6 @@ export class HerdrBridge {
     }
   }
 
-  public ensureDefaultSession(): HerdrSession {
-    const active = this.listActiveSessions();
-    if (active.length > 0) {
-      return active[0];
-    }
-    return this.spawnSession('default', 'workspace', 'local', 'Default shell session');
-  }
-
   /**
    * Delete a workspace directory, and nothing else. This is a recursive
    * delete, so the containment check in front of it is the only thing standing
@@ -1009,48 +1001,62 @@ export class HerdrBridge {
     }
   }
 
-  public writePty(sessionId: string | undefined, data: string): void {
-    let session = sessionId ? this.getSession(sessionId) : undefined;
-    if (!session) {
-      session = this.ensureDefaultSession();
-    }
-    if (session && session.ptyProcess) {
+  /**
+   * The PTY entry points, and the one rule they share: a session id this daemon
+   * does not hold gets nothing.
+   *
+   * Every caller here is a client that was handed a session id earlier, so an
+   * id we cannot find is a caller bug — most often a sidepanel re-initialising
+   * against a daemon that has restarted since the id was issued. All four of
+   * these used to fall through to an `ensureDefaultSession()` helper that
+   * returned an arbitrary active session, or spawned a `default/workspace`
+   * shell when there were none. A stale re-init was answered with somebody
+   * else's terminal, or with a phantom agent that then sat in the pane list —
+   * and both look like success from the outside, which is how the bug survived
+   * unnoticed. See KAN-25.
+   *
+   * So: `false`/`undefined` means "no such session", and the caller owes its
+   * client an error. Nothing in here creates a session as a side effect, and
+   * nothing substitutes a different one for the one that was asked for.
+   */
+  public writePty(sessionId: string | undefined, data: string): boolean {
+    const session = sessionId ? this.getSession(sessionId) : undefined;
+    if (!session) return false;
+    if (session.ptyProcess) {
       session.ptyProcess.write(data);
     }
+    return true;
   }
 
-  public resizePty(sessionId: string | undefined, cols: number, rows: number): void {
-    let session = sessionId ? this.getSession(sessionId) : undefined;
-    if (!session) {
-      session = this.ensureDefaultSession();
-    }
-    if (session && session.ptyProcess && cols > 0 && rows > 0) {
+  public resizePty(sessionId: string | undefined, cols: number, rows: number): boolean {
+    const session = sessionId ? this.getSession(sessionId) : undefined;
+    if (!session) return false;
+    if (session.ptyProcess && cols > 0 && rows > 0) {
       try {
         session.ptyProcess.resize(cols, rows);
       } catch (err) {
         // ignore resize errors if process ended
       }
     }
+    return true;
   }
 
-  public getPtyBuffer(sessionId: string | undefined): string {
-    let session = sessionId ? this.getSession(sessionId) : undefined;
-    if (!session) {
-      session = this.ensureDefaultSession();
-    }
-    return session ? session.ptyBuffer : '';
+  /** The session's replay buffer, or `undefined` when there is no such session. */
+  public getPtyBuffer(sessionId: string | undefined): string | undefined {
+    const session = sessionId ? this.getSession(sessionId) : undefined;
+    return session ? session.ptyBuffer : undefined;
   }
 
-  public registerDataListener(sessionId: string | undefined, listener: (data: string) => void): () => void {
-    let session = sessionId ? this.getSession(sessionId) : undefined;
-    if (!session) {
-      session = this.ensureDefaultSession();
-    }
+  /** The unsubscribe, or `undefined` when there is no such session to listen to. */
+  public registerDataListener(
+    sessionId: string | undefined,
+    listener: (data: string) => void
+  ): (() => void) | undefined {
+    const session = sessionId ? this.getSession(sessionId) : undefined;
+    if (!session) return undefined;
     session.onDataListeners.push(listener);
     return () => {
-      if (session) {
-        session.onDataListeners = session.onDataListeners.filter(l => l !== listener);
-      }
+      session.onDataListeners = session.onDataListeners.filter(l => l !== listener);
     };
   }
 

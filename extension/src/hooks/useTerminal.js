@@ -249,6 +249,16 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
       if (message.type === 'DAEMON_RESPONSE') {
         const payload = message.payload;
         if (payload.action === 'pty_init_response') {
+          // A refusal is not a buffer. The daemon rejects a session id it does
+          // not hold rather than answering with some other session's output
+          // (KAN-25), so this branch must not treat the reply as a replay and
+          // clear the screen for it. Getting a current session id is
+          // useWorkspaceSession's job — it owns the id; this hook keeps the
+          // last good frame on screen until a new one arrives.
+          if (payload.success === false) {
+            reinitPendingRef.current = false;
+            return;
+          }
           if (termRef.current && payload.sessionId === sessionData.sessionId) {
             // Reset first: on a re-init the buffer repeats what is already on
             // screen, and writing it over the old contents would double it.
