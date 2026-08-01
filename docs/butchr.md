@@ -282,6 +282,54 @@ avoids firing at agent worktrees and unrelated branches — is in
 
 ---
 
+## 🖥️ Which terminal the panel is looking at
+
+`pty_init`, `pty_input` and `pty_resize` all name a `sessionId`, and a session
+id is only meaningful to the daemon process that issued it. The session map
+lives in memory and dies with the daemon; the herdr pane behind it does not. So
+after a daemon restart the sidepanel is holding an id nothing will ever answer
+to again — and it does not know, because the native host is a separate process
+that keeps Chrome's port open across the restart and reconnects to the new
+daemon on the next message it is asked to forward.
+
+**An id the daemon does not hold is refused, by name.** It used to be treated as
+"no preference": the request fell through to a helper that returned an arbitrary
+active session or, with none running, spawned a `default/workspace` shell to
+answer with. Either way the caller got a plausible reply to a question it had
+not asked — output from an agent it was not watching, keystrokes delivered to
+someone else's terminal, and a phantom agent left holding a herdr pane. That
+helper had no other caller, so it is gone rather than narrowed.
+
+**What the panel does with the refusal** is the other half, since a rejection
+nothing recovers from is only a different failure. On any refused PTY reply the
+panel drops the session id it was holding, leaves the last good frame on screen
+rather than clearing it, and lets the ordinary re-attach path re-resolve the
+workspace — either adopting the session the next status check names, or
+activating, which reuses the running herdr pane. It does that **once**. A second
+refusal without a working attach in between stops and renders "Terminal session
+not recognised" with a Reconnect button, because at that point re-asking is not
+a fix and a panel silently trading requests with the daemon is worse than one
+that says it is stuck.
+
+All three PTY actions are covered, not just `pty_init`: the first thing to meet
+a new daemon is usually whatever the user did next — a keystroke, a panel drag —
+and learning it from a refused keystroke is the same news by a different route.
+
+Two live proofs, both against real processes on a private herdr server and a
+temp `$HOME`, so neither can touch the live daemon:
+
+* `node daemon/scripts/verify-pty-init-rejects-unknown-session.mjs` — the
+  refusal itself, that nothing is created or attached to, that no
+  `default/workspace` appears, and that a genuine session still works. Point
+  `--dist` at a build of an older commit to watch the phantom being spawned.
+* `node extension/scripts/verify-sidepanel-survives-daemon-restart.mjs` — the
+  built sidepanel and the real service worker against a daemon that is killed
+  and restarted underneath them, printing the wire transcript and what the panel
+  rendered at each step. It also re-runs the KAN-4 service-worker-death path
+  with the daemon left alone, which must still recover in silence.
+
+---
+
 ## 📄 Prompt Templates (`prompts/*.md`)
 
 All workspace initial prompts are stored as plain Markdown (`.md`) files in the local service configuration directory. This design allows users and developers to tweak, inspect, and refine agent prompts without recompiling code.

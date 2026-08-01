@@ -1698,11 +1698,13 @@ export class MessageRouter {
   /**
    * Whether a `list_agents` entry costs an agent's worth of machine.
    *
-   * Not everything the list reports does. The daemon opens a bare shell for
-   * itself (`ensureDefaultSession`), and it appears in that list because we hold
-   * a session for it — which is the right answer to "what can I attach to" and
-   * the wrong one to "what is this machine carrying". On a 4-core box it was
-   * silently occupying one of two slots.
+   * Not everything the list reports does. The daemon used to open a bare shell
+   * for itself — the `default/workspace` session KAN-25 removed — and it
+   * appeared in this list because we held a session for it, which is the right
+   * answer to "what can I attach to" and the wrong one to "what is this machine
+   * carrying". On a 4-core box it was silently occupying one of two slots. The
+   * daemon no longer starts anything for itself, but herdr hosts more than
+   * Butchr and the distinction still has to be drawn.
    *
    * The test is whether the entry is a workspace type this daemon starts agents
    * into, or whether herdr can see an agent runtime behind the pane. Either is
@@ -2012,40 +2014,108 @@ export class MessageRouter {
     return { agents, unbackedPanes, staleSessions };
   }
 
+  /**
+   * The session id a PTY request names, when it named one at all.
+   *
+   * `null` covers both a missing id and a non-string one, so the refusal below
+   * can tell "you sent no session" from "you sent a session I do not have"
+   * without any caller having to trust the shape of the wire.
+   */
+  private ptySessionId(data: any): string | null {
+    return typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : null;
+  }
+
+  /**
+   * The refusal a PTY request gets when it names a session this daemon does not
+   * hold.
+   *
+   * It says which id, what that means, and what to do instead — because the
+   * caller is a program, and a program that is only told "no" will retry the
+   * same id forever. The alternative this replaces was worse than a bad error
+   * message: the daemon used to substitute an arbitrary session, or spawn a
+   * `default/workspace` shell, and answer as though the request had been
+   * honoured. See KAN-25.
+   */
+  private unknownPtySession(action: string, sessionId: string | null): string {
+    const named =
+      sessionId === null
+        ? `${action} arrived without a sessionId`
+        : `${action} names session '${sessionId}', which this daemon does not have`;
+    return (
+      `${named}. A PTY session id is only valid for the daemon process that issued it, ` +
+      'and this one is not among them — most likely it was issued by a previous daemon ' +
+      'and the client has not re-resolved since. Ask for the workspace again (status, then ' +
+      'activate) and use the session id that comes back; retrying this one cannot succeed.'
+    );
+  }
+
   private handlePtyInit(data: any, respond: Respond) {
-    const buffer = this.herdrBridge.getPtyBuffer(data.sessionId);
+    const sessionId = this.ptySessionId(data);
+    const session = sessionId === null ? undefined : this.herdrBridge.getSession(sessionId);
+    if (sessionId === null || session === undefined) {
+      respond({
+        action: 'pty_init_response',
+        success: false,
+        sessionId,
+        error: this.unknownPtySession('pty_init', sessionId)
+      });
+      return;
+    }
+
     respond({
       action: 'pty_init_response',
-      sessionId: data.sessionId,
-      buffer: buffer
+      success: true,
+      sessionId,
+      buffer: session.ptyBuffer
     });
 
-    if (this.activePtyListeners.has(data.sessionId)) {
-      const oldCleanup = this.activePtyListeners.get(data.sessionId);
-      if (oldCleanup) oldCleanup();
-    }
+    const oldCleanup = this.activePtyListeners.get(sessionId);
+    if (oldCleanup) oldCleanup();
 
     // Streamed output is unsolicited: it must not carry the pty_init id, or
     // a correlating transport would try to answer a request already closed.
-    const cleanup = this.herdrBridge.registerDataListener(data.sessionId, (ptyData) => {
+    const cleanup = this.herdrBridge.registerDataListener(sessionId, (ptyData) => {
       this.send({
         action: 'pty_output',
-        sessionId: data.sessionId,
+        sessionId,
         data: ptyData
       });
     });
 
-    this.activePtyListeners.set(data.sessionId, cleanup);
+    // Only absent if the session went away between the lookup above and here,
+    // which cannot happen synchronously — but nothing is registered on a guess.
+    if (cleanup) this.activePtyListeners.set(sessionId, cleanup);
   }
 
   private handlePtyInput(data: any, ack: Respond) {
-    this.herdrBridge.writePty(data.sessionId, data.data);
-    ack({ action: 'pty_input_response', success: true });
+    const sessionId = this.ptySessionId(data);
+    // The most dangerous of the three to answer approximately: keystrokes sent
+    // to a session picked on the client's behalf land in some other agent's
+    // terminal, and get executed there.
+    if (!this.herdrBridge.writePty(sessionId ?? undefined, data.data)) {
+      ack({
+        action: 'pty_input_response',
+        success: false,
+        sessionId,
+        error: this.unknownPtySession('pty_input', sessionId)
+      });
+      return;
+    }
+    ack({ action: 'pty_input_response', success: true, sessionId });
   }
 
   private handlePtyResize(data: any, ack: Respond) {
-    this.herdrBridge.resizePty(data.sessionId, data.cols, data.rows);
-    ack({ action: 'pty_resize_response', success: true });
+    const sessionId = this.ptySessionId(data);
+    if (!this.herdrBridge.resizePty(sessionId ?? undefined, data.cols, data.rows)) {
+      ack({
+        action: 'pty_resize_response',
+        success: false,
+        sessionId,
+        error: this.unknownPtySession('pty_resize', sessionId)
+      });
+      return;
+    }
+    ack({ action: 'pty_resize_response', success: true, sessionId });
   }
 
   public cleanup() {
