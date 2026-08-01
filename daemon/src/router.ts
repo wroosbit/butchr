@@ -665,7 +665,21 @@ export class MessageRouter {
 
     if (closedType) this.rememberDeactivated(closedType, key);
 
-    if (result.success) {
+    // Standing down an agent that has already died is not a failure — it is the
+    // request working. There was no pane to close, and the thing actually being
+    // asked for ("stop expecting this agent back") is the registry write, which
+    // succeeded. Reporting `success: false` there tells a supervisor its
+    // stand-down did not take, inviting it either to retry forever or to
+    // conclude the agent is still owed a slot; the next boot would then be the
+    // first anyone learns the intent was recorded all along.
+    //
+    // Only when herdr *answered* though. An unreachable herdr also fails to
+    // close the pane, and calling that "already gone" would report an agent
+    // stood down while it is still running.
+    const goneAlready =
+      !result.success && Boolean(closedType) && this.herdrBridge.listHerdrAgentsChecked().reachable;
+
+    if (result.success || goneAlready) {
       this.broadcast({
         action: 'agent_deactivated_event',
         type: closedType,
@@ -676,8 +690,11 @@ export class MessageRouter {
     respond({
       action: 'deactivate_response',
       key,
-      success: result.success,
-      ...(result.error ? { error: result.error } : {})
+      success: result.success || goneAlready,
+      ...(goneAlready
+        ? { alreadyGone: true, note: 'No agent was running. Its stand-down is recorded, so it will not be restored.' }
+        : {}),
+      ...(result.error && !goneAlready ? { error: result.error } : {})
     });
   }
 
@@ -1223,6 +1240,19 @@ export class MessageRouter {
    * by type, which is precisely what this cannot guess, so it declines rather
    * than picking one.
    */
+  /**
+   * Whether an empty pane is evidence that this agent died.
+   *
+   * For everything Claude-shaped, yes: the runtime is the agent, and its
+   * absence is the death. For a `shell` workspace it is the opposite — there
+   * was never a runtime to lose, and a bare prompt is the delivered product.
+   * Unknown agents are assumed to have a runtime, so a name we cannot place
+   * still gets watched rather than quietly excused.
+   */
+  private expectsRuntime(agentName: string): boolean {
+    return this.agentRegistry?.intents().get(agentName)?.record.defaultAgent !== 'shell';
+  }
+
   private registeredTypeFor(key: string): string | undefined {
     if (!this.agentRegistry) return undefined;
     const lower = key.toLowerCase();
@@ -1316,9 +1346,20 @@ export class MessageRouter {
       // answered. An unreachable herdr returns an empty census, and treating
       // that silence as "they are all dead" would condemn a perfectly healthy
       // fleet, so in that case we keep trusting the session map.
-      if (reachable && !byName.get(agentName)?.agentRuntime) {
-        staleSessions.add(agentName);
-        continue;
+      //
+      // Two different deaths, and only one of them is unconditional. A name
+      // herdr has never heard of is gone, full stop. A name it *has* with no
+      // runtime behind it is a pane whose agent exited — dead too, except for
+      // a `shell` workspace, where a bare prompt and no runtime is the entire
+      // point. Calling one of those missing would be a false alarm about
+      // something working exactly as asked.
+      if (reachable) {
+        const record = byName.get(agentName);
+        const dead = !record || (!record.agentRuntime && this.expectsRuntime(agentName));
+        if (dead) {
+          staleSessions.add(agentName);
+          continue;
+        }
       }
 
       const dto = this.toAgentDto(session, statuses);

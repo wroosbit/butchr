@@ -381,7 +381,7 @@ check('the reason says it started and died, not that it never existed', () => {
   assert.ok(/started and then died/.test(missing.reason), missing.reason);
 });
 
-check('a pane with no agent runtime behind it does not count as alive either', () => {
+check('a pane whose agent runtime has exited is missing too', () => {
   // herdr knows the name but nothing is running in the pane — the same
   // emptiness, reported one layer down.
   const missing = routerWith({
@@ -391,6 +391,22 @@ check('a pane with no agent runtime behind it does not count as alive either', (
   }).findMissingAgents();
 
   assert.strictEqual(missing.length, 1, JSON.stringify(missing));
+});
+
+check('a shell workspace with no runtime is working as asked, not missing', () => {
+  // The one case where an empty pane is the product rather than the failure.
+  // Reporting it would be a false alarm about something doing its job.
+  const file = path.join(tmp, 'reg-shell.jsonl');
+  const reg = new AgentRegistry(file);
+  reg.recordActivated(record('kan-21', { defaultAgent: 'shell' }));
+
+  const missing = routerWith({
+    sessions: [session('kan-21')],
+    herdr: [herdrAgent('kan-21', null)],
+    registry: reg
+  }).findMissingAgents();
+
+  assert.deepStrictEqual(missing, [], 'a shell workspace must not be reported dead');
 });
 
 check('a healthy agent is not reported missing', () => {
