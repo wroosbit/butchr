@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { JiraIssueTypeService } from './jira.js';
@@ -9,8 +10,10 @@ import {
   HerdrAgentStatus,
   addressFromAgentName,
   agentNameFor,
-  typeFromAgentName
+  typeFromAgentName,
+  workspaceDirFor
 } from './herdr.js';
+import { readWorkState } from './work-state.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
 import { AgentRecord, AgentRegistry, PreemptionRecord } from './agent-registry.js';
 import { ResumeCause } from './resume.js';
@@ -81,6 +84,18 @@ interface ListedAgent {
   herdrStatus: HerdrAgentStatus;
   /** herdr's own `agent` field: the CLI running in the pane, null for a shell. */
   agentRuntime: string | null;
+  /**
+   * Whether this agent supervises the board rather than doing work on it.
+   *
+   * Sent so a client does not have to know which workspace types those are.
+   * KAN-38 put an Off button next to every row including the board manager's,
+   * and the guard on that row has to be different in kind — stopping it stops
+   * the thing that hands work out. A UI deciding that from a hardcoded
+   * `type === 'manage'` would be a second copy of a rule that already lives in
+   * registry.ts, and the copy is the one that gets forgotten when a second
+   * supervisor type is added.
+   */
+  supervisor: boolean;
 }
 
 /**
@@ -168,6 +183,48 @@ interface MissingAgent {
   since: string;
   reason: string;
 }
+
+/**
+ * An agent somebody deliberately switched off, that could be switched back on.
+ *
+ * KAN-38 asked where the *on* half of a fleet switch gets its candidates from,
+ * because the Agents page lists what is running and a stopped agent is by
+ * definition not in that list. The answer is KAN-21's registry, and this is the
+ * third of the three ways it can answer "not running":
+ *
+ *   - {@link MissingAgent}    — recorded active, absent anyway. A loss.
+ *   - preempted (see below)   — stood down so something else could run. A debt.
+ *   - StandbyAgent            — stood down because a person said so.
+ *
+ * The three are disjoint on purpose, so no agent grows two switches. This one
+ * is what makes Off reversible from the page that offers it: without it,
+ * turning an agent off here would drop it off every list the page renders and
+ * there would be no way back except finding its Jira tab again.
+ *
+ * Only agents whose workspace still exists are offered. A `reset` also records
+ * a stand-down, and the directory it deleted is the evidence that "turn this
+ * back on" is not what anyone means by it.
+ */
+interface StandbyAgent {
+  agentName: string;
+  type: string;
+  key: string;
+  workDir: string;
+  url: string | null;
+  /** Which launcher it last ran, so it comes back as what it was. */
+  defaultAgent: string | null;
+  /** When the registry recorded the stand-down. */
+  since: string;
+  reason: string;
+}
+
+/**
+ * How many stood-down agents `list_agents` will carry. The registry compacts
+ * at 500 records, so this is bounded already — the cap is about the 2s poll,
+ * not about the log. Anything beyond it is *counted* rather than dropped
+ * silently: see `standbyTotal`.
+ */
+const STANDBY_LIMIT = 25;
 
 /**
  * What the caller is told about the agent it could stand down, when it is at
@@ -276,6 +333,16 @@ export class MessageRouter {
    * history: without it, boot-time restoration would resurrect every agent
    * anyone had ever run. Recorded even when the teardown failed — the caller
    * asked for the agent to be gone, and that is the intent to honour.
+   *
+   * Everything the last activation knew is carried onto the stand-down, and
+   * that is not tidiness. `AgentRecord` is the argument list of an activation,
+   * and `defaultAgent` is one of its arguments: an agent recorded without it
+   * and then switched back on resolves to the `shell` launcher (see
+   * launchers.ts) and comes back as a bare bash prompt wearing the name of a
+   * Claude agent. Before KAN-38 nothing switched a stood-down agent back on, so
+   * the loss was invisible; the moment the Agents page offers an On button it
+   * is the ordinary path. The url and workDir travel for the same reason —
+   * they are how it comes back as what it was rather than as something new.
    */
   private rememberDeactivated(
     type: string,
@@ -284,12 +351,27 @@ export class MessageRouter {
     preemption?: PreemptionRecord
   ): void {
     if (!this.agentRegistry) return;
+    const agentName = agentNameFor(type, key);
+    const previous = this.agentRegistry.intents().get(agentName)?.record;
     this.agentRegistry.recordDeactivated(
       {
-        agentName: agentNameFor(type, key),
+        agentName,
         type,
-        key,
-        workDir: workDir ?? ''
+        // The registry's spelling of the key, when it has one. `agentName` is
+        // built from a lower-cased key, so an agent addressed from a census —
+        // which is how the Agents page addresses one — arrives here as
+        // `kan-38`, and recording that would quietly replace a key spelled the
+        // way its Jira issue is. `preemptionCandidates` already prefers the
+        // registry's spelling for the same reason: this key is about to be
+        // shown to a person next to a ticket that is spelled KAN-38.
+        key: previous?.key ?? key,
+        // The caller's own answer wins — it is looking at the live session —
+        // and the registry's is the fallback for the by-key paths that have no
+        // session to read one from.
+        workDir: workDir ?? previous?.workDir ?? '',
+        ...(previous?.url ? { url: previous.url } : {}),
+        ...(previous?.defaultAgent ? { defaultAgent: previous.defaultAgent } : {}),
+        ...(previous?.mcpServers ? { mcpServers: previous.mcpServers } : {})
       },
       preemption
     );
@@ -367,6 +449,9 @@ export class MessageRouter {
         break;
       case 'capacity':
         this.handleCapacity(data, respond);
+        break;
+      case 'agent_work_state':
+        this.handleAgentWorkState(data, respond);
         break;
       case 'jira_credential_status':
         void guard(this.handleJiraCredentialStatus(respond), 'jira_credential_status');
@@ -946,6 +1031,12 @@ export class MessageRouter {
       respond({
         action: 'deactivate_response',
         success,
+        // The address, so a caller that asked about several agents can tell
+        // which one this answers for. A fleet list can — the Agents page shows
+        // every agent at once, and a bare `success: false` there is a failure
+        // it cannot attribute to a row.
+        type: session.type,
+        key: session.key,
         sessionId: session.sessionId,
         ...(preemption ? { preempted: true } : {})
       });
@@ -1002,6 +1093,7 @@ export class MessageRouter {
     respond({
       action: 'deactivate_response',
       key,
+      ...(closedType ? { type: closedType } : {}),
       success: result.success || goneAlready,
       ...(preemption ? { preempted: true } : {}),
       ...(goneAlready
@@ -1443,6 +1535,10 @@ export class MessageRouter {
     // list is built from, so the two can never disagree about what is running.
     const missingAgents = this.missingAgents(agents, staleSessions);
 
+    // Agents a person switched off. From the same census for the same reason:
+    // an agent that is running must never be offered an On button.
+    const { standby, total: standbyTotal } = this.standbyAgents(agents);
+
     // Descriptor headroom, reported where someone looking at agents will see
     // it. On KAN-24 the herdr server's fd usage was invisible until spawning
     // broke, and the only way to learn it was to read /proc by hand. Expressed
@@ -1480,6 +1576,14 @@ export class MessageRouter {
       // restarts them, deliberately — a preemption queue is a scheduler and
       // this ticket said so.
       preemptedAgents: this.preemptedAgents(),
+      // Where the Agents page's On button gets its candidates. Always present
+      // and empty rather than absent, by the same rule as the two lists above:
+      // "nothing is switched off" and "this daemon does not track that" are
+      // different answers and a client cannot tell them apart from a missing
+      // field. `standbyTotal` is the unclipped count — a list that silently
+      // stopped at STANDBY_LIMIT would read as "that is all of them".
+      standbyAgents: standby,
+      standbyTotal,
       capacity: capacityDto(capacity),
       // What each running agent is worth, and therefore what a would-be
       // activation would have to outrank. Sent alongside the capacity figures
@@ -1701,6 +1805,99 @@ export class MessageRouter {
   }
 
   /**
+   * Agents a person switched off, that could be switched back on.
+   *
+   * Three filters, each removing a different kind of thing nobody means by
+   * "turn it back on":
+   *
+   *   - still running — the stand-down failed, or it was started again since.
+   *     Offering On for something already on is how a control starts lying.
+   *   - preempted — reported separately, with the name of what took its slot.
+   *     One agent, one switch: a row in two lists is a row that can be pressed
+   *     twice.
+   *   - no workspace on disk — `reset` records a stand-down too, and the
+   *     directory it deleted is the whole difference between "stopped" and
+   *     "finished with". Re-activating one of those would create an empty
+   *     workspace and start an agent in it with nothing to continue.
+   *
+   * Newest first, because the thing you just switched off is the thing you are
+   * most likely to want back.
+   */
+  private standbyAgents(agents: ListedAgent[]): { standby: StandbyAgent[]; total: number } {
+    if (!this.agentRegistry) return { standby: [], total: 0 };
+
+    const alive = new Set(agents.map((a) => a.agentName));
+    const standby: StandbyAgent[] = [];
+
+    for (const [agentName, intent] of this.agentRegistry.intents()) {
+      if (intent.event !== 'deactivated') continue;
+      if (intent.preemption) continue;
+      if (alive.has(agentName)) continue;
+
+      const workDir = intent.record.workDir;
+      if (!workDir || !fs.existsSync(workDir)) continue;
+
+      standby.push({
+        agentName,
+        type: intent.record.type,
+        key: intent.record.key,
+        workDir,
+        url: intent.record.url ?? null,
+        defaultAgent: intent.record.defaultAgent ?? null,
+        since: intent.at,
+        reason:
+          'Switched off deliberately. Its workspace is still on disk, so switching it back ' +
+          'on resumes the conversation it was stopped in rather than starting a new one.'
+      });
+    }
+
+    standby.sort((a, b) => b.since.localeCompare(a.since));
+    return { standby: standby.slice(0, STANDBY_LIMIT), total: standby.length };
+  }
+
+  /**
+   * What an agent would lose if it were switched off now.
+   *
+   * Answered from the address rather than from a path the caller supplies: this
+   * runs git in the directory it is given, and a client-supplied path would be
+   * a client choosing where the daemon executes subprocesses. The workspace is
+   * derived from type and key by the same function that creates it.
+   *
+   * Never fails the request. A check that could not be performed comes back
+   * `checked: false` with the reason, because a UI that renders an error as
+   * "nothing to lose" is worse than one that never asked.
+   */
+  private handleAgentWorkState(data: any, respond: Respond) {
+    const { key, type } = data;
+    const badAddress = invalidAddress(key, type);
+    if (badAddress) {
+      respond({ action: 'agent_work_state_response', success: false, error: badAddress });
+      return;
+    }
+
+    // The live session knows where it actually is; the registry remembers for
+    // the agents that outlived their session; the convention is the fallback,
+    // and is what `initPty` would have used anyway.
+    const session = this.herdrBridge.getSessionByKey(key);
+    const recorded =
+      typeof type === 'string'
+        ? this.agentRegistry?.intents().get(agentNameFor(type, key))?.record.workDir
+        : undefined;
+    const workDir =
+      session?.workDir ||
+      (recorded && recorded.length ? recorded : undefined) ||
+      (typeof type === 'string' ? workspaceDirFor(type, key) : '');
+
+    respond({
+      action: 'agent_work_state_response',
+      success: true,
+      type: type ?? null,
+      key,
+      ...readWorkState(workDir)
+    });
+  }
+
+  /**
    * `missingAgents`, for callers outside a request — the daemon's periodic
    * sweep. Public because the sweep runs on a timer rather than in response to
    * a client, and must ask the same question the list answers.
@@ -1770,7 +1967,8 @@ export class MessageRouter {
         status: dto.status,
         workDir: dto.workDir,
         herdrStatus: dto.herdrStatus,
-        agentRuntime: byName.get(agentName)?.agentRuntime ?? null
+        agentRuntime: byName.get(agentName)?.agentRuntime ?? null,
+        supervisor: isSupervisorType(dto.type)
       });
     }
 
@@ -1808,7 +2006,8 @@ export class MessageRouter {
         status: null,
         workDir: record.workDir,
         herdrStatus: record.herdrStatus,
-        agentRuntime: record.agentRuntime
+        agentRuntime: record.agentRuntime,
+        supervisor: isSupervisorType(address.type)
       });
     }
 

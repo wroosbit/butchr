@@ -71,6 +71,57 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       sendResponse({ status: 'error', error: 'Native host not connected' });
     }
+  } else if (message.type === 'ACTIVATE_BUTCHR_BY_KEY') {
+    // Starting an agent that has no page open — which is every agent the
+    // Agents page can offer to switch back on, because it lists the fleet
+    // rather than a tab. `activate` needs a URL to resolve a workspace type
+    // from; this one is handed the type and key directly, which is how the
+    // daemon and the MCP tool have always addressed agents and the one path
+    // this service worker never exposed.
+    //
+    // `defaultAgent` comes from the registry's record of what the agent last
+    // ran, not from extension storage: switching an agent back on must bring
+    // back what was there, and the storage default describes what a *new*
+    // agent would be. It falls back to the stored default only when the
+    // registry has nothing, which is the pre-KAN-38 records.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      chrome.storage.sync.get(['defaultAgent'], (result) => {
+        nativePort.postMessage({
+          action: 'activate_by_key',
+          type: message.workspaceType,
+          key: message.key,
+          ...(message.url ? { url: message.url } : {}),
+          defaultAgent: message.defaultAgent || result.defaultAgent || 'shell',
+          // Same rule as ACTIVATE_BUTCHR: forwarded rather than defaulted, so
+          // that the daemon's record of one means a person pressed a button
+          // that said what it would do.
+          ...(message.override ? { override: true } : {}),
+          ...(message.preempt ? { preempt: true } : {})
+        });
+        sendResponse({ status: 'sent' });
+      });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
+  } else if (message.type === 'FETCH_AGENT_WORK_STATE') {
+    // What an agent would lose if it were stopped. Asked once, when a human
+    // clicks Off and before they confirm — never on the Agents page's 2s poll.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'agent_work_state',
+        type: message.workspaceType,
+        key: message.key
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
   } else if (message.type === 'DEACTIVATE_BUTCHR') {
     if (!isConnected || !nativePort) {
       connectNativeHost();

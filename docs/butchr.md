@@ -224,6 +224,40 @@ real router, registry and on-disk log.
 
 ---
 
+## 🔌 Switching agents on and off from the Agents page
+
+The Agents page shows the whole fleet and, until KAN-38, could act on none of
+it. Every running agent now carries an **Off** switch, and every agent that is
+*not* running can be switched back on from the same page.
+
+**Off** goes through `deactivate_by_key`, so it reaches an agent that outlived
+the daemon holding its terminal as readily as one it is attached to. It is not a
+single click: the daemon runs git in the agent's workspace first
+(`{"action": "agent_work_state"}`) and the confirmation names what would
+actually be lost — a `confirm()` dialog says the same words whether there is
+work to lose or not. The board manager may be switched off too, behind a
+confirmation that says what stops with it, and it reappears immediately on the
+list that switches it back on.
+
+**On** takes its candidates from KAN-21's registry, because the page lists what
+is running and a stopped agent is by definition not in it: `missingAgents` (a
+loss), `preemptedAgents` (a debt) and `standbyAgents` (a person's choice),
+disjoint so no agent grows two switches. Starting one goes through
+`activate_by_key` — a path the daemon and the MCP tool always had and the
+extension never exposed. A stand-down now carries the whole activation record
+forward, so an agent comes back as what it was rather than as a bare shell.
+
+Refusals are rendered with the same `ActivationRefusal.jsx` the sidepanel uses,
+under the row whose button was pressed. Full reasoning — the candidate sources,
+the confirmation, the manager decision, and how an in-flight control is kept
+from fighting the 2-second poll — is in
+[`docs/fleet-controls.md`](fleet-controls.md);
+`node daemon/scripts/verify-agent-power-controls.mjs` and
+`node daemon/scripts/verify-fleet-switch-live.mjs` prove it against the real
+router and against a real herdr respectively.
+
+---
+
 ## 🕰️ Is this the code that was merged?
 
 Merging a PR changes nothing on the machine: the clone is not pulled, `dist/`
