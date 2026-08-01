@@ -217,6 +217,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "butchr_staleness_check",
+        description:
+          "Reports whether the Butchr installation on this machine is actually running the code that was merged: local checkout vs origin/main, daemon/src vs daemon/dist, the running daemon vs the build on disk, and extension sources vs extension/dist. Run this BEFORE citing anything observed from a running daemon or a loaded extension as proof that your change works — otherwise you may be testing whatever was last built rather than what you merged. It only reports; it never pulls, rebuilds or restarts anything.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            force: {
+              type: "boolean",
+              description:
+                "Optional. Recompute instead of reusing the cached report (cached for 15s). Pass true right after a rebuild.",
+            },
+          },
+          required: [],
+        },
+      },
+      {
         name: "butchr_reset_agent",
         description: "Deactivates an agent and securely deletes its workspace directory",
         inputSchema: {
@@ -303,6 +319,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const res = await callDaemonAPI('list_agents');
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+      };
+    }
+
+    if (name === "butchr_staleness_check") {
+      const { force } = (args ?? {}) as any;
+      const res = await callDaemonAPI('staleness_check', { force: force === true });
+      // isError when something *is* stale, not only when the check failed: a
+      // caller that skims tool output for problems must not skim past this one.
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false || res?.stale === true,
       };
     }
 

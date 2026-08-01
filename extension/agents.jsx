@@ -4,10 +4,12 @@ import '@launchpad-ui/components/style.css';
 import './sidepanel.css'; // Reuse basic styles if needed
 
 import { HerdrStateChip } from './src/components/HerdrStateChip.jsx';
+import { StalenessBanner } from './src/components/StalenessBanner.jsx';
 
 function Agents() {
   const [daemonConnected, setDaemonConnected] = useState(false);
   const [agents, setAgents] = useState([]);
+  const [staleness, setStaleness] = useState(null);
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_DAEMON_STATUS' }, (res) => {
@@ -25,6 +27,9 @@ function Agents() {
         const payload = message.payload;
         if (payload.action === 'list_agents_response') {
           setAgents(payload.agents || []);
+          // Rides along on the poll rather than being fetched separately. An
+          // older daemon simply omits it, and the banner then renders nothing.
+          if (payload.staleness) setStaleness(payload.staleness);
         }
       }
     };
@@ -60,6 +65,10 @@ function Agents() {
           <span>{daemonConnected ? 'Daemon Online' : 'Daemon Offline'}</span>
         </div>
       </div>
+
+      {/* Above the agent list, not below it: a warning that what is running is
+          not what was merged changes how you should read everything under it. */}
+      <StalenessBanner staleness={staleness} />
 
       {!daemonConnected ? (
         <div style={{ textAlign: 'center', color: '#94a3b8', padding: '40px' }}>Daemon is offline.</div>
