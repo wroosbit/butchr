@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { TurnOnButton } from './TurnOnButton.jsx';
+
 // "Something was deliberately stopped, and nobody has decided what happens to
 // it yet."
 //
@@ -38,7 +40,12 @@ function since(iso) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h ago`;
 }
 
-export function PreemptedAgentsBanner({ preemptedAgents }) {
+// `onTurnOn` is optional and its absence changes nothing else, for the reason
+// MissingAgentsBanner gives. Note what is still true with it present: nothing
+// here restarts anything by itself. A preemption queue is a scheduler, which
+// KAN-37 ruled out and KAN-38 did not reopen — this is a person deciding, one
+// agent at a time, exactly as the sidepanel toggle already let them.
+export function PreemptedAgentsBanner({ preemptedAgents, pending, onTurnOn, renderRefusal }) {
   if (!Array.isArray(preemptedAgents) || preemptedAgents.length === 0) return null;
 
   return (
@@ -71,28 +78,41 @@ export function PreemptedAgentsBanner({ preemptedAgents }) {
               const ago = since(agent.at);
               return (
                 <li key={agent.agentName} style={{ marginBottom: '10px', listStyle: 'none' }}>
-                  <div style={{ fontWeight: 600, color: PALETTE.title, fontSize: '13px' }}>
-                    🔑 {agent.key}
-                    <span
-                      style={{
-                        backgroundColor: '#1e293b',
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        fontSize: '11px',
-                        marginLeft: '8px',
-                        color: '#e2e8f0'
-                      }}
-                    >
-                      {agent.type} · priority {agent.priority}
-                    </span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, color: PALETTE.title, fontSize: '13px' }}>
+                        🔑 {agent.key}
+                        <span
+                          style={{
+                            backgroundColor: '#1e293b',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            marginLeft: '8px',
+                            color: '#e2e8f0'
+                          }}
+                        >
+                          {agent.type} · priority {agent.priority}
+                        </span>
+                      </div>
+                      {/* Who took it, by name. An agent stopped by an anonymous
+                          "higher-priority activation" is one nobody can argue with. */}
+                      <div style={{ color: PALETTE.fg, fontSize: '12px', marginTop: '2px' }}>
+                        stood down for {agent.by?.type}/{agent.by?.key} (priority {agent.by?.priority})
+                        {ago ? ` · ${ago}` : null}
+                        {agent.herdrStatusWhenPreempted ? ` · was ${agent.herdrStatusWhenPreempted}` : null}
+                      </div>
+                    </div>
+                    {onTurnOn ? (
+                      <TurnOnButton
+                        candidate={agent}
+                        pending={pending?.[agent.agentName]}
+                        onTurnOn={onTurnOn}
+                        label="Put back"
+                      />
+                    ) : null}
                   </div>
-                  {/* Who took it, by name. An agent stopped by an anonymous
-                      "higher-priority activation" is one nobody can argue with. */}
-                  <div style={{ color: PALETTE.fg, fontSize: '12px', marginTop: '2px' }}>
-                    stood down for {agent.by?.type}/{agent.by?.key} (priority {agent.by?.priority})
-                    {ago ? ` · ${ago}` : null}
-                    {agent.herdrStatusWhenPreempted ? ` · was ${agent.herdrStatusWhenPreempted}` : null}
-                  </div>
+                  {renderRefusal ? renderRefusal(agent.agentName) : null}
                 </li>
               );
             })}

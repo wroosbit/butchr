@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { TurnOnButton } from './TurnOnButton.jsx';
+
 // "Something that should be running is not", said where someone will see it.
 //
 // This is the detectability half of KAN-21. On the outage that produced that
@@ -36,7 +38,11 @@ function since(iso) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h ago`;
 }
 
-export function MissingAgentsBanner({ missingAgents }) {
+// `onTurnOn` is optional, and this banner renders without it exactly as it did
+// before KAN-38. That is not defensiveness — the sidepanel does not pass one,
+// and a banner that broke when nobody could act on it would be a banner that
+// stopped reporting losses on the surface that only reports them.
+export function MissingAgentsBanner({ missingAgents, pending, onTurnOn, renderRefusal }) {
   if (!Array.isArray(missingAgents) || missingAgents.length === 0) return null;
 
   return (
@@ -71,37 +77,54 @@ export function MissingAgentsBanner({ missingAgents }) {
               const ago = since(agent.since);
               return (
                 <li key={agent.agentName} style={{ marginBottom: '10px', listStyle: 'none' }}>
-                  <div style={{ fontWeight: 600, color: PALETTE.title, fontSize: '13px' }}>
-                    🔑 {agent.key}
-                    <span
-                      style={{
-                        backgroundColor: '#1e293b',
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        fontSize: '11px',
-                        marginLeft: '8px',
-                        color: '#e2e8f0'
-                      }}
-                    >
-                      {agent.type}
-                    </span>
-                  </div>
-                  <div style={{ color: PALETTE.fg, fontSize: '12px', marginTop: '2px' }}>
-                    {agent.agentName}
-                    {ago ? ` · activated ${ago}` : null}
-                  </div>
-                  {agent.workDir ? (
-                    <div
-                      style={{
-                        color: '#94a3b8',
-                        fontSize: '11px',
-                        marginTop: '2px',
-                        wordBreak: 'break-all'
-                      }}
-                    >
-                      {agent.workDir}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, color: PALETTE.title, fontSize: '13px' }}>
+                        🔑 {agent.key}
+                        <span
+                          style={{
+                            backgroundColor: '#1e293b',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            marginLeft: '8px',
+                            color: '#e2e8f0'
+                          }}
+                        >
+                          {agent.type}
+                        </span>
+                      </div>
+                      <div style={{ color: PALETTE.fg, fontSize: '12px', marginTop: '2px' }}>
+                        {agent.agentName}
+                        {ago ? ` · activated ${ago}` : null}
+                      </div>
+                      {agent.workDir ? (
+                        <div
+                          style={{
+                            color: '#94a3b8',
+                            fontSize: '11px',
+                            marginTop: '2px',
+                            wordBreak: 'break-all'
+                          }}
+                        >
+                          {agent.workDir}
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
+                    {/* The banner already told the reader to re-activate it.
+                        Before KAN-38 that was advice with nowhere to follow it
+                        — the agent is not on any list that has a switch, which
+                        is what being missing means. */}
+                    {onTurnOn ? (
+                      <TurnOnButton
+                        candidate={agent}
+                        pending={pending?.[agent.agentName]}
+                        onTurnOn={onTurnOn}
+                        label="Restore"
+                      />
+                    ) : null}
+                  </div>
+                  {renderRefusal ? renderRefusal(agent.agentName) : null}
                 </li>
               );
             })}
