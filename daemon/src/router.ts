@@ -12,6 +12,7 @@ import {
   typeFromAgentName
 } from './herdr.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
+import { getStalenessReport, StalenessReport } from './staleness.js';
 import {
   Capacity,
   capacityReason,
@@ -153,8 +154,20 @@ export class MessageRouter {
     private herdrBridge: HerdrBridge,
     private send: (msg: any) => void,
     private broadcast: (msg: any) => void = send,
-    private jira?: JiraIssueTypeService
+    private jira?: JiraIssueTypeService,
+    /**
+     * Where this daemon is installed and when it started — everything the
+     * staleness check needs. Absent in the unit-test constructions that do not
+     * care, in which case the check is simply not offered.
+     */
+    private install?: { repoRoot: string; daemonStartedAt: Date }
   ) {}
+
+  /** The staleness report, or undefined when this router has no install context. */
+  private staleness(force = false): StalenessReport | undefined {
+    if (!this.install) return undefined;
+    return getStalenessReport({ ...this.install, force });
+  }
 
   public handle(data: any) {
     // Responses echo the request's `id` so a transport can correlate them.
@@ -216,6 +229,9 @@ export class MessageRouter {
         break;
       case 'list_agents':
         this.handleListAgents(data, respond);
+        break;
+      case 'staleness_check':
+        this.handleStalenessCheck(data, respond);
         break;
       case 'capacity':
         this.handleCapacity(data, respond);
@@ -916,6 +932,26 @@ export class MessageRouter {
   }
 
   /**
+   * "Is the thing I am looking at the thing that was merged?" — on demand.
+   *
+   * The audience is as much an agent as a human: an agent that verifies its
+   * work against this daemon is verifying whatever was last built, and this is
+   * how it can find that out before believing its own acceptance proof.
+   */
+  private handleStalenessCheck(data: any, respond: Respond) {
+    const report = this.staleness(data?.force === true);
+    if (!report) {
+      respond({
+        action: 'staleness_check_response',
+        success: false,
+        error: 'This daemon was started without install context; staleness cannot be checked.'
+      });
+      return;
+    }
+    respond({ action: 'staleness_check_response', success: true, ...report });
+  }
+
+  /**
    * Everything running, from herdr's view unioned with our own.
    *
    * The session map is emptied by a daemon restart while the herdr panes keep
@@ -948,12 +984,19 @@ export class MessageRouter {
     // agent; this is the number that decision needs.
     const capacity = this.capacityOf(agents);
 
+    // Staleness rides along on the poll the Agents page is already making, so
+    // the banner can appear without a second request and without the page
+    // having to know when to ask. The report is cached for 15s inside
+    // getStalenessReport, so a 2s poll does not mean a 2s git invocation.
+    const staleness = this.staleness();
+
     respond({
       action: 'list_agents_response',
       success: true,
       agents,
       unbackedPanes,
       capacity: capacityDto(capacity),
+      ...(staleness ? { staleness } : {}),
       ...(usage ? {
         herdrHealth: {
           pid: usage.pid,

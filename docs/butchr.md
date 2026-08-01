@@ -184,6 +184,30 @@ it starts nothing and costs nothing.
 
 ---
 
+## 🕰️ Is this the code that was merged?
+
+Merging a PR changes nothing on the machine: the clone is not pulled, `dist/`
+does not rebuild, Chrome does not reload the unpacked extension. Since that
+turns a live daemon into unreliable evidence — for a human debugging and for an
+agent proving its work — the daemon checks four things at startup and on
+demand: local `HEAD` against `origin/main` as last fetched, `daemon/dist`
+against `daemon/src`, the running process against `daemon/dist`, and
+`extension/dist` against the extension sources. Every verdict carries the
+commit or the mtime it was decided on.
+
+It **reports and never acts**: no pulling, no rebuilding, no restarting, no
+refusing to start. Stale states are shown as a banner on the Agents page (which
+already polls `list_agents`, so the report rides along), returned by
+`{"action": "staleness_check"}` on the socket, and by the MCP tool
+`butchr_staleness_check`, which flags an error response when the install is
+stale so an agent must decide to ignore it. A fresh install shows nothing.
+
+Full reasoning — surface choice, why it warns rather than blocks, and how it
+avoids firing at agent worktrees and unrelated branches — is in
+[docs/staleness.md](staleness.md).
+
+---
+
 ## 📄 Prompt Templates (`prompts/*.md`)
 
 All workspace initial prompts are stored as plain Markdown (`.md`) files in the local service configuration directory. This design allows users and developers to tweak, inspect, and refine agent prompts without recompiling code.

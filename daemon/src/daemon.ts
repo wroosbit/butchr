@@ -10,6 +10,7 @@ import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
+import { getStalenessReport, formatStalenessReport } from './staleness.js';
 import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
 import { execFileSync } from 'child_process';
 
@@ -100,6 +101,21 @@ log(
     ? `Jira credential configured for ${credentialStatus.email} @ ${credentialStatus.siteUrl} (stored in ${credentialStatus.storage})`
     : 'No Jira credential configured; Jira issue URLs will all resolve to type `task`'
 );
+// When this process started, so the staleness check can tell a rebuilt `dist/`
+// from a daemon that has actually loaded it. Captured before anything slow.
+const daemonStartedAt = new Date();
+
+// Nothing about a merged PR reaches this machine on its own: the clone is not
+// pulled, `dist/` does not rebuild, Chrome does not reload. Report it at
+// startup — the daemon is restarted precisely when someone has just changed
+// something, which is the moment the answer matters. Local reads only; a
+// blocking `git fetch` here would trade a silent failure for a slow one.
+for (const line of formatStalenessReport(
+  getStalenessReport({ repoRoot, daemonStartedAt, force: true })
+)) {
+  log(line);
+}
+
 const connections = new Set<net.Socket>();
 
 const broadcast = (msg: any) => {
@@ -131,7 +147,8 @@ const server = net.createServer((socket) => {
     herdrBridge,
     (msg) => writeJsonLine(socket, msg),
     broadcast,
-    jira
+    jira,
+    { repoRoot, daemonStartedAt }
   );
 
   onJsonLines(

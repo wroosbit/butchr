@@ -358,9 +358,11 @@ validates it at submit time. See `docs/butchr.md` for the full design.
 
 ## 9. Keeping it working
 
-Merging a PR changes nothing on your machine until you do this. Nothing
-currently warns you (tracked as KAN-30); `butchr-doctor` reports stale builds,
-which is the closest thing today.
+Merging a PR changes nothing on your machine until you do this. The daemon now
+says so when it is outstanding — at startup in its log, and as a banner on the
+Agents page — but it will not do any of it for you. See
+[docs/staleness.md](staleness.md) for what it checks and why it warns rather
+than blocks; `butchr-doctor` reports the same build staleness on demand.
 
 ```bash
 git pull
