@@ -22,7 +22,7 @@ function SidePanel() {
   const {
     pageStatus, statusError, supported, active, attached, detachReason, activateError,
     sessionData, handleToggle, handleReset, handleReconnect, handleOverrideActivate,
-    dismissActivateError, retryStatus
+    handlePreemptActivate, dismissActivateError, retryStatus
   } = useWorkspaceSession(
     currentTab,
     activeTabView,
@@ -123,6 +123,7 @@ function SidePanel() {
                 <ActivationRefusal
                   refusal={activateError}
                   onOverride={handleOverrideActivate}
+                  onPreempt={handlePreemptActivate}
                   onDismiss={dismissActivateError}
                 />
                 <TerminalView

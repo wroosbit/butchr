@@ -59,7 +59,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // Forwarded rather than defaulted so an ordinary activate carries no
           // override at all, and the daemon's record of one means a person
           // asked for it.
-          ...(message.override ? { override: true } : {})
+          ...(message.override ? { override: true } : {}),
+          // Same rule, and it matters more here: this one ends another agent's
+          // turn. It is set only by the "Stand down <agent> and start" button,
+          // which exists only on a refusal that has already named the agent —
+          // so a preempt reaching the daemon means a person read the name.
+          ...(message.preempt ? { preempt: true } : {})
         });
         sendResponse({ status: 'sent' });
       });

@@ -12,8 +12,18 @@ import {
   typeFromAgentName
 } from './herdr.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
-import { AgentRecord, AgentRegistry } from './agent-registry.js';
+import { AgentRecord, AgentRegistry, PreemptionRecord } from './agent-registry.js';
 import { ResumeCause } from './resume.js';
+import { nudgeResumedAgent } from './nudge.js';
+import {
+  PreemptionCandidate,
+  addressOf,
+  describeCandidate,
+  describeFleetPriorities,
+  noVictimReason,
+  preemptionOffer,
+  selectVictim
+} from './priority.js';
 import { getStalenessReport, StalenessReport } from './staleness.js';
 import {
   Capacity,
@@ -159,6 +169,28 @@ interface MissingAgent {
   reason: string;
 }
 
+/**
+ * What the caller is told about the agent it could stand down, when it is at
+ * capacity and outranks something.
+ *
+ * Sent on the *refusal*, not after the fact. Preemption is opt-in per
+ * activation for the same reason KAN-36 made refusals visible: someone toggling
+ * an agent on must not silently destroy another agent's uncommitted work. This
+ * is the sentence the sidepanel turns into a named button, and its presence in
+ * the payload is what the consent criterion is satisfied by.
+ */
+interface PreemptionOfferDto {
+  agentName: string;
+  type: string | null;
+  key: string;
+  priority: number;
+  herdrStatus: HerdrAgentStatus;
+  /** The priority of the activation being refused, for the comparison. */
+  incomingPriority: number;
+  /** One sentence naming what would be stood down and what authorises it. */
+  offer: string;
+}
+
 /** What {@link MessageRouter.capacityGate} decided, and why. */
 interface CapacityGateResult {
   capacity: Capacity;
@@ -166,6 +198,28 @@ interface CapacityGateResult {
   refusal: string | null;
   /** Set when it may proceed only because the caller deliberately said so. */
   overrode: { at: string; derivation: string } | null;
+  /**
+   * Set on a refusal that preemption could lift. Null both when there is
+   * nothing to preempt and when preemption already happened.
+   */
+  preemptable: PreemptionOfferDto | null;
+  /** Set when an agent was actually stood down to make this room. */
+  preempted: { at: string; victim: PreemptionOfferDto; derivation: string } | null;
+}
+
+/** Everything the capacity gate needs to know about the activation it is judging. */
+interface GateRequest {
+  /** `task/KAN-99`, for the refusal prose. */
+  what: string;
+  type: string;
+  key: string;
+  agentName: string;
+  /** What this activation outranks. See priority.ts. */
+  priority: number;
+  /** Start it past the cap without freeing anything. */
+  override: unknown;
+  /** Free a slot by standing down something this activation outranks. */
+  preempt: unknown;
 }
 
 export class MessageRouter {
@@ -223,14 +277,22 @@ export class MessageRouter {
    * anyone had ever run. Recorded even when the teardown failed — the caller
    * asked for the agent to be gone, and that is the intent to honour.
    */
-  private rememberDeactivated(type: string, key: string, workDir?: string): void {
+  private rememberDeactivated(
+    type: string,
+    key: string,
+    workDir?: string,
+    preemption?: PreemptionRecord
+  ): void {
     if (!this.agentRegistry) return;
-    this.agentRegistry.recordDeactivated({
-      agentName: agentNameFor(type, key),
-      type,
-      key,
-      workDir: workDir ?? ''
-    });
+    this.agentRegistry.recordDeactivated(
+      {
+        agentName: agentNameFor(type, key),
+        type,
+        key,
+        workDir: workDir ?? ''
+      },
+      preemption
+    );
   }
 
   /** The staleness report, or undefined when this router has no install context. */
@@ -351,27 +413,128 @@ export class MessageRouter {
    * Someone reading the log later should be able to see that the machine was
    * over-staffed deliberately, and what the numbers were at the time.
    */
-  private capacityGate(
-    what: string,
-    override: unknown,
-    agentName?: string
-  ): CapacityGateResult {
+  private capacityGate(request: GateRequest): CapacityGateResult {
+    const { what, type, key, agentName, priority, override, preempt } = request;
+    const pass = (capacity: Capacity): CapacityGateResult => ({
+      capacity,
+      refusal: null,
+      overrode: null,
+      preemptable: null,
+      preempted: null
+    });
+
     const { agents } = this.surveyAgents();
 
-    if (agentName && agents.some((a) => a.agentName === agentName)) {
+    if (agents.some((a) => a.agentName === agentName)) {
       // Already alive and already counted. Starting nothing costs nothing.
-      return { capacity: this.capacityOf(agents), refusal: null, overrode: null };
+      return pass(this.capacityOf(agents));
     }
 
     const capacity = this.capacityOf(agents);
-    if (!capacity.atCapacity) return { capacity, refusal: null, overrode: null };
+    if (!capacity.atCapacity) return pass(capacity);
+
+    // Everything running that this activation could conceivably displace, and
+    // the one it would take. `victim` is null in the ordinary case — a task
+    // agent on a board of task agents outranks nothing, and neither does
+    // anything at all when the only thing running is the board manager.
+    const candidates = this.preemptionCandidates(agents, agentName);
+    const victim = selectVictim(candidates, priority);
+    const derivation = describeCapacity(capacity);
+    const offer = (v: PreemptionCandidate): PreemptionOfferDto => ({
+      agentName: v.agentName,
+      type: v.type,
+      key: v.key,
+      priority: v.priority,
+      herdrStatus: v.herdrStatus,
+      incomingPriority: priority,
+      offer: preemptionOffer(v, priority)
+    });
+
+    if (preempt && victim) {
+      const at = new Date().toISOString();
+      const preemption: PreemptionRecord = {
+        byAgentName: agentName,
+        byType: type,
+        byKey: key,
+        byPriority: priority,
+        priority: victim.priority,
+        herdrStatus: victim.herdrStatus,
+        derivation
+      };
+
+      // Through the ordinary stand-down path rather than a teardown of its own.
+      // KAN-21's `deactivate_by_key` already handles every case this needs —
+      // a live session, an agent that outlived its daemon, and one that has
+      // already died — and answers honestly about which it found. Preemption
+      // reusing it means there is one way an agent stops, not two.
+      let standDown: any = null;
+      this.handleDeactivateByKey(
+        { key: victim.key, type: victim.type ?? undefined, preemption },
+        (msg: any) => {
+          standDown = msg;
+        }
+      );
+
+      if (!standDown?.success) {
+        // Nothing was freed, so nothing may start. Refusing here is the
+        // important half: proceeding would leave the machine over capacity
+        // *and* have announced a preemption that did not happen.
+        const error =
+          `Refusing to activate ${what}: standing down ${addressOf(victim)} to make room ` +
+          `failed (${standDown?.error ?? 'no reason given'}), so no capacity was freed.\n` +
+          derivation;
+        console.error(`[capacity] preemption aborted: ${error}`);
+        return { capacity, refusal: error, overrode: null, preemptable: offer(victim), preempted: null };
+      }
+
+      console.warn(
+        `[capacity] preemption: ${what} (priority ${priority}) stood down ` +
+        `${describeCandidate(victim)} at ${at}\n${derivation}`
+      );
+      this.broadcast({
+        action: 'agent_preempted_event',
+        at,
+        victim: offer(victim),
+        by: { agentName, type, key, priority },
+        capacity: capacityDto(capacity)
+      });
+
+      // Re-surveyed rather than reused: the caller is about to be told what the
+      // machine looks like, and it is not the machine that refused a moment ago.
+      //
+      // The activation now proceeds unconditionally, and that is deliberate.
+      // Only the count term responds to a stand-down immediately — the load
+      // average is a one-minute mean and the kernel has not yet reclaimed the
+      // memory — so re-running the whole gate here would sometimes refuse
+      // *after* destroying an agent's work, which is the worst of both
+      // outcomes. A slot was freed on purpose; the machine is strictly better
+      // off than it was a moment ago, and it is about to look it.
+      const after = this.capacityOf(this.surveyAgents().agents);
+      return {
+        capacity: after,
+        refusal: null,
+        overrode: null,
+        preemptable: null,
+        preempted: { at, victim: offer(victim), derivation }
+      };
+    }
 
     if (!override) {
-      return { capacity, refusal: capacityRefusal(capacity, what), overrode: null };
+      // Both branches name what is running and what it is worth. Losing a slot
+      // is survivable; not being able to see who you lost it to is not.
+      const refusal =
+        `${capacityRefusal(capacity, what)}\n` +
+        (victim ? preemptionOffer(victim, priority) : noVictimReason(candidates, priority));
+      return {
+        capacity,
+        refusal,
+        overrode: null,
+        preemptable: victim ? offer(victim) : null,
+        preempted: null
+      };
     }
 
     const at = new Date().toISOString();
-    const derivation = describeCapacity(capacity);
     console.warn(
       `[capacity] override: starting ${what} past capacity at ${at}\n${derivation}`
     );
@@ -381,7 +544,104 @@ export class MessageRouter {
       at,
       capacity: capacityDto(capacity)
     });
-    return { capacity, refusal: null, overrode: { at, derivation } };
+    return {
+      capacity,
+      refusal: null,
+      overrode: { at, derivation },
+      preemptable: victim ? offer(victim) : null,
+      preempted: null
+    };
+  }
+
+  /**
+   * Everything running that could be considered for a stand-down.
+   *
+   * The same filter the capacity model uses, for the same reason it exists
+   * there: a list that counted the daemon's own bare shell would offer to kill
+   * it, and a list that disagreed with `running` would offer to free a slot
+   * that was never occupied.
+   *
+   * The board manager is deliberately *included*. It can never be selected —
+   * nothing outranks priority 3 and the comparison is strictly-greater — and
+   * leaving it in is what makes that a fact about the ordering rather than a
+   * special case somebody has to remember. It is protected twice over in any
+   * event: its share is reserved off the top rather than counted against the
+   * cap, so standing it down would not free a fleet slot even if it could be
+   * chosen.
+   */
+  private preemptionCandidates(agents: ListedAgent[], exclude?: string): PreemptionCandidate[] {
+    const intents = this.agentRegistry?.intents();
+    const candidates: PreemptionCandidate[] = [];
+
+    for (const entry of agents) {
+      if (!this.countsAsAgent(entry)) continue;
+      if (exclude && entry.agentName === exclude) continue;
+
+      const intent = intents?.get(entry.agentName);
+      candidates.push({
+        agentName: entry.agentName,
+        type: entry.type,
+        // The registry's key when it has one, because an agent resolved from
+        // its name alone carries the lower-cased form the name was built from
+        // — and this key is about to be shown to a person next to a Jira issue
+        // that is spelled KAN-10.
+        key: intent?.record.key ?? entry.key,
+        priority: this.registry.priorityFor(entry.type),
+        herdrStatus: entry.herdrStatus,
+        activatedAt: intent?.event === 'activated' ? intent.at : null
+      });
+    }
+
+    return candidates;
+  }
+
+  /**
+   * The resume cause for an activation nobody labelled one.
+   *
+   * An agent whose last stand-down was a preemption is being *resumed* when it
+   * is switched back on, whatever the caller thinks it is doing — and it must
+   * be told so, or it comes back with its whole conversation restored and no
+   * turn to take. That is KAN-21's idle-forever failure, reached by a route
+   * KAN-21 never had: nobody rebooted anything, a person just turned a switch
+   * back on.
+   *
+   * An explicit cause always wins; only boot-time reconciliation sets one.
+   */
+  private resumeCauseFor(agentName: string, explicit?: ResumeCause): ResumeCause | undefined {
+    if (explicit) return explicit;
+    return this.agentRegistry?.preemptionFor(agentName) ? 'preempted' : undefined;
+  }
+
+  /**
+   * Tell a just-resumed agent to carry on, without making the caller wait.
+   *
+   * Fire-and-forget on purpose: the nudge waits up to two minutes for the
+   * agent's prompt to appear, and an activate that blocked on that would time
+   * out in every client. The response has already gone; this is the part that
+   * happens afterwards, and its outcome lands in the daemon log.
+   *
+   * Scheduled onto a later turn rather than merely un-awaited, which is not
+   * fussiness. The first thing the nudge does is read the agent's pane, and
+   * `herdr agent read` is an `execSync` with a five-second ceiling — starting it
+   * inside this call would run it *before* the handler reaches `respond`, and
+   * the user would watch a toggle hang on a message it is not waiting for.
+   *
+   * Only when a conversation actually came back. The other branch started with
+   * the degraded-resume prompt on its command line and is already working.
+   */
+  private nudgeIfResumed(session: HerdrSession, defaultAgent?: string): void {
+    if (!session.resume || session.resumedConversation !== true) return;
+    const cause = session.resume;
+    setTimeout(() => {
+      void nudgeResumedAgent({
+        herdrBridge: this.herdrBridge,
+        type: session.type,
+        key: session.key,
+        cause,
+        defaultAgent,
+        log: (...args: any[]) => console.log(...args)
+      });
+    }, 0);
   }
 
   private async handleActivate(data: any, respond: Respond) {
@@ -401,14 +661,19 @@ export class MessageRouter {
       URL: data.url
     });
 
+    const agentName = agentNameFor(config.type, key);
     let session = this.herdrBridge.getSessionByKey(key);
     let gate: CapacityGateResult | null = null;
     if (!session) {
-      gate = this.capacityGate(
-        `${config.type}/${key}`,
-        data.override,
-        agentNameFor(config.type, key)
-      );
+      gate = this.capacityGate({
+        what: `${config.type}/${key}`,
+        type: config.type,
+        key,
+        agentName,
+        priority: config.priority,
+        override: data.override,
+        preempt: data.preempt
+      });
       if (gate.refusal) {
         respond({
           action: 'activate_response',
@@ -424,11 +689,19 @@ export class MessageRouter {
           refusedBy: 'capacity',
           reason: capacityReason(gate.capacity),
           derivation: describeCapacity(gate.capacity),
-          capacity: capacityDto(gate.capacity)
+          capacity: capacityDto(gate.capacity),
+          priority: config.priority,
+          // Named, so the panel can offer a button that says whose work it
+          // ends. Absent when there is nothing this activation outranks.
+          ...(gate.preemptable ? { preemption: gate.preemptable } : {})
         });
         return;
       }
-      session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers);
+      // A preempted agent switched back on is resuming interrupted work, not
+      // starting it. See resumeCauseFor.
+      const resume = this.resumeCauseFor(agentName);
+      session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers, resume);
+      if (!session.spawnError) this.nudgeIfResumed(session, data.defaultAgent);
     }
 
     if (!session.spawnError) {
@@ -475,6 +748,9 @@ export class MessageRouter {
       workDir: session.workDir,
       createdAt: session.createdAt.toISOString(),
       mcpServers: config.mcpServers,
+      priority: config.priority,
+      ...(session.resume ? { resume: session.resume, resumedConversation: session.resumedConversation } : {}),
+      ...(gate?.preempted ? { preempted: gate.preempted } : {}),
       ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
     });
   }
@@ -507,13 +783,23 @@ export class MessageRouter {
     const config = this.registry.get(type);
     const promptTemplateFile = config?.promptTemplateFile ?? `prompts/${type}.md`;
     const mcpServers = config?.mcpServers ?? ['atlassian', 'butchr'];
+    const priority = this.registry.priorityFor(type);
+    const agentName = agentNameFor(type, key);
     let session = this.herdrBridge.getSessionByKey(key);
     let gate: CapacityGateResult | null = null;
 
     if (!session) {
       // Before the prompt is even rendered: the cheapest refusal is the one
       // that happens before any work is done for an agent that will not exist.
-      gate = this.capacityGate(`${type}/${key}`, data.override, agentNameFor(type, key));
+      gate = this.capacityGate({
+        what: `${type}/${key}`,
+        type,
+        key,
+        agentName,
+        priority,
+        override: data.override,
+        preempt: data.preempt
+      });
       if (gate.refusal) {
         respond({
           action: 'activate_response',
@@ -525,7 +811,9 @@ export class MessageRouter {
           refusedBy: 'capacity',
           reason: capacityReason(gate.capacity),
           derivation: describeCapacity(gate.capacity),
-          capacity: capacityDto(gate.capacity)
+          capacity: capacityDto(gate.capacity),
+          priority,
+          ...(gate.preemptable ? { preemption: gate.preemptable } : {})
         });
         return;
       }
@@ -534,13 +822,22 @@ export class MessageRouter {
         KEY: key,
         URL: url ?? ''
       });
-      // `resume` is set only by boot-time reconciliation, never by a client:
-      // it changes what the agent is told when there is nothing to continue,
-      // and an ordinary activation is not an interrupted one.
-      const resume: ResumeCause | undefined =
+      // An explicit `resume` is set only by boot-time reconciliation, never by
+      // a client: it changes what the agent is told when there is nothing to
+      // continue, and an ordinary activation is not an interrupted one. What a
+      // client *can* produce without saying so is the re-activation of an agent
+      // it previously preempted, which is an interrupted one — resumeCauseFor
+      // is where that is recognised rather than trusted to the caller.
+      const explicit: ResumeCause | undefined =
         data.resume === 'reboot' || data.resume === 'daemon-restart' ? data.resume : undefined;
+      const resume = this.resumeCauseFor(agentName, explicit);
 
       session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, mcpServers, resume);
+
+      // Reconciliation nudges its own restores, in sequence and with the
+      // stagger it needs; it passes an explicit cause, which is how the two are
+      // told apart. A preemption resume has nobody else to do it.
+      if (!explicit && !session.spawnError) this.nudgeIfResumed(session, defaultAgent);
     }
 
     if (!session.spawnError) {
@@ -589,11 +886,16 @@ export class MessageRouter {
       sessionId: session.sessionId,
       status: session.status,
       workDir: session.workDir,
+      priority,
       // Only present on a restore. `false` means the agent came up with the
       // degraded-resume prompt and is already working; `true` means it was
       // handed its old conversation and is sitting at an empty prompt, which
       // is the case that needs a nudge. See daemon.ts's reconciliation.
       ...(session.resume ? { resume: session.resume, resumedConversation: session.resumedConversation } : {}),
+      // What this activation cost somebody else. Reported to the caller as well
+      // as broadcast, so an MCP client that started an agent by preemption
+      // learns whose work it interrupted from the same response.
+      ...(gate?.preempted ? { preempted: gate.preempted } : {}),
       ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
     });
   }
@@ -624,23 +926,28 @@ export class MessageRouter {
 
   public handleDeactivateByKey(data: any, respond: Respond) {
     const { key } = data;
+    // Set only by the capacity gate, never by a client: it is the record of why
+    // this stand-down was not the agent's own idea. See PreemptionRecord.
+    const preemption: PreemptionRecord | undefined = data.preemption;
     const session = this.herdrBridge.getSessionByKey(key);
 
     if (session) {
       const success = this.herdrBridge.terminateSession(session.sessionId);
-      this.rememberDeactivated(session.type, session.key, session.workDir);
+      this.rememberDeactivated(session.type, session.key, session.workDir, preemption);
 
       this.broadcast({
         action: 'agent_deactivated_event',
         type: session.type,
         key: session.key,
-        sessionId: session.sessionId
+        sessionId: session.sessionId,
+        ...(preemption ? { preempted: true } : {})
       });
 
       respond({
         action: 'deactivate_response',
         success,
-        sessionId: session.sessionId
+        sessionId: session.sessionId,
+        ...(preemption ? { preempted: true } : {})
       });
       return;
     }
@@ -659,11 +966,15 @@ export class MessageRouter {
     // the next boot would resurrect an agent someone had explicitly given up
     // on. Standing down something that is already gone has to work, because
     // that is exactly when it is asked for.
+    //
+    // A caller that already knows the type says so and is believed first — the
+    // capacity gate does, having just picked this agent out of a census.
     const closedType =
+      (typeof data.type === 'string' && data.type.trim() ? data.type.trim() : undefined) ??
       (result.agentName ? typeFromAgentName(result.agentName, key) : undefined) ??
       this.registeredTypeFor(key);
 
-    if (closedType) this.rememberDeactivated(closedType, key);
+    if (closedType) this.rememberDeactivated(closedType, key, undefined, preemption);
 
     // Standing down an agent that has already died is not a failure — it is the
     // request working. There was no pane to close, and the thing actually being
@@ -683,7 +994,8 @@ export class MessageRouter {
       this.broadcast({
         action: 'agent_deactivated_event',
         type: closedType,
-        key
+        key,
+        ...(preemption ? { preempted: true } : {})
       });
     }
 
@@ -691,6 +1003,7 @@ export class MessageRouter {
       action: 'deactivate_response',
       key,
       success: result.success || goneAlready,
+      ...(preemption ? { preempted: true } : {}),
       ...(goneAlready
         ? { alreadyGone: true, note: 'No agent was running. Its stand-down is recorded, so it will not be restored.' }
         : {}),
@@ -1157,7 +1470,29 @@ export class MessageRouter {
       // agents are missing" from "this daemon does not track that" cannot do it
       // from an absent field. Empty array means the fleet is whole.
       missingAgents,
+      // Work that was taken off the machine to make room for something more
+      // important, and has not been put back. Always present, empty when
+      // nothing is owed — a caller distinguishing "nothing was preempted" from
+      // "this daemon does not track that" cannot do it from an absent field.
+      //
+      // It is a queue of decisions still owed rather than a log of events: the
+      // moment one of these is re-activated it leaves the list. Nothing here
+      // restarts them, deliberately — a preemption queue is a scheduler and
+      // this ticket said so.
+      preemptedAgents: this.preemptedAgents(),
       capacity: capacityDto(capacity),
+      // What each running agent is worth, and therefore what a would-be
+      // activation would have to outrank. Sent alongside the capacity figures
+      // because "there is no room" and "there is no room *for you*" became
+      // different answers with KAN-37, and a supervisor deciding whether to
+      // staff something needs both.
+      priorities: this.preemptionCandidates(agents).map((c) => ({
+        agentName: c.agentName,
+        type: c.type,
+        key: c.key,
+        priority: c.priority,
+        herdrStatus: c.herdrStatus
+      })),
       ...(staleness ? { staleness } : {}),
       ...(usage ? {
         herdrHealth: {
@@ -1179,13 +1514,63 @@ export class MessageRouter {
 
   /** `butchr_capacity`: how many more agents this machine can carry. */
   private handleCapacity(data: any, respond: Respond) {
-    const capacity = this.capacityOf(this.surveyAgents().agents);
+    const { agents } = this.surveyAgents();
+    const capacity = this.capacityOf(agents);
+    const candidates = this.preemptionCandidates(agents);
     respond({
       action: 'capacity_response',
       success: true,
       ...capacityDto(capacity),
-      derivation: describeCapacity(capacity)
+      derivation: describeCapacity(capacity),
+      // At capacity the next question is always "then what would I have to
+      // stand down?", and answering it here saves a caller from working the
+      // ordering out for itself — or, worse, guessing at it.
+      priorities: candidates.map((c) => ({
+        agentName: c.agentName,
+        type: c.type,
+        key: c.key,
+        priority: c.priority,
+        herdrStatus: c.herdrStatus
+      })),
+      fleetPriorities: describeFleetPriorities(candidates)
     });
+  }
+
+  /**
+   * Agents stood down to make room, in the shape a client renders.
+   *
+   * Reported until they are re-activated. Restarting them is out of scope by
+   * the ticket's own words — a preemption queue is a scheduler — so what this
+   * buys is that the decision is *owed to someone* rather than lost: the board
+   * manager sees it on every poll and can move the ticket back to To Do, and a
+   * human sees whose work is waiting.
+   */
+  private preemptedAgents() {
+    if (!this.agentRegistry) return [];
+    return this.agentRegistry.preempted().map((entry) => ({
+      agentName: entry.agentName,
+      type: entry.record.type,
+      key: entry.record.key,
+      workDir: entry.record.workDir,
+      url: entry.record.url ?? null,
+      at: entry.at,
+      priority: entry.preemption.priority,
+      herdrStatusWhenPreempted: entry.preemption.herdrStatus,
+      by: {
+        agentName: entry.preemption.byAgentName,
+        type: entry.preemption.byType,
+        key: entry.preemption.byKey,
+        priority: entry.preemption.byPriority
+      },
+      reason:
+        `Stood down at ${entry.at} to free capacity for ` +
+        `${entry.preemption.byType}/${entry.preemption.byKey} ` +
+        `(priority ${entry.preemption.byPriority} against this agent's ` +
+        `${entry.preemption.priority}). Its work was interrupted, not finished. ` +
+        `Re-activating it resumes the conversation it was stopped in; until then ` +
+        `its ticket should not read In Progress.`,
+      derivation: entry.preemption.derivation
+    }));
   }
 
   /**
@@ -1206,25 +1591,34 @@ export class MessageRouter {
    * silently one of them — on a 4-core machine that was half the budget spent
    * on the supervisor, and the user could never start a second task agent.
    */
+  /**
+   * Whether a `list_agents` entry costs an agent's worth of machine.
+   *
+   * Not everything the list reports does. The daemon opens a bare shell for
+   * itself (`ensureDefaultSession`), and it appears in that list because we hold
+   * a session for it — which is the right answer to "what can I attach to" and
+   * the wrong one to "what is this machine carrying". On a 4-core box it was
+   * silently occupying one of two slots.
+   *
+   * The test is whether the entry is a workspace type this daemon starts agents
+   * into, or whether herdr can see an agent runtime behind the pane. Either is
+   * enough; a registered type does not wait for herdr to notice a freshly
+   * spawned agent, and a runtime catches anything the registry has not heard of.
+   *
+   * Shared by the capacity count and the preemption candidate list, so an agent
+   * that occupies a slot is exactly an agent that can be asked to give it up.
+   */
+  private countsAsAgent(entry: ListedAgent): boolean {
+    const registered = entry.type !== null && this.registry.get(entry.type) !== undefined;
+    return registered || entry.agentRuntime !== null;
+  }
+
   private capacityOf(agents: ListedAgent[]): Capacity {
     let fleet = 0;
     let supervisors = 0;
 
     for (const entry of agents) {
-      // Not everything `list_agents` reports costs an agent's worth of
-      // machine. The daemon opens a bare shell for itself
-      // (`ensureDefaultSession`), and it appears in that list because we hold a
-      // session for it — which is the right answer to "what can I attach to"
-      // and the wrong one to "what is this machine carrying". On a 4-core box
-      // it was silently occupying one of two slots.
-      //
-      // The test is whether the entry is a workspace type this daemon starts
-      // agents into, or whether herdr can see an agent runtime behind the pane.
-      // Either is enough; a registered type does not wait for herdr to notice
-      // a freshly spawned agent, and a runtime catches anything the registry
-      // has not heard of.
-      const registered = entry.type !== null && this.registry.get(entry.type) !== undefined;
-      if (!registered && entry.agentRuntime === null) continue;
+      if (!this.countsAsAgent(entry)) continue;
 
       if (isSupervisorType(entry.type)) supervisors++;
       else fleet++;

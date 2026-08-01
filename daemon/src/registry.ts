@@ -1,4 +1,10 @@
 import { WorkspaceTypeConfig } from './types.js';
+import {
+  DEFAULT_WORKSPACE_PRIORITY,
+  PRIORITY_MANAGE,
+  PRIORITY_STORY,
+  PRIORITY_TASK
+} from './priority.js';
 
 /**
  * Jira issue-type name → workspace type.
@@ -77,6 +83,7 @@ export class WorkspaceRegistry {
       },
       mcpServers: ['atlassian', 'butchr'],
       promptTemplateFile: 'prompts/task.md',
+      priority: PRIORITY_TASK,
       // Every Jira issue URL matches this type first; which workspace type it
       // *actually* becomes is then decided by the issue's type in Jira.
       refineByJiraIssueType: true
@@ -100,7 +107,11 @@ export class WorkspaceRegistry {
           ? 'work'
           : null,
       mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/manage.md'
+      promptTemplateFile: 'prompts/manage.md',
+      // The top of the scale, which is what makes "never preempt the board
+      // manager" a consequence of the ordering rather than a rule somebody has
+      // to remember. See priority.ts.
+      priority: PRIORITY_MANAGE
     });
 
     // Deliberately pattern-less. A Story's URL is byte-identical to a Task's,
@@ -115,8 +126,23 @@ export class WorkspaceRegistry {
       urlPatterns: [],
       keyExtractor: () => null,
       mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/story.md'
+      promptTemplateFile: 'prompts/story.md',
+      // Above `task` because a story agent decomposes a story into the tasks
+      // that task agents execute: it is upstream of them, so taking a task's
+      // slot to run a story unblocks the thing that generates more work.
+      priority: PRIORITY_STORY
     });
+  }
+
+  /**
+   * What a workspace type outranks. Unregistered types get the floor — see
+   * DEFAULT_WORKSPACE_PRIORITY for why that is the safe direction — and this is
+   * the only place that fallback is applied, so a caller cannot accidentally
+   * pick a different one.
+   */
+  public priorityFor(type: string | null | undefined): number {
+    if (typeof type !== 'string') return DEFAULT_WORKSPACE_PRIORITY;
+    return this.types.get(type)?.priority ?? DEFAULT_WORKSPACE_PRIORITY;
   }
 
   public register(config: WorkspaceTypeConfig) {

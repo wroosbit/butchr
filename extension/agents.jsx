@@ -6,12 +6,19 @@ import './sidepanel.css'; // Reuse basic styles if needed
 import { HerdrStateChip } from './src/components/HerdrStateChip.jsx';
 import { StalenessBanner } from './src/components/StalenessBanner.jsx';
 import { MissingAgentsBanner } from './src/components/MissingAgentsBanner.jsx';
+import { PreemptedAgentsBanner } from './src/components/PreemptedAgentsBanner.jsx';
 
 function Agents() {
   const [daemonConnected, setDaemonConnected] = useState(false);
   const [agents, setAgents] = useState([]);
   const [staleness, setStaleness] = useState(null);
   const [missingAgents, setMissingAgents] = useState([]);
+  const [preemptedAgents, setPreemptedAgents] = useState([]);
+  // What each running agent is worth, keyed by agent name. Rendered on the row
+  // rather than in a banner: priority is a standing property of every agent,
+  // not an alarm, and it is what tells the reader which of these could be
+  // stood down for which.
+  const [priorities, setPriorities] = useState({});
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_DAEMON_STATUS' }, (res) => {
@@ -37,6 +44,12 @@ function Agents() {
           // because it was restored — must clear the banner rather than leave a
           // stale alarm on screen.
           setMissingAgents(payload.missingAgents || []);
+          // Assigned unconditionally for the same reason: an agent that has
+          // been put back must leave the banner rather than linger on it.
+          setPreemptedAgents(payload.preemptedAgents || []);
+          setPriorities(
+            Object.fromEntries((payload.priorities || []).map((p) => [p.agentName, p.priority]))
+          );
         }
       }
     };
@@ -81,6 +94,11 @@ function Agents() {
           differently when a fourth should be there and is not. */}
       <MissingAgentsBanner missingAgents={missingAgents} />
 
+      {/* Below the losses and above the list: work that is stopped on purpose
+          is less urgent than work that stopped by itself, and both change how
+          the list beneath them reads. */}
+      <PreemptedAgentsBanner preemptedAgents={preemptedAgents} />
+
       {!daemonConnected ? (
         <div style={{ textAlign: 'center', color: '#94a3b8', padding: '40px' }}>Daemon is offline.</div>
       ) : agents.length === 0 ? (
@@ -92,6 +110,11 @@ function Agents() {
               <div>
                 <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '4px' }}>
                   🔑 {agent.key} <span style={{ backgroundColor: '#1e293b', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '8px' }}>{agent.type}</span>
+                  {/* Absent on a daemon that predates priorities, rather than
+                      rendered as "priority undefined". */}
+                  {priorities[agent.agentName] !== undefined ? (
+                    <span title="Higher priority can stand this agent down when the machine is full" style={{ backgroundColor: '#1e293b', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '6px', color: '#94a3b8' }}>P{priorities[agent.agentName]}</span>
+                  ) : null}
                 </div>
                 {/* Agents activated by key may have no page to link to; an
                     empty clickable row is worse than no row at all. */}

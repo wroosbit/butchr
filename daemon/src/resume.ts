@@ -108,13 +108,31 @@ export function hasRestorableConversation(workDir: string): boolean {
   }
 }
 
-/** Why an agent is being brought back, which decides how it is addressed. */
-export type ResumeCause = 'reboot' | 'daemon-restart';
+/**
+ * Why an agent is being brought back, which decides how it is addressed.
+ *
+ * `preempted` is the one that is nobody's accident. The other two are failures
+ * — a machine or a daemon died — and the agent is told so. A preempted agent
+ * was stopped on purpose, by a person, to let more important work run, and
+ * telling it that its machine crashed would be a lie about its own history that
+ * it would then act on. It is also the case that makes this whole file
+ * load-bearing for KAN-37: preemption without resumption is destruction, and
+ * the framing below is the difference.
+ */
+export type ResumeCause = 'reboot' | 'daemon-restart' | 'preempted';
 
 function causeSentence(cause: ResumeCause): string {
-  return cause === 'reboot'
-    ? 'The machine you were running on restarted (a reboot or a power cut), which destroyed your terminal mid-task.'
-    : 'The Butchr daemon restarted, which destroyed your terminal mid-task.';
+  if (cause === 'reboot') {
+    return 'The machine you were running on restarted (a reboot or a power cut), which destroyed your terminal mid-task.';
+  }
+  if (cause === 'preempted') {
+    return (
+      'You were deliberately stood down to free capacity for higher-priority work, ' +
+      'which ended your terminal mid-task. This was a decision, not a crash: nothing ' +
+      'was wrong with what you were doing, and you are being brought back to finish it.'
+    );
+  }
+  return 'The Butchr daemon restarted, which destroyed your terminal mid-task.';
 }
 
 /**

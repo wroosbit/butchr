@@ -1,7 +1,8 @@
 import { AgentRegistry } from './agent-registry.js';
 import { HerdrBridge } from './herdr.js';
 import { MessageRouter } from './router.js';
-import { ResumeCause, resumeNudge } from './resume.js';
+import { ResumeCause } from './resume.js';
+import { delay, monotonicNow, nudgeResumedAgent } from './nudge.js';
 
 /**
  * Bringing the fleet back after the machine came back.
@@ -31,47 +32,6 @@ const HERDR_POLL_INTERVAL_MS = 1_000;
  * a restoration turns into the thing that makes the machine unusable.
  */
 const RESTORE_STAGGER_MS = 3_000;
-
-/** How long an agent gets to reach its prompt before a nudge is typed at it. */
-const AGENT_READY_TIMEOUT_MS = 120_000;
-const AGENT_READY_POLL_MS = 2_000;
-
-/**
- * Evidence that Claude Code has finished starting and is listening.
- *
- * Read off the pane rather than asked of herdr because herdr's `agent_status`
- * reports what its hooks last told it, which on a freshly spawned agent is
- * nothing. These are the two things Claude Code puts on screen once its input
- * box exists — the permission-mode footer and the prompt caret — and a nudge
- * typed before either appears would go to the bash that is still starting it.
- */
-const AGENT_READY_MARKERS = ['bypass permissions', 'for shortcuts', '❯'];
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Elapsed time that does not count time the machine spent asleep.
- *
- * These budgets exist to bound *waiting*, and `Date.now()` does not measure
- * waiting — it measures the wall clock, which keeps running through a suspend
- * while nothing here does. This is not hypothetical: on the reboot that proved
- * this ticket, the laptop suspended 1.5 seconds into restoring the first agent
- * and woke five hours and forty minutes later. The 120-second budget below had
- * expired without a single poll ever being taken after the machine came back,
- * so a restored agent that was very probably sitting at a healthy prompt was
- * written off as "never reached a prompt within 120s" and never nudged — the
- * exact idle-forever failure this file exists to prevent — and the second agent
- * waited out the whole suspend behind it.
- *
- * `performance.now()` is CLOCK_MONOTONIC on Linux, which excludes suspended
- * time. So the budget means what it says: 120 seconds of the machine actually
- * being awake, whenever those seconds happen to occur.
- */
-function monotonicNow(): number {
-  return performance.now();
-}
 
 /** What one agent's restoration did, for the log and for the caller. */
 export interface RestoreOutcome {
@@ -109,28 +69,6 @@ async function waitForHerdr(herdrBridge: HerdrBridge): Promise<boolean> {
     if (herdrBridge.herdrReachable()) return true;
     if (monotonicNow() >= deadline) return false;
     await delay(HERDR_POLL_INTERVAL_MS);
-  }
-}
-
-/**
- * Wait until an agent's pane looks like a prompt rather than a launching shell.
- * Returns false on timeout, which is a reason not to type at it rather than a
- * reason to fail the restore — the agent is up either way.
- */
-async function waitForAgentReady(
-  herdrBridge: HerdrBridge,
-  key: string,
-  type: string
-): Promise<boolean> {
-  const deadline = monotonicNow() + AGENT_READY_TIMEOUT_MS;
-  for (;;) {
-    const tail = herdrBridge.tailAgent(key, type, 40);
-    if (tail.success && typeof tail.text === 'string') {
-      const text = tail.text.toLowerCase();
-      if (AGENT_READY_MARKERS.some((marker) => text.includes(marker.toLowerCase()))) return true;
-    }
-    if (monotonicNow() >= deadline) return false;
-    await delay(AGENT_READY_POLL_MS);
   }
 }
 
@@ -239,28 +177,16 @@ export async function reconcileAgents(opts: {
     // instructions. The other branch needs no message — its prompt went in on
     // the command line and it is already working.
     if (outcome.resumedConversation) {
-      if (record.defaultAgent !== 'claude') {
-        // Only the Claude launcher restores a conversation; anything else came
-        // up fresh and there is nothing to nudge it about.
-        outcome.nudged = false;
-      } else if (await waitForAgentReady(herdrBridge, key, type)) {
-        const sent = await herdrBridge.sendToAgent(key, resumeNudge(type, key, cause), type);
-        outcome.nudged = sent.success;
-        if (!sent.success) outcome.error = sent.error;
-        log(
-          `[reconcile] ${agentName} restored its conversation; ` +
-          (sent.success
-            ? 'sent it the interrupted-work message.'
-            : `could NOT send the interrupted-work message: ${sent.error}. It will sit idle.`)
-        );
-      } else {
-        outcome.nudged = false;
-        outcome.error = 'agent did not reach a prompt in time';
-        log(
-          `[reconcile] ${agentName} restored its conversation but never reached a prompt within ` +
-          `${AGENT_READY_TIMEOUT_MS / 1000}s; not typing at it. It will sit idle until nudged.`
-        );
-      }
+      const nudge = await nudgeResumedAgent({
+        herdrBridge,
+        type,
+        key,
+        cause,
+        defaultAgent: record.defaultAgent,
+        log
+      });
+      outcome.nudged = nudge.nudged;
+      if (nudge.error) outcome.error = nudge.error;
     } else {
       log(
         `[reconcile] ${agentName} had no conversation to restore; ` +
