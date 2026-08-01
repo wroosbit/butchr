@@ -38,7 +38,6 @@ const {
   PRIORITY_TASK,
   DEFAULT_WORKSPACE_PRIORITY,
   compareVictims,
-  describeFleetPriorities,
   outranks,
   selectVictim
 } = await import(path.join(distDir, 'priority.js'));
@@ -128,6 +127,39 @@ function stubHerdr(running, { statuses = {}, sessions = [] } = {}) {
     }
   };
   return bridge;
+}
+
+/**
+ * The running fleet as priority candidates, read off whatever the stub herdr is
+ * currently reporting.
+ */
+function fleetNow(bridge) {
+  return bridge.listHerdrAgents().map((a) => {
+    const [, type, ...rest] = a.name.split('-');
+    return {
+      agentName: a.name,
+      type,
+      key: rest.join('-'),
+      priority: registry.priorityFor(type),
+      herdrStatus: a.herdrStatus,
+      activatedAt: null
+    };
+  });
+}
+
+/**
+ * Capacity as the router computes it, from that same census. Used for the
+ * before/after pair in section 5, so those two lines are readings of the fleet
+ * as it then is rather than numbers this script chose and then asserted.
+ */
+function capacityOfFleet(bridge) {
+  let fleet = 0;
+  let supervisors = 0;
+  for (const c of fleetNow(bridge)) {
+    if (c.type === 'manage') supervisors++;
+    else fleet++;
+  }
+  return readCapacity(fleet, supervisors);
 }
 
 // A registry that answers the one question the real one asks Jira: is this
@@ -364,11 +396,13 @@ rule('5. PREEMPTION — capacity before and after, and the record of what went')
   const bridge = stubHerdr(FULL, { statuses: { 'butchr-task-kan-10': 'idle' } });
   const { router, events, agentRegistry } = newRouter(bridge, SEED);
 
-  const before = computeCapacity(readMachineFacts(), HERE.cap, { supervisorsRunning: 1 });
+  const before = capacityOfFleet(bridge);
   console.log(`BEFORE  ${summarizeCapacity(before)}`);
   console.log(`        at capacity: ${before.atCapacity}`);
   console.log(`        running, in the order they would be taken:`);
-  for (const line of describeFleetPriorities(fleet).split(', ')) console.log(`          ${line}`);
+  for (const c of [...fleetNow(bridge)].sort(compareVictims)) {
+    console.log(`          ${c.priority}  ${c.herdrStatus.padEnd(8)} ${c.agentName}`);
+  }
 
   const res = await call(router, 'activate_by_key', {
     type: 'story',
@@ -381,8 +415,9 @@ rule('5. PREEMPTION — capacity before and after, and the record of what went')
   console.log('what was preempted, and why:\n');
   console.log(JSON.stringify(res.preempted, null, 2).split('\n').slice(0, 14).join('\n'));
 
-  const after = computeCapacity(readMachineFacts(), HERE.cap, { supervisorsRunning: 1 });
-  console.log(`\nAFTER   ${summarizeCapacity({ ...after, running: HERE.cap })}`);
+  const after = capacityOfFleet(bridge);
+  console.log(`\nAFTER   ${summarizeCapacity(after)}`);
+  console.log(`        at capacity: ${after.atCapacity}`);
   console.log(`        alive: ${bridge.alive.join(', ')}`);
 
   const broadcast = events.find((e) => e.action === 'agent_preempted_event');
