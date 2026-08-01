@@ -453,7 +453,15 @@ check('the restore wait is monotonic, so sleeping through it does not consume it
   // "never reached a prompt" and never nudged. CLOCK_MONOTONIC excludes
   // suspended time, which is the only reading of "120 seconds" that means
   // anything to an agent that was asleep for most of them.
-  const src = fs.readFileSync(path.join(dist, 'reconcile.js'), 'utf8');
+  // Both budgets, wherever they live. The agent-ready wait moved to nudge.js
+  // in KAN-37, because a preempted agent that is switched back on needs the
+  // same "wait for a prompt, then tell it it was interrupted" that a restored
+  // one does — and reconciliation is no longer the only caller. The property
+  // asserted here is about the two waits, not about which file holds them, so
+  // it is checked across both rather than pinned to one.
+  const src = ['reconcile.js', 'nudge.js']
+    .map((file) => fs.readFileSync(path.join(dist, file), 'utf8'))
+    .join('\n');
   // Matched on the deadline arithmetic rather than on any mention of the two
   // clocks, so that the comment explaining why the wall clock is wrong here
   // cannot itself fail the check.
@@ -467,7 +475,7 @@ check('the restore wait is monotonic, so sleeping through it does not consume it
     2,
     `expected both wait budgets (herdr-ready, agent-ready) to be monotonic, found ${monotonicDeadlines.length}`
   );
-  assert.ok(/performance\.now\(\)/.test(src), 'reconcile does not use a monotonic clock');
+  assert.ok(/performance\.now\(\)/.test(src), 'the waits do not use a monotonic clock');
 });
 
 // ---------------------------------------------------------------------------

@@ -102,7 +102,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_capacity",
         description:
-          "Reports how many concurrent agents this machine can carry and how many more can be started right now. The cap is derived from the machine's own cores and memory, so it differs between machines; headroom additionally accounts for the current load average, so a fleet that is compiling reports less room than the same fleet idle. Ask this before activating, not after the machine is on its knees.",
+          "Reports how many concurrent agents this machine can carry and how many more can be started right now. The cap is derived from the machine's own cores and memory, so it differs between machines; headroom additionally accounts for the current load average, so a fleet that is compiling reports less room than the same fleet idle. Ask this before activating, not after the machine is on its knees. ALSO REPORTS priorities: what each running agent is worth (manage 3, story 2, task 1), which is what an activation at capacity would have to strictly outrank before it could stand any of them down.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -112,7 +112,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_activate_agent",
         description:
-          "Activates an agent for a specific workspace type and key (e.g. task and KAN-1). Refused when the machine is already at capacity — see butchr_capacity — unless override is set.",
+          "Activates an agent for a specific workspace type and key (e.g. task and KAN-1). Refused when the machine is already at capacity — see butchr_capacity — unless override or preempt is set. A refusal names what is running and what each one is worth; when this activation outranks one of them, the refusal also carries a `preemption` block naming the agent that could be stood down to make room.",
         inputSchema: {
           type: "object",
           properties: {
@@ -120,6 +120,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "boolean",
               description:
                 "Optional. Start the agent even when the machine is at capacity. The refusal it bypasses is recorded with the load and memory figures at the time. Use it deliberately, not reflexively: the cap exists because a human noticed the desktop had become unusable.",
+            },
+            preempt: {
+              type: "boolean",
+              description:
+                "Optional, and destructive. Make room by standing down the lowest-priority agent this activation STRICTLY outranks (manage 3 > story 2 > task 1), rather than over-committing the machine as override does. Equal priority never preempts, so a task agent can never displace another task agent, and nothing can displace the board manager. The victim's uncommitted work is interrupted; it is recorded as preempted, reported by butchr_list_agents until it is put back, and resumes its conversation when re-activated. Read the `preemption` block on the refusal first — it names exactly who would be stopped and what they are doing — and do not pass this without having decided that this work matters more than theirs.",
             },
             type: {
               type: "string",
@@ -226,7 +231,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_list_agents",
         description:
-          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down.",
+          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down. ALSO CHECK preemptedAgents: agents deliberately stood down to free capacity for higher-priority work, listed until they are put back. Their work was interrupted rather than finished, so their tickets must NOT be left In Progress — move each back to To Do with a comment naming what took its slot. Re-activating one resumes the conversation it was stopped in.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -284,10 +289,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (name === "butchr_activate_agent") {
-      const { type, key, url, defaultAgent, override } = args as any;
+      const { type, key, url, defaultAgent, override, preempt } = args as any;
       if (!type || !key) throw new Error("Missing required arguments");
 
-      const res = await callDaemonAPI('activate_by_key', { type, key, url, defaultAgent, override });
+      const res = await callDaemonAPI('activate_by_key', { type, key, url, defaultAgent, override, preempt });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
         // The sibling tools already flag their failures this way. Without it a
@@ -348,7 +353,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // does the same: a supervisor skimming tool output for problems must
         // not skim past this one. A silently-stopped agent leaves its ticket
         // reading In Progress, which is the failure KAN-21 exists to end.
-        isError: res?.success === false || (Array.isArray(res?.missingAgents) && res.missingAgents.length > 0),
+        //
+        // A preempted agent is the same failure by a different route — its
+        // ticket also reads In Progress with nothing behind it — so it flags
+        // the same way. The difference is that somebody chose this one, which
+        // makes it a decision owed rather than a loss to investigate.
+        isError:
+          res?.success === false ||
+          (Array.isArray(res?.missingAgents) && res.missingAgents.length > 0) ||
+          (Array.isArray(res?.preemptedAgents) && res.preemptedAgents.length > 0),
       };
     }
 

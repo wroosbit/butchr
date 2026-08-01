@@ -334,10 +334,41 @@ html.app-sidepanel #root {
   word-break: break-word;
 }
 
+/* The agent this activation would stop, set apart from the capacity figures
+   above it. Those explain why there is no room; this one is the only part of
+   the box that describes something about to be done to somebody else's work,
+   and it must not read as one more statistic. */
+.preemption-offer {
+  margin-top: 10px;
+  padding: 8px;
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 0 4px 4px 0;
+}
+
+.preemption-offer .preemption-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #fbbf24;
+  margin-bottom: 4px;
+}
+
 .refusal-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* Red, and it says the name of what it stops. The other buttons in this box
+   cost the machine; this one costs an agent its turn. */
+.btn-danger {
+  background-color: #b91c1c;
+  color: #fef2f2;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #dc2626;
 }
 
 .spinner {

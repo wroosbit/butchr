@@ -72,10 +72,46 @@ export interface AgentRecord {
   mcpServers?: string[];
 }
 
+/**
+ * Why a stand-down happened, when it happened *to* an agent rather than
+ * because its work was done.
+ *
+ * KAN-37 asked the sharpest question this registry has faced: a preempted agent
+ * must be recorded either so the next boot resurrects it, or so it does not.
+ * The answer is `deactivated` — reconciliation restores the whole expected
+ * fleet at once and does so with `override: true`, so recording a preempted
+ * agent as still-expected would bring back both it *and* the agent that took
+ * its slot, past a gate that has been told not to argue, on a machine that has
+ * just demonstrated it cannot hold both. A human's deliberate choice about
+ * which work matters more must not be overturned by a restart.
+ *
+ * So the event stays `deactivated` and {@link intents} needs no new rule. What
+ * this annotation adds is the half that "deactivated" throws away: *why*. It is
+ * the difference between a human flipping a switch off and work being taken
+ * away from an agent that was in the middle of it, and it is what lets
+ * `list_agents` keep reporting interrupted work until somebody decides about
+ * it.
+ */
+export interface PreemptionRecord {
+  /** The agent that took this one's slot. */
+  byAgentName: string;
+  byType: string;
+  byKey: string;
+  byPriority: number;
+  /** What the preempted agent was worth, so the comparison is legible later. */
+  priority: number;
+  /** What herdr said it was doing at the moment it was stood down. */
+  herdrStatus: string;
+  /** The capacity arithmetic that made the slot necessary. */
+  derivation: string;
+}
+
 export interface AgentLogEntry extends AgentRecord {
   event: AgentEvent;
   /** ISO 8601, so a human reading the raw file can date every line. */
   at: string;
+  /** Present only on a `deactivated` that was not the agent's own idea. */
+  preemption?: PreemptionRecord;
 }
 
 /** The last thing said about one agent. */
@@ -83,6 +119,15 @@ export interface AgentIntent {
   event: AgentEvent;
   record: AgentRecord;
   at: string;
+  preemption?: PreemptionRecord;
+}
+
+/** An agent that was stood down to make room, and has not come back. */
+export interface PreemptedAgent {
+  agentName: string;
+  record: AgentRecord;
+  at: string;
+  preemption: PreemptionRecord;
 }
 
 function isUsableEntry(value: any): value is AgentLogEntry {
@@ -112,8 +157,13 @@ export class AgentRegistry {
    * Never throws. A registry that cannot be written is a degraded restore, not
    * a reason to fail the activation the caller is in the middle of.
    */
-  public record(event: AgentEvent, record: AgentRecord): void {
-    const entry: AgentLogEntry = { ...record, event, at: new Date().toISOString() };
+  public record(event: AgentEvent, record: AgentRecord, preemption?: PreemptionRecord): void {
+    const entry: AgentLogEntry = {
+      ...record,
+      event,
+      at: new Date().toISOString(),
+      ...(preemption ? { preemption } : {})
+    };
 
     let fd: number | undefined;
     try {
@@ -141,8 +191,8 @@ export class AgentRegistry {
     this.record('activated', record);
   }
 
-  public recordDeactivated(record: AgentRecord): void {
-    this.record('deactivated', record);
+  public recordDeactivated(record: AgentRecord, preemption?: PreemptionRecord): void {
+    this.record('deactivated', record, preemption);
   }
 
   /**
@@ -200,10 +250,49 @@ export class AgentRegistry {
   public intents(): Map<string, AgentIntent> {
     const intents = new Map<string, AgentIntent>();
     for (const entry of this.readLog()) {
-      const { event, at, ...record } = entry;
-      intents.set(entry.agentName, { event, at, record });
+      // `preemption` is pulled out rather than left in the rest: `record` is
+      // the argument list of an activation, and a later activate must not carry
+      // the reason a previous stand-down happened.
+      const { event, at, preemption, ...record } = entry;
+      intents.set(entry.agentName, { event, at, record, ...(preemption ? { preemption } : {}) });
     }
     return intents;
+  }
+
+  /**
+   * Agents that were stood down to make room and have not been brought back.
+   *
+   * Derived from {@link intents}, so it empties itself: the moment a preempted
+   * agent is re-activated its last event is `activated` again and it leaves this
+   * list. That is what makes it safe to report on every `list_agents` poll — it
+   * is a queue of decisions still owed, not a log of things that happened.
+   *
+   * It does not survive compaction, which rewrites the log as one `activated`
+   * record per expected agent. That is deliberate rather than overlooked: this
+   * is a live signal about work waiting to be re-staffed, and compaction only
+   * happens after 500 records, by which time a preemption nobody acted on is
+   * not news.
+   */
+  public preempted(): PreemptedAgent[] {
+    const out: PreemptedAgent[] = [];
+    for (const [agentName, intent] of this.intents()) {
+      if (intent.event !== 'deactivated' || !intent.preemption) continue;
+      out.push({ agentName, record: intent.record, at: intent.at, preemption: intent.preemption });
+    }
+    return out;
+  }
+
+  /**
+   * Whether this agent's last stand-down was a preemption — i.e. whether
+   * re-activating it is resuming interrupted work rather than starting it.
+   *
+   * This is what turns a re-activation into a resume, so a preempted agent
+   * comes back with KAN-21's interrupted-work framing instead of sitting at a
+   * restored-but-silent prompt.
+   */
+  public preemptionFor(agentName: string): PreemptionRecord | undefined {
+    const intent = this.intents().get(agentName);
+    return intent?.event === 'deactivated' ? intent.preemption : undefined;
   }
 
   /**

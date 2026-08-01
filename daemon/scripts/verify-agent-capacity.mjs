@@ -152,14 +152,20 @@ console.log(
 // A herdr that reports exactly the agents we tell it to, and a registry and
 // prompt loader that answer enough for handleActivateByKey to reach the gate.
 function stubBridge(runningAgentNames) {
+  const agents = runningAgentNames.map((name) => ({
+    name,
+    agentRuntime: 'claude',
+    workDir: '/tmp',
+    herdrStatus: 'working'
+  }));
   return {
-    listHerdrAgents: () =>
-      runningAgentNames.map((name) => ({
-        name,
-        agentRuntime: 'claude',
-        workDir: '/tmp',
-        herdrStatus: 'working'
-      })),
+    listHerdrAgents: () => agents,
+    // The census `surveyAgents` actually asks for. KAN-21 moved it to this
+    // reachability-carrying form and this stub was not updated with it, so
+    // every section below that drives the real router died on a TypeError
+    // instead of proving anything. A proof that cannot run is worse than no
+    // proof: it is still cited.
+    listHerdrAgentsChecked: () => ({ reachable: true, agents }),
     listActiveSessions: () => [],
     getSessionByKey: () => undefined,
     spawnSession: () => {
@@ -168,7 +174,15 @@ function stubBridge(runningAgentNames) {
   };
 }
 
-const stubRegistry = { get: () => undefined, resolve: async () => null };
+// `priorityFor` answers the floor for everything, which is what an unregistered
+// type gets from the real registry too. That keeps this script about capacity:
+// nothing here can outrank anything, so no refusal below is softened into a
+// preemption offer. KAN-37's ordering is proved by verify-agent-preemption.mjs.
+const stubRegistry = {
+  get: () => undefined,
+  resolve: async () => null,
+  priorityFor: () => 1
+};
 const stubPrompts = { loadAndRender: () => '# prompt' };
 
 async function activate(runningAgentNames, args) {

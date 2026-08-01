@@ -184,6 +184,46 @@ it starts nothing and costs nothing.
 
 ---
 
+## 🥇 Who gets the machine when it is full
+
+At capacity the cap used to refuse everything identically, which left whoever
+was asking to work out for themselves what to stand down. Agents now carry a
+priority, fixed by workspace type: **`manage` 3, `story` 2, `task` 1.** It is a
+property of the type rather than of the Jira ticket, so it needs no lookup and
+both callers — the sidepanel toggle and the board manager — get it the same way.
+
+**Strictly greater.** Equal never preempts, which makes task-versus-task — the
+normal shape of a full machine here — always a refusal. And it makes "never
+preempt the board manager" a consequence of the ordering rather than a rule
+anyone has to remember: 3 is the top of the scale.
+
+**Never automatic.** A refusal at capacity now names what is running and what
+each one is worth, and — when the activation outranks one of them — which agent
+would be stopped and what it is doing. That is all it does. `preempt: true` on
+the MCP tool, or a sidepanel button that reads **Stand down task/KAN-99 and
+start**, is what authorises it. Nothing dies before a person has read its name.
+
+**A preempted agent survives.** Its stand-down is recorded as `deactivated`
+with an annotation saying who took its slot and why — so a reboot does *not*
+resurrect it (that would overturn a person's decision on a machine that has just
+proved it cannot hold both) while the reason stays legible. Switching it back on
+is recognised as a resume: it comes back with its conversation *and* KAN-21's
+interrupted-work nudge, rather than sitting silently at a restored prompt.
+
+**Its ticket is somebody's job.** The daemon holds no Jira write and never will,
+so `butchr_list_agents` reports `preemptedAgents` on every poll until the agent
+is put back, and `prompts/manage.md` tells the board manager to move each one
+back to **To Do** with a comment naming what took its slot. Left In Progress
+with nothing behind it, a preempted ticket tells exactly the lie KAN-21 exists
+to end.
+
+Full reasoning — the ordering, the victim rule, why the registry records what it
+records — is in [`docs/priority.md`](priority.md);
+`node daemon/scripts/verify-agent-preemption.mjs` proves all of it against the
+real router, registry and on-disk log.
+
+---
+
 ## 🕰️ Is this the code that was merged?
 
 Merging a PR changes nothing on the machine: the clone is not pulled, `dist/`

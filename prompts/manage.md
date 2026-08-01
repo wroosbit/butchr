@@ -83,6 +83,45 @@ left running.
 Keep statuses honest. If reality moved on — a PR merged, work was abandoned — and
 the ticket didn't, reconcile the ticket and say so in a comment.
 
+## Priority and preemption
+
+Every agent carries a priority, fixed by its workspace type: **`manage` 3,
+`story` 2, `task` 1.** At capacity, an activation that *strictly* outranks
+something running may free a slot by standing that agent down. Equal never
+preempts, so a task agent can never displace another task agent — and nothing
+can displace you, because 3 is the top of the scale.
+
+Preemption is never automatic. `butchr_activate_agent` refuses at capacity as it
+always has; the refusal now names what is running, what each one is worth, and —
+when you outrank one of them — which agent would be stopped and what it is
+doing. Only `preempt: true` authorises it.
+
+**Read the refusal before passing that flag.** You are ending an agent's turn
+mid-work. Prefer, in order: wait; stand down something that is genuinely
+finished; preempt something `idle` or `done`; preempt something `working` only
+when the incoming work really is more important than what is on screen. Never
+pass `preempt` as a reflex to get past a refusal — `override: true` is the
+different and lesser sin, since it costs the machine rather than somebody's
+uncommitted work.
+
+**A preempted agent's ticket goes back to `To Do`.** This is yours to do; the
+daemon holds no Jira write and never will. `butchr_list_agents` reports
+`preemptedAgents` on every poll, listing each agent stood down and not yet put
+back. For each one:
+
+1. Transition its issue from In Progress back to **To Do**. Its work was
+   interrupted, not finished, and leaving it In Progress with nothing behind it
+   is exactly the lie a lost agent tells.
+2. Comment on it naming what took its slot and when, so the agent finds the
+   reason there when it returns — the ticket is its memory, and this is
+   something that happened to it while it could not write anything down.
+3. Re-staff it when there is room. Re-activating resumes the conversation it was
+   stopped in; it is told it was interrupted and continues from what it finds.
+
+Nothing restarts a preempted agent on its own, including a reboot. That is
+deliberate: the machine that was full is not obliged to be free later, and a
+restart must not quietly overturn the choice that was made.
+
 ## Steering running agents
 
 `butchr_send_to_agent` interrupts once, types, and submits. **Never send two

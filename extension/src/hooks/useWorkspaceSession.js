@@ -145,7 +145,16 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
               payload.error ??
               'The daemon refused to start this agent and gave no reason.',
             derivation: payload.derivation ?? null,
-            capacity: payload.capacity ?? null
+            capacity: payload.capacity ?? null,
+            // Who this activation is and what it is worth, so the panel can
+            // state the comparison rather than just its outcome.
+            type: payload.type ?? null,
+            key: payload.key ?? null,
+            priority: payload.priority ?? null,
+            // Present only when this activation outranks something running.
+            // It is what the panel turns into a named stand-down button; with
+            // it absent, no preemption is on offer and none is shown.
+            preemption: payload.preemption ?? null
           });
           // This attempt is finished. Re-arm the automatic re-attach so that
           // closing an agent and coming back is not suppressed by a flag left
@@ -265,6 +274,28 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     });
   }, [currentTab]);
 
+  /**
+   * Start the agent by standing down a lower-priority one, deliberately.
+   *
+   * Separate from the override above because they are different asks with
+   * different victims. Override over-commits the machine and nobody else pays;
+   * this ends another agent's turn mid-work. It is reachable only from the
+   * refusal that named that agent, which is what makes the consent informed
+   * rather than nominal — there is no way to preempt from this panel without
+   * having been shown who.
+   */
+  const handlePreemptActivate = useCallback(() => {
+    if (!currentTab || !currentTab.url) return;
+    setActivateError(null);
+    reattachSentRef.current = false;
+    chrome.runtime.sendMessage({
+      type: 'ACTIVATE_BUTCHR',
+      url: currentTab.url,
+      tabId: currentTab.id,
+      preempt: true
+    });
+  }, [currentTab]);
+
   const dismissActivateError = useCallback(() => setActivateError(null), []);
 
   const handleToggle = (isChecked) => {
@@ -313,6 +344,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     handleReset,
     handleReconnect,
     handleOverrideActivate,
+    handlePreemptActivate,
     dismissActivateError,
     retryStatus
   };
