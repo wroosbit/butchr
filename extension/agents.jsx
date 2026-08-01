@@ -5,11 +5,13 @@ import './sidepanel.css'; // Reuse basic styles if needed
 
 import { HerdrStateChip } from './src/components/HerdrStateChip.jsx';
 import { StalenessBanner } from './src/components/StalenessBanner.jsx';
+import { MissingAgentsBanner } from './src/components/MissingAgentsBanner.jsx';
 
 function Agents() {
   const [daemonConnected, setDaemonConnected] = useState(false);
   const [agents, setAgents] = useState([]);
   const [staleness, setStaleness] = useState(null);
+  const [missingAgents, setMissingAgents] = useState([]);
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_DAEMON_STATUS' }, (res) => {
@@ -30,6 +32,11 @@ function Agents() {
           // Rides along on the poll rather than being fetched separately. An
           // older daemon simply omits it, and the banner then renders nothing.
           if (payload.staleness) setStaleness(payload.staleness);
+          // Assigned unconditionally where staleness is not: the daemon always
+          // sends this field, and an agent that has *stopped* being missing —
+          // because it was restored — must clear the banner rather than leave a
+          // stale alarm on screen.
+          setMissingAgents(payload.missingAgents || []);
         }
       }
     };
@@ -69,6 +76,10 @@ function Agents() {
       {/* Above the agent list, not below it: a warning that what is running is
           not what was merged changes how you should read everything under it. */}
       <StalenessBanner staleness={staleness} />
+
+      {/* Above the list for the same reason: three running agents read
+          differently when a fourth should be there and is not. */}
+      <MissingAgentsBanner missingAgents={missingAgents} />
 
       {!daemonConnected ? (
         <div style={{ textAlign: 'center', color: '#94a3b8', padding: '40px' }}>Daemon is offline.</div>

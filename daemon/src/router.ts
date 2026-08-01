@@ -12,6 +12,8 @@ import {
   typeFromAgentName
 } from './herdr.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
+import { AgentRecord, AgentRegistry } from './agent-registry.js';
+import { ResumeCause } from './resume.js';
 import { getStalenessReport, StalenessReport } from './staleness.js';
 import {
   Capacity,
@@ -136,6 +138,27 @@ function invalidAddress(key: unknown, type: unknown): string | null {
   return null;
 }
 
+/**
+ * An agent the registry says should be running that herdr does not have.
+ *
+ * This is the whole of the detectability half of KAN-21, as data. On the day
+ * that ticket was written two agents ceased to exist and the board read healthy
+ * for twenty minutes; the loss was found only because a human thought to ask.
+ * The registry is what makes the question answerable without asking — it holds
+ * the *intended* fleet, and anything in it that herdr cannot show is a loss,
+ * reported on every `list_agents` poll rather than written to a log.
+ */
+interface MissingAgent {
+  agentName: string;
+  type: string;
+  key: string;
+  workDir: string;
+  url: string | null;
+  /** When the registry last recorded this agent as activated. */
+  since: string;
+  reason: string;
+}
+
 /** What {@link MessageRouter.capacityGate} decided, and why. */
 interface CapacityGateResult {
   capacity: Capacity;
@@ -160,8 +183,55 @@ export class MessageRouter {
      * staleness check needs. Absent in the unit-test constructions that do not
      * care, in which case the check is simply not offered.
      */
-    private install?: { repoRoot: string; daemonStartedAt: Date }
+    private install?: { repoRoot: string; daemonStartedAt: Date },
+    /**
+     * The durable record of which agents should exist. Optional for the same
+     * reason `install` is — the unit-test constructions do not care — and when
+     * absent nothing is recorded and nothing is reported missing, which is
+     * exactly the pre-KAN-21 behaviour.
+     */
+    private agentRegistry?: AgentRegistry
   ) {}
+
+  /**
+   * Write an activation down before it is acknowledged.
+   *
+   * Called on every successful activate, but only appends when it would change
+   * something: re-attaching to an agent already recorded as activated is a
+   * no-op, and the sidepanel re-activates often enough that recording each one
+   * would fill the log with restatements of the same intent.
+   */
+  private rememberActivated(record: AgentRecord): void {
+    if (!this.agentRegistry) return;
+    const current = this.agentRegistry.intents().get(record.agentName);
+    if (
+      current?.event === 'activated' &&
+      current.record.workDir === record.workDir &&
+      current.record.url === record.url &&
+      current.record.defaultAgent === record.defaultAgent
+    ) {
+      return;
+    }
+    this.agentRegistry.recordActivated(record);
+  }
+
+  /**
+   * Write a stand-down down, so reconciliation leaves this agent alone.
+   *
+   * This is the half of the registry that makes it *intent* rather than
+   * history: without it, boot-time restoration would resurrect every agent
+   * anyone had ever run. Recorded even when the teardown failed — the caller
+   * asked for the agent to be gone, and that is the intent to honour.
+   */
+  private rememberDeactivated(type: string, key: string, workDir?: string): void {
+    if (!this.agentRegistry) return;
+    this.agentRegistry.recordDeactivated({
+      agentName: agentNameFor(type, key),
+      type,
+      key,
+      workDir: workDir ?? ''
+    });
+  }
 
   /** The staleness report, or undefined when this router has no install context. */
   private staleness(force = false): StalenessReport | undefined {
@@ -361,6 +431,18 @@ export class MessageRouter {
       session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers);
     }
 
+    if (!session.spawnError) {
+      this.rememberActivated({
+        agentName: agentNameFor(config.type, key),
+        type: config.type,
+        key,
+        workDir: session.workDir,
+        url: data.url,
+        defaultAgent: data.defaultAgent,
+        mcpServers: config.mcpServers
+      });
+    }
+
     if (session.spawnError) {
       respond({
         action: 'activate_response',
@@ -452,7 +534,25 @@ export class MessageRouter {
         KEY: key,
         URL: url ?? ''
       });
-      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, mcpServers);
+      // `resume` is set only by boot-time reconciliation, never by a client:
+      // it changes what the agent is told when there is nothing to continue,
+      // and an ordinary activation is not an interrupted one.
+      const resume: ResumeCause | undefined =
+        data.resume === 'reboot' || data.resume === 'daemon-restart' ? data.resume : undefined;
+
+      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, mcpServers, resume);
+    }
+
+    if (!session.spawnError) {
+      this.rememberActivated({
+        agentName: agentNameFor(type, key),
+        type,
+        key,
+        workDir: session.workDir,
+        url,
+        defaultAgent,
+        mcpServers
+      });
     }
 
     // A spawn herdr refused is the one case where activate can say for certain
@@ -488,6 +588,12 @@ export class MessageRouter {
       url: session.url,
       sessionId: session.sessionId,
       status: session.status,
+      workDir: session.workDir,
+      // Only present on a restore. `false` means the agent came up with the
+      // degraded-resume prompt and is already working; `true` means it was
+      // handed its old conversation and is sitting at an empty prompt, which
+      // is the case that needs a nudge. See daemon.ts's reconciliation.
+      ...(session.resume ? { resume: session.resume, resumedConversation: session.resumedConversation } : {}),
       ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
     });
   }
@@ -502,7 +608,13 @@ export class MessageRouter {
       return;
     }
 
+    // Read before the teardown: terminateSession marks the session terminated,
+    // after which getSession still answers but the address is what we need and
+    // it does not change. Recorded either way — see rememberDeactivated.
+    const session = this.herdrBridge.getSession(data.sessionId);
     const success = this.herdrBridge.terminateSession(data.sessionId);
+    if (session) this.rememberDeactivated(session.type, session.key, session.workDir);
+
     respond({
       action: 'deactivate_response',
       success,
@@ -516,6 +628,7 @@ export class MessageRouter {
 
     if (session) {
       const success = this.herdrBridge.terminateSession(session.sessionId);
+      this.rememberDeactivated(session.type, session.key, session.workDir);
 
       this.broadcast({
         action: 'agent_deactivated_event',
@@ -536,11 +649,19 @@ export class MessageRouter {
     // the daemon and the herdr pane does not. Close it through the fallback
     // rather than telling the caller an obviously-running agent is gone.
     const result = this.herdrBridge.closeAgentByKey(key);
+    const closedType = result.agentName ? typeFromAgentName(result.agentName, key) : undefined;
+
+    // The type is only known when the agent name resolved. Without one there is
+    // no address to record a stand-down against, and inventing a type would
+    // write an intent for an agent that does not exist — leaving the real one
+    // still marked activated, which is the safe way to be wrong: it stays
+    // visible as missing rather than silently disappearing from the census.
+    if (closedType) this.rememberDeactivated(closedType, key);
 
     if (result.success) {
       this.broadcast({
         action: 'agent_deactivated_event',
-        type: result.agentName ? typeFromAgentName(result.agentName, key) : undefined,
+        type: closedType,
         key
       });
     }
@@ -678,6 +799,11 @@ export class MessageRouter {
       this.herdrBridge.closeAgentByKey(key);
     }
 
+    // A reset destroys the workspace as well as the agent, so it is the most
+    // deliberate stand-down there is. Restoring it on the next boot would
+    // recreate an agent whose working directory was deliberately deleted.
+    this.rememberDeactivated(config.type, key);
+
     const { success, error } = this.herdrBridge.resetWorkspace(config.type, key);
     respond({ action: 'reset_response', success, ...(error ? { error } : {}) });
   }
@@ -700,6 +826,10 @@ export class MessageRouter {
       agentClosed = result.success;
       agentError = result.error;
     }
+
+    // Same reasoning as handleReset: the workspace is about to be deleted, so
+    // this agent must not be brought back by reconciliation.
+    this.rememberDeactivated(type, key, session?.workDir);
 
     // The workspace still goes away even if no agent was there to close —
     // reset's job is to leave nothing behind. Unless the target isn't ours to
@@ -972,6 +1102,10 @@ export class MessageRouter {
   private handleListAgents(data: any, respond: Respond) {
     const { agents, unbackedPanes } = this.surveyAgents();
 
+    // Agents that should be here and are not. Computed from the same census the
+    // list is built from, so the two can never disagree about what is running.
+    const missingAgents = this.missingAgents(agents);
+
     // Descriptor headroom, reported where someone looking at agents will see
     // it. On KAN-24 the herdr server's fd usage was invisible until spawning
     // broke, and the only way to learn it was to read /proc by hand. Expressed
@@ -995,6 +1129,10 @@ export class MessageRouter {
       success: true,
       agents,
       unbackedPanes,
+      // Always present, even when empty: a caller that has to distinguish "no
+      // agents are missing" from "this daemon does not track that" cannot do it
+      // from an absent field. Empty array means the fleet is whole.
+      missingAgents,
       capacity: capacityDto(capacity),
       ...(staleness ? { staleness } : {}),
       ...(usage ? {
@@ -1069,6 +1207,50 @@ export class MessageRouter {
     }
 
     return readCapacity(fleet, supervisors);
+  }
+
+  /**
+   * The gap between what the registry says should be running and what herdr
+   * actually has.
+   *
+   * The comparison is against the *census*, not against the session map: an
+   * agent that survived a daemon restart has no session of ours and is
+   * nonetheless perfectly alive, and calling it missing would be the same
+   * false alarm KAN-9 and KAN-28 already fixed at other layers.
+   */
+  private missingAgents(agents: ListedAgent[]): MissingAgent[] {
+    if (!this.agentRegistry) return [];
+
+    const alive = new Set(agents.map((a) => a.agentName));
+    const missing: MissingAgent[] = [];
+
+    for (const [agentName, intent] of this.agentRegistry.intents()) {
+      if (intent.event !== 'activated') continue;
+      if (alive.has(agentName)) continue;
+
+      missing.push({
+        agentName,
+        type: intent.record.type,
+        key: intent.record.key,
+        workDir: intent.record.workDir,
+        url: intent.record.url ?? null,
+        since: intent.at,
+        reason:
+          'The registry records this agent as active, but herdr has no agent by that name ' +
+          'and this daemon holds no session for it. It is not running.'
+      });
+    }
+
+    return missing;
+  }
+
+  /**
+   * `missingAgents`, for callers outside a request — the daemon's periodic
+   * sweep. Public because the sweep runs on a timer rather than in response to
+   * a client, and must ask the same question the list answers.
+   */
+  public findMissingAgents(): MissingAgent[] {
+    return this.missingAgents(this.surveyAgents().agents);
   }
 
   private surveyAgents(): { agents: ListedAgent[]; unbackedPanes: UnbackedPane[] } {

@@ -158,9 +158,30 @@ export function trustClaudeWorkspace(workDir: string, configPath?: string): void
   }
 }
 
+/**
+ * Wrap a string so bash sees exactly these bytes, newlines and all.
+ *
+ * The launcher command is handed to `bash -c`, and the prompt inside it is now
+ * generated text (the degraded-resume framing) rather than a fixed literal, so
+ * it must be quoted rather than interpolated. Single quotes disable every form
+ * of bash expansion; the only character that needs work is a single quote
+ * itself, which is closed, escaped and reopened.
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export interface AgentLauncher {
-  /** Shell command run inside the herdr pane (via bash -c). */
-  command: string;
+  /**
+   * Shell command run inside the herdr pane (via bash -c).
+   *
+   * A function rather than a constant because the fallback prompt is no longer
+   * always the same sentence: an agent being restored after a reboot whose
+   * conversation could not be recovered must be told that, not greeted as if
+   * it were starting fresh. `promptCommand` is what to say when there is no
+   * conversation to continue; omitted, it is the ordinary cold start.
+   */
+  command: (promptCommand?: string) => string;
   /** Optional pre-launch setup, e.g. CLI-specific MCP config. */
   setup?: (workDir: string, mcpServers: string[]) => void;
 }
@@ -170,7 +191,7 @@ export interface AgentLauncher {
 // never itself executed as shell.
 export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
   shell: {
-    command: 'bash'
+    command: () => 'bash'
   },
   claude: {
     // Interactive session: resume if a conversation exists, else start one
@@ -178,14 +199,23 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
     // turn and exit, leaving a dead pane.)
     // --permission-mode backs up the settings file on the --continue path,
     // where a resumed session could otherwise carry a stale mode forward.
-    command: `claude --permission-mode bypassPermissions --continue || claude --permission-mode bypassPermissions "${PROMPT_CMD}"`,
+    //
+    // The `||` is load-bearing and was measured: `claude --continue` in a
+    // directory with no history exits 1 with "No conversation found to
+    // continue", so the fallback is reached exactly when there is nothing to
+    // restore — which is what makes it the right place to put the degraded
+    // resume prompt.
+    command: (promptCommand = PROMPT_CMD) =>
+      `claude --permission-mode bypassPermissions --continue || ` +
+      `claude --permission-mode bypassPermissions ${shellQuote(promptCommand)}`,
     setup: (workDir) => {
       configureClaudeSettings(workDir);
       trustClaudeWorkspace(workDir);
     }
   },
   'anti-gravity': {
-    command: `agy --continue || agy -i "${PROMPT_CMD}"`,
+    command: (promptCommand = PROMPT_CMD) =>
+      `agy --continue || agy -i ${shellQuote(promptCommand)}`,
     setup: (_workDir, mcpServers) => configureAgyMcp(mcpServers)
   }
 };

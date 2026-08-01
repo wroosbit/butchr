@@ -6,6 +6,12 @@ import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
+import {
+  RESUME_ENV,
+  ResumeCause,
+  degradedResumePrompt,
+  hasRestorableConversation
+} from './resume.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +35,22 @@ export interface HerdrSession {
    * instead of claiming an activation that did not happen.
    */
   spawnError?: string;
+  /**
+   * Set when this session was started to bring an agent back after its machine
+   * or daemon died under it, rather than to start fresh work.
+   */
+  resume?: ResumeCause;
+  /**
+   * On a resume, whether a conversation was there to restore — decided before
+   * the spawn by {@link hasRestorableConversation}.
+   *
+   * `true` means the agent comes back remembering everything and therefore
+   * needs to be *told* to carry on, because Claude Code resumes at an empty
+   * prompt and waits indefinitely. `false` means the launcher's fallback ran
+   * with the degraded-resume prompt and the agent is already working. The
+   * caller uses this to decide whether to nudge; undefined outside a resume.
+   */
+  resumedConversation?: boolean;
 }
 
 /**
@@ -260,7 +282,7 @@ export class HerdrBridge {
   // `url` is `string | undefined` rather than optional: it sits in front of
   // required parameters, and callers who have no URL must pass nothing rather
   // than a placeholder.
-  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[]): HerdrSession {
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[], resume?: ResumeCause): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
     // routers dedupe by key alone, which misses a second workspace *type* on
     // the same key, and the MCP server and the sidepanel's re-attach path can
@@ -284,7 +306,21 @@ export class HerdrBridge {
     }
 
     console.log(`[HerdrBridge] Spawning PTY session: ${sessionId} in ${defaultWorkDir}`);
-    
+
+    // Asked *before* the spawn, because the directory is checked as it is now
+    // and the launcher is about to write into it. It decides which resume
+    // framing the agent gets, and — for the caller — whether the restored agent
+    // will need to be told to carry on.
+    const resumedConversation = resume ? hasRestorableConversation(defaultWorkDir) : undefined;
+    if (resume) {
+      console.log(
+        `[HerdrBridge] Resuming ${agentName} after ${resume}: ` +
+        (resumedConversation
+          ? 'a conversation is on disk, so --continue will restore it'
+          : 'no conversation on disk, so it will start with the degraded-resume prompt')
+      );
+    }
+
     const session: HerdrSession = {
       sessionId,
       type,
@@ -294,7 +330,8 @@ export class HerdrBridge {
       status: 'active',
       workDir: defaultWorkDir,
       ptyBuffer: '',
-      onDataListeners: []
+      onDataListeners: [],
+      ...(resume ? { resume, resumedConversation } : {})
     };
 
     this.sessions.set(sessionId, session);
@@ -473,6 +510,16 @@ export class HerdrBridge {
     if (!agentExists) {
       const { launcher } = resolveLauncher(defaultAgent);
 
+      // What the agent is told when there is no conversation to continue. On a
+      // resume with nothing on disk that must not be the cold-start prompt: an
+      // agent greeted as if it were starting fresh would claim its ticket and
+      // begin again, silently redoing — or conflicting with — work it had
+      // already committed. See resume.ts.
+      const fallbackPrompt =
+        session.resume && session.resumedConversation === false
+          ? degradedResumePrompt(session.type, session.key, session.resume)
+          : undefined;
+
       try {
         // The pane inherits the herdr *server's* environment, not ours — and
         // that server is typically started at login with a thin PATH (no
@@ -486,8 +533,20 @@ export class HerdrBridge {
         // straight on to attach to an agent that did not exist, and the
         // session was reported active. That is the silent false success in
         // KAN-24, and the reason `ghostty error -2` read as a mystery.
+        //
+        // RESUME_ENV rides in on the same `env` invocation. It raises the two
+        // thresholds behind Claude Code's "Resume from summary / Resume full
+        // session" prompt, which otherwise appears whenever a resumed
+        // conversation is both over 70 minutes old and over 100k tokens — the
+        // exact shape of an agent that has been working all afternoon, and a
+        // hard stop for one with nobody at the keyboard. It is set on every
+        // spawn, not only on resumes: the launcher tries `--continue` first
+        // every time, so any re-activation can meet that modal.
         this.startAgentInOwnTab(agentName, session.workDir, [
-          'env', `PATH=${process.env.PATH}`, 'bash', '-c', launcher.command
+          'env',
+          `PATH=${process.env.PATH}`,
+          ...Object.entries(RESUME_ENV).map(([name, value]) => `${name}=${value}`),
+          'bash', '-c', launcher.command(fallbackPrompt)
         ]);
       } catch (e: any) {
         if ((e as HerdrCliError)?.herdrCode === AGENT_NAME_TAKEN) {
@@ -630,6 +689,26 @@ export class HerdrBridge {
     } catch (e) {
       console.error('[HerdrBridge] Could not parse `herdr agent list` output', e);
       return [];
+    }
+  }
+
+  /**
+   * Whether herdr's server is up and answering.
+   *
+   * {@link listHerdrAgents} deliberately flattens "herdr said nothing" and
+   * "herdr has no agents" into an empty list, which is right for a status
+   * display and wrong for boot-time reconciliation: there, the two answers lead
+   * to opposite actions — wait, or start the whole fleet. This is the question
+   * that separates them, and it is asked as its own call rather than by
+   * changing what listHerdrAgents returns, so no existing caller has to think
+   * about a new empty-ish value.
+   */
+  public herdrReachable(): boolean {
+    try {
+      this.runHerdr(['agent', 'list']);
+      return true;
+    } catch {
+      return false;
     }
   }
 
