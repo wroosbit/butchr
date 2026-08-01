@@ -663,6 +663,21 @@ export class HerdrBridge {
    * not turn one into the other.
    */
   public listHerdrAgents(): HerdrAgentRecord[] {
+    return this.listHerdrAgentsChecked().agents;
+  }
+
+  /**
+   * The same census as {@link listHerdrAgents}, but saying whether herdr
+   * actually answered.
+   *
+   * Both facts come out of one `herdr agent list`, on purpose. A caller that
+   * needs to know "is this agent still there?" has to distinguish an absent
+   * name from an absent herdr, and asking that as a second call would let herdr
+   * die between the two — producing exactly the false verdict the distinction
+   * exists to prevent. `reachable: false` means the list below is silence, not
+   * evidence, and nothing may be declared dead on the strength of it.
+   */
+  public listHerdrAgentsChecked(): { reachable: boolean; agents: HerdrAgentRecord[] } {
     let output: string;
     try {
       output = execSync('herdr agent list', {
@@ -671,24 +686,27 @@ export class HerdrBridge {
         stdio: ['ignore', 'pipe', 'ignore']
       });
     } catch (e) {
-      return [];
+      return { reachable: false, agents: [] };
     }
 
     try {
       const agents = JSON.parse(output)?.result?.agents;
-      if (!Array.isArray(agents)) return [];
+      if (!Array.isArray(agents)) return { reachable: false, agents: [] };
 
-      return agents
-        .filter((agent: any) => agent && typeof agent.name === 'string')
-        .map((agent: any) => ({
-          name: agent.name as string,
-          agentRuntime: typeof agent.agent === 'string' && agent.agent ? agent.agent : null,
-          workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
-          herdrStatus: toAgentStatus(agent.agent_status)
-        }));
+      return {
+        reachable: true,
+        agents: agents
+          .filter((agent: any) => agent && typeof agent.name === 'string')
+          .map((agent: any) => ({
+            name: agent.name as string,
+            agentRuntime: typeof agent.agent === 'string' && agent.agent ? agent.agent : null,
+            workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
+            herdrStatus: toAgentStatus(agent.agent_status)
+          }))
+      };
     } catch (e) {
       console.error('[HerdrBridge] Could not parse `herdr agent list` output', e);
-      return [];
+      return { reachable: false, agents: [] };
     }
   }
 

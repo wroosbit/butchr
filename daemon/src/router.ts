@@ -649,13 +649,20 @@ export class MessageRouter {
     // the daemon and the herdr pane does not. Close it through the fallback
     // rather than telling the caller an obviously-running agent is gone.
     const result = this.herdrBridge.closeAgentByKey(key);
-    const closedType = result.agentName ? typeFromAgentName(result.agentName, key) : undefined;
 
-    // The type is only known when the agent name resolved. Without one there is
-    // no address to record a stand-down against, and inventing a type would
-    // write an intent for an agent that does not exist — leaving the real one
-    // still marked activated, which is the safe way to be wrong: it stays
-    // visible as missing rather than silently disappearing from the census.
+    // The type comes from the agent herdr just closed, or — when herdr has no
+    // such agent — from the registry.
+    //
+    // That second source is not a nicety. An agent that has already died cannot
+    // be resolved through herdr at all, so without it the one case where a
+    // human most needs to say "stop expecting this" would record nothing, and
+    // the next boot would resurrect an agent someone had explicitly given up
+    // on. Standing down something that is already gone has to work, because
+    // that is exactly when it is asked for.
+    const closedType =
+      (result.agentName ? typeFromAgentName(result.agentName, key) : undefined) ??
+      this.registeredTypeFor(key);
+
     if (closedType) this.rememberDeactivated(closedType, key);
 
     if (result.success) {
@@ -1100,11 +1107,11 @@ export class MessageRouter {
    * dropping them would repeat the mistake this handler exists to fix.
    */
   private handleListAgents(data: any, respond: Respond) {
-    const { agents, unbackedPanes } = this.surveyAgents();
+    const { agents, unbackedPanes, staleSessions } = this.surveyAgents();
 
     // Agents that should be here and are not. Computed from the same census the
     // list is built from, so the two can never disagree about what is running.
-    const missingAgents = this.missingAgents(agents);
+    const missingAgents = this.missingAgents(agents, staleSessions);
 
     // Descriptor headroom, reported where someone looking at agents will see
     // it. On KAN-24 the herdr server's fd usage was invisible until spawning
@@ -1210,6 +1217,22 @@ export class MessageRouter {
   }
 
   /**
+   * The workspace type the registry has on file for a key, when it is
+   * unambiguous. Used to address an agent that no longer exists anywhere else —
+   * see handleDeactivateByKey. Two registered agents sharing a key differ only
+   * by type, which is precisely what this cannot guess, so it declines rather
+   * than picking one.
+   */
+  private registeredTypeFor(key: string): string | undefined {
+    if (!this.agentRegistry) return undefined;
+    const lower = key.toLowerCase();
+    const matches = Array.from(this.agentRegistry.intents().values()).filter(
+      (intent) => intent.event === 'activated' && intent.record.key.toLowerCase() === lower
+    );
+    return matches.length === 1 ? matches[0].record.type : undefined;
+  }
+
+  /**
    * The gap between what the registry says should be running and what herdr
    * actually has.
    *
@@ -1218,7 +1241,7 @@ export class MessageRouter {
    * nonetheless perfectly alive, and calling it missing would be the same
    * false alarm KAN-9 and KAN-28 already fixed at other layers.
    */
-  private missingAgents(agents: ListedAgent[]): MissingAgent[] {
+  private missingAgents(agents: ListedAgent[], staleSessions?: Set<string>): MissingAgent[] {
     if (!this.agentRegistry) return [];
 
     const alive = new Set(agents.map((a) => a.agentName));
@@ -1235,9 +1258,16 @@ export class MessageRouter {
         workDir: intent.record.workDir,
         url: intent.record.url ?? null,
         since: intent.at,
-        reason:
-          'The registry records this agent as active, but herdr has no agent by that name ' +
-          'and this daemon holds no session for it. It is not running.'
+        // Both cases are "not running", but they are not the same event and a
+        // reader acting on this deserves the difference: an agent that never
+        // came back, versus one that was running under this daemon and died
+        // while we held its session. The second is a crash we witnessed.
+        reason: staleSessions?.has(agentName)
+          ? 'The registry records this agent as active and this daemon still holds a session ' +
+            'for it, but herdr has no agent by that name: it started and then died. ' +
+            'It is not running.'
+          : 'The registry records this agent as active, but herdr has no agent by that name ' +
+            'and this daemon holds no session for it. It is not running.'
       });
     }
 
@@ -1250,20 +1280,47 @@ export class MessageRouter {
    * a client, and must ask the same question the list answers.
    */
   public findMissingAgents(): MissingAgent[] {
-    return this.missingAgents(this.surveyAgents().agents);
+    const { agents, staleSessions } = this.surveyAgents();
+    return this.missingAgents(agents, staleSessions);
   }
 
-  private surveyAgents(): { agents: ListedAgent[]; unbackedPanes: UnbackedPane[] } {
-    const herdrAgents = this.herdrBridge.listHerdrAgents();
+  private surveyAgents(): {
+    agents: ListedAgent[];
+    unbackedPanes: UnbackedPane[];
+    staleSessions: Set<string>;
+  } {
+    const { reachable, agents: herdrAgents } = this.herdrBridge.listHerdrAgentsChecked();
     const byName = new Map<string, HerdrAgentRecord>(herdrAgents.map(a => [a.name, a]));
     const statuses = new Map(herdrAgents.map(a => [a.name, a.herdrStatus]));
 
     const agents: ListedAgent[] = [];
     const attached = new Set<string>();
 
+    /**
+     * Sessions this daemon still holds for agents herdr no longer has.
+     *
+     * A session is our record that we *started* something; it is not evidence
+     * that the thing is still alive, and it outlives the agent whenever the
+     * pane dies without us tearing it down — which is precisely what a crashed
+     * or killed agent looks like. Listing one as running is how a dead agent
+     * keeps a ticket reading In Progress with nothing behind it: the silent
+     * loss this whole ticket exists to remove, reintroduced one layer up.
+     */
+    const staleSessions = new Set<string>();
+
     for (const session of this.herdrBridge.listActiveSessions()) {
       const agentName = agentNameFor(session.type, session.key);
       attached.add(agentName);
+
+      // herdr is the authority on whether an agent exists — but only when it
+      // answered. An unreachable herdr returns an empty census, and treating
+      // that silence as "they are all dead" would condemn a perfectly healthy
+      // fleet, so in that case we keep trusting the session map.
+      if (reachable && !byName.get(agentName)?.agentRuntime) {
+        staleSessions.add(agentName);
+        continue;
+      }
+
       const dto = this.toAgentDto(session, statuses);
       agents.push({
         sessionless: false,
@@ -1318,7 +1375,7 @@ export class MessageRouter {
       });
     }
 
-    return { agents, unbackedPanes };
+    return { agents, unbackedPanes, staleSessions };
   }
 
   private handlePtyInit(data: any, respond: Respond) {

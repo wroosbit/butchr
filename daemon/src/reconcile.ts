@@ -51,6 +51,28 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Elapsed time that does not count time the machine spent asleep.
+ *
+ * These budgets exist to bound *waiting*, and `Date.now()` does not measure
+ * waiting — it measures the wall clock, which keeps running through a suspend
+ * while nothing here does. This is not hypothetical: on the reboot that proved
+ * this ticket, the laptop suspended 1.5 seconds into restoring the first agent
+ * and woke five hours and forty minutes later. The 120-second budget below had
+ * expired without a single poll ever being taken after the machine came back,
+ * so a restored agent that was very probably sitting at a healthy prompt was
+ * written off as "never reached a prompt within 120s" and never nudged — the
+ * exact idle-forever failure this file exists to prevent — and the second agent
+ * waited out the whole suspend behind it.
+ *
+ * `performance.now()` is CLOCK_MONOTONIC on Linux, which excludes suspended
+ * time. So the budget means what it says: 120 seconds of the machine actually
+ * being awake, whenever those seconds happen to occur.
+ */
+function monotonicNow(): number {
+  return performance.now();
+}
+
 /** What one agent's restoration did, for the log and for the caller. */
 export interface RestoreOutcome {
   agentName: string;
@@ -82,12 +104,12 @@ export interface ReconcileResult {
  * *launched* first, not that its socket is accepting.
  */
 async function waitForHerdr(herdrBridge: HerdrBridge): Promise<boolean> {
-  const deadline = Date.now() + HERDR_READY_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+  const deadline = monotonicNow() + HERDR_READY_TIMEOUT_MS;
+  for (;;) {
     if (herdrBridge.herdrReachable()) return true;
+    if (monotonicNow() >= deadline) return false;
     await delay(HERDR_POLL_INTERVAL_MS);
   }
-  return false;
 }
 
 /**
@@ -100,16 +122,16 @@ async function waitForAgentReady(
   key: string,
   type: string
 ): Promise<boolean> {
-  const deadline = Date.now() + AGENT_READY_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+  const deadline = monotonicNow() + AGENT_READY_TIMEOUT_MS;
+  for (;;) {
     const tail = herdrBridge.tailAgent(key, type, 40);
     if (tail.success && typeof tail.text === 'string') {
       const text = tail.text.toLowerCase();
       if (AGENT_READY_MARKERS.some((marker) => text.includes(marker.toLowerCase()))) return true;
     }
+    if (monotonicNow() >= deadline) return false;
     await delay(AGENT_READY_POLL_MS);
   }
-  return false;
 }
 
 /**

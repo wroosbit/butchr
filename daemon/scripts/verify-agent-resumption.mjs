@@ -314,6 +314,147 @@ check('the resume modal thresholds are raised past any real conversation', () =>
 });
 
 // ---------------------------------------------------------------------------
+section('6. A session is not proof that an agent is alive');
+
+// The defect these cover was found in this code, by the reboot it was written
+// for. An agent was restored at boot, died later, and `list_agents` went on
+// reporting it `active` with `missingAgents: []` — because the census counted
+// any session this daemon held, without asking herdr whether the agent behind
+// it still existed. A dead agent that reports as healthy is the silent loss
+// this whole ticket exists to remove, so it must not survive here.
+
+const { MessageRouter } = await import(path.join(dist, 'router.js'));
+
+/** A router wired to a herdr that says exactly what a test wants it to say. */
+function routerWith({ sessions, herdr, reachable = true, registry }) {
+  const herdrBridge = {
+    listActiveSessions: () => sessions,
+    listHerdrAgentsChecked: () => ({ reachable, agents: herdr }),
+    listHerdrAgents: () => herdr,
+    listHerdrStatuses: () => new Map(herdr.map((a) => [a.name, a.herdrStatus]))
+  };
+  return new MessageRouter(null, null, herdrBridge, () => {}, () => {}, undefined, undefined, registry);
+}
+
+const session = (key) => ({
+  sessionId: `task-${key}-1`,
+  type: 'task',
+  key,
+  url: null,
+  createdAt: new Date(0),
+  status: 'active',
+  workDir: path.join(tmp, 'workspaces', 'task', key)
+});
+
+const herdrAgent = (key, agentRuntime = 'claude') => ({
+  name: `butchr-task-${key}`,
+  agentRuntime,
+  workDir: path.join(tmp, 'workspaces', 'task', key),
+  herdrStatus: 'working'
+});
+
+function registryExpecting(...keys) {
+  const file = path.join(tmp, `reg-${keys.join('-')}-${Math.random()}.jsonl`);
+  const reg = new AgentRegistry(file);
+  for (const key of keys) reg.recordActivated(record(key));
+  return reg;
+}
+
+check('an agent herdr no longer has is missing, even while its session lingers', () => {
+  const missing = routerWith({
+    sessions: [session('kan-21')],
+    herdr: [], // herdr answered, and it has never heard of this agent
+    registry: registryExpecting('kan-21')
+  }).findMissingAgents();
+
+  assert.strictEqual(missing.length, 1, `expected 1 missing, got ${JSON.stringify(missing)}`);
+  assert.strictEqual(missing[0].agentName, 'butchr-task-kan-21');
+});
+
+check('the reason says it started and died, not that it never existed', () => {
+  const [missing] = routerWith({
+    sessions: [session('kan-21')],
+    herdr: [],
+    registry: registryExpecting('kan-21')
+  }).findMissingAgents();
+
+  assert.ok(/started and then died/.test(missing.reason), missing.reason);
+});
+
+check('a pane with no agent runtime behind it does not count as alive either', () => {
+  // herdr knows the name but nothing is running in the pane — the same
+  // emptiness, reported one layer down.
+  const missing = routerWith({
+    sessions: [session('kan-21')],
+    herdr: [herdrAgent('kan-21', null)],
+    registry: registryExpecting('kan-21')
+  }).findMissingAgents();
+
+  assert.strictEqual(missing.length, 1, JSON.stringify(missing));
+});
+
+check('a healthy agent is not reported missing', () => {
+  const missing = routerWith({
+    sessions: [session('kan-21')],
+    herdr: [herdrAgent('kan-21')],
+    registry: registryExpecting('kan-21')
+  }).findMissingAgents();
+
+  assert.deepStrictEqual(missing, []);
+});
+
+check('an unreachable herdr condemns nobody — silence is not evidence of death', () => {
+  // The trap: an unreachable herdr returns an empty census, which looks
+  // identical to "every agent is gone". Acting on it would declare a whole
+  // healthy fleet dead the moment herdr hiccups.
+  const missing = routerWith({
+    sessions: [session('kan-21')],
+    herdr: [],
+    reachable: false,
+    registry: registryExpecting('kan-21')
+  }).findMissingAgents();
+
+  assert.deepStrictEqual(missing, [], 'an unreachable herdr must not condemn a live agent');
+});
+
+check('a deliberately stood-down agent is not reported missing', () => {
+  const file = path.join(tmp, 'reg-standdown.jsonl');
+  const reg = new AgentRegistry(file);
+  reg.recordActivated(record('kan-21'));
+  reg.recordDeactivated({ agentName: 'butchr-task-kan-21', type: 'task', key: 'kan-21' });
+
+  const missing = routerWith({ sessions: [], herdr: [], registry: reg }).findMissingAgents();
+  assert.deepStrictEqual(missing, [], 'a stand-down must stay down, not become an alarm');
+});
+
+// ---------------------------------------------------------------------------
+section('7. Waiting budgets survive a suspend');
+
+check('the restore wait is monotonic, so sleeping through it does not consume it', () => {
+  // On the reboot this ticket was proved by, the laptop suspended 1.5s into
+  // the first restore and woke 5h40m later. A Date.now() deadline had expired
+  // without a single poll after resume, so a restored agent was written off as
+  // "never reached a prompt" and never nudged. CLOCK_MONOTONIC excludes
+  // suspended time, which is the only reading of "120 seconds" that means
+  // anything to an agent that was asleep for most of them.
+  const src = fs.readFileSync(path.join(dist, 'reconcile.js'), 'utf8');
+  // Matched on the deadline arithmetic rather than on any mention of the two
+  // clocks, so that the comment explaining why the wall clock is wrong here
+  // cannot itself fail the check.
+  assert.ok(
+    !/deadline\s*=\s*Date\.now\(\)/.test(src),
+    'a wait deadline is still computed from the wall clock'
+  );
+  const monotonicDeadlines = src.match(/deadline\s*=\s*monotonicNow\(\)/g) ?? [];
+  assert.strictEqual(
+    monotonicDeadlines.length,
+    2,
+    `expected both wait budgets (herdr-ready, agent-ready) to be monotonic, found ${monotonicDeadlines.length}`
+  );
+  assert.ok(/performance\.now\(\)/.test(src), 'reconcile does not use a monotonic clock');
+});
+
+// ---------------------------------------------------------------------------
 fs.rmSync(tmp, { recursive: true, force: true });
 
 console.log(`\n${checks - failures}/${checks} checks passed.`);
