@@ -50,8 +50,9 @@ export function ActivationRefusal({ refusal, onOverride, onPreempt, onDismiss })
 
           {capacity.supervisors > 0 && (
             <div className="status-hint">
-              The board manager is running as well. It is not one of the {capacity.cap} —
-              its share of the machine is reserved before the cap is worked out.
+              {capacity.supervisors} epic/story agent{capacity.supervisors === 1 ? ' is' : 's are'} running
+              as well. They are not counted against the {capacity.cap} — they supervise
+              rather than do the work.
             </div>
           )}
 

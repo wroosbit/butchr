@@ -22,13 +22,31 @@ import * as os from 'os';
  * KAN-36 corrected two things about the first version, both discovered the
  * same way — a human found the product unusable and no instrument had noticed:
  *
- *   - The cap counts *task* agents. The board manager is always-on
- *     infrastructure, so its share is reserved off the top like herdr's rather
- *     than spent from the same budget as the work. Counting it left a 4-core
- *     machine able to run exactly one task agent, forever.
+ *   - The cap counts *task* agents. At the time there was one always-on board
+ *     manager, so KAN-36 reserved its share off the top like herdr's rather
+ *     than spending it from the same budget as the work. Counting it had left
+ *     a 4-core machine able to run exactly one task agent, forever.
  *   - An agent is a process tree, not a process. The MCP servers every agent
  *     starts are most of the difference between 480 MB and the 650 MB one
  *     actually holds.
+ *
+ * KAN-36's one-slot supervisor reservation was deliberately
+ * unconditional. The manager was "present whenever Butchr is being used at
+ * all, exactly like herdr", so holding its slot whether or not it happened to
+ * be up kept `cap` a static property of the hardware. That was right when it
+ * was written, and then KAN-39 removed the thing it assumed: there is no
+ * longer one always-on supervisor. Zero or more `epic` and `story` agents are
+ * staffed and stood down as work comes and goes, and a fixed reservation for
+ * one of them had become arithmetic about an agent that may not exist.
+ *
+ * The rule that replaced it (KAN-41): only task agents are accounted for at
+ * all. `cap` is cores and memory minus the human reserve and herdr's
+ * overhead, and nothing else. Epic and story agents are neither counted in
+ * `running` nor reserved for — they are typically low-resource and idle,
+ * reading Jira, filing tickets and waiting, not competing for the machine the
+ * way a task agent compiling a repo does. They are still reported in
+ * `Capacity.supervisors`, so a reader of a capacity report can see they
+ * exist; they are simply never charged.
  */
 
 export const GIB = 1024 ** 3;
@@ -92,39 +110,6 @@ export const MEASURED_AGENT_COST: AgentCost = {
  */
 export const HERDR_OVERHEAD_CORES = 0.5;
 
-/**
- * Supervisor agents whose cost is reserved off the top instead of counted
- * against the cap.
- *
- * KAN-34 said the board manager "counts toward the total; it is a claude
- * process like any other", which is true about the process and wrong about the
- * cap. The cap answers "how much work may this machine be given"; the manager
- * is not work, it is the thing that hands work out. It is present whenever
- * Butchr is being used at all, exactly like herdr. Counting it meant a 4-core
- * machine with a cap of 2 could run one task agent and refuse every activation
- * after it — a cap that did not protect the machine, it prevented the product
- * from being used.
- *
- * The fix is not to stop charging for the manager. It really does hold a core
- * and half a gigabyte, and a cap that pretended otherwise would over-commit
- * the machine by an agent. It is to charge for it in the place where
- * ever-present overhead is already charged — subtracted from the budget, like
- * {@link HERDR_OVERHEAD_CORES} — so that `cap` becomes the number the user can
- * act on: how many *task* agents they may start.
- *
- * The reservation is unconditional rather than conditional on a manager
- * actually running, for the same reason herdr's is: the cap is a static
- * property of the hardware, quoted in the portability table and computed for
- * machines nobody here owns. A cap that grew by one whenever the manager
- * restarted would be a cap nobody could predict, and holding a slot the
- * manager is not currently using errs toward leaving the desktop usable —
- * which is the error this whole file exists to make.
- *
- * Override with BUTCHR_SUPERVISOR_AGENTS, including to 0 for a fleet that runs
- * no manager at all.
- */
-export const SUPERVISOR_AGENTS = 1;
-
 /** What the machine looks like right now, or what we pretend it looks like. */
 export interface MachineFacts {
   cores: number;
@@ -167,8 +152,6 @@ export interface Capacity {
   machine: MachineFacts;
   cost: AgentCost;
   reservedForHuman: { cores: number; bytes: number };
-  /** What {@link SUPERVISOR_AGENTS} costs, held back before agents are counted. */
-  reservedForSupervisor: { agents: number; cores: number; bytes: number };
 
   /** Concurrent *task* agents this hardware supports, load aside. */
   cap: number;
@@ -181,9 +164,9 @@ export interface Capacity {
   /** Task agents alive right now. Supervisors are not among them. */
   running: number;
   /**
-   * Supervisors alive right now. Reported, never counted: their share is
-   * already reserved off the top, and charging for them twice is what made a
-   * 4-core machine refuse the user's second agent.
+   * Epic and story agents alive right now. Reported, never charged: they
+   * supervise rather than do the work, and spend most of their lives idle
+   * waiting on Jira. See the header for the argument.
    */
   supervisors: number;
 
@@ -202,8 +185,6 @@ export interface CapacityOptions {
   cost?: AgentCost;
   /** A cap the operator set by hand, bypassing the derivation entirely. */
   configuredCap?: number | null;
-  /** How many supervisor slots to reserve. Defaults to {@link SUPERVISOR_AGENTS}. */
-  supervisorAgents?: number;
   /** Supervisors observed running. Reported only; it changes no arithmetic. */
   supervisorsRunning?: number;
 }
@@ -222,22 +203,18 @@ export function computeCapacity(
 ): Capacity {
   const cost = options.cost ?? MEASURED_AGENT_COST;
   const configuredCap = options.configuredCap ?? null;
-  const supervisorAgents = options.supervisorAgents ?? SUPERVISOR_AGENTS;
 
   const reservedCores = humanReserveCores(machine.cores);
   const reservedBytes = humanReserveBytes(machine.totalBytes);
-  // A supervisor is an agent and costs what an agent costs. What differs is
-  // where it is charged: to the budget, not to the cap. See SUPERVISOR_AGENTS.
-  const supervisorCores = supervisorAgents * cost.cores;
-  const supervisorBytes = supervisorAgents * cost.residentBytes;
 
   // Static cap: what the hardware supports with nothing else assumed. herdr's
-  // and the supervisor's shares come off here because the load average cannot
-  // be consulted for a machine that is not this one.
-  const cpuBudget = machine.cores - reservedCores - HERDR_OVERHEAD_CORES - supervisorCores;
+  // share comes off here because the load average cannot be consulted for a
+  // machine that is not this one. Nothing is held back for supervisors — see
+  // the header: only task agents are charged.
+  const cpuBudget = machine.cores - reservedCores - HERDR_OVERHEAD_CORES;
   const capByCpu = Math.floor(Math.max(0, cpuBudget) / cost.cores);
   const capByMemory = Math.floor(
-    Math.max(0, machine.totalBytes - reservedBytes - supervisorBytes) / cost.residentBytes
+    Math.max(0, machine.totalBytes - reservedBytes) / cost.residentBytes
   );
 
   let cap: number;
@@ -264,12 +241,13 @@ export function computeCapacity(
   // about either.
   const headroomByCap = Math.max(0, cap - running);
 
-  // The load average already includes every agent, the supervisor, herdr, and
-  // whatever the human is running, so this is the one term that distinguishes
-  // three idle agents from three that are compiling — and the one place the
-  // supervisor is *not* deducted separately, because it is already in there.
-  // The same is true of availableBytes below: a running supervisor's memory is
-  // memory the kernel has already stopped offering.
+  // The load average already includes every agent, any supervisors, herdr,
+  // and whatever the human is running, so this is the one term that
+  // distinguishes three idle agents from three that are compiling. It is also
+  // where running epic and story agents are felt at all: never charged in the
+  // model, their real (usually small) usage is in the measured load, and in
+  // availableBytes below — a running supervisor's memory is memory the kernel
+  // has already stopped offering.
   //
   // It is a 1-minute average, so it lags: two agents started seconds apart are
   // both invisible to it. That is exactly the gap the count term covers, which
@@ -297,11 +275,6 @@ export function computeCapacity(
     machine,
     cost,
     reservedForHuman: { cores: reservedCores, bytes: reservedBytes },
-    reservedForSupervisor: {
-      agents: supervisorAgents,
-      cores: supervisorCores,
-      bytes: supervisorBytes
-    },
     cap,
     capByCpu,
     capByMemory,
@@ -375,8 +348,6 @@ function envNumber(name: string, allowZero = false): number | undefined {
  *   BUTCHR_MAX_AGENTS        — set the cap outright, skipping the derivation
  *   BUTCHR_AGENT_MEMORY_MB   — resident cost of one agent
  *   BUTCHR_AGENT_CORES       — load-average cost of one active agent
- *   BUTCHR_SUPERVISOR_AGENTS — supervisor slots reserved off the top; 0 for a
- *                              fleet that runs no board manager
  */
 export function optionsFromEnv(): CapacityOptions {
   const memoryMb = envNumber('BUTCHR_AGENT_MEMORY_MB');
@@ -386,17 +357,16 @@ export function optionsFromEnv(): CapacityOptions {
       residentBytes: memoryMb !== undefined ? memoryMb * MIB : MEASURED_AGENT_COST.residentBytes,
       cores: cores ?? MEASURED_AGENT_COST.cores
     },
-    configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null,
-    supervisorAgents: envNumber('BUTCHR_SUPERVISOR_AGENTS', true) ?? SUPERVISOR_AGENTS
+    configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null
   };
 }
 
 /**
  * Capacity of this machine, with `running` task agents already on it.
  *
- * `supervisors` is how many board managers were found running. It is passed so
- * the report can say so, not so the arithmetic can charge for them — their
- * share is reserved whether they are up or not.
+ * `supervisors` is how many epic and story agents were found running. It is
+ * passed so the report can say so, not so the arithmetic can charge for them —
+ * they are never charged at all.
  */
 export function readCapacity(running: number, supervisors = 0): Capacity {
   return computeCapacity(readMachineFacts(), running, {
@@ -429,14 +399,6 @@ export function describeCapacity(c: Capacity): string {
   lines.push(
     `reserved for you: ${c.reservedForHuman.cores} core(s), ${gib(c.reservedForHuman.bytes)}`
   );
-  const sup = c.reservedForSupervisor;
-  if (sup.agents > 0) {
-    lines.push(
-      `reserved for the board manager: ${sup.agents} agent slot(s) — ` +
-      `${sup.cores} core(s), ${gib(sup.bytes)}. It is always-on infrastructure, ` +
-      `so it is subtracted here rather than counted against the cap below.`
-    );
-  }
 
   if (c.capBoundBy === 'configured') {
     lines.push(`cap: ${c.cap} task agents (set by BUTCHR_MAX_AGENTS, derivation skipped)`);
@@ -444,10 +406,9 @@ export function describeCapacity(c: Capacity): string {
     lines.push(
       `cap: ${c.cap} task agents — ` +
       `CPU allows ${c.capByCpu} ((${m.cores} cores − ${c.reservedForHuman.cores} reserved ` +
-      `− ${HERDR_OVERHEAD_CORES} for herdr − ${sup.cores} for the manager) ` +
-      `÷ ${c.cost.cores} core/agent), ` +
-      `memory allows ${c.capByMemory} ((${gib(m.totalBytes)} − ${gib(c.reservedForHuman.bytes)} ` +
-      `− ${gib(sup.bytes)}) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB/agent)` +
+      `− ${HERDR_OVERHEAD_CORES} for herdr) ÷ ${c.cost.cores} core/agent), ` +
+      `memory allows ${c.capByMemory} ((${gib(m.totalBytes)} − ${gib(c.reservedForHuman.bytes)}) ` +
+      `÷ ${Math.round(c.cost.residentBytes / MIB)} MB/agent)` +
       (c.capBoundBy === 'floor'
         ? '; both said 0, floored to 1 because a machine that can run nothing is not a useful answer'
         : `; bound by ${c.capBoundBy}`)
@@ -456,7 +417,9 @@ export function describeCapacity(c: Capacity): string {
 
   lines.push(
     `running: ${c.running} task agent(s)` +
-    (c.supervisors > 0 ? `, plus ${c.supervisors} board manager (not counted)` : '')
+    (c.supervisors > 0
+      ? `, plus ${c.supervisors} epic/story supervisor agent(s) (not counted against the cap)`
+      : '')
   );
   lines.push(
     `headroom: ${c.headroom} more — ` +
