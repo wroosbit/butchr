@@ -546,9 +546,19 @@ export class HerdrBridge {
 
     // Agent-specific provisioning, also on every activation: it is idempotent,
     // and a workspace reset out from under a live herdr agent would otherwise
-    // never get its settings back.
+    // never get its settings back. A setup that throws refuses the activation
+    // (KAN-54): provisioning that demonstrably did not stick — the folder
+    // trust entry above all — would otherwise spawn an agent wedged on a
+    // startup dialog behind a `success: true, verified: true` answer.
     if (launcher.setup) {
-      launcher.setup(session.workDir, mcpServers ?? []);
+      try {
+        launcher.setup(session.workDir, mcpServers ?? []);
+      } catch (e: any) {
+        session.spawnError = e?.message ?? String(e);
+        session.status = 'terminated';
+        console.error(`[HerdrBridge] Refusing to start ${agentName}: ${session.spawnError}`);
+        return;
+      }
     }
 
     if (initialPrompt) {
@@ -577,6 +587,25 @@ export class HerdrBridge {
         session.resume && session.resumedConversation === false
           ? degradedResumePrompt(session.type, session.key, session.resume)
           : undefined;
+
+      // The last daemon-side moment to look (KAN-54). Between setup and here
+      // sit the prompt-file write and a subprocess round-trip to `herdr agent
+      // get` — real time, in which a sibling claude's boot write-back can
+      // erase the trust entry setup just verified. Re-checking now shrinks
+      // the unguarded window to spawn-to-config-read, which is as small as it
+      // gets without watching the agent past its startup dialogs (deferred by
+      // KAN-49). A clobber that will not repair refuses the activation on the
+      // spawnError channel rather than starting a wedged agent.
+      if (launcher.preSpawnCheck) {
+        try {
+          launcher.preSpawnCheck(session.workDir);
+        } catch (e: any) {
+          session.spawnError = e?.message ?? String(e);
+          session.status = 'terminated';
+          console.error(`[HerdrBridge] Refusing to spawn ${agentName}: ${session.spawnError}`);
+          return;
+        }
+      }
 
       try {
         // The pane inherits the herdr *server's* environment, not ours — and
