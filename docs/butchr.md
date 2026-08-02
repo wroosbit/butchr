@@ -48,6 +48,18 @@ Same URLs, same key format, different prompt — `prompts/story.md`.
 | **MCP Tools** | Official Atlassian MCP Server tools |
 | **Initial Prompt File** | `prompts/story.md` |
 
+### 📌 Type: `epic` (Jira)
+
+Same URLs, same key format, different prompt — `prompts/epic.md`.
+
+| Parameter | Configuration |
+| :--- | :--- |
+| **Workspace Type** | `epic` |
+| **URL Patterns** | *(none)* — same reason as `story`, see below |
+| **Entity Key** | Jira Work Item ID |
+| **MCP Tools** | Official Atlassian MCP Server tools |
+| **Initial Prompt File** | `prompts/epic.md` |
+
 ### 🔎 Why Jira types need a lookup
 
 A Jira issue URL does not carry the issue's type: `…/browse/KAN-5` is
@@ -59,7 +71,7 @@ matches `task` first, and that match is then *refined* by asking Jira for the
 issue's real `issuetype`:
 
 ```
-URL ──match──> task (provisional) ──ask Jira──> issuetype name ──map──> task | story
+URL ──match──> task (provisional) ──ask Jira──> issuetype name ──map──> task | story | epic
 ```
 
 The mapping lives in one place in `daemon/src/registry.ts`, as data:
@@ -67,14 +79,17 @@ The mapping lives in one place in `daemon/src/registry.ts`, as data:
 | Jira issue type | Workspace type |
 | :--- | :--- |
 | `Story` | `story` |
-| `Task`, `Bug`, `Epic`, `Subtask`, anything unrecognised | `task` |
+| `Epic` | `epic` |
+| `Task`, `Bug`, `Subtask`, anything unrecognised | `task` |
 | *lookup unavailable or failed* | `task` |
 
 **Resolution is asynchronous** as a result (`registry.resolve()` returns a
-Promise). Board-URL handling and its precedence are unchanged: a bare board URL
-is still `manage`, and a board URL carrying `&selectedIssue=KEY` is still an
-opened issue and still wins over `manage` — it simply now resolves to `task` or
-`story` per the lookup.
+Promise). A bare board URL resolves to **nothing**: board pages are not a
+workspace, the sidepanel shows its ordinary "no workspace for this page" state,
+and an epic is reached by opening the epic issue like any other issue. A board
+URL carrying `&selectedIssue=KEY` still resolves as an ordinary issue URL — no
+longer by winning a precedence contest, since there is nothing left to beat —
+and lands on `task`, `story` or `epic` per the lookup.
 
 ### 🔐 The Jira credential, and degrading without one
 
@@ -188,13 +203,14 @@ it starts nothing and costs nothing.
 
 At capacity the cap used to refuse everything identically, which left whoever
 was asking to work out for themselves what to stand down. Agents now carry a
-priority, fixed by workspace type: **`manage` 3, `story` 2, `task` 1.** It is a
+priority, fixed by workspace type: **`epic` 3, `story` 2, `task` 1.** It is a
 property of the type rather than of the Jira ticket, so it needs no lookup and
-both callers — the sidepanel toggle and the board manager — get it the same way.
+both callers — the sidepanel toggle and the agents that activate over MCP — get
+it the same way.
 
 **Strictly greater.** Equal never preempts, which makes task-versus-task — the
 normal shape of a full machine here — always a refusal. And it makes "never
-preempt the board manager" a consequence of the ordering rather than a rule
+preempt an epic agent" a consequence of the ordering rather than a rule
 anyone has to remember: 3 is the top of the scale.
 
 **Never automatic.** A refusal at capacity now names what is running and what
@@ -212,7 +228,7 @@ interrupted-work nudge, rather than sitting silently at a restored prompt.
 
 **Its ticket is somebody's job.** The daemon holds no Jira write and never will,
 so `butchr_list_agents` reports `preemptedAgents` on every poll until the agent
-is put back, and `prompts/manage.md` tells the board manager to move each one
+is put back, and `prompts/epic.md` tells the epic agent to move each one
 back to **To Do** with a comment naming what took its slot. Left In Progress
 with nothing behind it, a preempted ticket tells exactly the lie KAN-21 exists
 to end.
@@ -397,9 +413,10 @@ is recorded as an `Implements` issue link (task → story) plus an explicit line
 in each task's description. Where a site has no `Implements` link type
 configured, the agent falls back to `Blocks` and reports that it did.
 
-It does **not** activate agents for the tasks it files — agent lifecycle belongs
-to the board manager (`prompts/manage.md`). Its handoff is the filed, linked
-ticket on the board.
+It **activates the task agents for the tasks it files** — agent lifecycle for
+its tasks is its own. It monitors those agents, steers them when they stall,
+and when a task's PR merges it sets the task **Done** and deactivates the
+agent.
 
 Nothing in the daemon depends on any of this: the prompt is read from disk at
 activation, so it is the human's to iterate on.
@@ -427,7 +444,7 @@ activation, so it is the human's to iterate on.
 │   ┌────────────────────────────────────────────────────────────────┐   │
 │   │                       Butchr Local Daemon                      │   │
 │   │                                                                │   │
-│   │   - Workspace Type Registry (`task`, `story`, `manage`)        │   │
+│   │   - Workspace Type Registry (`task`, `story`, `epic`)          │   │
 │   │   - Prompt File Loader (`prompts/task.md`)                     │   │
 │   │   - Read-only Jira client (issue type -> workspace type)       │   │
 │   │   - MCP Configuration Manager (Atlassian MCP Server)           │   │
