@@ -7,7 +7,7 @@ Butchr agents are supposed to outlive the machine they run on. This is how.
 On 2026-07-31 two task agents were activated at `17:23:47 UTC`. At `17:25:20` the
 machine rebooted. Ninety-three seconds of work vanished, and:
 
-* nothing resumed on its own — not the task agents, not the board manager;
+* nothing resumed on its own — not the task agents, not their supervisors;
 * `butchr_agent_status` answered `agent target butchr-task-kan-16 not found`,
   so the agents were gone at the herdr level, not merely detached;
 * both Jira tickets read **In Progress** for another twenty minutes;
@@ -151,8 +151,8 @@ The registry says what *should* be running; herdr says what *is*. The difference
 is `missingAgents`, and it appears:
 
 * on **every `list_agents` response**, which is what `butchr_list_agents` returns
-  — the call the board manager already makes. A non-empty `missingAgents` also
-  sets `isError`, so a supervisor skimming for problems cannot skim past it;
+  — the call the epic and story agents already make. A non-empty `missingAgents`
+  also sets `isError`, so a supervisor skimming for problems cannot skim past it;
 * as an **`agent_lost_event`** broadcast by a sweep every 30 seconds, for
   newly-missing agents only (re-announcing an hour-old loss twice a minute would
   train everyone to ignore it);

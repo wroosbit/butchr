@@ -20,11 +20,12 @@
 //   cd extension && npm run build
 //   node scripts/screenshot-agent-controls.mjs /tmp/kan38-payloads /tmp/shots
 //
-// Writes four images:
+// Writes five images:
 //
 //   fleet.png             the page at rest — running agents, a loss, a stood-down list
 //   confirm-agent.png     Off pressed on a task agent that has uncommitted work
-//   confirm-manager.png   Off pressed on the board manager
+//   confirm-epic.png      Off pressed on an epic supervisor
+//   confirm-story.png     Off pressed on a story supervisor
 //   refusal.png           Turn on pressed at capacity
 //
 // Needs a browser that will actually render. Headless Chrome fails to produce a
@@ -229,9 +230,13 @@ const running = listAgents.agents.map((a) => `${a.type}/${a.key}`);
 console.log(`rendering the built Agents page: ${running.join(', ')}`);
 console.log(`  stood down: ${listAgents.standbyAgents.map((a) => `${a.type}/${a.key}`).join(', ')}`);
 
+// Lower-case keys: the dumped agents are sessionless census rows, and a key
+// recovered from an agent name arrives as `kan-38` (see router.ts, list_agents)
+// — so that is what the shipped button's title actually says.
 shoot('fleet.png', null, 1200);
-shoot('confirm-agent.png', 'Stop task/KAN-38', 1200);
-shoot('confirm-manager.png', 'Stop manage/work', 1200);
+shoot('confirm-agent.png', 'Stop task/kan-38', 1200);
+shoot('confirm-epic.png', 'Stop epic/kan-39', 1200);
+shoot('confirm-story.png', 'Stop story/kan-40', 1200);
 shoot('refusal.png', 'Start task/KAN-21', 1400);
 
 rmSync(profile, { recursive: true, force: true });

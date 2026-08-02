@@ -9,7 +9,7 @@
 //   3. refusal          — equal or lower priority is still refused, and told why
 //   4. consent          — what is shown BEFORE anything is killed
 //   5. preemption       — capacity before and after, and the record of what went
-//   6. manager safety   — the highest possible activation cannot touch `manage`
+//   6. supervisor safety — the highest possible activation cannot touch `epic`
 //   7. survival         — a preempted agent, re-activated, resumes
 //   8. ticket status    — what the preempted ticket becomes, and who moves it
 //   9. the registry     — why a reboot does NOT bring a preempted agent back
@@ -33,7 +33,7 @@ const distDir = process.argv[2] ?? path.join(scriptDir, '..', 'dist');
 const repoRoot = path.resolve(scriptDir, '..', '..');
 
 const {
-  PRIORITY_MANAGE,
+  PRIORITY_EPIC,
   PRIORITY_STORY,
   PRIORITY_TASK,
   DEFAULT_WORKSPACE_PRIORITY,
@@ -41,7 +41,7 @@ const {
   outranks,
   selectVictim
 } = await import(path.join(distDir, 'priority.js'));
-const { WorkspaceRegistry } = await import(path.join(distDir, 'registry.js'));
+const { WorkspaceRegistry, isSupervisorType } = await import(path.join(distDir, 'registry.js'));
 const { MessageRouter } = await import(path.join(distDir, 'router.js'));
 const { AgentRegistry } = await import(path.join(distDir, 'agent-registry.js'));
 const { PromptLoader } = await import(path.join(distDir, 'prompt.js'));
@@ -53,7 +53,7 @@ const { claudeTranscriptDir, hasRestorableConversation, resumeNudge } =
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 const verdict = (ok, yes, no) => console.log(`\n  ${ok ? '→ ' + yes : '→ FAILED — ' + no}`);
 
-// The board manager plus however many task agents this machine's own derivation
+// A supervisor plus however many task agents this machine's own derivation
 // says it can carry. Filling to the derived cap rather than to a number this
 // script picked means the refusals below are produced by the real arithmetic.
 const HERE = readCapacity(0, 1);
@@ -164,7 +164,7 @@ function capacityOfFleet(bridge) {
   let fleet = 0;
   let supervisors = 0;
   for (const c of fleetNow(bridge)) {
-    if (c.type === 'manage') supervisors++;
+    if (isSupervisorType(c.type)) supervisors++;
     else fleet++;
   }
   return readCapacity(fleet, supervisors);
@@ -257,34 +257,34 @@ rule('1. THE SCALE — where priority comes from');
 console.log(
   'Priority is a property of the WORKSPACE TYPE, not of the Jira ticket. The type\n' +
   'is already resolved before activation, so no Jira lookup is added to the\n' +
-  'activation path and both callers — the sidepanel toggle and the board manager —\n' +
-  'get the same answer by the same route.\n'
+  'activation path and both callers — the sidepanel toggle and the supervisor\n' +
+  'agents that activate over MCP — get the same answer by the same route.\n'
 );
 console.log('  type      priority   registered in registry.ts');
-for (const type of ['manage', 'story', 'task']) {
+for (const type of ['epic', 'story', 'task']) {
   console.log(`  ${type.padEnd(9)} ${String(registry.priorityFor(type)).padStart(4)}       ${registry.get(type).name}`);
 }
 console.log(`  ${'(unknown)'.padEnd(9)} ${String(registry.priorityFor('nonesuch')).padStart(4)}       falls to the floor, so it can preempt nothing`);
 
 const scaleOk =
-  registry.priorityFor('manage') === PRIORITY_MANAGE &&
+  registry.priorityFor('epic') === PRIORITY_EPIC &&
   registry.priorityFor('story') === PRIORITY_STORY &&
   registry.priorityFor('task') === PRIORITY_TASK &&
   registry.priorityFor('nonesuch') === DEFAULT_WORKSPACE_PRIORITY;
-verdict(scaleOk, 'manage 3 > story 2 > task 1, as specified.', 'the scale is not what was specified.');
+verdict(scaleOk, 'epic 3 > story 2 > task 1, as specified.', 'the scale is not what was specified.');
 
 console.log(
   '\n  Strictly-greater, not greater-or-equal:\n' +
   `    task(1) over task(1):    ${outranks(PRIORITY_TASK, PRIORITY_TASK)}   ← the common case, and a refusal\n` +
   `    story(2) over task(1):   ${outranks(PRIORITY_STORY, PRIORITY_TASK)}\n` +
-  `    manage(3) over manage(3):${String(outranks(PRIORITY_MANAGE, PRIORITY_MANAGE)).padStart(6)}   ← nothing can outrank the top of the scale`
+  `    epic(3) over epic(3):    ${String(outranks(PRIORITY_EPIC, PRIORITY_EPIC)).padStart(5)}   ← nothing can outrank the top of the scale`
 );
 
 // ------------------------------------------------------------ 2. ordering --
 rule('2. ORDERING — which agent is chosen, and why that one');
 
 const fleet = [
-  { agentName: 'butchr-manage-work',    type: 'manage', key: 'work',   priority: 3, herdrStatus: 'working', activatedAt: '2026-08-01T09:00:00Z' },
+  { agentName: 'butchr-epic-kan-39',    type: 'epic',   key: 'KAN-39', priority: 3, herdrStatus: 'working', activatedAt: '2026-08-01T09:00:00Z' },
   { agentName: 'butchr-story-kan-50',   type: 'story',  key: 'KAN-50', priority: 2, herdrStatus: 'idle',    activatedAt: '2026-08-01T10:00:00Z' },
   { agentName: 'butchr-task-kan-10',    type: 'task',   key: 'KAN-10', priority: 1, herdrStatus: 'working', activatedAt: '2026-08-01T11:00:00Z' },
   { agentName: 'butchr-task-kan-11',    type: 'task',   key: 'KAN-11', priority: 1, herdrStatus: 'idle',    activatedAt: '2026-08-01T12:00:00Z' },
@@ -321,10 +321,10 @@ verdict(
 // ------------------------------------------------------------- 3. refusal --
 rule(`3. REFUSAL — a task agent at capacity, on a board of task agents`);
 
-// Filled to the machine's own derived cap, plus the board manager, which is
+// Filled to the machine's own derived cap, plus an epic supervisor, which is
 // reserved off the top and does not occupy one of those slots.
 const FULL = [
-  'butchr-manage-work',
+  'butchr-epic-kan-39',
   ...Array.from({ length: HERE.cap }, (_, i) => `butchr-task-kan-${10 + i}`)
 ];
 
@@ -334,7 +334,7 @@ const SEED = FULL.map((agentName) => {
   return {
     agentName,
     type,
-    key: type === 'manage' ? key : key.toUpperCase(),
+    key: key.toUpperCase(),
     workDir: `/tmp/${agentName}`
   };
 });
@@ -455,46 +455,46 @@ rule('5. PREEMPTION — capacity before and after, and the record of what went')
   );
 }
 
-// ----------------------------------------------------- 6. manager safety --
-rule('6. MANAGER SAFETY — the highest possible activation cannot touch `manage`');
+// -------------------------------------------------- 6. supervisor safety --
+rule('6. SUPERVISOR SAFETY — the highest possible activation cannot touch `epic`');
 
 {
-  // A fleet where the board manager is the ONLY thing running, and an
+  // A fleet where an epic supervisor is the ONLY thing running, and an
   // activation at the very top of the scale asking for room.
-  const managerOnly = [{ ...fleet[0] }];
-  const topOfScale = selectVictim(managerOnly, PRIORITY_MANAGE);
-  console.log(`fleet: butchr-manage-work (priority ${PRIORITY_MANAGE})`);
-  console.log(`an activation at the highest priority the scale has (${PRIORITY_MANAGE}) would take: ${topOfScale ?? '(nothing)'}\n`);
+  const epicOnly = [{ ...fleet[0] }];
+  const topOfScale = selectVictim(epicOnly, PRIORITY_EPIC);
+  console.log(`fleet: butchr-epic-kan-39 (priority ${PRIORITY_EPIC})`);
+  console.log(`an activation at the highest priority the scale has (${PRIORITY_EPIC}) would take: ${topOfScale ?? '(nothing)'}\n`);
 
-  // And through the real router, on a full board: the manager is a candidate,
-  // is considered, and is not chosen.
+  // And through the real router, on a full board: the epic agent is a
+  // candidate, is considered, and is not chosen.
   const bridge = stubHerdr(FULL, { statuses: { 'butchr-task-kan-10': 'idle' } });
   const { router } = newRouter(bridge, SEED);
-  const res = await quiet(() => call(router, 'activate_by_key', { type: 'manage', key: 'other', preempt: true }));
+  const res = await quiet(() => call(router, 'activate_by_key', { type: 'epic', key: 'KAN-77', preempt: true }));
 
-  console.log(`on a full board including butchr-manage-work, a priority-${PRIORITY_MANAGE} activation`);
+  console.log(`on a full board including butchr-epic-kan-39, a priority-${PRIORITY_EPIC} activation`);
   console.log(`with preempt: true took: ${res.preempted?.victim?.agentName ?? '(nothing)'}`);
-  console.log(`  butchr-manage-work still running: ${bridge.alive.includes('butchr-manage-work')}`);
+  console.log(`  butchr-epic-kan-39 still running: ${bridge.alive.includes('butchr-epic-kan-39')}`);
 
   console.log(
-    '\n  This is ordering, not a special case. `manage` is the top of the scale and the\n' +
+    '\n  This is ordering, not a special case. `epic` is the top of the scale and the\n' +
     '  comparison is strictly-greater, so there is no rule anywhere that says "except\n' +
-    '  the board manager" — there is nothing for a future change to forget. It is also\n' +
-    '  protected a second, independent way: KAN-36 reserves the manager\'s share off the\n' +
-    '  top rather than counting it against the cap, so standing it down would free no\n' +
-    '  fleet slot even if the ordering permitted it:'
+    '  an epic agent" — there is nothing for a future change to forget. It is also\n' +
+    '  protected a second, independent way: KAN-36 reserves the supervisors\' share off\n' +
+    '  the top rather than counting it against the cap, so standing one down would free\n' +
+    '  no fleet slot even if the ordering permitted it:'
   );
   const facts = readMachineFacts();
-  const withMgr = computeCapacity(facts, HERE.cap, { supervisorsRunning: 1 });
-  const withoutMgr = computeCapacity(facts, HERE.cap, { supervisorsRunning: 0 });
-  console.log(`    manager running:     cap ${withMgr.cap}, running ${withMgr.running}, headroom by count ${withMgr.headroomByCap}`);
-  console.log(`    manager stood down:  cap ${withoutMgr.cap}, running ${withoutMgr.running}, headroom by count ${withoutMgr.headroomByCap}  ← unchanged`);
+  const withSup = computeCapacity(facts, HERE.cap, { supervisorsRunning: 1 });
+  const withoutSup = computeCapacity(facts, HERE.cap, { supervisorsRunning: 0 });
+  console.log(`    supervisor running:     cap ${withSup.cap}, running ${withSup.running}, headroom by count ${withSup.headroomByCap}`);
+  console.log(`    supervisor stood down:  cap ${withoutSup.cap}, running ${withoutSup.running}, headroom by count ${withoutSup.headroomByCap}  ← unchanged`);
 
   verdict(
-    topOfScale === null && bridge.alive.includes('butchr-manage-work') && res.preempted?.victim?.type === 'task',
-    'the board manager cannot be selected at any priority, and a top-of-scale\n' +
+    topOfScale === null && bridge.alive.includes('butchr-epic-kan-39') && res.preempted?.victim?.type === 'task',
+    'an epic agent cannot be selected at any priority, and a top-of-scale\n' +
     '    activation on a full board took a task agent instead.',
-    'the board manager was selected as a preemption victim.'
+    'the epic agent was selected as a preemption victim.'
   );
 }
 
@@ -524,9 +524,14 @@ rule('7. SURVIVAL — a preempted agent, re-activated, resumes rather than start
   console.log(`  (${transcript})\n`);
 
   // Make room, then switch it back on the ordinary way — no resume flag, no
-  // reconciliation, just a person turning the switch back to On.
+  // reconciliation, just a person turning the switch back to On. `override`
+  // passes the capacity gate, not the resume machinery: the gate reads this
+  // machine's live one-minute load, and this section is about what a
+  // re-activation restores, not about whether the machine is quiet while the
+  // script runs. verify-agent-power-controls.mjs makes the same argument as
+  // PAST_THE_GATE.
   bridge.alive.splice(bridge.alive.indexOf('butchr-story-kan-50'), 1);
-  const back = await quiet(() => call(router, 'activate_by_key', { type: 'task', key: 'KAN-10', defaultAgent: 'claude' }));
+  const back = await quiet(() => call(router, 'activate_by_key', { type: 'task', key: 'KAN-10', defaultAgent: 'claude', override: true }));
 
   console.log('re-activated with no resume flag of any kind. What the daemon did with it:\n');
   console.log(`  resume cause:          ${back.resume}`);
@@ -599,9 +604,9 @@ rule('8. TICKET STATUS — what the preempted ticket becomes, and who moves it')
     `  agent — a supervisor skimming tool output for problems must not skim past this.`
   );
 
-  console.log('\nand `prompts/manage.md` — the board manager holds the Jira write — now says:\n');
-  const manage = fs.readFileSync(path.join(repoRoot, 'prompts', 'manage.md'), 'utf8');
-  const section = manage.slice(manage.indexOf('**A preempted agent'));
+  console.log('\nand `prompts/epic.md` — the supervisor that holds the Jira write — now says:\n');
+  const epicPrompt = fs.readFileSync(path.join(repoRoot, 'prompts', 'epic.md'), 'utf8');
+  const section = epicPrompt.slice(epicPrompt.indexOf('**A preempted agent'));
   console.log(section.split('\n').slice(0, 16).map((l) => '  ' + l).join('\n'));
 
   verdict(
@@ -609,8 +614,8 @@ rule('8. TICKET STATUS — what the preempted ticket becomes, and who moves it')
     'the ticket goes back to To Do, with a comment naming what took its slot. Leaving\n' +
     '    it In Progress with nothing behind it is precisely the lie KAN-21 exists to end,\n' +
     '    and a preemption reintroduces it by a different door if nobody moves the ticket.\n' +
-    '    The daemon cannot move it and says so; the board manager can, is told to, and is\n' +
-    '    handed the list on every poll it already makes.',
+    '    The daemon cannot move it and says so; the supervising epic agent can, is told\n' +
+    '    to, and is handed the list on every poll it already makes.',
     'the preempted agent was not reported, or no status rule was recorded.'
   );
 }

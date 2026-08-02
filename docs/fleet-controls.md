@@ -10,7 +10,7 @@ census taken from what exists rather than from the session map).
 chip, workspace, link — and could act on none of them. The one screen that
 showed the whole fleet was the one screen that could not touch it. Stopping an
 agent meant opening its own Jira tab and using the sidepanel toggle, or asking
-the board manager to do it.
+its supervising agent to do it.
 
 ## Off is nearly free. On is the design question.
 
@@ -99,24 +99,27 @@ so and the warning still stands. A check that renders its own failure as
 "nothing to lose" is worse than no check, because the all-clear is the one that
 gets believed.
 
-## The board manager: allowed, guarded, reversible
+## Supervisors: allowed, guarded, reversible
 
-`manage/work` is listed here like anything else, and switching it off stops the
-thing that reads the board, staffs tickets and merges finished work — which
-after KAN-37 is also the only agent nothing can preempt.
+Supervision is per epic: `epic` and `story` agents hand out the work under them
+and merge what comes back, and both are listed here like anything else.
+Switching one off stops the thing that keeps its slice of the board moving —
+and an epic agent is also the top of the priority scale, the one thing nothing
+can preempt.
 
 **It is allowed.** Refusing was the tempting answer and it is the wrong one: a
 supervisor you cannot stop is a worse failure than one you can stop by accident,
-and it is the agent a human is most likely to need stood down. Three things make
-that safe rather than reckless:
+and supervisors are the agents a human is most likely to need stood down. Three
+things make that safe rather than reckless:
 
 1. `list_agents` marks the row `supervisor: true`. The rule lives in
    `registry.ts` (`SUPERVISOR_WORKSPACE_TYPES`) and is sent over the wire rather
-   than duplicated in the UI, so adding a second supervisor type does not leave
-   a stale copy behind.
-2. Its confirmation is different in kind — red rather than amber, and it says
-   what stops while it is off, including that nothing the other agents finish
-   will be merged.
+   than duplicated in the UI, so adding or removing a supervisor type does not
+   leave a stale copy behind.
+2. Its confirmation is different in kind — red rather than amber, it names the
+   agent it will stop (`Stop the supervisor epic/KAN-39?`), and it says what
+   stops while it is off, including that nothing its agents finish will be
+   merged.
 3. It appears on the **Stood down** list the moment it stops, so the guard is a
    speed limit rather than a cliff.
 
@@ -181,8 +184,8 @@ node scripts/verify-fleet-switch-live.mjs         # a real daemon, real herdr, r
 
 The first drives the real `MessageRouter`, `WorkspaceRegistry` and on-disk
 `AgentRegistry` through all eight questions the ticket asked — off, the
-confirmation, the manager, on, the launcher record, the refusal, poll stability,
-and reset. The second opens and closes a real pane on a real herdr and uses
+confirmation, the supervisor, on, the launcher record, the refusal, poll
+stability, and reset. The second opens and closes a real pane on a real herdr and uses
 `herdr agent list` as the ground truth, isolating its registry under a temporary
 `$HOME` so the live install is never written to. It cleans up on every exit path.
 

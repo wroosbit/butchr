@@ -112,8 +112,11 @@ try {
 const R = await import(pathToFileURL(path.join(bundleDir, 'render.js')).href);
 
 const agent = listAgents.agents.find((a) => a.agentName === 'butchr-task-kan-38') ?? listAgents.agents.find((a) => !a.supervisor);
-const manager = listAgents.agents.find((a) => a.supervisor);
+const epicAgent = listAgents.agents.find((a) => a.supervisor && a.type === 'epic');
+const storyAgent = listAgents.agents.find((a) => a.supervisor && a.type === 'story');
 const standbyCandidate = listAgents.standbyAgents[0];
+
+const CLEAN = { checked: true, hasUnsavedWork: false, repos: [], summary: 'Nothing uncommitted: the workspace: clean.' };
 
 // The refusal as useFleetControls hands it to the component: the same mapping,
 // so what is drawn here is what the page draws.
@@ -142,7 +145,7 @@ const row = (a, right) => `
       <div>
         <div style="font-weight:600;font-size:15px;margin-bottom:4px">🔑 ${a.key}
           <span style="background:#1e293b;padding:2px 6px;border-radius:4px;font-size:12px;margin-left:8px">${a.type}</span>
-          ${a.supervisor ? '<span style="background:#1e293b;padding:2px 6px;border-radius:4px;font-size:12px;margin-left:6px;color:#fbbf24">board manager</span>' : ''}
+          ${a.supervisor ? '<span style="background:#1e293b;padding:2px 6px;border-radius:4px;font-size:12px;margin-left:6px;color:#fbbf24">supervisor</span>' : ''}
         </div>
         <div style="font-size:12px;color:#94a3b8">Session: ${a.sessionId ?? '—'}</div>
       </div>
@@ -171,9 +174,9 @@ const page = `<!doctype html>
   </div>
 
   ${section(
-    '1 · the row, at rest',
-    'Every running agent gets one control. Before this it had none — the page that showed the whole fleet was the one page that could not touch it.',
-    row(agent, R.offButton(agent))
+    '1 · the fleet, at rest',
+    'Every running agent gets one control. The supervisor badge marks the rows that hand work out — the epic and story agents — and not the task agent; the type chip beside the key already says which supervisory type each one is.',
+    [epicAgent, storyAgent, agent].filter(Boolean).map((a) => row(a, R.offButton(a))).join('\n')
   )}
 
   ${section(
@@ -183,31 +186,37 @@ const page = `<!doctype html>
   )}
 
   ${section(
-    '3 · Off, pressed — the board manager',
+    '3 · Off, pressed — an epic supervisor',
     'Allowed, not refused: a supervisor you cannot stop is worse than one you can stop by accident. Different colour, different words, and a way back on the same page.',
-    `<div style="display:flex;justify-content:flex-end">${R.offConfirm(manager, { checked: true, hasUnsavedWork: false, repos: [], summary: 'Nothing uncommitted: the workspace: clean.' })}</div>`
+    `<div style="display:flex;justify-content:flex-end">${R.offConfirm(epicAgent, CLEAN)}</div>`
   )}
 
   ${section(
-    '4 · while the stop is in flight',
+    '4 · Off, pressed — a story supervisor',
+    'The same guard for the other supervisory type: the title names the agent, so two supervisors on one list can never be confused for each other.',
+    `<div style="display:flex;justify-content:flex-end">${R.offConfirm(storyAgent, CLEAN)}</div>`
+  )}
+
+  ${section(
+    '5 · while the stop is in flight',
     'The row reports the decision rather than offering a disabled button — nothing to double-press, and nothing whose enabled-ness the 2-second poll could argue with. It stays this way until the agent leaves the census, not until the daemon replies.',
     row(agent, R.offButton(agent, 'off'))
   )}
 
   ${section(
-    '5 · the way back — where On gets its candidates',
+    '6 · the way back — where On gets its candidates',
     'The page lists what is running, so something that is off is not in it. These come from KAN-21’s registry: the agents whose last recorded intent was a stand-down, that are not running, and whose workspace is still on disk.',
     R.standby(listAgents.standbyAgents, listAgents.standbyTotal)
   )}
 
   ${section(
-    '6 · an agent that should be running and is not',
+    '7 · an agent that should be running and is not',
     'The other candidate source, and the banner that already existed. It told the reader to re-activate it; before this there was nowhere to do that from.',
     R.missing(listAgents.missingAgents)
   )}
 
   ${section(
-    '7 · Turn on, refused at capacity',
+    '8 · Turn on, refused at capacity',
     'The same component the sidepanel uses, rendered under the row whose button was pressed. KAN-36 exists because one surface threw this away; a second surface throwing it away differently would be that defect twice.',
     `<div style="background:#0b1220;border-radius:8px;border:1px solid #334155;padding:14px 16px">
        <div style="display:flex;justify-content:space-between;align-items:center">
@@ -250,8 +259,11 @@ const show = (title, html) => {
   console.log(transcribe(html));
 };
 
+show('the fleet list — the supervisor badge on the epic and story rows, not the task row',
+  [epicAgent, storyAgent, agent].filter(Boolean).map((a) => row(a, R.offButton(a))).join('\n'));
 show('the Off confirmation for an agent with uncommitted work', R.offConfirm(agent, workState));
-show('the Off confirmation for the board manager', R.offConfirm(manager, { checked: true, hasUnsavedWork: false, repos: [], summary: 'Nothing uncommitted: the workspace: clean.' }));
+show('the Off confirmation for an epic supervisor', R.offConfirm(epicAgent, CLEAN));
+show('the Off confirmation for a story supervisor', R.offConfirm(storyAgent, CLEAN));
 show('the stood-down list — where Turn on gets its candidates', R.standby(listAgents.standbyAgents, listAgents.standbyTotal));
 show('a refusal at capacity, on the Agents page', R.refusalBox(refusalProps));
 
