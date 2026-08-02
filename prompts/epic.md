@@ -84,7 +84,12 @@ is Done or already in flight, don't file another.
 ## Agent lifecycle
 
 Activate with the issue's **real URL** so the Agents page links correctly; never
-invent one. Transition the issue to In Progress at activation.
+invent one. Name the agent runtime explicitly — pass `defaultAgent` (e.g.
+`claude`); omitting it starts a bare shell that still reports success. Verify a
+fresh spawn with `butchr_tail_agent` rather than trusting the activate response.
+(This guard covers a daemon defect; drop it once the daemon safely defaults or
+refuses — a workaround that outlives its cause becomes folklore.) Transition the
+issue to In Progress at activation.
 
 Read status with judgement:
 

@@ -131,10 +131,15 @@ don't file another — link it to the story instead.
 
 **You activate the agents for the tasks you create.** Agent lifecycle for your
 tasks is yours: activate each task's agent with `butchr_activate_agent` (using
-the issue's real URL, never an invented one), monitor it, steer it with
-`butchr_send_to_agent`, and when its PR merges, set the task **Done** and
-deactivate its agent with `butchr_deactivate_agent`. Done agents are not left
-running.
+the issue's real URL, never an invented one, and naming the agent runtime
+explicitly — pass `defaultAgent`, e.g. `claude`; omitting it starts a bare
+shell that still reports success), verify the fresh spawn with
+`butchr_tail_agent` rather than trusting the activate response, monitor it,
+steer it with `butchr_send_to_agent`, and when its PR merges, set the task
+**Done** and deactivate its agent with `butchr_deactivate_agent`. Done agents
+are not left running. (The `defaultAgent` guard covers a daemon defect; drop it
+once the daemon safely defaults or refuses — a workaround that outlives its
+cause becomes folklore.)
 
 The anti-race rule survives the change of owner: **one and only one agent staffs
 a given ticket — its parent**, not a global coordinator. You staff the tasks you
