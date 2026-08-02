@@ -729,6 +729,38 @@ export class MessageRouter {
     }, 0);
   }
 
+  /**
+   * The step that makes an activate response a statement about the world
+   * rather than about our own intentions.
+   *
+   * Returns the complaint when success cannot honestly be claimed, and
+   * `undefined` when the agent has been confirmed to exist. Both activate
+   * handlers call it in the same place — after herdr's own errors have been
+   * dealt with, before anything is recorded, broadcast or answered — so there
+   * is exactly one point at which the two of them decide they succeeded.
+   *
+   * A confirmed-absent agent takes its session down with it. That is not a
+   * retry (see the ticket's out-of-scope list) and not a cleanup: it is the
+   * difference between a failure a caller can act on and one it is locked out
+   * of, because a session left active is the one the next activate would
+   * reuse. An unverifiable answer changes nothing — see abandonSession.
+   */
+  private async confirmActivation(
+    session: HerdrSession,
+    agentName: string
+  ): Promise<string | undefined> {
+    const presence = await this.herdrBridge.confirmAgentPresent(agentName);
+    if (presence.present) return undefined;
+
+    console.error(
+      `[Router] Refusing to report ${agentName} activated: ${presence.error}`
+    );
+    if (presence.reason === 'absent') {
+      this.herdrBridge.abandonSession(session.sessionId, presence.error);
+    }
+    return presence.error;
+  }
+
   private async handleActivate(data: any, respond: Respond) {
     const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
@@ -789,18 +821,6 @@ export class MessageRouter {
       if (!session.spawnError) this.nudgeIfResumed(session, data.defaultAgent);
     }
 
-    if (!session.spawnError) {
-      this.rememberActivated({
-        agentName: agentNameFor(config.type, key),
-        type: config.type,
-        key,
-        workDir: session.workDir,
-        url: data.url,
-        defaultAgent: data.defaultAgent,
-        mcpServers: config.mcpServers
-      });
-    }
-
     if (session.spawnError) {
       respond({
         action: 'activate_response',
@@ -812,6 +832,35 @@ export class MessageRouter {
       });
       return;
     }
+
+    const unconfirmed = await this.confirmActivation(session, agentName);
+    if (unconfirmed) {
+      respond({
+        action: 'activate_response',
+        success: false,
+        type: config.type,
+        key,
+        url: data.url,
+        error: unconfirmed,
+        verified: false
+      });
+      return;
+    }
+
+    // Only now. The durable registry is the record of which agents *should* be
+    // running, and writing an activation into it before the agent is known to
+    // exist would have list_agents report the failure as an agent that
+    // silently stopped, indefinitely, until a human stood down something that
+    // was never started.
+    this.rememberActivated({
+      agentName,
+      type: config.type,
+      key,
+      workDir: session.workDir,
+      url: data.url,
+      defaultAgent: data.defaultAgent,
+      mcpServers: config.mcpServers
+    });
 
     this.broadcast({
       action: 'agent_activated_event',
@@ -834,6 +883,10 @@ export class MessageRouter {
       createdAt: session.createdAt.toISOString(),
       mcpServers: config.mcpServers,
       priority: config.priority,
+      // Not decoration: it is the difference between this response and the one
+      // KAN-23 was filed about. `true` means the agent was found in herdr's
+      // census before this was sent, and success is never reported without it.
+      verified: true,
       ...(session.resume ? { resume: session.resume, resumedConversation: session.resumedConversation } : {}),
       ...(gate?.preempted ? { preempted: gate.preempted } : {}),
       ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
@@ -925,23 +978,12 @@ export class MessageRouter {
       if (!explicit && !session.spawnError) this.nudgeIfResumed(session, defaultAgent);
     }
 
-    if (!session.spawnError) {
-      this.rememberActivated({
-        agentName: agentNameFor(type, key),
-        type,
-        key,
-        workDir: session.workDir,
-        url,
-        defaultAgent,
-        mcpServers
-      });
-    }
-
     // A spawn herdr refused is the one case where activate can say for certain
-    // that no agent exists. Reporting it as a failure here is not KAN-23's
-    // post-spawn existence check — that still has to be added, for the case
-    // where herdr reports success and the agent is nevertheless absent — but
-    // an error herdr handed us must never be answered with success: true.
+    // that no agent exists, and an error herdr handed us must never be
+    // answered with success: true. It is not the whole of the question, which
+    // is why confirmActivation follows: herdr can also report success and
+    // leave no agent behind, and that case is answered by looking rather than
+    // by trusting.
     if (session.spawnError) {
       respond({
         action: 'activate_response',
@@ -953,6 +995,31 @@ export class MessageRouter {
       });
       return;
     }
+
+    const unconfirmed = await this.confirmActivation(session, agentName);
+    if (unconfirmed) {
+      respond({
+        action: 'activate_response',
+        success: false,
+        type,
+        key,
+        url,
+        error: unconfirmed,
+        verified: false
+      });
+      return;
+    }
+
+    // After confirmation, for the reason handleActivate gives.
+    this.rememberActivated({
+      agentName,
+      type,
+      key,
+      workDir: session.workDir,
+      url,
+      defaultAgent,
+      mcpServers
+    });
 
     this.broadcast({
       action: 'agent_activated_event',
@@ -972,6 +1039,8 @@ export class MessageRouter {
       status: session.status,
       workDir: session.workDir,
       priority,
+      // See handleActivate: success is never sent without having looked.
+      verified: true,
       // Only present on a restore. `false` means the agent came up with the
       // degraded-resume prompt and is already working; `true` means it was
       // handed its old conversation and is sitting at an empty prompt, which
@@ -999,13 +1068,14 @@ export class MessageRouter {
     // after which getSession still answers but the address is what we need and
     // it does not change. Recorded either way — see rememberDeactivated.
     const session = this.herdrBridge.getSession(data.sessionId);
-    const success = this.herdrBridge.terminateSession(data.sessionId);
+    const { success, error } = this.herdrBridge.terminateSession(data.sessionId);
     if (session) this.rememberDeactivated(session.type, session.key, session.workDir);
 
     respond({
       action: 'deactivate_response',
       success,
-      sessionId: data.sessionId
+      sessionId: data.sessionId,
+      ...(error ? { error } : {})
     });
   }
 
@@ -1017,16 +1087,22 @@ export class MessageRouter {
     const session = this.herdrBridge.getSessionByKey(key);
 
     if (session) {
-      const success = this.herdrBridge.terminateSession(session.sessionId);
+      const { success, error } = this.herdrBridge.terminateSession(session.sessionId);
       this.rememberDeactivated(session.type, session.key, session.workDir, preemption);
 
-      this.broadcast({
-        action: 'agent_deactivated_event',
-        type: session.type,
-        key: session.key,
-        sessionId: session.sessionId,
-        ...(preemption ? { preempted: true } : {})
-      });
+      // Not broadcast when the teardown could not be confirmed: the event is
+      // what the Agents page and the sidepanel act on, and announcing an agent
+      // deactivated while it may still be running is the same false claim this
+      // ticket is about, arriving as an event instead of as a response.
+      if (success) {
+        this.broadcast({
+          action: 'agent_deactivated_event',
+          type: session.type,
+          key: session.key,
+          sessionId: session.sessionId,
+          ...(preemption ? { preempted: true } : {})
+        });
+      }
 
       respond({
         action: 'deactivate_response',
@@ -1038,7 +1114,8 @@ export class MessageRouter {
         type: session.type,
         key: session.key,
         sessionId: session.sessionId,
-        ...(preemption ? { preempted: true } : {})
+        ...(preemption ? { preempted: true } : {}),
+        ...(error ? { error } : {})
       });
       return;
     }
@@ -1222,11 +1299,16 @@ export class MessageRouter {
 
     // Same ordering rule as handleResetByKey: the agent goes first, whether we
     // reach it through the session map or the herdr-list fallback.
-    if (session) {
-      this.herdrBridge.terminateSession(session.sessionId);
-    } else {
-      this.herdrBridge.closeAgentByKey(key);
-    }
+    //
+    // And the outcome is reported, as handleResetByKey already did. This path
+    // discarded it entirely, so a reset whose agent could not be closed —
+    // leaving it running in a directory about to be deleted — was answered
+    // exactly like one that went cleanly. `success` still describes the
+    // workspace delete, which is what reset is; `agentClosed` is the separate
+    // fact, and a caller that cannot see it cannot know to go looking.
+    const closed = session
+      ? this.herdrBridge.terminateSession(session.sessionId)
+      : this.herdrBridge.closeAgentByKey(key);
 
     // A reset destroys the workspace as well as the agent, so it is the most
     // deliberate stand-down there is. Restoring it on the next boot would
@@ -1234,7 +1316,13 @@ export class MessageRouter {
     this.rememberDeactivated(config.type, key);
 
     const { success, error } = this.herdrBridge.resetWorkspace(config.type, key);
-    respond({ action: 'reset_response', success, ...(error ? { error } : {}) });
+    respond({
+      action: 'reset_response',
+      success,
+      agentClosed: closed.success,
+      ...(closed.error ? { agentError: closed.error } : {}),
+      ...(error ? { error } : {})
+    });
   }
 
   public handleResetByKey(data: any, respond: Respond) {
@@ -1245,16 +1333,9 @@ export class MessageRouter {
     // running in. Without a session the agent is still reachable through the
     // herdr-list fallback, and skipping that left the agent alive in a cwd
     // that no longer exists.
-    let agentClosed = false;
-    let agentError: string | undefined;
-
-    if (session) {
-      agentClosed = this.herdrBridge.terminateSession(session.sessionId);
-    } else {
-      const result = this.herdrBridge.closeAgentByKey(key);
-      agentClosed = result.success;
-      agentError = result.error;
-    }
+    const { success: agentClosed, error: agentError } = session
+      ? this.herdrBridge.terminateSession(session.sessionId)
+      : this.herdrBridge.closeAgentByKey(key);
 
     // Same reasoning as handleReset: the workspace is about to be deleted, so
     // this agent must not be brought back by reconciliation.
