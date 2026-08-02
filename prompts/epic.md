@@ -101,9 +101,10 @@ if I woke up here with no history*. What belongs in it:
 - **Decisions taken with the human that are not in the repo** — with the
   reasoning, not just the verdict.
 - **Hazards and sharp edges learned the hard way**, each with the symptom that
-  identifies it and the fix. The `defaultAgent` shell trap (see *Agent
-  lifecycle*) is the worked example: an agent that has read that entry does
-  not lose twenty minutes to it.
+  identifies it and the fix. The `defaultAgent` shell trap — activation
+  without the field once launched a bare shell that still reported success,
+  until KAN-53 made omission mean `claude` — is the worked example: an agent
+  that had read that entry did not lose twenty minutes to it.
 - **Conventions and workarounds this board needs**, with the reason each
   exists and the condition under which it should be dropped — a workaround
   that outlives its cause becomes folklore.
@@ -159,12 +160,8 @@ is Done or already in flight, don't file another.
 ## Agent lifecycle
 
 Activate with the issue's **real URL** so the Agents page links correctly; never
-invent one. Name the agent runtime explicitly — pass `defaultAgent` (e.g.
-`claude`); omitting it starts a bare shell that still reports success. Verify a
-fresh spawn with `butchr_tail_agent` rather than trusting the activate response.
-(This guard covers a daemon defect; drop it once the daemon safely defaults or
-refuses — a workaround that outlives its cause becomes folklore.) Transition the
-issue to In Progress at activation.
+invent one. Verify a fresh spawn with `butchr_tail_agent` rather than trusting
+the activate response. Transition the issue to In Progress at activation.
 
 Read status with judgement:
 

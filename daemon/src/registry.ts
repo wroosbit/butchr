@@ -41,7 +41,7 @@ export function workspaceTypeForJiraIssueType(issueTypeName: string | null): str
  *
  * Two callers read this set, and it lives here because this is where workspace
  * types are defined. The capacity model exempts supervisors from the cap —
- * see SUPERVISOR_AGENTS in capacity.ts for the argument. And the fleet UI's
+ * see the header of capacity.ts for the argument. And the fleet UI's
  * stronger Off confirmation is driven by the `supervisor` DTO field in
  * router.ts, which is computed from this set so the UI never carries its own
  * copy of the rule.
