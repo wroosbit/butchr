@@ -183,10 +183,12 @@ function Agents() {
                       <span title="Higher priority can stand this agent down when the machine is full" style={{ backgroundColor: '#1e293b', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '6px', color: '#94a3b8' }}>P{priorities[agent.agentName]}</span>
                     ) : null}
                     {/* Named on the row as well as in its confirmation: the
-                        reader should know which of these rows is the one
-                        supervising the board before they reach for its Off. */}
+                        reader should know which of these rows hand work out
+                        before they reach for an Off. The type chip to the left
+                        already says epic or story; this badge only carries what
+                        that type does. */}
                     {agent.supervisor ? (
-                      <span title="Supervises the board: hands out work and merges it" style={{ backgroundColor: '#1e293b', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '6px', color: '#fbbf24' }}>board manager</span>
+                      <span title="Hands out work and merges what comes back" style={{ backgroundColor: '#1e293b', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '6px', color: '#fbbf24' }}>supervisor</span>
                     ) : null}
                   </div>
                   {/* Agents activated by key may have no page to link to; an

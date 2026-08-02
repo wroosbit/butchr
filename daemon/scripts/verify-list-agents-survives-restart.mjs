@@ -93,7 +93,7 @@ stubHerdr(JSON.stringify({
     type: 'agent_list',
     agents: [
       { name: 'butchr-task-kan-28', agent: 'claude', agent_status: 'working', cwd: '/w/task/kan-28' },
-      { name: 'butchr-manage-work', agent: 'claude', agent_status: 'idle', cwd: '/w/manage/work' },
+      { name: 'butchr-epic-kan-39', agent: 'claude', agent_status: 'idle', cwd: '/w/epic/kan-39' },
       { name: 'butchr-default-workspace', agent_status: 'unknown', cwd: '/w/default/workspace' },
       { name: 'butchr-cto-agent-story-st-8fbd6dac', agent_status: 'unknown', cwd: '/home/u' },
       { name: 'not-a-butchr-agent', agent: 'claude', agent_status: 'working', cwd: '/elsewhere' }
@@ -107,7 +107,7 @@ console.log(JSON.stringify(res, null, 2));
 const names = res.agents.map(a => a.agentName).sort();
 check(
   'both claude-backed agents are listed',
-  JSON.stringify(names) === JSON.stringify(['butchr-manage-work', 'butchr-task-kan-28']),
+  JSON.stringify(names) === JSON.stringify(['butchr-epic-kan-39', 'butchr-task-kan-28']),
   names.join(', ')
 );
 check('every entry is marked sessionless', res.agents.every(a => a.sessionless === true));

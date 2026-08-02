@@ -251,9 +251,9 @@ the daemon holding its terminal as readily as one it is attached to. It is not a
 single click: the daemon runs git in the agent's workspace first
 (`{"action": "agent_work_state"}`) and the confirmation names what would
 actually be lost — a `confirm()` dialog says the same words whether there is
-work to lose or not. The board manager may be switched off too, behind a
-confirmation that says what stops with it, and it reappears immediately on the
-list that switches it back on.
+work to lose or not. A supervisor — an epic or story agent — may be switched
+off too, behind a confirmation that names it and says what stops with it, and
+it reappears immediately on the list that switches it back on.
 
 **On** takes its candidates from KAN-21's registry, because the page lists what
 is running and a stopped agent is by definition not in it: `missingAgents` (a

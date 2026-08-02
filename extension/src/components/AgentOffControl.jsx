@@ -23,18 +23,18 @@ import React from 'react';
  * all-clear is worse than no check, because the all-clear is the one that gets
  * believed.
  *
- * WHY THE BOARD MANAGER'S CONFIRMATION IS DIFFERENT
+ * WHY A SUPERVISOR'S CONFIRMATION IS DIFFERENT
  *
- * Because stopping it is different. `manage/work` is what reads the board,
- * staffs tickets and merges the work everything else produces; after KAN-37 it
- * is also the top of the priority scale, the one agent nothing can preempt.
- * Switching it off from a fleet list is allowed — a supervisor you cannot stop
- * is worse than one you can stop by accident, and it is the one agent the
- * human explicitly needs a way to stand down. But it is allowed with a
- * confirmation that says what it supervises, in a different colour, over a
- * button that names it. It is reversible from this same page: a stood-down
- * manager appears in the Stood down list below and can be switched straight
- * back on.
+ * Because stopping one is different. A supervisor — an epic or story agent —
+ * is what hands out the work under it and merges what comes back; stopping it
+ * stops the thing that keeps its slice of the board moving, not just one
+ * worker. Switching one off from a fleet list must stay possible — a
+ * supervisor you cannot stop is worse than one you can stop by accident, and
+ * supervisors are exactly the agents the human needs a way to stand down. But
+ * it is allowed with a confirmation that says what stopping it stops, in a
+ * different colour, over a button that names it. It is reversible from this
+ * same page: a stood-down supervisor appears in the Stood down list below and
+ * can be switched straight back on.
  */
 
 const DANGER = {
@@ -165,17 +165,17 @@ export function AgentOffControl({
     >
       <div style={{ fontWeight: 700, fontSize: '13px', color: palette.title }}>
         {agent.supervisor
-          ? `Stop the board manager (${address(agent)})?`
+          ? `Stop the supervisor ${address(agent)}?`
           : `Stop ${address(agent)}?`}
       </div>
 
       <div style={{ fontSize: '12px', color: palette.fg, marginTop: '4px', lineHeight: 1.45 }}>
         {agent.supervisor ? (
           <>
-            This is the agent that reads the board, staffs tickets and merges finished work.
-            While it is off, nothing will be assigned, reviewed or merged — including anything
-            the agents below finish. It can be switched back on from the <b>Stood down</b> list
-            on this page.
+            This agent hands out the work under it and merges what comes back. While it is
+            off, nothing it supervises will be assigned, reviewed or merged — including
+            anything its agents finish. It can be switched back on from the <b>Stood down</b>{' '}
+            list on this page.
           </>
         ) : (
           <>

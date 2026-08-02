@@ -5,7 +5,7 @@
 //
 //   1. off            — the message the page sends, and the agent gone from the census
 //   2. confirmation   — what a human is shown BEFORE it, against a real dirty repo
-//   3. manager        — what happens when the target is `manage/work`
+//   3. supervisor     — what happens when the target is a supervisor (epic)
 //   4. on             — where the candidates come from, and the agent back
 //   5. launcher       — why a stand-down has to carry the activation record with it
 //   6. refusal        — at capacity, what the page displays instead of nothing
@@ -77,7 +77,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'kan38-'));
 const WORKSPACES = path.join(TMP, 'workspaces');
 let registryFile = 0;
 
-// The board manager plus whatever this machine's own derivation says it can
+// A supervisor plus whatever this machine's own derivation says it can
 // carry, so section 6's refusal is produced by the real arithmetic.
 const HERE = readCapacity(0, 1);
 
@@ -217,7 +217,7 @@ const seedOf = (names, workDirs = {}) =>
     return {
       agentName,
       type,
-      key: type === 'manage' ? key : key.toUpperCase(),
+      key: key.toUpperCase(),
       workDir: workDirs[agentName] ?? path.join(WORKSPACES, type, key),
       defaultAgent: 'claude'
     };
@@ -227,7 +227,7 @@ const seedOf = (names, workDirs = {}) =>
 rule('1. OFF — what the page sends, and the agent gone from the census');
 
 {
-  const FLEET = ['butchr-manage-work', 'butchr-task-kan-38', 'butchr-task-kan-25'];
+  const FLEET = ['butchr-epic-kan-39', 'butchr-task-kan-38', 'butchr-task-kan-25'];
   const workDirs = Object.fromEntries(
     FLEET.map((n) => [n, path.join(WORKSPACES, ...n.replace('butchr-', '').split(/-(.*)/s).slice(0, 2))])
   );
@@ -337,57 +337,57 @@ rule('2. CONFIRMATION — what is shown BEFORE an agent is stopped');
   );
 }
 
-// -------------------------------------------------------------- 3. manager --
-rule('3. MANAGER — what happens when the target is `manage/work`');
+// ----------------------------------------------------------- 3. supervisor --
+rule('3. SUPERVISOR — what happens when the target is a supervisor (epic/KAN-39)');
 
 {
-  const FLEET = ['butchr-manage-work', 'butchr-task-kan-25'];
+  const FLEET = ['butchr-epic-kan-39', 'butchr-task-kan-25'];
   for (const n of FLEET) fs.mkdirSync(path.join(WORKSPACES, n), { recursive: true });
   const bridge = stubHerdr(FLEET);
   const { router, sent } = newRouter(bridge, seedOf(FLEET));
 
   const listed = list(router, sent);
-  const manager = listed.agents.find((a) => a.type === 'manage');
+  const supervisor = listed.agents.find((a) => a.type === 'epic');
   const worker = listed.agents.find((a) => a.type === 'task');
 
   console.log('DECISION: allowed, behind a confirmation that differs in kind — not refused.\n');
   console.log(
     'Refusing it was the tempting answer and it is the wrong one. The human asked for a\n' +
-    'way to shut agents off from this page, and the board manager is the agent they are\n' +
-    'most likely to need stood down: it is the one that spawns the others, and after\n' +
-    'KAN-37 it is the only agent nothing can preempt. A supervisor you cannot stop is a\n' +
-    'worse failure than one you can stop by accident — provided stopping it is neither\n' +
-    'accidental nor a one-way door.\n'
+    'way to shut agents off from this page, and a supervisor — an epic or story agent —\n' +
+    'is the kind they are most likely to need stood down: it is what spawns the agents\n' +
+    'under it, and an epic agent is the one thing nothing can preempt. A supervisor you\n' +
+    'cannot stop is a worse failure than one you can stop by accident — provided\n' +
+    'stopping it is neither accidental nor a one-way door.\n'
   );
   console.log('So the row is marked, and the daemon is what marks it:\n');
-  console.log(`  ${manager.agentName}: supervisor=${manager.supervisor}`);
+  console.log(`  ${supervisor.agentName}: supervisor=${supervisor.supervisor}`);
   console.log(`  ${worker.agentName}: supervisor=${worker.supervisor}`);
   console.log(
-    '\n  Sent by the daemon rather than decided by the page from `type === "manage"`,\n' +
+    '\n  Sent by the daemon rather than decided by the page from the agent\'s type,\n' +
     '  because that rule already lives in registry.ts (SUPERVISOR_WORKSPACE_TYPES) and\n' +
-    '  a second copy in the UI is the copy that gets forgotten when a second supervisor\n' +
-    '  type is added.\n'
+    '  a second copy in the UI is the copy that gets forgotten when a supervisor type\n' +
+    '  is added or removed.\n'
   );
 
   console.log('what the human sees on that row instead of the ordinary confirmation:\n');
-  console.log('  ┃ Stop the board manager (manage/work)?           ← red, not amber');
-  console.log('  ┃ This is the agent that reads the board, staffs tickets and merges');
-  console.log('  ┃ finished work. While it is off, nothing will be assigned, reviewed or');
-  console.log('  ┃ merged — including anything the agents below finish. It can be switched');
+  console.log('  ┃ Stop the supervisor epic/KAN-39?               ← red, not amber');
+  console.log('  ┃ This agent hands out the work under it and merges what comes back.');
+  console.log('  ┃ While it is off, nothing it supervises will be assigned, reviewed or');
+  console.log('  ┃ merged — including anything its agents finish. It can be switched');
   console.log('  ┃ back on from the Stood down list on this page.');
-  console.log('  ┃ [ Cancel ]  [ Stop manage/work ]');
+  console.log('  ┃ [ Cancel ]  [ Stop epic/KAN-39 ]');
 
   // And it is genuinely a round trip: off, then present as a candidate, then on.
-  await quiet(async () => router.handle({ action: 'deactivate_by_key', type: 'manage', key: 'work' }));
+  await quiet(async () => router.handle({ action: 'deactivate_by_key', type: 'epic', key: 'KAN-39' }));
   const afterOff = list(router, sent);
-  const standby = afterOff.standbyAgents.find((a) => a.agentName === 'butchr-manage-work');
+  const standby = afterOff.standbyAgents.find((a) => a.agentName === 'butchr-epic-kan-39');
   console.log(`\nafter stopping it:`);
   console.log(`  running:    ${afterOff.agents.map((a) => a.agentName).join(', ')}`);
   console.log(`  stood down: ${afterOff.standbyAgents.map((a) => `${a.type}/${a.key}`).join(', ')}   ← the way back, on the same page`);
 
   await quiet(() =>
     router.handleActivateByKey(
-      { type: 'manage', key: 'work', defaultAgent: standby.defaultAgent, ...PAST_THE_GATE },
+      { type: 'epic', key: 'KAN-39', defaultAgent: standby.defaultAgent, ...PAST_THE_GATE },
       () => {}
     )
   );
@@ -395,14 +395,14 @@ rule('3. MANAGER — what happens when the target is `manage/work`');
   console.log(`  switched back on: ${afterOn.agents.map((a) => a.agentName).join(', ')}`);
 
   verdict(
-    manager.supervisor === true &&
+    supervisor.supervisor === true &&
       worker.supervisor === false &&
       Boolean(standby) &&
-      afterOn.agents.some((a) => a.agentName === 'butchr-manage-work'),
-    'the board manager can be stopped, is the only row whose confirmation says what\n' +
-    '    that costs, and is on the stood-down list the moment it stops — so the guard is\n' +
+      afterOn.agents.some((a) => a.agentName === 'butchr-epic-kan-39'),
+    'a supervisor can be stopped, is the only row whose confirmation says what that\n' +
+    '    costs, and is on the stood-down list the moment it stops — so the guard is\n' +
     '    a speed limit rather than a cliff.',
-    'the manager was not marked, or could not be brought back from this page.'
+    'the supervisor was not marked, or could not be brought back from this page.'
   );
 }
 
@@ -410,7 +410,7 @@ rule('3. MANAGER — what happens when the target is `manage/work`');
 rule('4. ON — where the candidates come from, and the agent back');
 
 {
-  const FLEET = ['butchr-manage-work', 'butchr-task-kan-38'];
+  const FLEET = ['butchr-epic-kan-39', 'butchr-task-kan-38'];
   const workDirs = Object.fromEntries(FLEET.map((n) => [n, path.join(WORKSPACES, 'live', n)]));
   for (const dir of Object.values(workDirs)) fs.mkdirSync(dir, { recursive: true });
 
@@ -542,7 +542,7 @@ rule('6. REFUSAL — at capacity, what the page displays instead of nothing');
   // The machine's own derived cap, filled with equal-priority task agents, so
   // the refusal below is the real arithmetic refusing and offers no preemption
   // — a task agent outranks nothing on a board of task agents.
-  const FULL = ['butchr-manage-work', ...Array.from({ length: HERE.cap }, (_, i) => `butchr-task-kan-${10 + i}`)];
+  const FULL = ['butchr-epic-kan-39', ...Array.from({ length: HERE.cap }, (_, i) => `butchr-task-kan-${10 + i}`)];
   for (const n of FULL) fs.mkdirSync(path.join(WORKSPACES, n), { recursive: true });
   const bridge = stubHerdr(FULL, { statuses: { 'butchr-task-kan-10': 'idle' } });
   const { router } = newRouter(bridge, seedOf(FULL));
@@ -595,7 +595,7 @@ rule('6. REFUSAL — at capacity, what the page displays instead of nothing');
 rule('7. POLL STABILITY — a control mid-action against the 2-second poll');
 
 {
-  const FLEET = ['butchr-manage-work', 'butchr-task-kan-38'];
+  const FLEET = ['butchr-epic-kan-39', 'butchr-task-kan-38'];
   for (const n of FLEET) fs.mkdirSync(path.join(WORKSPACES, n), { recursive: true });
   const bridge = stubHerdr(FLEET);
   const { router, sent } = newRouter(bridge, seedOf(FLEET));
@@ -607,7 +607,7 @@ rule('7. POLL STABILITY — a control mid-action against the 2-second poll');
 
   console.log('  a) rows are keyed by agent name, not array index.');
   const poll1 = list(router, sent).agents.map((a) => a.agentName);
-  await quiet(async () => router.handle({ action: 'deactivate_by_key', type: 'manage', key: 'work' }));
+  await quiet(async () => router.handle({ action: 'deactivate_by_key', type: 'epic', key: 'KAN-39' }));
   const poll2 = list(router, sent).agents.map((a) => a.agentName);
   console.log(`     poll n:   [0]=${poll1[0]}  [1]=${poll1[1]}`);
   console.log(`     poll n+1: [0]=${poll2[0]}`);
@@ -679,15 +679,16 @@ rule('8. RESET — a deleted workspace is not offered a way back');
 if (dumpDir) {
   rule('9. DUMP — the payloads the screenshots are taken against');
 
-  // One fleet carrying every case the page has to render at once: a board
-  // manager, two ordinary task agents, an agent recorded active that is not
-  // there, and two that were switched off. Assembled here rather than in the
-  // screenshot script for the reason the KAN-30 screenshots gave: a fixture
-  // written by hand proves that someone can write a fixture. These come out of
-  // the same handlers a client talks to.
-  const RUNNING = ['butchr-manage-work', 'butchr-task-kan-38', 'butchr-task-kan-25'];
+  // One fleet carrying every case the page has to render at once: both
+  // supervisory types (an epic agent and a story agent), two ordinary task
+  // agents, an agent recorded active that is not there, and two that were
+  // switched off. Assembled here rather than in the screenshot script for the
+  // reason the KAN-30 screenshots gave: a fixture written by hand proves that
+  // someone can write a fixture. These come out of the same handlers a client
+  // talks to.
+  const RUNNING = ['butchr-epic-kan-39', 'butchr-story-kan-40', 'butchr-task-kan-38', 'butchr-task-kan-25'];
   const OFF = ['butchr-task-kan-21', 'butchr-task-kan-35'];
-  const LOST = 'butchr-story-kan-40';
+  const LOST = 'butchr-task-kan-31';
 
   const dirs = {};
   for (const name of [...RUNNING, ...OFF, LOST]) {
@@ -701,7 +702,8 @@ if (dumpDir) {
 
   const bridge = stubHerdr([...RUNNING], {
     statuses: {
-      'butchr-manage-work': 'done',
+      'butchr-epic-kan-39': 'working',
+      'butchr-story-kan-40': 'working',
       'butchr-task-kan-38': 'working',
       'butchr-task-kan-25': 'idle'
     },
@@ -723,7 +725,7 @@ if (dumpDir) {
   });
 
   // And a refusal, from a machine filled to its own derived cap.
-  const FULL = ['butchr-manage-work', ...Array.from({ length: HERE.cap }, (_, i) => `butchr-task-kan-${10 + i}`)];
+  const FULL = ['butchr-epic-kan-39', ...Array.from({ length: HERE.cap }, (_, i) => `butchr-task-kan-${10 + i}`)];
   for (const n of FULL) fs.mkdirSync(path.join(WORKSPACES, 'dumpfull', n), { recursive: true });
   const fullBridge = stubHerdr(FULL, { statuses: { 'butchr-task-kan-10': 'idle' } });
   const { router: fullRouter } = newRouter(fullBridge, seedOf(FULL));

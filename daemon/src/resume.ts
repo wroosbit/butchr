@@ -140,7 +140,7 @@ function causeSentence(cause: ResumeCause): string {
  *
  * It has its memory but no turn to take: Claude Code resumes at an empty
  * prompt and waits. On the day this ticket was filed that wait was indefinite,
- * and was only broken by the board manager re-typing instructions by hand.
+ * and was only broken by a supervising agent re-typing instructions by hand.
  * This message is that manual step, automated — which is what requirement 5
  * asked for.
  *
