@@ -421,6 +421,10 @@ agent.
 Nothing in the daemon depends on any of this: the prompt is read from disk at
 activation, so it is the human's to iterate on.
 
+### The `epic` Prompt: [`prompts/epic.md`](../prompts/epic.md)
+
+The canonical prompt lives in [`prompts/epic.md`](../prompts/epic.md) — see that file rather than an embedded copy here, so the two cannot drift. In outline: the agent decomposes its epic into Stories, staffs and steers the story agents that carry them — and it owns the epic's **description**, which does two jobs. It is the **design doc** for the system the epic is about, maintained as stories land, with the reasoning behind each decision attached; and it is the agent's **operating memory** — what must persist across a deactivation or reset so a restarted agent picks up where the last one left off. Point-in-time state ("what is staffed, what is blocked") goes in comments, not the description; `prompts/epic.md` is the canonical statement of the rule and the test that applies it.
+
 ---
 
 ## 🏗️ High-Level System Architecture
