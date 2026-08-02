@@ -4,10 +4,9 @@ import { HerdrAgentStatus } from './herdr.js';
  * Which work gets the machine when there is not enough machine.
  *
  * KAN-36 gave the cap a number and a legible refusal. What it could not do is
- * choose: at capacity every activation was refused identically, so a board
- * manager that needed to start could not, and the person asking was left to
- * work out for themselves what to stand down. This file is the missing
- * comparison.
+ * choose: at capacity every activation was refused identically, so an agent
+ * that needed to start could not, and the person asking was left to work out
+ * for themselves what to stand down. This file is the missing comparison.
  *
  * WHERE PRIORITY COMES FROM
  *
@@ -20,28 +19,30 @@ import { HerdrAgentStatus } from './herdr.js';
  *     back `{config, key}` — so priority is already in hand at the moment it is
  *     needed. Reading Jira would put a network call on the activation path for
  *     a question the daemon has already answered.
- *   - Both callers work. The sidepanel toggle cannot supply a Jira priority and
- *     the board manager can; a property of the type is available to both,
- *     identically, so there is no path that degrades.
- *   - Manager safety stops being a rule. `manage` is the top of the scale, so
- *     "never preempt the board manager" is not an exception anyone has to
- *     remember to code — it is what the ordering already says. See
- *     {@link outranks}.
+ *   - Both callers work. The sidepanel toggle cannot supply a Jira priority
+ *     and the epic and story agents that activate over MCP can; a property of
+ *     the type is available to both, identically, so there is no path that
+ *     degrades.
+ *   - Epic safety is not a rule. `epic` is the top of the scale, so nothing
+ *     outranks an epic agent by construction rather than by an exception
+ *     anyone has to remember to code — it is what the ordering already says.
+ *     See {@link outranks}.
  *
  * THE SCALE
  *
  * Three levels, ordered by what each type is to the others rather than by how
  * urgent any particular piece of work feels:
  *
- *   manage (3) supervises the fleet and hands work out.
- *   story  (2) decomposes a story into the tasks that task agents execute, so
- *              it is upstream of them: preempting a task to let a story run
- *              unblocks the thing that generates more work.
- *   task   (1) does the work.
+ *   epic  (3) supervises its own stories, handing work out rather than doing
+ *             it.
+ *   story (2) decomposes a story into the tasks that task agents execute, so
+ *             it is upstream of them: preempting a task to let a story run
+ *             unblocks the thing that generates more work.
+ *   task  (1) does the work.
  */
 
-/** The board manager. Nothing outranks it, which is the whole of rule 3. */
-export const PRIORITY_MANAGE = 3;
+/** Epic supervision. The top of the scale: nothing outranks it. */
+export const PRIORITY_EPIC = 3;
 /** Story decomposition, upstream of the tasks it produces. */
 export const PRIORITY_STORY = 2;
 /** Ordinary work. The floor, and the common case. */
@@ -63,15 +64,17 @@ export const DEFAULT_WORKSPACE_PRIORITY = PRIORITY_TASK;
  *
  * Equal-priority preemption is churn in the general case — two agents at the
  * same level displacing each other indefinitely — but the argument is sharper
- * on this scale than on a five-level one. With three levels and one agent per
- * supervisory type in practice, *equal* is the normal case: two `task` agents
- * at priority 1 is what a full machine looks like here. Greater-or-equal would
- * therefore mean any task agent may kill any other task agent, making the
- * choice of victim arbitrary and every activation a coin toss over somebody's
- * uncommitted work.
+ * on this scale than on a five-level one. With three levels and supervision
+ * per epic, *equal* is the normal case at every level: several epic agents,
+ * several story agents, and a machine full of `task` agents at priority 1 can
+ * all be staffed at once. Greater-or-equal would therefore mean any agent may
+ * kill any peer of its own level, making the choice of victim arbitrary and
+ * every activation a coin toss over somebody's uncommitted work.
  *
  * Strictly-greater makes task-versus-task always a refusal, which is the
  * honest answer: the machine is full of work exactly as important as yours.
+ * And it makes epic-versus-epic a refusal too, so one epic agent can never
+ * displace another.
  */
 export function outranks(incoming: number, running: number): boolean {
   return incoming > running;
@@ -146,7 +149,7 @@ export function compareVictims(a: PreemptionCandidate, b: PreemptionCandidate): 
  *
  * Null is the ordinary answer, not an error: it is what a task agent gets on a
  * machine full of task agents, and what anything gets on a machine holding only
- * the board manager.
+ * epic agents.
  */
 export function selectVictim(
   candidates: PreemptionCandidate[],

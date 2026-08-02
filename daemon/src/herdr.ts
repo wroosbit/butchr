@@ -227,7 +227,7 @@ export interface AgentAddress {
  * enumerating herdr's agents and working out which workspace each one is.
  *
  * `butchr-<type>-<key>` is split at the *first* dash after the prefix, because
- * workspace types are single tokens (`task`, `manage`, `story`, `default`)
+ * workspace types are single tokens (`task`, `epic`, `story`, `default`)
  * while keys routinely contain dashes (`kan-28`). That is a convention, not a
  * guarantee, so the parse is only trusted when it rebuilds the name it came
  * from — a name this daemon could never have produced yields null rather than
