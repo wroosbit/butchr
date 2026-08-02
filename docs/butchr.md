@@ -176,16 +176,35 @@ The daemon's own fallback shell (`butchr-default-workspace`) is not counted at
 all: it appears in `list_agents` because a session exists for it, but a shell
 costs nothing like an agent.
 
-**What an agent costs** is two measured numbers, `MEASURED_AGENT_COST`, and an
-agent is a process *tree* — the `claude` process plus the MCP servers it starts.
-Re-measure with `node daemon/scripts/measure-agent-cost.mjs [seconds]` before
-arguing with them. Three environment variables override the derivation:
+**What an agent costs** is measured, continuously, by the daemon itself. An
+agent is a process *tree* — the `claude` process plus the MCP servers it
+starts — and every 60 seconds the daemon measures its live trees with the same
+instrument as `node daemon/scripts/measure-agent-cost.mjs [seconds]`
+([`daemon/src/agent-cost.ts`](../daemon/src/agent-cost.ts)) and divides the
+cap by a **damped** per-tree figure. The damping
+([`daemon/src/agent-cost-damping.ts`](../daemon/src/agent-cost-damping.ts)) is
+asymmetric on purpose — quick to believe an agent is expensive, slow to
+believe it is cheap — because the errors are not symmetric: under-estimating
+cost makes the desktop unusable, over-estimating merely refuses an activation.
+
+The `MEASURED_AGENT_COST` constants (measured 2026-07-31) remain as the
+**seed**: what capacity answers from until the first damped figure lands, and
+what it degrades to whenever there is nothing to measure — no agent trees,
+`/proc` unreadable, a sample that fails validation. Every capacity report
+labels each figure `seed`, `measured` (with the sample's window, tree count
+and timestamp) or `override`, so the derivation stays checkable by hand even
+though the divisor moves. Three environment variables override the derivation:
 
 | variable | effect |
 | --- | --- |
 | `BUTCHR_MAX_AGENTS` | sets the cap outright, skipping the derivation |
 | `BUTCHR_AGENT_MEMORY_MB` | resident cost of one agent tree |
 | `BUTCHR_AGENT_CORES` | load-average cost of one active agent |
+
+Precedence is strict: an override beats the live measurement outright, the
+measurement beats the seed, and `BUTCHR_MAX_AGENTS` pins the cap before any of
+it. Overrides are per-dimension — setting `BUTCHR_AGENT_CORES` alone leaves
+the memory figure measured.
 
 **Headroom is a different question from the cap** and is answered three ways —
 count, 1-minute load average, available memory — with the smallest winning.

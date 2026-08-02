@@ -47,6 +47,32 @@ import * as os from 'os';
  * way a task agent compiling a repo does. They are still reported in
  * `Capacity.supervisors`, so a reader of a capacity report can see they
  * exist; they are simply never charged.
+ *
+ * KAN-44/KAN-56 closed the loop this header opened. `readCapacity()` always
+ * read cores, memory and load live; the one static input left was the
+ * per-agent cost divisor, measured once on 2026-07-31. Now the daemon
+ * re-measures its own fleet on a timer (daemon.ts, with agent-cost.ts as the
+ * instrument), damps the estimate (agent-cost-damping.ts — asymmetric on
+ * purpose, see that file), and this arithmetic divides by the damped figure.
+ * The constants below remain as the *seed*: what capacity answers from when
+ * there is nothing to measure — no agent trees, no /proc, a sample that fails
+ * validation — because whatever breaks, capacity still answers, conservatively.
+ *
+ * That accuracy is paid for in predictability. The original argument here was
+ * for a static cap — "a cap nobody can follow is a cap people route around" —
+ * and a divisor that moves with the fleet is exactly a cap nobody can follow
+ * from the constants alone. So the deal is: the cost input may move, but every
+ * report says where each figure came from (seed, measured, or override), when
+ * the sample was taken, over what window, from how many trees — and the
+ * arithmetic from those printed figures to `cap` stays reproducible by hand.
+ * A reader who cannot predict tomorrow's cap can still check today's.
+ *
+ * Precedence is strict and short: an operator override
+ * (BUTCHR_AGENT_CORES / BUTCHR_AGENT_MEMORY_MB) beats the measurement
+ * outright — someone who typed a number into their environment has re-measured
+ * or decided, and a fleet that argues with its operator gets turned off. The
+ * measurement beats the seed. The seed is what remains. BUTCHR_MAX_AGENTS
+ * still pins the cap and skips the derivation entirely.
  */
 
 export const GIB = 1024 ** 3;
@@ -93,11 +119,38 @@ export interface AgentCost {
  * thrashing-inflated share, which is the range a divisor in a load-average
  * budget has to live in. Re-measure it before trusting it — that is what the
  * script is for.
+ *
+ * Since KAN-56 the daemon does re-measure it, continuously, and these numbers
+ * are the seed rather than the answer: they hold until the sampler has a
+ * damped live figure, and they are what everything degrades to when it does
+ * not. A capacity report built from them says `seed`, because a figure nobody
+ * measured on this fleet must be labelled as such — that mislabelling is the
+ * exact failure story KAN-44 exists to correct.
  */
 export const MEASURED_AGENT_COST: AgentCost = {
   residentBytes: 650 * MIB,
   cores: 0.75
 };
+
+/** Where a cost figure came from. Tracked per dimension, because the operator
+ * may override cores while memory stays measured. */
+export type CostSource = 'override' | 'measured' | 'seed';
+
+/**
+ * A damped live measurement of what one agent tree costs, with the metadata a
+ * reader needs to judge it: when the window closed, how long it was, and how
+ * many trees the per-tree figure was averaged over. Produced by the daemon's
+ * sampler (daemon.ts) from agent-cost.ts windows, damped by
+ * agent-cost-damping.ts — by design never an instantaneous reading.
+ */
+export interface MeasuredAgentCost extends AgentCost {
+  /** Wall-clock ms (Date.now()) when the sample window closed. */
+  sampledAt: number;
+  /** Length of the window that closed the measurement, in seconds. */
+  windowSeconds: number;
+  /** Agent trees the per-tree figures were averaged over. */
+  agentTrees: number;
+}
 
 /**
  * The herdr server's own appetite. It sat at ~49% of a core with seven agents
@@ -151,6 +204,13 @@ export type HeadroomBound = 'cap' | 'load' | 'memory';
 export interface Capacity {
   machine: MachineFacts;
   cost: AgentCost;
+  /** Where each dimension of `cost` came from: override, measured, or seed. */
+  costSource: { residentBytes: CostSource; cores: CostSource };
+  /**
+   * The damped measurement that was consulted, if the sampler had one. Kept
+   * even when an override beat it, so a report can say what was ignored.
+   */
+  measured: MeasuredAgentCost | null;
   reservedForHuman: { cores: number; bytes: number };
 
   /** Concurrent *task* agents this hardware supports, load aside. */
@@ -182,7 +242,15 @@ export interface Capacity {
 }
 
 export interface CapacityOptions {
-  cost?: AgentCost;
+  /**
+   * Operator-set costs (BUTCHR_AGENT_CORES / BUTCHR_AGENT_MEMORY_MB). A
+   * dimension set here beats the measurement outright — see the header for
+   * the precedence argument.
+   */
+  overrides?: Partial<AgentCost>;
+  /** The damped live measurement, if there is one. Beats the seed, loses to
+   * overrides. */
+  measured?: MeasuredAgentCost | null;
   /** A cap the operator set by hand, bypassing the derivation entirely. */
   configuredCap?: number | null;
   /** Supervisors observed running. Reported only; it changes no arithmetic. */
@@ -201,7 +269,21 @@ export function computeCapacity(
   running: number,
   options: CapacityOptions = {}
 ): Capacity {
-  const cost = options.cost ?? MEASURED_AGENT_COST;
+  // The divisor, one dimension at a time: override, else measured, else seed.
+  // Per dimension rather than all-or-nothing so an operator who has re-measured
+  // cores does not silently discard the memory measurement too.
+  const overrides = options.overrides ?? {};
+  const measured = options.measured ?? null;
+  const pick = (dim: keyof AgentCost): { value: number; source: CostSource } => {
+    const override = overrides[dim];
+    if (override !== undefined) return { value: override, source: 'override' };
+    if (measured) return { value: measured[dim], source: 'measured' };
+    return { value: MEASURED_AGENT_COST[dim], source: 'seed' };
+  };
+  const resident = pick('residentBytes');
+  const coreCost = pick('cores');
+  const cost: AgentCost = { residentBytes: resident.value, cores: coreCost.value };
+  const costSource = { residentBytes: resident.source, cores: coreCost.source };
   const configuredCap = options.configuredCap ?? null;
 
   const reservedCores = humanReserveCores(machine.cores);
@@ -274,6 +356,8 @@ export function computeCapacity(
   return {
     machine,
     cost,
+    costSource,
+    measured,
     reservedForHuman: { cores: reservedCores, bytes: reservedBytes },
     cap,
     capByCpu,
@@ -352,13 +436,33 @@ function envNumber(name: string, allowZero = false): number | undefined {
 export function optionsFromEnv(): CapacityOptions {
   const memoryMb = envNumber('BUTCHR_AGENT_MEMORY_MB');
   const cores = envNumber('BUTCHR_AGENT_CORES');
+  // Only the dimensions actually set become overrides: an unset variable must
+  // leave room for the measurement, not silently pin the seed.
+  const overrides: Partial<AgentCost> = {};
+  if (memoryMb !== undefined) overrides.residentBytes = memoryMb * MIB;
+  if (cores !== undefined) overrides.cores = cores;
   return {
-    cost: {
-      residentBytes: memoryMb !== undefined ? memoryMb * MIB : MEASURED_AGENT_COST.residentBytes,
-      cores: cores ?? MEASURED_AGENT_COST.cores
-    },
+    overrides,
     configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null
   };
+}
+
+/**
+ * The damped live measurement, held here so every caller of readCapacity —
+ * each per-connection router and the daemon's own — divides by the same
+ * figure. The daemon's sampler (daemon.ts) is the only writer: it sets a
+ * fresh value after each valid window and clears back to null the moment the
+ * instrument fails, which is what makes "whatever breaks, capacity still
+ * answers from the seed" true without any caller having to know.
+ */
+let liveMeasuredCost: MeasuredAgentCost | null = null;
+
+export function setMeasuredAgentCost(measured: MeasuredAgentCost | null): void {
+  liveMeasuredCost = measured;
+}
+
+export function getMeasuredAgentCost(): MeasuredAgentCost | null {
+  return liveMeasuredCost;
 }
 
 /**
@@ -371,6 +475,7 @@ export function optionsFromEnv(): CapacityOptions {
 export function readCapacity(running: number, supervisors = 0): Capacity {
   return computeCapacity(readMachineFacts(), running, {
     ...optionsFromEnv(),
+    measured: liveMeasuredCost,
     supervisorsRunning: supervisors
   });
 }
@@ -392,10 +497,34 @@ export function describeCapacity(c: Capacity): string {
     `machine: ${m.cores} cores, ${gib(m.totalBytes)} RAM ` +
     `(${gib(m.availableBytes)} available), load average ${m.load1.toFixed(2)}`
   );
+  // Every cost figure carries its provenance, because the divisor can now be
+  // a measurement: a reader must be able to tell a number this fleet produced
+  // from the 2026-07-31 seed and from a number the operator typed in.
   lines.push(
-    `agent cost: ${Math.round(c.cost.residentBytes / MIB)} MB resident, ` +
-    `${c.cost.cores} core while active`
+    `agent cost: ${Math.round(c.cost.residentBytes / MIB)} MB resident (${c.costSource.residentBytes}), ` +
+    `${c.cost.cores} core while active (${c.costSource.cores})`
   );
+  if (c.measured) {
+    const beaten: string[] = [];
+    if (c.costSource.residentBytes === 'override') {
+      beaten.push(`BUTCHR_AGENT_MEMORY_MB overrides its ${Math.round(c.measured.residentBytes / MIB)} MB`);
+    }
+    if (c.costSource.cores === 'override') {
+      beaten.push(`BUTCHR_AGENT_CORES overrides its ${c.measured.cores} core`);
+    }
+    lines.push(
+      `  measured (damped): ${Math.round(c.measured.residentBytes / MIB)} MB, ` +
+      `${c.measured.cores} core per agent tree — ${c.measured.agentTrees} tree(s) ` +
+      `over a ${Math.round(c.measured.windowSeconds)}s window ` +
+      `ending ${new Date(c.measured.sampledAt).toISOString()}` +
+      (beaten.length ? `; ignored: ${beaten.join(', ')}` : '')
+    );
+  } else if (c.costSource.residentBytes === 'seed' || c.costSource.cores === 'seed') {
+    lines.push(
+      '  no live measurement; seed figures are the 2026-07-31 constants, ' +
+      'not a measurement of this fleet'
+    );
+  }
   lines.push(
     `reserved for you: ${c.reservedForHuman.cores} core(s), ${gib(c.reservedForHuman.bytes)}`
   );
