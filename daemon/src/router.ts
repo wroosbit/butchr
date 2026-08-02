@@ -522,7 +522,7 @@ export class MessageRouter {
     // Everything running that this activation could conceivably displace, and
     // the one it would take. `victim` is null in the ordinary case — a task
     // agent on a board of task agents outranks nothing, and neither does
-    // anything at all when the only thing running is the board manager.
+    // anything at all when the only things running are epic or story agents.
     const candidates = this.preemptionCandidates(agents, agentName);
     const victim = selectVictim(candidates, priority);
     const derivation = describeCapacity(capacity);
@@ -647,13 +647,13 @@ export class MessageRouter {
    * it, and a list that disagreed with `running` would offer to free a slot
    * that was never occupied.
    *
-   * The board manager is deliberately *included*. It can never be selected —
-   * nothing outranks priority 3 and the comparison is strictly-greater — and
-   * leaving it in is what makes that a fact about the ordering rather than a
-   * special case somebody has to remember. It is protected twice over in any
-   * event: its share is reserved off the top rather than counted against the
-   * cap, so standing it down would not free a fleet slot even if it could be
-   * chosen.
+   * Supervisors — epic and story agents — are deliberately *included*. An
+   * epic agent can never be selected: nothing outranks priority 3 and the
+   * comparison is strictly-greater, and leaving supervisors in is what makes
+   * that a fact about the ordering rather than a special case somebody has to
+   * remember. (Standing one down would not free a fleet slot anyway — they
+   * are never counted against the cap — but the ordering, not that, is what
+   * protects them.)
    */
   private preemptionCandidates(agents: ListedAgent[], exclude?: string): PreemptionCandidate[] {
     const intents = this.agentRegistry?.intents();
@@ -1727,9 +1727,9 @@ export class MessageRouter {
    *
    * Reported until they are re-activated. Restarting them is out of scope by
    * the ticket's own words — a preemption queue is a scheduler — so what this
-   * buys is that the decision is *owed to someone* rather than lost: the board
-   * manager sees it on every poll and can move the ticket back to To Do, and a
-   * human sees whose work is waiting.
+   * buys is that the decision is *owed to someone* rather than lost: the epic
+   * and story agents that supervise see it on every poll and can move the
+   * ticket back to To Do, and a human sees whose work is waiting.
    */
   private preemptedAgents() {
     if (!this.agentRegistry) return [];
@@ -1769,13 +1769,16 @@ export class MessageRouter {
    * answer too many.
    */
   /**
-   * The capacity model applied to a census, with the manager set aside.
+   * The capacity model applied to a census: task agents in `running`,
+   * epic and story agents counted separately as `supervisors` (reported,
+   * never charged — see capacity.ts).
    *
    * Every capacity answer in this daemon goes through here, so `running` means
    * the same thing in the refusal, in `list_agents` and in `butchr_capacity`.
-   * KAN-34 passed `agents.length` at each call site and the board manager was
-   * silently one of them — on a 4-core machine that was half the budget spent
-   * on the supervisor, and the user could never start a second task agent.
+   * KAN-34 passed `agents.length` at each call site and the then-single board
+   * manager was silently one of them — on a 4-core machine that was half the
+   * budget spent on the supervisor, and the user could never start a second
+   * task agent.
    */
   /**
    * Whether a `list_agents` entry costs an agent's worth of machine.

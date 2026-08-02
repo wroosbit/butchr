@@ -163,13 +163,14 @@ than declared, so the answer travels: see
 `node daemon/scripts/verify-agent-capacity.mjs` for the derivation with the
 numbers behind it.
 
-**`cap` counts task agents.** Two things that are not work are charged before
-the cap is worked out rather than against it:
-
-- **the herdr server** — 0.5 core, always present;
-- **the board manager** — one agent's worth of core and memory. It is
-  infrastructure that hands work out, not work. Counting it meant a 4-core
-  machine could run one task agent and refused every activation after it.
+**`cap` counts task agents, and only task agents.** The **herdr server** —
+0.5 core, always present — is charged before the cap is worked out rather than
+against it. **Epic and story agents are reported but never charged**: they
+supervise rather than do the work, spending most of their lives reading Jira
+and waiting, so they neither occupy a slot in `running` nor have one reserved
+for them. (KAN-36 reserved a slot for the then always-on board manager; KAN-39
+replaced that manager with per-epic and per-story agents that come and go, and
+KAN-41 removed the reservation with it.)
 
 The daemon's own fallback shell (`butchr-default-workspace`) is not counted at
 all: it appears in `list_agents` because a session exists for it, but a shell
@@ -178,14 +179,13 @@ costs nothing like an agent.
 **What an agent costs** is two measured numbers, `MEASURED_AGENT_COST`, and an
 agent is a process *tree* — the `claude` process plus the MCP servers it starts.
 Re-measure with `node daemon/scripts/measure-agent-cost.mjs [seconds]` before
-arguing with them. Four environment variables override the derivation:
+arguing with them. Three environment variables override the derivation:
 
 | variable | effect |
 | --- | --- |
 | `BUTCHR_MAX_AGENTS` | sets the cap outright, skipping the derivation |
 | `BUTCHR_AGENT_MEMORY_MB` | resident cost of one agent tree |
 | `BUTCHR_AGENT_CORES` | load-average cost of one active agent |
-| `BUTCHR_SUPERVISOR_AGENTS` | supervisor slots reserved; `0` for a fleet with no board manager |
 
 **Headroom is a different question from the cap** and is answered three ways —
 count, 1-minute load average, available memory — with the smallest winning.
