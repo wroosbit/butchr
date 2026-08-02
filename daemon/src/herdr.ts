@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
+import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
 import {
   RESUME_ENV,
@@ -522,6 +523,21 @@ export class HerdrBridge {
   private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: string[]): void {
     const agentName = agentNameFor(session.type, session.key);
 
+    // Resolved before anything else happens. An unknown defaultAgent refuses
+    // the whole activation (KAN-53), and it must do so before the workspace is
+    // provisioned for an agent that will never exist. The refusal travels as
+    // spawnError — the same channel a spawn herdr refused uses — so activate
+    // answers `success: false` with the message naming the valid launchers.
+    let launcher: AgentLauncher;
+    try {
+      ({ launcher } = resolveLauncher(defaultAgent));
+    } catch (e: any) {
+      session.spawnError = e?.message ?? String(e);
+      session.status = 'terminated';
+      console.error(`[HerdrBridge] Refusing to start ${agentName}: ${session.spawnError}`);
+      return;
+    }
+
     // Workspace-scoped MCP config, written for every agent type: Claude picks
     // up .mcp.json from its cwd, and the file documents the workspace either way.
     if (mcpServers && mcpServers.length > 0) {
@@ -531,9 +547,8 @@ export class HerdrBridge {
     // Agent-specific provisioning, also on every activation: it is idempotent,
     // and a workspace reset out from under a live herdr agent would otherwise
     // never get its settings back.
-    const { launcher: setupLauncher } = resolveLauncher(defaultAgent);
-    if (setupLauncher.setup) {
-      setupLauncher.setup(session.workDir, mcpServers ?? []);
+    if (launcher.setup) {
+      launcher.setup(session.workDir, mcpServers ?? []);
     }
 
     if (initialPrompt) {
@@ -553,8 +568,6 @@ export class HerdrBridge {
     } catch(e) {}
 
     if (!agentExists) {
-      const { launcher } = resolveLauncher(defaultAgent);
-
       // What the agent is told when there is no conversation to continue. On a
       // resume with nothing on disk that must not be the cold-start prompt: an
       // agent greeted as if it were starting fresh would claim its ticket and

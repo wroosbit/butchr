@@ -505,7 +505,8 @@ rule('5. LAUNCHER — why a stand-down has to carry the activation record with i
     '\n  Before KAN-38 a stand-down recorded only { agentName, type, key, workDir }, and\n' +
     '  that was harmless for exactly as long as nothing switched a stood-down agent back\n' +
     '  on. `defaultAgent` is an argument of an activation: absent, resolveLauncher() in\n' +
-    '  launchers.ts falls back to `shell`, so the agent would have come back as a bare\n' +
+    '  launchers.ts fell back to `shell` (KAN-53 has since made omission mean `claude`\n' +
+    '  and unknown names refuse), so the agent would have come back as a bare\n' +
     '  bash prompt wearing the name of a Claude agent — running nothing, reporting\n' +
     '  nothing, and looking from this page exactly like a healthy row. The On button is\n' +
     '  what makes that path ordinary, so the record has to survive the stand-down.\n' +
