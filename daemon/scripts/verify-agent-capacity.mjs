@@ -9,7 +9,13 @@
 // and only task agents are charged at all. Epic and story agents are
 // reported as `supervisors`, never charged.
 //
-// Nine sections:
+// Extended again for KAN-56: the per-agent cost divisor is no longer only the
+// 2026-07-31 constants. The daemon samples its own fleet (agent-cost.ts),
+// damps the estimate (agent-cost-damping.ts), and capacity divides by the
+// damped figure — with the constants demoted to a labelled seed and the env
+// overrides still beating everything. Sections 10–13 prove that plumbing.
+//
+// Thirteen sections:
 //
 //   1. derivation    — the cap on THIS machine, with the arithmetic
 //   2. reservation   — the removed manager reservation, before and after
@@ -20,6 +26,10 @@
 //   7. re-attach     — the same call for an agent that is already running
 //   8. load          — the same fleet idle and busy, answering differently
 //   9. override      — the refusal bypassed deliberately, and recorded
+//  10. provenance    — measured cost vs seed: the divisor moves, and says so
+//  11. damping       — step response both directions: up fast, down slow
+//  12. degrade       — the instrument breaks; capacity answers from the seed
+//  13. precedence    — env overrides beat the measurement beats the seed
 //
 // Sections 5 through 7 and 9 drive the real MessageRouter — handleCapacity
 // and handleActivateByKey, the same calls an MCP caller makes — so what they
@@ -44,8 +54,11 @@ const {
   humanReserveBytes,
   HERDR_OVERHEAD_CORES,
   MEASURED_AGENT_COST,
+  optionsFromEnv,
   GIB
 } = await import(path.join(distDir, 'capacity.js'));
+const { dampCost, sampleFromMeasurement, ALPHA_UP, ALPHA_DOWN } =
+  await import(path.join(distDir, 'agent-cost-damping.js'));
 const { MessageRouter } = await import(path.join(distDir, 'router.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
@@ -364,6 +377,160 @@ console.log(
   `    spawnSession, which is how we know the gate was passed: ${
     overridden.reachedSpawn ? 'it was' : 'IT WAS NOT — CHECK THIS'
   }.`
+);
+
+// ----------------------------------------------------- 10. provenance --
+rule('10. PROVENANCE — the same hardware, seed vs measured divisor');
+
+const MIB = 1024 ** 2;
+
+// A measurement shaped exactly like the daemon's sampler publishes: per-tree
+// averages, already damped, with the metadata a reader needs to judge it.
+const MEASURED = {
+  residentBytes: 680 * MIB,
+  cores: 0.3,
+  sampledAt: Date.parse('2026-08-02T19:00:00Z'),
+  windowSeconds: 60,
+  agentTrees: 4
+};
+
+const seeded = computeCapacity(FACTS, 0);
+const measuredCap = computeCapacity(FACTS, 0, { measured: MEASURED });
+
+console.log('with nothing measured — the seed, and the report says so:\n');
+console.log(describeCapacity(seeded));
+console.log("\nwith the daemon's damped measurement in place of the seed:\n");
+console.log(describeCapacity(measuredCap));
+console.log(
+  `\n  → cap ${seeded.cap} → ${measuredCap.cap} on the same hardware, because the measured tree ` +
+  `(${MEASURED.cores} core)\n    is cheaper than the seed's calibrated 0.75. Every figure above carries its\n` +
+  '    provenance — (seed) or (measured) — plus the window, tree count and\n' +
+  '    timestamp, so the moving divisor stays checkable by hand.'
+);
+
+// -------------------------------------------------------- 11. damping --
+rule('11. DAMPING — quick to believe expensive, slow to believe cheap');
+
+const meta = { sampledAt: MEASURED.sampledAt, windowSeconds: 60, agentTrees: 4 };
+const capFor = (est) => computeCapacity(FACTS, 0, { measured: { ...est, ...meta } }).cap;
+const row = (i, est) =>
+  console.log(
+    `  window ${String(i).padStart(2)}: cost ${est.cores.toFixed(3)} core, ` +
+    `${Math.round(est.residentBytes / MIB)} MB → cap ${capFor(est)}`
+  );
+
+const CHEAP = { residentBytes: 600 * MIB, cores: 0.15 };
+const EXPENSIVE = { residentBytes: 900 * MIB, cores: 1.5 };
+
+console.log(
+  `cheap→expensive: the fleet wakes up (alpha up ${ALPHA_UP} — the protective direction):\n`
+);
+let est = { ...CHEAP };
+row(0, est);
+let upWindows = 0;
+for (let i = 1; i <= 6; i++) {
+  est = dampCost(est, EXPENSIVE);
+  row(i, est);
+  if (upWindows === 0 && est.cores >= EXPENSIVE.cores * 0.9) upWindows = i;
+}
+const capAfterUp = capFor(est);
+
+console.log(
+  `\nexpensive→cheap: the fleet goes idle (alpha down ${ALPHA_DOWN} — the sceptical direction):\n`
+);
+est = { ...EXPENSIVE };
+row(0, est);
+let downWindows = 0;
+for (let i = 1; i <= 24; i++) {
+  est = dampCost(est, CHEAP);
+  if (i <= 4 || i % 4 === 0) row(i, est);
+  if (downWindows === 0 && est.cores <= CHEAP.cores + (EXPENSIVE.cores - CHEAP.cores) * 0.1) {
+    downWindows = i;
+  }
+}
+console.log(
+  `\n  → the cap falls within ${upWindows} window(s) of the fleet getting expensive and needs ` +
+  `${downWindows || '>24'}\n    windows to believe it got cheap — at the daemon's 60s window, minutes down,\n` +
+  '    the better part of half an hour back up. A single good-looking reading is\n' +
+  '    not evidence of damping; this staircase is. Under-estimating cost makes\n' +
+  '    the desktop unusable; over-estimating refuses an activation — the errors\n' +
+  '    are not symmetric, so neither are the alphas.' +
+  (capAfterUp <= capFor(EXPENSIVE) + 1 ? '' : '\n    EXPECTED the cap near its expensive-fleet value — CHECK THIS.')
+);
+
+// -------------------------------------------------------- 12. degrade --
+rule('12. DEGRADE — the instrument breaks; capacity still answers, from the seed');
+
+const window60 = { elapsed: 60, loadStart: 0.2, loadEnd: 0.2, agents: [] };
+const badWindows = [
+  ['zero agent trees ', { ...window60, totals: { agents: 0, cores: 0, residentMb: 0 } }],
+  ['negative cores   ', { ...window60, totals: { agents: 3, cores: -0.2, residentMb: 1800 } }],
+  ['zero cores       ', { ...window60, totals: { agents: 3, cores: 0, residentMb: 1800 } }],
+  ['absurd rss       ', {
+    ...window60,
+    totals: { agents: 3, cores: 0.4, residentMb: (FACTS.totalBytes / MIB) * 9 }
+  }],
+  ['zero-length window', { ...window60, elapsed: 0, totals: { agents: 3, cores: 0.4, residentMb: 1800 } }]
+];
+console.log('what sampleFromMeasurement makes of windows that prove nothing:\n');
+let allRejected = true;
+for (const [label, m] of badWindows) {
+  const s = sampleFromMeasurement(m, FACTS.totalBytes);
+  allRejected &&= s === null;
+  console.log(`  ${label} → ${s === null ? 'null (rejected)' : JSON.stringify(s) + ' — CHECK THIS'}`);
+}
+console.log(
+  `\n  → every bad window rejects to null${allRejected ? '' : ' — EXCEPT SOME, CHECK THIS'}. ` +
+  'The daemon clears the live measurement on\n' +
+  '    null (and on a /proc read throwing), so what capacity answers is:\n'
+);
+console.log(describeCapacity(computeCapacity(FACTS, 1, { measured: null })));
+console.log(
+  '\n  → the figures are the seed constants and the report *says* seed — the same\n' +
+  '    guarantee the Jira lookup makes: whatever breaks, capacity still answers,\n' +
+  '    conservatively, and a figure nobody measured is labelled as such.'
+);
+
+// ----------------------------------------------------- 13. precedence --
+rule('13. PRECEDENCE — the operator beats the measurement beats the seed');
+
+console.log(
+  'BUTCHR_AGENT_CORES=0.75 set by hand, memory left alone, measurement live:\n'
+);
+console.log(
+  describeCapacity(computeCapacity(FACTS, 0, { measured: MEASURED, overrides: { cores: 0.75 } }))
+);
+console.log(
+  '\n  → cores says (override) and the measured 0.3 is named as ignored; memory\n' +
+  '    stays (measured). Overrides are per-dimension: overriding cores does not\n' +
+  '    silently discard the memory measurement.\n'
+);
+
+console.log('BUTCHR_MAX_AGENTS=2 on top of everything:\n');
+console.log(
+  describeCapacity(
+    computeCapacity(FACTS, 0, { measured: MEASURED, overrides: { cores: 0.75 }, configuredCap: 2 })
+  )
+);
+console.log('\n  → the configured cap pins the answer and skips the derivation entirely.\n');
+
+// The env plumbing itself, with the variables controlled for the demo and
+// restored after it.
+const savedEnv = {};
+for (const name of ['BUTCHR_AGENT_CORES', 'BUTCHR_AGENT_MEMORY_MB', 'BUTCHR_MAX_AGENTS']) {
+  savedEnv[name] = process.env[name];
+  delete process.env[name];
+}
+process.env.BUTCHR_AGENT_CORES = '0.15';
+console.log('optionsFromEnv() with only BUTCHR_AGENT_CORES=0.15 in the environment:\n');
+console.log(`  ${JSON.stringify(optionsFromEnv())}`);
+for (const [name, value] of Object.entries(savedEnv)) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+console.log(
+  '\n  → only the dimension actually set becomes an override; an unset variable\n' +
+  '    leaves room for the measurement rather than pinning the seed.'
 );
 
 console.log('\n== done ==');

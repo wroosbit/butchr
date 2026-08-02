@@ -147,6 +147,15 @@ function capacityDto(c: Capacity) {
     availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
     agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
     agentCores: c.cost.cores,
+    // Where the two cost figures came from (KAN-56): 'override', 'measured'
+    // or 'seed', plus the sample's metadata when a measurement was consulted.
+    // A caller deciding whether to trust the cap can see whether anyone
+    // measured it.
+    agentMemorySource: c.costSource.residentBytes,
+    agentCoresSource: c.costSource.cores,
+    measuredAt: c.measured ? new Date(c.measured.sampledAt).toISOString() : null,
+    measuredWindowSeconds: c.measured ? Math.round(c.measured.windowSeconds) : null,
+    measuredAgentTrees: c.measured ? c.measured.agentTrees : null,
     capByCpu: c.capByCpu,
     capByMemory: c.capByMemory,
     headroomByCap: c.headroomByCap,
