@@ -85,15 +85,16 @@ interface ListedAgent {
   /** herdr's own `agent` field: the CLI running in the pane, null for a shell. */
   agentRuntime: string | null;
   /**
-   * Whether this agent supervises the board rather than doing work on it.
+   * Whether this agent supervises its own children rather than doing the work
+   * itself.
    *
    * Sent so a client does not have to know which workspace types those are.
-   * KAN-38 put an Off button next to every row including the board manager's,
-   * and the guard on that row has to be different in kind — stopping it stops
-   * the thing that hands work out. A UI deciding that from a hardcoded
-   * `type === 'manage'` would be a second copy of a rule that already lives in
-   * registry.ts, and the copy is the one that gets forgotten when a second
-   * supervisor type is added.
+   * KAN-38 put an Off button next to every row including the supervisors',
+   * and the guard on those rows has to be different in kind — stopping one
+   * stops the thing that hands work out. A UI deciding that from a hardcoded
+   * list of types would be a second copy of a rule that already lives in
+   * SUPERVISOR_WORKSPACE_TYPES in registry.ts, and the copy is the one that
+   * gets forgotten when the set changes.
    */
   supervisor: boolean;
 }

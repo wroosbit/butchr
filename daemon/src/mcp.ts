@@ -102,7 +102,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_capacity",
         description:
-          "Reports how many concurrent agents this machine can carry and how many more can be started right now. The cap is derived from the machine's own cores and memory, so it differs between machines; headroom additionally accounts for the current load average, so a fleet that is compiling reports less room than the same fleet idle. Ask this before activating, not after the machine is on its knees. ALSO REPORTS priorities: what each running agent is worth (manage 3, story 2, task 1), which is what an activation at capacity would have to strictly outrank before it could stand any of them down.",
+          "Reports how many concurrent agents this machine can carry and how many more can be started right now. The cap is derived from the machine's own cores and memory, so it differs between machines; headroom additionally accounts for the current load average, so a fleet that is compiling reports less room than the same fleet idle. Ask this before activating, not after the machine is on its knees. ALSO REPORTS priorities: what each running agent is worth (epic 3, story 2, task 1), which is what an activation at capacity would have to strictly outrank before it could stand any of them down.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -124,7 +124,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             preempt: {
               type: "boolean",
               description:
-                "Optional, and destructive. Make room by standing down the lowest-priority agent this activation STRICTLY outranks (manage 3 > story 2 > task 1), rather than over-committing the machine as override does. Equal priority never preempts, so a task agent can never displace another task agent, and nothing can displace the board manager. The victim's uncommitted work is interrupted; it is recorded as preempted, reported by butchr_list_agents until it is put back, and resumes its conversation when re-activated. Read the `preemption` block on the refusal first — it names exactly who would be stopped and what they are doing — and do not pass this without having decided that this work matters more than theirs.",
+                "Optional, and destructive. Make room by standing down the lowest-priority agent this activation STRICTLY outranks (epic 3 > story 2 > task 1), rather than over-committing the machine as override does. Equal priority never preempts, so a task agent can never displace another task agent, and nothing can displace an epic agent, because 3 is the top of the scale. The victim's uncommitted work is interrupted; it is recorded as preempted, reported by butchr_list_agents until it is put back, and resumes its conversation when re-activated. Read the `preemption` block on the refusal first — it names exactly who would be stopped and what they are doing — and do not pass this without having decided that this work matters more than theirs.",
             },
             type: {
               type: "string",

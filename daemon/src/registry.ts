@@ -1,7 +1,7 @@
 import { WorkspaceTypeConfig } from './types.js';
 import {
   DEFAULT_WORKSPACE_PRIORITY,
-  PRIORITY_MANAGE,
+  PRIORITY_EPIC,
   PRIORITY_STORY,
   PRIORITY_TASK
 } from './priority.js';
@@ -9,19 +9,19 @@ import {
 /**
  * Jira issue-type name → workspace type.
  *
- * Data, not branching: adding a workspace type for Bug or Epic later is a line
- * here plus a `register` call, with no control flow to re-read. Keys are
- * compared lower-cased because Jira's type names are display strings and a
- * renamed or localised type should not silently change behaviour by casing
- * alone.
+ * Data, not branching: adding a workspace type for Bug later is a line here
+ * plus a `register` call, with no control flow to re-read. Keys are compared
+ * lower-cased because Jira's type names are display strings and a renamed or
+ * localised type should not silently change behaviour by casing alone.
  */
 const WORKSPACE_TYPE_BY_JIRA_ISSUE_TYPE: Record<string, string> = {
+  epic: 'epic',
   story: 'story'
 };
 
 /**
- * Everything else — Task, Bug, Epic, Subtask, an unrecognised custom type, or
- * a lookup that could not be performed at all — is a `task` workspace. This
+ * Everything else — Task, Bug, Subtask, an unrecognised custom type, or a
+ * lookup that could not be performed at all — is a `task` workspace. This
  * constant is the degradation guarantee in one place: whatever goes wrong,
  * resolution lands here.
  */
@@ -36,15 +36,17 @@ export function workspaceTypeForJiraIssueType(issueTypeName: string | null): str
 }
 
 /**
- * Workspace types that are infrastructure rather than work.
+ * Workspace types that hand work out rather than doing it: an epic agent
+ * staffs its stories, a story agent staffs its tasks.
  *
- * The board manager is present whenever Butchr is being used at all, and it
- * hands work out rather than being work. The capacity model reserves its share
- * off the top instead of counting it against the cap — see SUPERVISOR_AGENTS
- * in capacity.ts for the argument. This set is what tells the two apart, and
- * it lives here because this is where workspace types are defined.
+ * Two callers read this set, and it lives here because this is where workspace
+ * types are defined. The capacity model exempts supervisors from the cap —
+ * see SUPERVISOR_AGENTS in capacity.ts for the argument. And the fleet UI's
+ * stronger Off confirmation is driven by the `supervisor` DTO field in
+ * router.ts, which is computed from this set so the UI never carries its own
+ * copy of the rule.
  */
-export const SUPERVISOR_WORKSPACE_TYPES: ReadonlySet<string> = new Set(['manage']);
+export const SUPERVISOR_WORKSPACE_TYPES: ReadonlySet<string> = new Set(['epic', 'story']);
 
 export function isSupervisorType(type: string | null | undefined): boolean {
   return typeof type === 'string' && SUPERVISOR_WORKSPACE_TYPES.has(type);
@@ -89,31 +91,6 @@ export class WorkspaceRegistry {
       refineByJiraIssueType: true
     });
 
-    // Registered after `task` on purpose: resolve() returns the first match,
-    // and a board URL carrying &selectedIssue=KAN-5 is an opened issue — a
-    // task context — not a board one. Task must get first refusal.
-    //
-    // There is a single board manager, so the key is the constant 'work'
-    // rather than anything derived from the URL: every board page activates
-    // the same agent.
-    this.register({
-      type: 'manage',
-      name: 'Board Manager',
-      urlPatterns: [
-        /https?:\/\/[^\/]+\/jira\/software\/projects\/[^\/]+\/boards\/\d+/i
-      ],
-      keyExtractor: (url: string) =>
-        /https?:\/\/[^\/]+\/jira\/software\/projects\/[^\/]+\/boards\/\d+/i.test(url)
-          ? 'work'
-          : null,
-      mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/manage.md',
-      // The top of the scale, which is what makes "never preempt the board
-      // manager" a consequence of the ordering rather than a rule somebody has
-      // to remember. See priority.ts.
-      priority: PRIORITY_MANAGE
-    });
-
     // Deliberately pattern-less. A Story's URL is byte-identical to a Task's,
     // so there is nothing to match on — this type is reached only by refining
     // a `task` URL match against the issue's real type in Jira, or by an
@@ -131,6 +108,23 @@ export class WorkspaceRegistry {
       // that task agents execute: it is upstream of them, so taking a task's
       // slot to run a story unblocks the thing that generates more work.
       priority: PRIORITY_STORY
+    });
+
+    // Pattern-less for the same reason as `story`: an Epic's URL is
+    // byte-identical to a Task's, so there is nothing to match on — this type
+    // is reached only by refining a `task` URL match against the issue's real
+    // type in Jira, or by an explicit activate_by_key. Giving it patterns
+    // would make it compete with `task` on identical URLs.
+    this.register({
+      type: 'epic',
+      name: 'Jira Epic',
+      urlPatterns: [],
+      keyExtractor: () => null,
+      mcpServers: ['atlassian', 'butchr'],
+      promptTemplateFile: 'prompts/epic.md',
+      // The top of the scale: an epic agent supervises the stories under it,
+      // so nothing outranks it by construction. See priority.ts.
+      priority: PRIORITY_EPIC
     });
   }
 
@@ -184,7 +178,16 @@ export class WorkspaceRegistry {
     if (!matched) return null;
     if (!matched.config.refineByJiraIssueType || !this.issueTypeLookup) return matched;
 
-    const issueTypeName = await this.issueTypeLookup(matched.key);
+    let issueTypeName: string | null;
+    try {
+      issueTypeName = await this.issueTypeLookup(matched.key);
+    } catch {
+      // The lookup's contract is "never throw; null means unknown", but the
+      // degradation guarantee must not depend on every injected lookup
+      // honouring it: a throwing lookup is a lookup that could not be
+      // performed, and lands on the same null as any other failure.
+      issueTypeName = null;
+    }
     const workspaceType = workspaceTypeForJiraIssueType(issueTypeName);
     if (workspaceType === matched.config.type) return matched;
 
