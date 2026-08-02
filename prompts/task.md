@@ -8,7 +8,7 @@ Your current working directory is this task's dedicated **workspace**. All of yo
 
 ### 1. Jira Task Retrieval
 - Use the official Atlassian MCP tools to read the Jira task **{{KEY}}** (summary, description, acceptance criteria, associated organization/repository info, and comments).
-- **Claim it before doing substantive work:** assign **{{KEY}}** to yourself and transition it to **In Progress**, both via the Atlassian MCP and both idempotent. Once your pull request is open, transition it to **In Review** so the board shows the review queue rather than one undifferentiated bucket — **Done** is the board manager's to set at merge, never yours. Note that agents reach Jira through the human's account, so the assignee records only that *someone* picked this up — never which agent; your comments and `butchr_list_agents` are what identify you.
+- **Claim it before doing substantive work:** assign **{{KEY}}** to yourself and transition it to **In Progress**, both via the Atlassian MCP and both idempotent. Once your pull request is open, transition it to **In Review** so the board shows the review queue rather than one undifferentiated bucket — **Done** is your story agent's to set at merge, never yours. Note that agents reach Jira through the human's account, so the assignee records only that *someone* picked this up — never which agent; your comments and `butchr_list_agents` are what identify you.
 
 ### 2. Environment & Repository Setup
 Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task works in its own git worktree inside the workspace.
