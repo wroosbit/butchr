@@ -122,6 +122,37 @@ export function configureClaudeSettings(workDir: string): void {
   }
 }
 
+/** Outcome of recording folder trust; `ok: false` must refuse the activation. */
+export interface TrustResult {
+  ok: boolean;
+  /** Write attempts made; 0 when the entry was already present on first read. */
+  attempts: number;
+  error?: string;
+}
+
+/**
+ * Synchronous sleep. initPty is deliberately synchronous from resolveLauncher
+ * to the spawn — no await for another activation to interleave into — and the
+ * trust write below must stay inside that property, so its settle delay cannot
+ * be a Promise.
+ */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * How many times a clobbered trust entry is rewritten before the activation is
+ * refused, and how long each write is given to be overwritten before it is
+ * believed. Verifying in the same tick as the write proves nothing — the file
+ * would still hold our own bytes even mid-race — so each attempt waits
+ * TRUST_SETTLE_MS first, long enough for a competing writer's write-back to
+ * land where the re-read can still see and repair it. Three attempts is not
+ * tuning: a writer that outruns two repairs is rewriting the file continuously,
+ * and no bounded retry beats that — refusing honestly does.
+ */
+const TRUST_WRITE_ATTEMPTS = 3;
+const TRUST_SETTLE_MS = 60;
+
 // Folder trust has no project-scoped setting — Claude Code only reads it from
 // `projects[<dir>].hasTrustDialogAccepted` in the user's global ~/.claude.json
 // (its own untrusted-workspace error names that key as the sole alternative to
@@ -129,33 +160,119 @@ export function configureClaudeSettings(workDir: string): void {
 // is add-only: bail if unparseable, write nothing if already trusted, and touch
 // no key but this workspace's. The trust check walks parent directories, so
 // trusting workDir also covers the git worktree the agent clones inside it.
-export function trustClaudeWorkspace(workDir: string, configPath?: string): void {
+//
+// The write is racing Claude Code itself, and that fact picked the mechanism
+// (KAN-54). Live incident, 2026-08-02: four story agents activated within ~7s;
+// the last one's trust entry was missing from ~/.claude.json when its claude
+// booted, and it sat wedged on the trust dialog behind a `success: true,
+// verified: true` answer. Two candidate writers were named and tested:
+//
+//   1. A second briefly-coexisting daemon (the connectToDaemon spawn race in
+//      ipc.ts). Ruled out structurally: the loser daemon hits EADDRINUSE,
+//      probes the winner's socket and exits *without ever listening*
+//      (daemon.ts), and boot restoration — its only write path to this file —
+//      runs in onListen. A daemon that never serves never writes.
+//
+//   2. The spawned `claude` processes themselves. Reproduced with the real
+//      binary on 2026-08-02: claude reads ~/.claude.json at boot and writes
+//      the whole file back from memory moments later; a trust entry injected
+//      between that read and write-back (t+0.45s into boot, present on disk at
+//      t+0.47s) was gone at t+0.48s and stayed gone. A sibling booting for an
+//      earlier workspace erases entries written after its read — the incident
+//      shape exactly, down to the *last*-activated workspace being the victim.
+//
+// So the racing writer lives in another process, and the rejected alternative
+// follows: an in-daemon mutex or per-file promise chain serialises only this
+// daemon, which — initPty being synchronous end-to-end — already cannot
+// interleave with itself. What works against an external rewriter is what this
+// function does: write atomically (temp-then-rename in the same directory, so
+// a mid-write reader never parses a torn file), then re-read after a settle
+// delay and repair a clobbered entry, bounded, and report failure instead of
+// letting the caller spawn an agent into an untrusted folder. The residual
+// window — a sibling's write-back landing after the last verify here but
+// before the new claude reads the file — closes at the pre-spawn re-check
+// (herdr.ts) and cannot be closed entirely from this side of the spawn;
+// KAN-49 explicitly defers watching agents past their startup dialogs.
+export function trustClaudeWorkspace(workDir: string, configPath?: string): TrustResult {
   const claudeConfigPath = configPath ?? path.join(os.homedir(), '.claude.json');
   // Claude Code keys projects by the normalized absolute path, nothing more.
   const trustKey = path.normalize(path.resolve(workDir));
 
-  let config: any = {};
-  if (fs.existsSync(claudeConfigPath)) {
+  const read = (): { config: any } | { unreadable: string } => {
+    if (!fs.existsSync(claudeConfigPath)) return { config: {} };
     try {
-      config = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf8'));
-    } catch (e) {
-      console.error('[Launchers] ~/.claude.json exists but is unparseable; refusing to overwrite it', e);
-      return;
+      return { config: JSON.parse(fs.readFileSync(claudeConfigPath, 'utf8')) };
+    } catch (e: any) {
+      return {
+        unreadable:
+          `${claudeConfigPath} exists but is unparseable; refusing to overwrite it ` +
+          `(${e?.message ?? String(e)})`
+      };
     }
-  }
-
-  if (config.projects?.[trustKey]?.hasTrustDialogAccepted === true) return;
-
-  config.projects = {
-    ...config.projects,
-    [trustKey]: { ...config.projects?.[trustKey], hasTrustDialogAccepted: true }
   };
+  const trusted = (config: any): boolean =>
+    config.projects?.[trustKey]?.hasTrustDialogAccepted === true;
 
-  try {
-    fs.writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
-  } catch (e) {
-    console.error('[Launchers] Failed to record workspace trust in ~/.claude.json', e);
+  for (let attempt = 1; attempt <= TRUST_WRITE_ATTEMPTS; attempt++) {
+    const current = read();
+    if ('unreadable' in current) {
+      // Not retried: an unparseable file is user state we must not replace,
+      // and it does not become parseable by waiting. (Our own writes can no
+      // longer tear it — the rename below is atomic — so this is either a
+      // torn write from an older Claude Code or genuine corruption.)
+      console.error(`[Launchers] ${current.unreadable}`);
+      return { ok: false, attempts: attempt - 1, error: current.unreadable };
+    }
+    if (trusted(current.config)) {
+      if (attempt > 1) {
+        console.log(
+          `[Launchers] Trust entry for ${trustKey} stuck after ${attempt - 1} write attempt(s)`
+        );
+      }
+      return { ok: true, attempts: attempt - 1 };
+    }
+
+    const config = current.config;
+    config.projects = {
+      ...config.projects,
+      [trustKey]: { ...config.projects?.[trustKey], hasTrustDialogAccepted: true }
+    };
+
+    // Same directory as the target so the rename cannot cross filesystems and
+    // stays atomic; pid + attempt keeps concurrent daemons off each other's
+    // temp files.
+    const tmpPath = `${claudeConfigPath}.butchr-${process.pid}-${attempt}.tmp`;
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
+      fs.renameSync(tmpPath, claudeConfigPath);
+    } catch (e: any) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      const error =
+        `Failed to record workspace trust in ${claudeConfigPath}: ${e?.message ?? String(e)}`;
+      console.error(`[Launchers] ${error}`);
+      return { ok: false, attempts: attempt, error };
+    }
+
+    sleepSync(TRUST_SETTLE_MS);
+    // Loop rather than return on a good re-read: the top of the next iteration
+    // is the same check, and going around once more costs nothing when the
+    // entry is present (the `trusted` early-return fires with attempts intact).
+    const after = read();
+    if (!('unreadable' in after) && trusted(after.config)) {
+      return { ok: true, attempts: attempt };
+    }
+    console.error(
+      `[Launchers] Trust entry for ${trustKey} was clobbered after write ` +
+      `${attempt}/${TRUST_WRITE_ATTEMPTS} — a concurrent writer rewrote ${claudeConfigPath}`
+    );
   }
+
+  const error =
+    `Trust entry for ${trustKey} in ${claudeConfigPath} would not stick after ` +
+    `${TRUST_WRITE_ATTEMPTS} attempts; a concurrent writer keeps rewriting the file. ` +
+    `Starting claude now would wedge it on the folder-trust dialog.`;
+  console.error(`[Launchers] ${error}`);
+  return { ok: false, attempts: TRUST_WRITE_ATTEMPTS, error };
 }
 
 /**
@@ -182,8 +299,20 @@ export interface AgentLauncher {
    * conversation to continue; omitted, it is the ordinary cold start.
    */
   command: (promptCommand?: string) => string;
-  /** Optional pre-launch setup, e.g. CLI-specific MCP config. */
+  /**
+   * Optional pre-launch setup, e.g. CLI-specific MCP config. Throwing refuses
+   * the activation: initPty answers with session.spawnError + terminated, the
+   * same channel as an unknown launcher, so setup that did not stick is never
+   * papered over with `success: true`.
+   */
   setup?: (workDir: string, mcpServers: string[]) => void;
+  /**
+   * Re-run immediately before the pane spawn, after everything between setup
+   * and the spawn (prompt write, `herdr agent get`) has had time to happen —
+   * time in which another process can undo what setup wrote (KAN-54). Throws
+   * to refuse the activation through the same spawnError channel.
+   */
+  preSpawnCheck?: (workDir: string) => void;
 }
 
 // The only agents Butchr will launch. defaultAgent arrives from extension
@@ -238,7 +367,20 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
       `claude --permission-mode bypassPermissions ${shellQuote(promptCommand)}`,
     setup: (workDir) => {
       configureClaudeSettings(workDir);
-      trustClaudeWorkspace(workDir);
+      const trust = trustClaudeWorkspace(workDir);
+      if (!trust.ok) {
+        throw new Error(`Refusing to start claude in an untrusted workspace: ${trust.error}`);
+      }
+    },
+    // trustClaudeWorkspace is its own verifier: present-and-true returns fast
+    // with no write, a clobbered entry is rewritten, and only an entry that
+    // will not stick throws. So the pre-spawn check is simply setup's trust
+    // half again, run as late as the daemon can run anything (KAN-54).
+    preSpawnCheck: (workDir) => {
+      const trust = trustClaudeWorkspace(workDir);
+      if (!trust.ok) {
+        throw new Error(`Refusing to spawn claude: ${trust.error}`);
+      }
     }
   },
   'anti-gravity': {
