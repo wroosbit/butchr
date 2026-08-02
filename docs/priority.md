@@ -7,7 +7,7 @@ first*.
 
 ## The problem
 
-At capacity, every activation was refused identically. A board manager that
+At capacity, every activation was refused identically. An epic agent that
 needed to start a story could not, and neither could anything else, however
 important. The machine said no and left the person asking to work out for
 themselves what to stand down — with no view of what was running, what it was
@@ -20,15 +20,15 @@ alongside `mcpServers` and `promptTemplateFile`:
 
 | type | priority | what it is |
 | --- | --- | --- |
-| `manage` | **3** | the board manager: supervises the fleet and hands work out |
+| `epic` | **3** | an epic agent: supervises the stories under its epic |
 | `story` | **2** | decomposes a story into the tasks that task agents execute |
 | `task` | **1** | does the work |
 | anything unregistered | **1** | the floor, so it can preempt nothing |
 
 The ordering is coherent on its own terms rather than a ranking of urgency: a
 story agent is *upstream* of the tasks it produces, so taking a task's slot to
-run a story unblocks the thing that generates more work, and the manager
-supervises both.
+run a story unblocks the thing that generates more work, and an epic agent
+supervises the stories under its epic in the same way.
 
 ### Why the type and not the Jira ticket
 
@@ -40,11 +40,15 @@ is better for three reasons:
   in hand. Reading Jira would put a network call on the activation path for a
   question already answered.
 - **Both callers work identically.** The sidepanel toggle cannot supply a Jira
-  priority and the board manager can. A property of the type is available to
-  both by the same route, so there is no path that degrades.
-- **Manager safety stops being a rule.** `manage` is the top of the scale, so
-  "never preempt the board manager" is what the ordering already says rather
-  than an exception a future change could forget.
+  priority and the agents that activate over MCP can. A property of the type is
+  available to both by the same route, so there is no path that degrades.
+- **Supervisor safety stops being a rule.** The scale is `epic` 3, `story` 2,
+  `task` 1, and `epic` is the top, so nothing outranks an epic agent by
+  construction — "never preempt an epic agent" is what the ordering already
+  says rather than an exception a future change could forget. New with this
+  scale: there can be **several** epic agents and several story agents running
+  at once, and strictly-greater means one epic agent can never displace
+  another.
 
 ## The rules
 
@@ -174,7 +178,7 @@ party that *does* hold the Jira write:
 - the Agents page shows an amber banner (distinct from the red missing-agent
   one: a missing agent is a loss to diagnose, a preempted one is a consequence
   to act on);
-- `prompts/manage.md` instructs the board manager to transition each back to
+- `prompts/epic.md` instructs the epic agent to transition each back to
   **To Do** and comment naming what took its slot — the ticket being the
   agent's memory, and this being something that happened to it while it could
   not write anything down.
