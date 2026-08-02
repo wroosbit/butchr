@@ -135,7 +135,8 @@ const { PromptLoader } = await import(path.join(distDir, 'prompt.js'));
 const { AgentRegistry } = await import(path.join(distDir, 'agent-registry.js'));
 
 // A prompt for the unregistered proof type. Agents here run `bash` — the
-// default launcher — so nothing in this script starts a real coding agent.
+// explicitly requested `shell` launcher — so nothing in this script starts a
+// real coding agent.
 const promptRoot = path.join(stateDir, 'promptroot');
 mkdirSync(path.join(promptRoot, 'prompts'), { recursive: true });
 writeFileSync(path.join(promptRoot, 'prompts', `${TYPE}.md`), 'KAN-23 proof workspace.\n');
@@ -159,10 +160,12 @@ const router = new MessageRouter(
 // same thing the sidepanel's [Start anyway] sends, and it is recorded.
 const OVERRIDE = { override: true };
 
-// These agents really are shells — the default launcher, `bash` — so nothing
-// here starts a coding agent. Said explicitly rather than left to default,
-// because list_agents reads the recorded launcher to decide whether a pane
-// with no runtime in it is a dead agent or a shell working as asked.
+// These agents really are shells — the `shell` launcher, `bash` — so nothing
+// here starts a coding agent. Said explicitly because it must be: since
+// KAN-53 omission means `claude`, and `shell` is reachable only by name. It
+// also keeps list_agents honest, which reads the recorded launcher to decide
+// whether a pane with no runtime in it is a dead agent or a shell working as
+// asked.
 const AS_SHELL = { defaultAgent: 'shell' };
 
 /** Drive the real handler and return exactly what the caller would receive. */

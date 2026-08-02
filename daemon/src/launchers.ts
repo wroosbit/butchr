@@ -189,6 +189,34 @@ export interface AgentLauncher {
 // The only agents Butchr will launch. defaultAgent arrives from extension
 // storage and from MCP tool arguments; it selects from this table and is
 // never itself executed as shell.
+//
+// The resolution rule (KAN-53): an omitted defaultAgent means DEFAULT_AGENT
+// (`claude`); an unknown one refuses the activation. Nothing resolves to
+// `shell` unless the caller asks for `shell` by name. The old rule was
+// `name || 'shell'` plus a warn-and-fall-back for unknown names, and both
+// halves were the same trap: an activation that omitted or misspelled the
+// field got a bare bash prompt wearing an agent's name, reported
+// `success: true, verified: true` because a pane by that name did exist, and
+// executed `butchr_send_to_agent` messages as shell commands (live incident,
+// 2026-08-02 — a story agent was a shell for twenty minutes).
+//
+// Default-to-claude was chosen over refuse-when-absent. Omission has exactly
+// one meaning in practice: standby records written before KAN-38 recorded
+// defaultAgent carry none (`defaultAgent: null`), and the sidepanel's
+// reactivation path (useFleetControls) omits the field for them — under a
+// refusal those agents would be stranded behind an error the sidepanel gives
+// the user no way to amend, while under the default they come back as the
+// claude agents they were. Refuse-when-absent is the more honest shape, but
+// it spends its honesty on exactly the callers who cannot supply the field.
+// The cost of the default is a silent wrong choice if a second default-worthy
+// runtime ever ships; the day the fleet stops being all-claude, revisit
+// DEFAULT_AGENT rather than assume it.
+//
+// `shell` stays in the table because it is a legitimate *explicit* request —
+// verify scripts activate it as a fixture, and expectsRuntime() in router.ts
+// reads the recorded value to excuse a pane that is a bare prompt on purpose
+// — but it is reachable only by `defaultAgent: 'shell'`, never by omission
+// and never by fallback.
 export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
   shell: {
     command: () => 'bash'
@@ -220,12 +248,27 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
   }
 };
 
+/** What an omitted defaultAgent means. See the block above AGENT_LAUNCHERS. */
+export const DEFAULT_AGENT = 'claude';
+
+/**
+ * Map a requested agent name to its launcher.
+ *
+ * Omitted or blank resolves to DEFAULT_AGENT. An unknown name throws, and the
+ * message names the valid launchers — the rule KAN-25 set for pty_init's
+ * unknown sessionId: refuse rather than substitute something plausible.
+ * initPty turns the throw into session.spawnError, the channel activate
+ * already answers `success: false` from, so the refusal reaches the caller
+ * without new vocabulary.
+ */
 export function resolveLauncher(name?: string): { name: string; launcher: AgentLauncher } {
-  const requested = name || 'shell';
+  const requested = name?.trim() ? name.trim() : DEFAULT_AGENT;
   const launcher = AGENT_LAUNCHERS[requested];
-  if (launcher) {
-    return { name: requested, launcher };
+  if (!launcher) {
+    throw new Error(
+      `Unknown agent '${requested}'. Valid launchers: ${Object.keys(AGENT_LAUNCHERS).join(', ')}. ` +
+      `Pass one of these as defaultAgent, or omit it to get '${DEFAULT_AGENT}'.`
+    );
   }
-  console.warn(`[Launchers] Unknown agent '${requested}'; falling back to shell`);
-  return { name: 'shell', launcher: AGENT_LAUNCHERS['shell'] };
+  return { name: requested, launcher };
 }
