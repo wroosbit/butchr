@@ -24,6 +24,20 @@
 // because it makes a network call. It cannot disturb a stored credential: the
 // daemon stores a token only after LaunchDarkly accepts it, and this one is
 // junk by construction. No real credential is involved at any point (KAN-20).
+//
+// Optional: --toggle <id> drives KAN-91's switch through a real round trip —
+// disable the integration, re-ask `list_integrations`, enable it, re-ask — and
+// renders the section from both captured payloads. This is what makes the
+// disabled render a fact rather than a hand-flipped flag: the greyed-out types
+// below are the daemon's own answer while it was genuinely switched off.
+//
+//   cd extension && node scripts/render-integrations.mjs /tmp/kan91 --toggle jira
+//
+// It is off by default because it briefly changes real daemon state. The window
+// is one round trip wide and the integration is put back the way it was found;
+// agents already running are unaffected either way (KAN-85), and a new
+// activation attempted inside that window is refused legibly rather than
+// silently. Nothing is written to a credential at any point.
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import net from 'net';
@@ -39,10 +53,16 @@ const extensionDir = path.resolve(scriptDir, '..');
 const argv = process.argv.slice(2);
 const payloadsIdx = argv.indexOf('--payloads');
 const payloadDir = payloadsIdx === -1 ? null : argv[payloadsIdx + 1];
+const toggleIdx = argv.indexOf('--toggle');
+const toggleId = toggleIdx === -1 ? null : argv[toggleIdx + 1];
 const probeRejection = argv.includes('--probe-rejection');
-const positional = argv.filter(
-  (a, i) => (payloadsIdx === -1 || (i !== payloadsIdx && i !== payloadsIdx + 1)) && !a.startsWith('--')
+const consumed = new Set(
+  [
+    ...(payloadsIdx === -1 ? [] : [payloadsIdx, payloadsIdx + 1]),
+    ...(toggleIdx === -1 ? [] : [toggleIdx, toggleIdx + 1])
+  ]
 );
+const positional = argv.filter((a, i) => !consumed.has(i) && !a.startsWith('--'));
 const outDir = positional[0] ?? path.join(extensionDir, 'kan87-render');
 
 const SOCKET_PATH = path.join(os.homedir(), '.local', 'share', 'butchr', 'butchr.sock');
@@ -92,6 +112,8 @@ const load = (name) => JSON.parse(readFileSync(path.join(payloadDir, name), 'utf
 
 let listIntegrations;
 let rejection = null;
+/** The round trip: what `list_integrations` said with the switch each way. */
+let toggleTrip = null;
 
 if (payloadDir) {
   if (!existsSync(path.join(payloadDir, 'list_integrations.json'))) {
@@ -100,6 +122,7 @@ if (payloadDir) {
   }
   listIntegrations = load('list_integrations.json');
   if (existsSync(path.join(payloadDir, 'ld_rejection.json'))) rejection = load('ld_rejection.json');
+  if (existsSync(path.join(payloadDir, 'toggle_trip.json'))) toggleTrip = load('toggle_trip.json');
 } else {
   if (!existsSync(SOCKET_PATH)) {
     console.error(
@@ -114,6 +137,61 @@ if (payloadDir) {
       { action: 'set_integration_credential', integration: 'launchdarkly', token: CANARY_TOKEN },
       'set_integration_credential_response'
     );
+  }
+  if (toggleId) {
+    const before = listIntegrations.integrations.find((i) => i.id === toggleId);
+    if (!before) {
+      console.error(
+        `--toggle ${toggleId}: this daemon reports no such integration ` +
+          `(it has: ${listIntegrations.integrations.map((i) => i.id).join(', ')}).`
+      );
+      process.exit(1);
+    }
+
+    const setEnabled = (enabled) =>
+      ask(
+        { action: 'set_integration_enabled', integration: toggleId, enabled },
+        'set_integration_enabled_response'
+      );
+    const list = () => ask({ action: 'list_integrations' }, 'list_integrations_response');
+
+    // Off, look, on, look. The integration is left the way it was found — the
+    // whole point is to observe the daemon's answer in both states, not to
+    // change how this machine is configured.
+    const disableResponse = await setEnabled(false);
+    const whileDisabled = await list();
+    const enableResponse = await setEnabled(true);
+    const whileEnabled = await list();
+
+    toggleTrip = {
+      integration: toggleId,
+      enabledBefore: before.enabled,
+      disableResponse,
+      whileDisabled,
+      enableResponse,
+      whileEnabled
+    };
+
+    const rowOf = (payload) => payload.integrations.find((i) => i.id === toggleId);
+    // A round trip that did not actually round-trip is not a proof, and a
+    // failure here means the daemon has been left switched off — say so
+    // loudly rather than rendering a page that implies it worked.
+    const failures = [];
+    if (rowOf(whileDisabled)?.enabled !== false) failures.push('disable did not take effect');
+    if (rowOf(whileEnabled)?.enabled !== true) failures.push('enable did not take effect');
+    if (failures.length) {
+      console.error(
+        `--toggle ${toggleId}: ${failures.join('; ')}. ` +
+          `Check ${toggleId}'s state before relying on this daemon.`
+      );
+      process.exit(1);
+    }
+    if (before.enabled !== true) {
+      console.warn(
+        `\n  ! ${toggleId} was OFF before this run and has been left ON. ` +
+          'Switch it back off in settings if that matters.\n'
+      );
+    }
   }
 }
 
@@ -137,12 +215,31 @@ import { LaunchDarklyCredentialCardView } from './src/components/LaunchDarklyCre
 
 const r = (el) => renderToStaticMarkup(el);
 
-export const section = (integrations) =>
-  r(React.createElement(IntegrationsSectionView, { integrations }));
+// The switch's callbacks exist only so the view draws it: this is a static
+// render, so nothing can be clicked. Which entry has its confirmation open, and
+// what the daemon last answered, are passed in — that is the whole reason
+// IntegrationsSectionView takes them as props instead of holding them itself.
+const noop = () => {};
+const withToggle = (extra = {}) => ({
+  onEnable: noop,
+  onRequestDisable: noop,
+  onCancelDisable: noop,
+  onConfirmDisable: noop,
+  ...extra
+});
+
+export const section = (integrations, toggle) =>
+  r(React.createElement(IntegrationsSectionView, { integrations, toggle: toggle && withToggle(toggle) }));
 
 /** The section without its cards — the summary rows on their own. */
-export const summaries = (integrations) =>
-  r(React.createElement(IntegrationsSectionView, { integrations, renderCard: () => null }));
+export const summaries = (integrations, toggle) =>
+  r(
+    React.createElement(IntegrationsSectionView, {
+      integrations,
+      renderCard: () => null,
+      toggle: toggle && withToggle(toggle)
+    })
+  );
 
 export const ldCard = (props) => r(React.createElement(LaunchDarklyCredentialCardView, props));
 `
@@ -175,26 +272,29 @@ const ld = rows.find((i) => i.id === 'launchdarkly');
 
 const sidepanelCss = readFileSync(path.join(extensionDir, 'sidepanel.css'), 'utf8');
 
-const sectionBlock = (title, note, body) => `
-  <div style="margin:34px 0 8px;font-size:13px;font-weight:700;color:#7dd3fc;letter-spacing:.04em;text-transform:uppercase">${title}</div>
+// Numbered at assembly rather than by hand, so inserting a block in the middle
+// does not silently leave two of them called "5".
+const sectionBlock = (title, note, body) => ({ title, note, body });
+const renderBlock = ({ title, note, body }, i) => `
+  <div style="margin:34px 0 8px;font-size:13px;font-weight:700;color:#7dd3fc;letter-spacing:.04em;text-transform:uppercase">${i + 1} · ${title}</div>
   <div style="font-size:12px;color:#94a3b8;margin-bottom:12px;max-width:640px;line-height:1.5">${note}</div>
   ${body}
 `;
 
 const blocks = [
   sectionBlock(
-    '1 · the section, as the settings page draws it',
+    'the section, as the settings page draws it',
     'Every word of it comes from one <code>list_integrations</code> response: which integrations exist, whether each is connected, and the workspace types each contributes. Nothing in the page repeats those facts, so a type added or re-prioritized in the daemon shows up here without anyone editing the extension.' +
       ' <strong>The two cards say “Checking…” on purpose</strong>: this is a static server render, so their <code>useEffect</code> never runs and they never ask the daemon for their own status. In Chrome they answer within a frame. The connection state beside each integration’s name is live either way — it comes from the response above, not from the card.',
-    R.section(rows)
+    R.section(rows, {})
   ),
   sectionBlock(
-    '2 · the summary rows on their own',
+    'the summary rows on their own',
     "Jira's three types with the distinction that matters: <code>task</code> is recognised from the page URL, while <code>epic</code> and <code>story</code> cannot be — their URLs are byte-identical to a Task's — so they are resolved by asking Jira what the issue really is. That difference is what the credential buys, and it is read from the response rather than written down here.",
-    R.summaries(rows)
+    R.summaries(rows, {})
   ),
   sectionBlock(
-    '3 · LaunchDarkly, before a token has ever been entered',
+    'LaunchDarkly, before a token has ever been entered',
     'Where the secret will land, said before the field rather than in the success message afterwards — the same disclosure the Jira card makes, for the same reason: which backend you get is decided by probing this machine, and once the token is sent, being told where it went is no longer a choice.',
     R.ldCard({
       status: {
@@ -205,7 +305,7 @@ const blocks = [
     })
   ),
   sectionBlock(
-    '4 · LaunchDarkly, configured',
+    'LaunchDarkly, configured',
     'A stored token is never rendered back — not masked, not partially, not behind a reveal. "Configured" and where it lives is the whole of what can honestly be said about it; the only affordances are replace and clear.',
     R.ldCard({
       status: {
@@ -217,10 +317,55 @@ const blocks = [
   )
 ];
 
+// ------------------------------------------------------- KAN-91: the switch --
+
+if (toggleTrip) {
+  const t = toggleTrip;
+  const rowIn = (payload) => payload.integrations.find((i) => i.id === t.integration);
+  const disabledRows = t.whileDisabled.integrations;
+  const enabledRows = t.whileEnabled.integrations;
+  const name = rowIn(t.whileEnabled)?.name ?? t.integration;
+
+  blocks.push(
+    sectionBlock(
+      `${name} switched on — the toggle, and what it provides`,
+      `Drawn from the <code>list_integrations</code> the daemon answered immediately after <code>set_integration_enabled { integration: "${t.integration}", enabled: true }</code>. The switch reads its position from the row's <code>enabled</code> field; the types beside it are the same <code>providedTypes</code> this page has always rendered.`,
+      R.summaries(enabledRows, {})
+    ),
+    sectionBlock(
+      `${name} switched off — the same types, inert`,
+      'Not an empty entry. The daemon reports what a disabled integration <em>would</em> provide, and this renders it greyed out and struck through, under a line saying none of them are registered. That is what makes the switch a choice rather than a mystery: with everything off by default, an entry that showed nothing would give a new user no reason to turn it on. The connection state and the credential card are untouched — switching an integration off is not forgetting its token.',
+      R.summaries(disabledRows, {})
+    ),
+    sectionBlock(
+      `the confirmation, before ${name} goes off`,
+      "Turning one <em>on</em> is one click; turning it off is not, because it unregisters the types the fleet runs on. The panel names them, says what stops, and — this is KAN-85's rule, reported rather than softened — says that agents already running are left strictly alone and only new activations are refused. The credential line is there because the obvious fear about a switch like this is that it throws the token away; it does not, and Clear stays its own control.",
+      R.summaries(enabledRows, { confirmingId: t.integration })
+    ),
+    sectionBlock(
+      `what the daemon answered when ${name} went off`,
+      `Rendered from the real <code>set_integration_enabled_response</code>. The agents that keep running are <strong>named, not counted</strong> — the daemon sends their addresses for exactly this, and a bare count is a claim the reader cannot check against the fleet in front of them. ${
+        t.disableResponse.runningAgentsUnaffected?.length
+          ? `This run caught ${t.disableResponse.runningAgentsUnaffected.length} of them.`
+          : 'This run caught none running, so only the plain confirmation shows.'
+      }`,
+      R.summaries(disabledRows, {
+        results: {
+          [t.integration]: {
+            ok: true,
+            text: `${name} is off.`,
+            runningAgentsUnaffected: t.disableResponse.runningAgentsUnaffected || []
+          }
+        }
+      })
+    )
+  );
+}
+
 if (rejection) {
   blocks.push(
     sectionBlock(
-      '5 · a rejected token, rendered verbatim',
+      'a rejected token, rendered verbatim',
       "The daemon's answer is a diagnosis followed by the leg that was tried and what LaunchDarkly said about it. The newlines are the structure, so <code>white-space: pre-line</code> keeps them: flattening this to a first sentence throws away the part the user can act on. The token field is already empty — it is wiped when the daemon answers, accepted or not.",
       R.ldCard({
         status: {
@@ -245,7 +390,7 @@ const page = `<!doctype html>
     <span style="font-size:24px">⚙️</span>
     <div style="font-size:24px;font-weight:700">Butchr Settings</div>
   </div>
-  ${blocks.join('\n')}
+  ${blocks.map(renderBlock).join('\n')}
 </div>
 </body>`;
 
@@ -259,6 +404,9 @@ if (!payloadDir) {
   );
   if (rejection) {
     writeFileSync(path.join(outDir, 'ld_rejection.json'), JSON.stringify(rejection, null, 2));
+  }
+  if (toggleTrip) {
+    writeFileSync(path.join(outDir, 'toggle_trip.json'), JSON.stringify(toggleTrip, null, 2));
   }
 }
 
@@ -304,6 +452,50 @@ if (rejection) {
       status: { available: true, configured: !!(rejection.status && rejection.status.configured) },
       result: { ok: false, text: rejection.error || 'The token was rejected.' }
     })
+  );
+}
+
+if (toggleTrip) {
+  const t = toggleTrip;
+  const rowIn = (payload) => payload.integrations.find((i) => i.id === t.integration);
+  const name = rowIn(t.whileEnabled)?.name ?? t.integration;
+  const typesOf = (payload) => (rowIn(payload)?.providedTypes ?? []).map((x) => x.type).join(', ');
+
+  console.log(`\n${'='.repeat(78)}\nKAN-91: THE SWITCH, ROUND-TRIPPED AGAINST THE LIVE DAEMON\n${'='.repeat(78)}`);
+  console.log(`\n  integration : ${t.integration} (displayed as "${name}")`);
+  console.log(`  before      : enabled=${t.enabledBefore}`);
+  console.log(
+    `  disabled    : enabled=${rowIn(t.whileDisabled).enabled}  ` +
+      `providedTypes still reported: [${typesOf(t.whileDisabled)}]  ` +
+      `providedMcpServers: [${(rowIn(t.whileDisabled).providedMcpServers ?? []).join(', ')}]`
+  );
+  console.log(
+    `  enabled     : enabled=${rowIn(t.whileEnabled).enabled}  ` +
+      `providedTypes: [${typesOf(t.whileEnabled)}]  ` +
+      `providedMcpServers: [${(rowIn(t.whileEnabled).providedMcpServers ?? []).join(', ')}]`
+  );
+  if (t.disableResponse.runningAgentsUnaffected?.length) {
+    console.log(
+      `  left alone  : ${t.disableResponse.runningAgentsUnaffected.join(', ')} ` +
+        '(running agents are never stopped to satisfy a toggle — KAN-85)'
+    );
+  }
+  console.log(
+    `  credential  : configured=${rowIn(t.whileDisabled).credential?.configured} while OFF ` +
+      '— disabling is not forgetting'
+  );
+
+  show(
+    `${name} switched OFF — the types still listed, and said to be unregistered`,
+    R.summaries(t.whileDisabled.integrations, {})
+  );
+  show(
+    `the confirmation that guards switching ${name} off`,
+    R.summaries(t.whileEnabled.integrations, { confirmingId: t.integration })
+  );
+  show(
+    `${name} switched back ON`,
+    R.summaries(t.whileEnabled.integrations, {})
   );
 }
 
