@@ -759,7 +759,14 @@ export class MessageRouter {
     session: HerdrSession,
     agentName: string
   ): Promise<string | undefined> {
-    const presence = await this.herdrBridge.confirmAgentPresent(agentName);
+    // Existence means a live runtime for every launcher but `shell` — a name
+    // registration over a dead pane must not verify (KAN-58). Sessions that
+    // reached this point were built by initPty, which sets the field; an
+    // unset one gets the strict reading rather than the lenient one.
+    const presence = await this.herdrBridge.confirmAgentPresent(
+      agentName,
+      session.expectsRuntime ?? true
+    );
     if (presence.present) return undefined;
 
     console.error(
