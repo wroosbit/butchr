@@ -170,7 +170,11 @@ supervise rather than do the work, spending most of their lives reading Jira
 and waiting, so they neither occupy a slot in `running` nor have one reserved
 for them. (KAN-36 reserved a slot for the then always-on board manager; KAN-39
 replaced that manager with per-epic and per-story agents that come and go, and
-KAN-41 removed the reservation with it.)
+KAN-41 removed the reservation with it.) Since KAN-57 the **capacity gate
+honours this end to end: a supervisor activation is never refused** — no
+override needed, none recorded — because refusing an agent the model never
+charges was the gate arguing with its own arithmetic, and desktop baseline
+load alone could otherwise pin supervisors off indefinitely.
 
 The daemon's own fallback shell (`butchr-default-workspace`) is not counted at
 all: it appears in `list_agents` because a session exists for it, but a shell

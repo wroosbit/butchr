@@ -1,6 +1,17 @@
 // Proof for KAN-37: a higher-priority agent can take a lower-priority one's
 // slot when the machine is full — visibly, reversibly, and never automatically.
 //
+// Reworked for KAN-57. When KAN-37 was written, `story` was a charged worker
+// type and the natural demonstration of preemption; KAN-46/KAN-52 then made
+// epic and story uncharged supervisors, and KAN-57 made the gate honour that —
+// a supervisor activation is never refused, so it never has anything to
+// preempt for. The ordering, the consent flow, the record and the resume all
+// still exist and still work; they are exercised here through a registered
+// priority-2 worker type (`hotfix`, synthetic to this script), which is the
+// shape of any future type that outranks `task` without being a supervisor.
+// Section 6 now also proves the KAN-57 half directly: an epic activation on a
+// full board starts without standing anything down.
+//
 // Nine sections, one per acceptance criterion plus the two design questions the
 // ticket asked to be decided rather than assumed:
 //
@@ -173,6 +184,21 @@ function capacityOfFleet(bridge) {
 // A registry that answers the one question the real one asks Jira: is this
 // issue a Task or a Story? Everything downstream of that answer is real code.
 const registry = new WorkspaceRegistry(async (key) => (key === 'KAN-50' ? 'Story' : 'Task'));
+
+// The priority-2 worker this proof drives preemption with since KAN-57 (see
+// the header). Registered through the real `register`, so `priorityFor` and
+// `countsAsAgent` treat it exactly as they would a future real type; it
+// borrows the task prompt because the prompt's content is irrelevant here.
+registry.register({
+  type: 'hotfix',
+  name: 'Synthetic priority-2 worker (this script only)',
+  urlPatterns: [],
+  keyExtractor: () => null,
+  mcpServers: ['atlassian', 'butchr'],
+  promptTemplateFile: 'prompts/task.md',
+  priority: PRIORITY_STORY
+});
+
 const prompts = new PromptLoader(repoRoot);
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'kan37-'));
@@ -366,22 +392,19 @@ rule('4. CONSENT — what is shown BEFORE anything is killed');
 {
   const bridge = stubHerdr(FULL, { statuses: { 'butchr-task-kan-10': 'idle' } });
   const captured = routerWithCapture(bridge, SEED);
-  // The URL path, because that is the one the sidepanel toggle takes. KAN-50 is
-  // a Story in the stubbed Jira, so it resolves to the `story` type: priority 2.
-  await quiet(async () => {
-    captured.router.handle({ action: 'activate', url: 'https://wroosbit.atlassian.net/browse/KAN-50' });
-    await new Promise((r) => setImmediate(r));
-  });
-  const res = captured.sent();
+  // A story activation would sail through the gate since KAN-57 — supervisors
+  // are never refused, so they are never offered a victim. The consent flow is
+  // reached by a priority-2 *worker*, which is what `hotfix` stands in for.
+  const res = await quiet(() => call(captured.router, 'activate_by_key', { type: 'hotfix', key: 'KAN-50' }));
 
-  console.log('the sidepanel toggle is switched on for a Story while the machine is full.\n');
-  console.log('what the panel receives:\n');
+  console.log('a priority-2 worker activation arrives while the machine is full.\n');
+  console.log('what the caller receives:\n');
   console.log(JSON.stringify({ success: res.success, type: res.type, key: res.key, priority: res.priority, preemption: res.preemption }, null, 2));
-  console.log('\nwhat it renders (ActivationRefusal.jsx):\n');
+  console.log('\nwhat a panel renders from it (ActivationRefusal.jsx):\n');
   console.log(`  ⚠️  Can't start this agent`);
   console.log(`  This machine is at capacity — ${res.reason}.`);
   console.log(`  ┃ This agent outranks one that is running`);
-  console.log(`  ┃ Starting story/KAN-50 (priority ${res.priority}) can free a slot by standing down`);
+  console.log(`  ┃ Starting hotfix/KAN-50 (priority ${res.priority}) can free a slot by standing down`);
   console.log(`  ┃ ${res.preemption.type}/${res.preemption.key} (priority ${res.preemption.priority}), which is currently ${res.preemption.herdrStatus}.`);
   console.log(`  ┃ That interrupts whatever ${res.preemption.type}/${res.preemption.key} has not committed. …`);
   console.log(`  [ Stand down ${res.preemption.type}/${res.preemption.key} and start ]  [ Start anyway ]  [ Dismiss ]`);
@@ -413,13 +436,13 @@ rule('5. PREEMPTION — capacity before and after, and the record of what went')
   }
 
   const res = await call(router, 'activate_by_key', {
-    type: 'story',
+    type: 'hotfix',
     key: 'KAN-50',
     defaultAgent: 'claude',
     preempt: true
   });
 
-  console.log(`\nactivate story/KAN-50 (priority 2) with preempt: true\n`);
+  console.log(`\nactivate hotfix/KAN-50 (priority 2) with preempt: true\n`);
   console.log('what was preempted, and why:\n');
   console.log(JSON.stringify(res.preempted, null, 2).split('\n').slice(0, 14).join('\n'));
 
@@ -444,7 +467,7 @@ rule('5. PREEMPTION — capacity before and after, and the record of what went')
   const startedIt = res.success === true;
   const tookTheIdleOne = res.preempted?.victim?.key?.toUpperCase() === 'KAN-10';
   const gone = !bridge.alive.includes('butchr-task-kan-10');
-  const started = bridge.alive.includes('butchr-story-kan-50');
+  const started = bridge.alive.includes('butchr-hotfix-kan-50');
   verdict(
     startedIt && tookTheIdleOne && gone && started,
     'the low-priority agent was stood down and the higher-priority one started. The\n' +
@@ -466,23 +489,26 @@ rule('6. SUPERVISOR SAFETY — the highest possible activation cannot touch `epi
   console.log(`fleet: butchr-epic-kan-39 (priority ${PRIORITY_EPIC})`);
   console.log(`an activation at the highest priority the scale has (${PRIORITY_EPIC}) would take: ${topOfScale ?? '(nothing)'}\n`);
 
-  // And through the real router, on a full board: the epic agent is a
-  // candidate, is considered, and is not chosen.
+  // And through the real router, on a full board. Since KAN-57 a supervisor
+  // activation never consults the gate at all: the epic agent starts alongside
+  // the full fleet, preempt: true notwithstanding, and nothing is stood down
+  // for it — its cost was never charged, so there is no slot to free.
   const bridge = stubHerdr(FULL, { statuses: { 'butchr-task-kan-10': 'idle' } });
   const { router } = newRouter(bridge, SEED);
-  const res = await quiet(() => call(router, 'activate_by_key', { type: 'epic', key: 'KAN-77', preempt: true }));
+  const res = await quiet(() => call(router, 'activate_by_key', { type: 'epic', key: 'KAN-77', defaultAgent: 'claude', preempt: true }));
 
-  console.log(`on a full board including butchr-epic-kan-39, a priority-${PRIORITY_EPIC} activation`);
-  console.log(`with preempt: true took: ${res.preempted?.victim?.agentName ?? '(nothing)'}`);
+  console.log(`on a full board including butchr-epic-kan-39, a priority-${PRIORITY_EPIC} epic activation`);
+  console.log(`with preempt: true → success: ${res.success}, stood down: ${res.preempted?.victim?.agentName ?? '(nothing)'}`);
   console.log(`  butchr-epic-kan-39 still running: ${bridge.alive.includes('butchr-epic-kan-39')}`);
+  console.log(`  every task agent still running:   ${FULL.every((n) => bridge.alive.includes(n))}`);
 
   console.log(
-    '\n  This is ordering, not a special case. `epic` is the top of the scale and the\n' +
-    '  comparison is strictly-greater, so there is no rule anywhere that says "except\n' +
-    '  an epic agent" — there is nothing for a future change to forget. It is also\n' +
-    '  protected a second, independent way: KAN-36 reserves the supervisors\' share off\n' +
-    '  the top rather than counting it against the cap, so standing one down would free\n' +
-    '  no fleet slot even if the ordering permitted it:'
+    '\n  Two protections, one of which has become the whole answer. The ordering half\n' +
+    '  is unchanged: `epic` is the top of the scale and the comparison is strictly-\n' +
+    '  greater, so no activation at any priority can select an epic agent as victim.\n' +
+    '  And since KAN-57 the gate half is absolute: a supervisor activation is never\n' +
+    '  refused and never preempts, because the capacity model has never charged\n' +
+    '  supervisors a slot — standing something down would free room it does not take:'
   );
   const facts = readMachineFacts();
   const withSup = computeCapacity(facts, HERE.cap, { supervisorsRunning: 1 });
@@ -491,10 +517,14 @@ rule('6. SUPERVISOR SAFETY — the highest possible activation cannot touch `epi
   console.log(`    supervisor stood down:  cap ${withoutSup.cap}, running ${withoutSup.running}, headroom by count ${withoutSup.headroomByCap}  ← unchanged`);
 
   verdict(
-    topOfScale === null && bridge.alive.includes('butchr-epic-kan-39') && res.preempted?.victim?.type === 'task',
-    'an epic agent cannot be selected at any priority, and a top-of-scale\n' +
-    '    activation on a full board took a task agent instead.',
-    'the epic agent was selected as a preemption victim.'
+    topOfScale === null &&
+      bridge.alive.includes('butchr-epic-kan-39') &&
+      res.success === true &&
+      !res.preempted &&
+      FULL.every((n) => bridge.alive.includes(n)),
+    'an epic agent cannot be selected at any priority, and a top-of-scale epic\n' +
+    '    activation on a full board started without standing anything down (KAN-57).',
+    'the epic activation was refused, or something was stood down for it.'
   );
 }
 
@@ -506,7 +536,7 @@ rule('7. SURVIVAL — a preempted agent, re-activated, resumes rather than start
   const { router, agentRegistry } = newRouter(bridge, SEED);
 
   // Preempt it, exactly as section 5 did.
-  await quiet(() => call(router, 'activate_by_key', { type: 'story', key: 'KAN-50', defaultAgent: 'claude', preempt: true }));
+  await quiet(() => call(router, 'activate_by_key', { type: 'hotfix', key: 'KAN-50', defaultAgent: 'claude', preempt: true }));
   console.log(`task/KAN-10 was preempted. The registry's last word on it:`);
   const intent = agentRegistry.intents().get('butchr-task-kan-10');
   console.log(`  event: ${intent.event}   preemption recorded: ${Boolean(intent.preemption)}\n`);
@@ -530,7 +560,7 @@ rule('7. SURVIVAL — a preempted agent, re-activated, resumes rather than start
   // re-activation restores, not about whether the machine is quiet while the
   // script runs. verify-agent-power-controls.mjs makes the same argument as
   // PAST_THE_GATE.
-  bridge.alive.splice(bridge.alive.indexOf('butchr-story-kan-50'), 1);
+  bridge.alive.splice(bridge.alive.indexOf('butchr-hotfix-kan-50'), 1);
   const back = await quiet(() => call(router, 'activate_by_key', { type: 'task', key: 'KAN-10', defaultAgent: 'claude', override: true }));
 
   console.log('re-activated with no resume flag of any kind. What the daemon did with it:\n');
@@ -566,7 +596,7 @@ rule('8. TICKET STATUS — what the preempted ticket becomes, and who moves it')
   const { router, sent } = routerWithCapture(bridge, SEED);
   await quiet(async () => {
     await router.handleActivateByKey(
-      { type: 'story', key: 'KAN-50', defaultAgent: 'claude', preempt: true },
+      { type: 'hotfix', key: 'KAN-50', defaultAgent: 'claude', preempt: true },
       () => {}
     );
   });
@@ -626,7 +656,7 @@ rule('9. THE REGISTRY — why a reboot does NOT bring a preempted agent back');
 {
   const bridge = stubHerdr(FULL, { statuses: { 'butchr-task-kan-10': 'idle' } });
   const { router, agentRegistry } = newRouter(bridge, SEED);
-  await quiet(() => call(router, 'activate_by_key', { type: 'story', key: 'KAN-50', defaultAgent: 'claude', preempt: true }));
+  await quiet(() => call(router, 'activate_by_key', { type: 'hotfix', key: 'KAN-50', defaultAgent: 'claude', preempt: true }));
 
   const expected = agentRegistry.expected().map((r) => r.agentName);
   const preempted = agentRegistry.preempted().map((p) => p.agentName);

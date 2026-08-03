@@ -84,6 +84,18 @@ kills another would be the same request.
 An agent the registry has no record of sorts **last** among its equals. Knowing
 least about something is a reason to be more careful with it, not less.
 
+### Supervisors never reach the gate (KAN-57)
+
+An `epic` or `story` activation is never refused on capacity grounds and never
+preempts anything: the capacity model has never charged supervisors a slot
+(KAN-41), so there is no room for them to be refused for and none they could
+free by standing something down. In practice this means the refusal-and-consent
+machinery below is exercised only by activations that are charged — today that
+is `task` (which outranks nothing), so preemption waits for any future type
+that sits above `task` without being a supervisor. The ordering itself is
+unchanged and `verify-agent-preemption.mjs` proves it through exactly such a
+type.
+
 ### Preemption is opt-in, per activation
 
 A refusal at capacity now carries:
@@ -218,7 +230,7 @@ node daemon/scripts/verify-agent-preemption.mjs
 
 Nine sections, one per acceptance criterion plus the two design questions:
 the scale, the ordering, the refusal, the consent, the preemption with capacity
-before and after, manager safety, survival, ticket status, and the registry.
+before and after, supervisor safety, survival, ticket status, and the registry.
 Sections 3 onward drive the real `MessageRouter`, the real `WorkspaceRegistry`
 and a real on-disk `AgentRegistry`, so what they print is what a caller
 receives and what is actually written to the log.
