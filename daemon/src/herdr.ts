@@ -74,7 +74,7 @@ export type HerdrAgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknow
 const HERDR_AGENT_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 'done', 'unknown'];
 
 /** Ceiling on any single herdr CLI call, so a wedged herdr can't hang a caller. */
-const HERDR_CLI_TIMEOUT_MS = 5000;
+export const HERDR_CLI_TIMEOUT_MS = 5000;
 
 /**
  * How long {@link HerdrBridge.confirmAgentPresent} keeps asking before it
@@ -87,7 +87,7 @@ const HERDR_CLI_TIMEOUT_MS = 5000;
  * far longer than that gap has ever been observed to be, and short enough that
  * a caller blocked on an activation is not left wondering.
  */
-const AGENT_CONFIRM_TIMEOUT_MS = 5000;
+export const AGENT_CONFIRM_TIMEOUT_MS = 5000;
 
 /**
  * How long {@link HerdrBridge.confirmAgentPresent} waits for a *runtime* to
