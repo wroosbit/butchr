@@ -32,11 +32,24 @@ export function ActivationRefusal({ refusal, onOverride, onPreempt, onDismiss })
   // between workspace types.
   const victim = preemption ? address(preemption.type, preemption.key) : null;
 
+  // The headline names the binding constraint (KAN-60). This panel used to
+  // open every capacity refusal with "at capacity" — false by the figures
+  // shown right below it whenever what actually bound was load or memory,
+  // and pointing the reader at the wrong lever. `headroomBoundBy` is on
+  // every capacity payload; render from it, the same rule the daemon's own
+  // refusal string follows.
+  const headline =
+    isCapacity && capacity.headroomBoundBy === 'load'
+      ? 'Load is too high'
+      : isCapacity && capacity.headroomBoundBy === 'memory'
+        ? 'Not enough memory'
+        : 'This machine is at capacity';
+
   return (
     <div className="status-box status-error activation-refusal" role="alert">
       <div className="status-title">⚠️ Can’t start this agent</div>
       <div className="status-detail">
-        {isCapacity ? `This machine is at capacity — ${reason}.` : reason}
+        {isCapacity ? `${headline} — ${reason}.` : reason}
       </div>
 
       {isCapacity && (

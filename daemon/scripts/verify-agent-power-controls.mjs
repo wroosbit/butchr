@@ -566,8 +566,16 @@ rule('6. REFUSAL — at capacity, what the page displays instead of nothing');
   }, null, 2));
 
   console.log('\nand renders it with the SAME component the sidepanel uses — ActivationRefusal.jsx:\n');
+  // The same headline rule the component applies (KAN-60): the binding
+  // constraint leads, and "at capacity" is said only when the count bound.
+  const headline =
+    res.capacity.headroomBoundBy === 'load'
+      ? 'Load is too high'
+      : res.capacity.headroomBoundBy === 'memory'
+        ? 'Not enough memory'
+        : 'This machine is at capacity';
   console.log(`  ⚠️  Can't start this agent`);
-  console.log(`  This machine is at capacity — ${res.reason}.`);
+  console.log(`  ${headline} — ${res.reason}.`);
   console.log(`  ${res.capacity.running} of ${res.capacity.cap} task agents · room for ${res.capacity.headroom} · load ${res.capacity.load1} / ${res.capacity.cores} cores`);
   console.log(`  ▸ How this number was worked out`);
   console.log(`  [ Start anyway ]  [ Dismiss ]`);

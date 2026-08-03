@@ -216,8 +216,16 @@ if (firstTry.success === false && firstTry.refusedBy === 'capacity') {
     preemption: firstTry.preemption ?? null
   }, null, 2));
   console.log('\nwhat the Agents page renders under the row that was pressed:\n');
+  // The same headline rule ActivationRefusal.jsx applies (KAN-60): the
+  // binding constraint leads; "at capacity" is said only when the count bound.
+  const headline =
+    firstTry.capacity.headroomBoundBy === 'load'
+      ? 'Load is too high'
+      : firstTry.capacity.headroomBoundBy === 'memory'
+        ? 'Not enough memory'
+        : 'This machine is at capacity';
   console.log(`  ⚠️  Can't start this agent`);
-  console.log(`  This machine is at capacity — ${firstTry.reason}.`);
+  console.log(`  ${headline} — ${firstTry.reason}.`);
   console.log(`  ${firstTry.capacity.running} of ${firstTry.capacity.cap} task agents · room for ${firstTry.capacity.headroom} · load ${firstTry.capacity.load1} / ${firstTry.capacity.cores} cores`);
   if (firstTry.preemption) {
     console.log(`  ┃ Starting ${PROBE_TYPE}/${PROBE_KEY} can free a slot by standing down`);

@@ -563,13 +563,24 @@ export function describeCapacity(c: Capacity): string {
   return lines.join('\n');
 }
 
-/** One line for callers that only have room for one. */
+/**
+ * One line for callers that only have room for one.
+ *
+ * When there is no room, it leads with the binding constraint rather than
+ * with the count (KAN-60): opening "2/10 task agents" on a load-bound refusal
+ * read as "at capacity" by count, which the line's own figures contradicted.
+ */
 export function summarizeCapacity(c: Capacity): string {
-  return (
+  const figures =
     `${c.running}/${c.cap} task agents, room for ${c.headroom} more ` +
     `(${c.machine.cores} cores, load ${c.machine.load1.toFixed(2)}, ` +
-    `${gib(c.machine.availableBytes)} available; bound by ${c.headroomBoundBy})`
-  );
+    `${gib(c.machine.availableBytes)} available; bound by ${c.headroomBoundBy})`;
+  if (!c.atCapacity) return figures;
+  // Count-bound, the figures already open with N-of-cap; repeating the whole
+  // reason would bury a one-line summary under its own headline.
+  return c.headroomBoundBy === 'cap'
+    ? `at capacity: ${figures}`
+    : `${capacityHeadline(c)}; ${figures}`;
 }
 
 /**
@@ -601,10 +612,31 @@ export function capacityReason(c: Capacity): string {
   );
 }
 
+/**
+ * The headline of a refusal: the binding constraint, named, then the figures
+ * that make it checkable.
+ *
+ * KAN-60: a load-bound refusal used to be headlined "at capacity" with the
+ * cap count leading — read by a human as "2 of 10, at capacity", which was
+ * false by its own numbers (2 running against a cap of 10) and pointed at the
+ * wrong constraint entirely. `headroomBoundBy` already knows which term
+ * bound; the headline renders from it, so "at capacity" is said only when
+ * the count is what bound.
+ */
+export function capacityHeadline(c: Capacity): string {
+  const constraint =
+    c.headroomBoundBy === 'load'
+      ? 'load too high'
+      : c.headroomBoundBy === 'memory'
+        ? 'not enough memory'
+        : 'at capacity';
+  return `${constraint} — ${capacityReason(c)}`;
+}
+
 /** Why an activation was refused, with the arithmetic that refused it. */
 export function capacityRefusal(c: Capacity, what: string): string {
   return (
-    `Refusing to activate ${what}: no capacity — ${capacityReason(c)}.\n` +
+    `Refusing to activate ${what}: ${capacityHeadline(c)}.\n` +
     `${describeCapacity(c)}\n` +
     `Deactivate an agent to make room, or pass override: true to start it anyway ` +
     `(the override is recorded with these numbers).`
