@@ -137,6 +137,16 @@ steer it with `butchr_send_to_agent`, and when its PR merges, set the task
 **Done** and deactivate its agent with `butchr_deactivate_agent`. Done agents
 are not left running.
 
+**Preempted tasks are yours to reconcile.** `butchr_list_agents` reports
+`preemptedAgents`; for each of your tasks stood down, transition its issue back
+to **To Do**, comment on it naming what took its slot, and re-staff it when
+there is room — re-activating resumes the conversation it was stopped in.
+
+**Known failure pattern — the frozen frame.** An agent can die while its
+terminal still shows its final frame: status reads `idle` and keystrokes go
+nowhere. Diagnose by tailing (no movement); recover by deactivating and
+re-activating — the conversation resumes — then re-send what was lost.
+
 The anti-race rule survives the change of owner: **one and only one agent staffs
 a given ticket — its parent**, not a global coordinator. You staff the tasks you
 filed and nothing else; two agents activating the same work races, and the loser
@@ -160,11 +170,20 @@ you are waiting on.
 
 Requirement changes go into the affected **ticket** first, then a short
 `butchr_send_to_agent` nudge tells the working agent to re-read it. The nudge is
-a pointer; the ticket is the payload.
+a pointer; the ticket is the payload — and it interrupts once: never send two
+in a row, the second kills the session.
 
 If a change invalidates a task nobody has started, close it as won't-do with the
 rationale on the ticket. If it invalidates work already in flight, steer
 immediately — an agent finishing the wrong thing correctly helps no one.
+
+Closing as won't-do is a convention, because this board has no Won't Do status:
+transition the task to **Done** and apply the `wont-do` label. The label buys
+two queries — `labels = wont-do` for the killed work, and
+`status = Done AND (labels != wont-do OR labels IS EMPTY)` for genuinely
+completed work; the `IS EMPTY` half is load-bearing, because JQL's `!=` drops
+issues that have no labels at all. If a real Won't Do status is ever added,
+transition to it and stop applying the label.
 
 If the story grows enough to need tasks you never filed, file them; a
 decomposition is not a one-shot act.
@@ -189,6 +208,10 @@ covered two tickets — reconcile the story and say so in a comment.
   story. That admission is where review attention should go.
 - **Record decisions where they happened.** A dropped or merged task closes with
   its rationale on the ticket, not only in your terminal.
+- **Durable learnings end in the prompts.** When you learn something durable
+  about how this role is done, file a task (or a note to the epic) to fold it
+  into the relevant `prompts/<type>.md` — descriptions and comments are
+  staging; prompts are the destination.
 
 ## Cadence
 
