@@ -15,7 +15,12 @@
 // damped figure — with the constants demoted to a labelled seed and the env
 // overrides still beating everything. Sections 10–13 prove that plumbing.
 //
-// Thirteen sections:
+// Extended for KAN-57: the gate itself now honours what the model decided.
+// Supervisor activations — epic and story agents — are never refused on
+// load or headroom grounds; their cost was never charged, so there was
+// nothing for the gate to ration. Section 14 proves it at zero headroom.
+//
+// Fourteen sections:
 //
 //   1. derivation    — the cap on THIS machine, with the arithmetic
 //   2. reservation   — the removed manager reservation, before and after
@@ -30,6 +35,7 @@
 //  11. damping       — step response both directions: up fast, down slow
 //  12. degrade       — the instrument breaks; capacity answers from the seed
 //  13. precedence    — env overrides beat the measurement beats the seed
+//  14. supervisor gate — epic/story activate at zero headroom, no override
 //
 // Sections 5 through 7 and 9 drive the real MessageRouter — handleCapacity
 // and handleActivateByKey, the same calls an MCP caller makes — so what they
@@ -532,5 +538,72 @@ console.log(
   '\n  → only the dimension actually set becomes an override; an unset variable\n' +
   '    leaves room for the measurement rather than pinning the seed.'
 );
+
+// ------------------------------------------------ 14. supervisor gate --
+rule('14. SUPERVISOR GATE — epic and story activate at zero headroom, no override');
+
+// KAN-57. The model has never charged supervisors (sections 3 and 5), but the
+// gate still refused them whenever headroom hit 0 — and desktop baseline load
+// alone can pin headroomByLoad at 0 indefinitely, so always-on infrastructure
+// could not start or auto-restore without a human pressing "Start anyway".
+//
+// Zero headroom is forced the same way an operator could force it: a per-agent
+// core cost so large that the load term answers 0 on any machine this script
+// runs on. That drives the refusal through the real readCapacity/env path
+// rather than through figures this script invented.
+const savedCores = process.env.BUTCHR_AGENT_CORES;
+process.env.BUTCHR_AGENT_CORES = '1000';
+
+const gateCheck = readCapacity(0, 0);
+console.log(
+  `with BUTCHR_AGENT_CORES=1000: headroomByLoad ${gateCheck.headroomByLoad}, ` +
+  `headroom ${gateCheck.headroom}, atCapacity ${gateCheck.atCapacity} ` +
+  `(bound by ${gateCheck.headroomBoundBy})\n`
+);
+
+// Nothing is running at all — the KAN-39 epic incident exactly: an empty
+// machine whose load average alone said no.
+const epicAtZero = await activate([], { type: 'epic', key: 'KAN-40' });
+const storyAtZero = await activate([], { type: 'story', key: 'KAN-41' });
+const taskAtZero = await activate([], { type: 'task', key: 'KAN-99' });
+
+const overrideEvents = [...epicAtZero.events, ...storyAtZero.events]
+  .filter((e) => e.action === 'capacity_override_event');
+
+console.log(
+  `  epic/KAN-40  (no override) → refused: ${epicAtZero.response?.success === false}, ` +
+  `reached spawn: ${epicAtZero.reachedSpawn}\n` +
+  `  story/KAN-41 (no override) → refused: ${storyAtZero.response?.success === false}, ` +
+  `reached spawn: ${storyAtZero.reachedSpawn}\n` +
+  `  task/KAN-99  (no override) → refused: ${taskAtZero.response?.success === false}` +
+  (taskAtZero.response?.reason ? ` (${taskAtZero.response.reason})` : '') + '\n' +
+  `  capacity_override_event broadcast for the supervisors: ${overrideEvents.length}\n`
+);
+
+const supervisorsPassed =
+  epicAtZero.reachedSpawn && storyAtZero.reachedSpawn && overrideEvents.length === 0;
+const taskStillRefused =
+  taskAtZero.response?.success === false &&
+  taskAtZero.response?.refusedBy === 'capacity' &&
+  String(taskAtZero.response?.reason ?? '').includes('load average');
+
+console.log(
+  supervisorsPassed
+    ? '  → both supervisors pass the gate with no override asked for and none\n' +
+      '    recorded. Their cost was reserved by the model from the start —\n' +
+      '    never counted in running, never charged a slot — so a refusal here\n' +
+      '    was the gate arguing with its own arithmetic.'
+    : '  → A SUPERVISOR WAS REFUSED OR AN OVERRIDE WAS RECORDED — CHECK THIS.'
+);
+console.log(
+  taskStillRefused
+    ? '  → the task agent is still refused, load-bound, with the same legible\n' +
+      '    reason as before: the exemption is exactly as wide as the supervisor\n' +
+      '    set and no wider.'
+    : '  → THE TASK AGENT WAS NOT REFUSED LOAD-BOUND — CHECK THIS.'
+);
+
+if (savedCores === undefined) delete process.env.BUTCHR_AGENT_CORES;
+else process.env.BUTCHR_AGENT_CORES = savedCores;
 
 console.log('\n== done ==');

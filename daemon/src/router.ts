@@ -507,6 +507,10 @@ export class MessageRouter {
    * cap people work around — but it is recorded rather than waved through.
    * Someone reading the log later should be able to see that the machine was
    * over-staffed deliberately, and what the numbers were at the time.
+   *
+   * Supervisor activations are never refused at all — see the exemption
+   * below, which is where the capacity model's "supervisors are not part of
+   * the limit" decision is actually honoured.
    */
   private capacityGate(request: GateRequest): CapacityGateResult {
     const { what, type, key, agentName, priority, override, preempt } = request;
@@ -526,6 +530,22 @@ export class MessageRouter {
     }
 
     const capacity = this.capacityOf(agents);
+
+    // Supervisors pass unconditionally (KAN-57). The capacity model already
+    // decided they are not part of the limit: they are neither counted in
+    // `running` nor charged a slot (see capacity.ts's header for the KAN-41
+    // argument), so a load- or headroom-bound refusal here was refusing an
+    // agent whose cost the model had already declined to charge. It was also
+    // a lockout in practice — desktop baseline load alone can pin
+    // headroomByLoad at 0 indefinitely, which meant epic and story agents
+    // could never start or auto-restore without a manual override. They are
+    // higher priority by construction (priority.ts) and always-on by intent,
+    // so the gate has nothing to ration for them: no refusal, and therefore
+    // no override to record and no preemption to offer. Task activations
+    // below are untouched, and supervisors still appear in every capacity
+    // report as `supervisors`.
+    if (isSupervisorType(type)) return pass(capacity);
+
     if (!capacity.atCapacity) return pass(capacity);
 
     // Everything running that this activation could conceivably displace, and
