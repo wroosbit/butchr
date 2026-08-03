@@ -156,6 +156,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "The workspace key (e.g., 'KAN-1')",
             },
+            type: {
+              type: "string",
+              description:
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly — several types can share one key, and a bare key stops whichever of them it happens to reach.",
+            },
           },
           required: ["key"],
         },
@@ -303,10 +308,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     
     if (name === "butchr_deactivate_agent") {
-      const { key } = args as any;
+      const { key, type } = args as any;
       if (!key) throw new Error("Missing key argument");
-      
-      const res = await callDaemonAPI('deactivate_by_key', { key });
+
+      const res = await callDaemonAPI('deactivate_by_key', { key, type });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
       };
