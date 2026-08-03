@@ -9,6 +9,7 @@ import { HerdrBridge } from './herdr.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
+import { LaunchDarklyIntegration } from './integrations/launchdarkly.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport } from './staleness.js';
@@ -97,6 +98,10 @@ if (!fdUsage) {
 // answers within its own timeout, so the registry can depend on it without
 // activation ever being able to hang or fail on Jira's account.
 const jira = new JiraIssueTypeService(new CredentialStore());
+// LaunchDarkly holds a credential only, for now: no flag reads, no LD-owned
+// workspace types. The adapter exists so the settings UI has somewhere real
+// to store and validate a token (KAN-86).
+const launchdarkly = new LaunchDarklyIntegration();
 const registry = new WorkspaceRegistry((key) => jira.getIssueTypeName(key));
 const promptLoader = new PromptLoader(repoRoot);
 const herdrBridge = new HerdrBridge();
@@ -112,6 +117,12 @@ log(
   credentialStatus.configured
     ? `Jira credential configured for ${credentialStatus.email} @ ${credentialStatus.siteUrl} (stored in ${credentialStatus.storage})`
     : 'No Jira credential configured; Jira issue URLs will all resolve to type `task`'
+);
+const ldStatus = launchdarkly.status();
+log(
+  ldStatus.configured
+    ? `LaunchDarkly credential configured (stored in ${ldStatus.storage})`
+    : 'No LaunchDarkly credential configured'
 );
 // When this process started, so the staleness check can tell a rebuilt `dist/`
 // from a daemon that has actually loaded it. Captured before anything slow.
@@ -161,7 +172,8 @@ const server = net.createServer((socket) => {
     broadcast,
     jira,
     { repoRoot, daemonStartedAt },
-    agentRegistry
+    agentRegistry,
+    launchdarkly
   );
 
   onJsonLines(
@@ -233,7 +245,8 @@ const daemonRouter = new MessageRouter(
   broadcast,
   jira,
   { repoRoot, daemonStartedAt },
-  agentRegistry
+  agentRegistry,
+  launchdarkly
 );
 
 /**

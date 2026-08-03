@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { JiraIssueTypeService } from './jira.js';
+import { LaunchDarklyIntegration } from './integrations/launchdarkly.js';
 import {
   HerdrBridge,
   HerdrSession,
@@ -289,6 +290,14 @@ interface GateRequest {
   preempt: unknown;
 }
 
+/**
+ * The refusal for an integration id this daemon does not know. Names the
+ * known ids so a typo'd caller learns the vocabulary from the error itself.
+ */
+function unknownIntegration(integration: string): string {
+  return `Unknown integration: ${integration || '(none given)'}. Known integrations: jira, launchdarkly.`;
+}
+
 export class MessageRouter {
   private activePtyListeners = new Map<string, () => void>();
 
@@ -311,7 +320,13 @@ export class MessageRouter {
      * absent nothing is recorded and nothing is reported missing, which is
      * exactly the pre-KAN-21 behaviour.
      */
-    private agentRegistry?: AgentRegistry
+    private agentRegistry?: AgentRegistry,
+    /**
+     * Optional exactly as `jira` is: a construction that does not pass one
+     * simply answers "no LaunchDarkly credential support" on the credential
+     * actions, and `list_integrations` reports the integration unavailable.
+     */
+    private launchdarkly?: LaunchDarklyIntegration
   ) {}
 
   /**
@@ -471,6 +486,27 @@ export class MessageRouter {
         break;
       case 'clear_jira_credential':
         void guard(this.handleClearJiraCredential(respond), 'clear_jira_credential');
+        break;
+      case 'integration_credential_status':
+        void guard(
+          this.handleIntegrationCredentialStatus(data, respond),
+          'integration_credential_status'
+        );
+        break;
+      case 'set_integration_credential':
+        void guard(
+          this.handleSetIntegrationCredential(data, respond),
+          'set_integration_credential'
+        );
+        break;
+      case 'clear_integration_credential':
+        void guard(
+          this.handleClearIntegrationCredential(data, respond),
+          'clear_integration_credential'
+        );
+        break;
+      case 'list_integrations':
+        void guard(this.handleListIntegrations(respond), 'list_integrations');
         break;
       case 'pty_init':
         this.handlePtyInit(data, respond);
@@ -1509,28 +1545,38 @@ export class MessageRouter {
     });
   }
 
-  // --- Atlassian credential -------------------------------------------------
+  // --- Integration credentials ---------------------------------------------
   //
-  // The token's whole journey is: settings UI → native messaging → here →
+  // A token's whole journey is: settings UI → native messaging → here →
   // CredentialStore. It never travels back. These handlers answer with
   // configured/not-configured and a validation verdict, never with the value,
   // so there is nothing for the extension to retain even by accident.
+  //
+  // Two generations of surface share these bodies. The legacy `jira_credential_*`
+  // actions predate integrations being plural and stay exactly as they were;
+  // the `*_integration_credential {integration}` actions are the generalized
+  // form KAN-87's settings UI speaks. Same handlers, different response action
+  // names — so the two surfaces cannot drift apart.
 
   private async handleJiraCredentialStatus(respond: Respond) {
+    await this.jiraCredentialStatus(respond, 'jira_credential_status_response', {});
+  }
+
+  private async jiraCredentialStatus(
+    respond: Respond,
+    action: string,
+    extra: Record<string, unknown>
+  ) {
     if (!this.jira) {
-      respond({
-        action: 'jira_credential_status_response',
-        success: true,
-        available: false,
-        configured: false
-      });
+      respond({ action, ...extra, success: true, available: false, configured: false });
       return;
     }
     // `storageTarget` runs a keyring probe, which is why this handler is async
     // now. It is what lets the settings page say where the token will land
     // before the user types it, rather than after it has already gone.
     respond({
-      action: 'jira_credential_status_response',
+      action,
+      ...extra,
       success: true,
       available: true,
       ...this.jira.status(),
@@ -1539,8 +1585,17 @@ export class MessageRouter {
   }
 
   private async handleSetJiraCredential(data: any, respond: Respond) {
+    await this.submitJiraCredential(data, respond, 'set_jira_credential_response', {});
+  }
+
+  private async submitJiraCredential(
+    data: any,
+    respond: Respond,
+    action: string,
+    extra: Record<string, unknown>
+  ) {
     const fail = (error: string) =>
-      respond({ action: 'set_jira_credential_response', success: false, valid: false, error });
+      respond({ action, ...extra, success: false, valid: false, error });
 
     if (!this.jira) {
       fail('This daemon has no Jira credential support.');
@@ -1606,7 +1661,8 @@ export class MessageRouter {
     );
 
     respond({
-      action: 'set_jira_credential_response',
+      action,
+      ...extra,
       success: true,
       valid: result.valid,
       ...(result.error ? { error: result.error } : {}),
@@ -1620,17 +1676,220 @@ export class MessageRouter {
   }
 
   private async handleClearJiraCredential(respond: Respond) {
+    await this.clearJiraCredential(respond, 'clear_jira_credential_response', {});
+  }
+
+  private async clearJiraCredential(
+    respond: Respond,
+    action: string,
+    extra: Record<string, unknown>
+  ) {
     if (!this.jira) {
-      respond({ action: 'clear_jira_credential_response', success: false, error: 'unsupported' });
+      respond({ action, ...extra, success: false, error: 'unsupported' });
       return;
     }
     await this.jira.clearCredential();
     console.log('jira: credential cleared');
     respond({
-      action: 'clear_jira_credential_response',
+      action,
+      ...extra,
       success: true,
       status: this.jira.status()
     });
+  }
+
+  // --- the generalized {integration} forms ----------------------------------
+
+  private async handleIntegrationCredentialStatus(data: any, respond: Respond) {
+    const action = 'integration_credential_status_response';
+    const integration = typeof data.integration === 'string' ? data.integration : '';
+    if (integration === 'jira') {
+      await this.jiraCredentialStatus(respond, action, { integration });
+      return;
+    }
+    if (integration === 'launchdarkly') {
+      if (!this.launchdarkly) {
+        respond({ action, integration, success: true, available: false, configured: false });
+        return;
+      }
+      respond({
+        action,
+        integration,
+        success: true,
+        available: true,
+        ...this.launchdarkly.status(),
+        storageTarget: await this.launchdarkly.storageTarget()
+      });
+      return;
+    }
+    respond({ action, success: false, error: unknownIntegration(integration) });
+  }
+
+  private async handleSetIntegrationCredential(data: any, respond: Respond) {
+    const action = 'set_integration_credential_response';
+    const integration = typeof data.integration === 'string' ? data.integration : '';
+    if (integration === 'jira') {
+      await this.submitJiraCredential(data, respond, action, { integration });
+      return;
+    }
+    if (integration === 'launchdarkly') {
+      const fail = (error: string) =>
+        respond({ action, integration, success: false, valid: false, error });
+      if (!this.launchdarkly) {
+        fail('This daemon has no LaunchDarkly credential support.');
+        return;
+      }
+      const token = typeof data.token === 'string' ? data.token : '';
+      if (!token) {
+        fail('An API token is required.');
+        return;
+      }
+
+      const result = await this.launchdarkly.setCredential({ token });
+
+      // Same shape of log line as the Jira submission below: verdict,
+      // diagnosis, and the leg trail as status codes and trace ids — never the
+      // token, and never LaunchDarkly's response text, which belongs to the
+      // (scrubbed) response rather than the log.
+      console.log(
+        `launchdarkly: credential submitted — ` +
+          (result.valid
+            ? `valid, stored in ${result.storage}`
+            : `rejected (${result.diagnosis ?? 'unknown'})`) +
+          (result.legs?.length
+            ? `; legs: ${result.legs
+                .map(
+                  (l) =>
+                    `${l.leg}=${l.failure ?? l.status}${l.traceId ? ` trace:${l.traceId}` : ''}`
+                )
+                .join(' ')}`
+            : '')
+      );
+
+      respond({
+        action,
+        integration,
+        success: true,
+        valid: result.valid,
+        ...(result.error ? { error: result.error } : {}),
+        ...(result.diagnosis ? { diagnosis: result.diagnosis } : {}),
+        ...(result.legs?.length ? { legs: result.legs } : {}),
+        ...(result.storage ? { storage: result.storage } : {}),
+        status: this.launchdarkly.status()
+      });
+      return;
+    }
+    respond({ action, success: false, valid: false, error: unknownIntegration(integration) });
+  }
+
+  private async handleClearIntegrationCredential(data: any, respond: Respond) {
+    const action = 'clear_integration_credential_response';
+    const integration = typeof data.integration === 'string' ? data.integration : '';
+    if (integration === 'jira') {
+      await this.clearJiraCredential(respond, action, { integration });
+      return;
+    }
+    if (integration === 'launchdarkly') {
+      if (!this.launchdarkly) {
+        respond({ action, integration, success: false, error: 'unsupported' });
+        return;
+      }
+      await this.launchdarkly.clearCredential();
+      console.log('launchdarkly: credential cleared');
+      respond({
+        action,
+        integration,
+        success: true,
+        status: this.launchdarkly.status()
+      });
+      return;
+    }
+    respond({ action, success: false, error: unknownIntegration(integration) });
+  }
+
+  /**
+   * The integrations surface the settings UI renders: one row per
+   * integration, each with its provided workspace types and a non-secret
+   * credential summary.
+   *
+   * Descriptor-driven on purpose. Today the daemon's integrations are a
+   * two-row table built here; KAN-85 re-backs the same response with real
+   * `Integration` objects, and this response shape — KAN-87's contract — is
+   * exactly what must not change when it does.
+   *
+   * The Jira rows' `providedTypes` are *read* from the registry's registered
+   * configs rather than restated, so a workspace type added or re-prioritized
+   * there shows up here without a second copy of the fact. (Reshaping the
+   * registry itself is KAN-85's, held.)
+   */
+  private async handleListIntegrations(respond: Respond) {
+    // Both storage probes run a keyring lookup; in parallel so the settings
+    // page pays one probe's latency, not the sum.
+    const [jiraTarget, ldTarget] = await Promise.all([
+      this.jira ? this.jira.storageTarget() : Promise.resolve(undefined),
+      this.launchdarkly ? this.launchdarkly.storageTarget() : Promise.resolve(undefined)
+    ]);
+
+    respond({
+      action: 'list_integrations_response',
+      success: true,
+      integrations: [
+        {
+          id: 'jira',
+          name: 'Jira',
+          providedTypes: this.jiraProvidedTypes(),
+          available: !!this.jira,
+          credential: this.jira ? this.jira.status() : { configured: false },
+          ...(jiraTarget ? { storageTarget: jiraTarget } : {})
+        },
+        {
+          id: 'launchdarkly',
+          name: 'LaunchDarkly',
+          // No workspace types yet: the credential lands first (this ticket),
+          // LD-owned types are follow-on stories. An empty list is the honest
+          // answer, not a placeholder.
+          providedTypes: [],
+          available: !!this.launchdarkly,
+          credential: this.launchdarkly ? this.launchdarkly.status() : { configured: false },
+          ...(ldTarget ? { storageTarget: ldTarget } : {})
+        }
+      ]
+    });
+  }
+
+  /**
+   * Jira's workspace types, as the registry has them registered.
+   *
+   * `resolution` says how a page becomes this type: `url-matched` types own
+   * URL patterns; the pattern-less ones are reached only by refining a task
+   * URL against the issue's real type in Jira (see registry.ts on why a
+   * Story's URL is byte-identical to a Task's).
+   */
+  private jiraProvidedTypes(): Array<{
+    type: string;
+    name: string;
+    resolution: 'url-matched' | 'refined-from-issue-type';
+    priority: number;
+    supervisor: boolean;
+  }> {
+    // Test constructions pass no registry; an empty list degrades exactly like
+    // the rest of this handler's absent-collaborator cases.
+    if (!this.registry) return [];
+    const provided = [];
+    for (const type of ['epic', 'story', 'task']) {
+      const config = this.registry.get(type);
+      if (!config) continue;
+      provided.push({
+        type,
+        name: config.name,
+        resolution: (config.urlPatterns.length > 0
+          ? 'url-matched'
+          : 'refined-from-issue-type') as 'url-matched' | 'refined-from-issue-type',
+        priority: config.priority,
+        supervisor: isSupervisorType(type)
+      });
+    }
+    return provided;
   }
 
   /**
