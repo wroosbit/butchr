@@ -116,7 +116,7 @@ A ticket an agent can execute unattended contains:
 - **Acceptance criteria with a live proof** — a command whose *output*
   demonstrates the change. "Tests pass" is not a proof.
 - **Standing rules** — work lands as a PR to protected `main`; required CI checks
-  must pass; do not merge; leave the PR open for human review.
+  must pass; do not merge — review and merge belong to your epic agent.
 
 **Coordination notes are your responsibility.** You are the only one who knows
 the tasks were carved from a single story and which of them touch the same files.
