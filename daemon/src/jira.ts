@@ -172,9 +172,10 @@ const MAX_DETAIL_CHARS = 200;
  * sails straight through. The verification script caught exactly that, with
  * 46 of a 50-character token surviving into the user-facing message. Order is
  * load-bearing here, which is why truncation lives in its own function that
- * the one caller applies last.
+ * callers apply last. Exported so integrations/launchdarkly.ts truncates with
+ * this exact function rather than a copy that could drift.
  */
-function truncate(text: string): string {
+export function truncate(text: string): string {
   return text.length > MAX_DETAIL_CHARS ? `${text.slice(0, MAX_DETAIL_CHARS)}…` : text;
 }
 
@@ -437,8 +438,9 @@ export class TokenJiraTransport implements JiraTransport {
  * "that host does not resolve" — and until now they produced the same one.
  * The abort is checked directly rather than trusting `err.name`, because the
  * abort reason varies by runtime and undici has shipped more than one.
+ * Exported for integrations/launchdarkly.ts, whose legs fail the same ways.
  */
-function failureKind(err: any, signal: AbortSignal): JiraLegFailure {
+export function failureKind(err: any, signal: AbortSignal): JiraLegFailure {
   if (signal.aborted || err?.name === 'AbortError' || err?.name === 'TimeoutError') {
     return 'timeout';
   }

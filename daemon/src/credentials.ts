@@ -3,20 +3,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BUTCHR_DIR, ensureButchrDir } from './ipc.js';
 
-// Storage for the Atlassian credential the daemon uses to look up an issue's
-// type. The secret arrives from the extension's settings page over native
-// messaging and stops here: it is never sent back out, never logged, and never
-// rendered into any UI.
+// Storage for the credentials the daemon holds, one store per integration
+// (Jira, LaunchDarkly, …). A secret arrives from the extension's settings page
+// over native messaging and stops here: it is never sent back out, never
+// logged, and never rendered into any UI.
 //
 // Two backends, in preference order:
 //   1. The OS keyring, via libsecret's `secret-tool`. The secret goes in on
 //      stdin — never argv, which is world-readable through `ps`.
 //   2. A 0600 file under ~/.local/share/butchr (itself 0700).
 //
-// Only the *token* moves between backends. The non-secret parts (site URL,
-// account email, which backend holds the token) always live in the metadata
-// file, so reporting "configured / not configured" never has to unlock a
-// keyring.
+// Only the *token* moves between backends. The non-secret parts (for Jira the
+// site URL and account email; which backend holds the token) always live in
+// the metadata file, so reporting "configured / not configured" never has to
+// unlock a keyring.
 //
 // macOS is a known gap: it falls through to the file backend. The obvious
 // helper, `security add-generic-password`, takes the secret as an argv
@@ -25,10 +25,37 @@ import { BUTCHR_DIR, ensureButchrDir } from './ipc.js';
 // means finding a stdin-based path (or a native binding), not passing `-w`.
 // The backend seam below is where that goes.
 
-const METADATA_FILE = path.join(BUTCHR_DIR, 'jira-credential.json');
+/**
+ * What makes one integration's store distinct from another's: where the
+ * metadata lives, how the keyring entry is addressed and labelled, and which
+ * non-secret fields ride alongside the token.
+ *
+ * The `id` names everything derivable — `<id>-credential.json`, keyring
+ * attribute `account <id>` — so two integrations cannot collide by accident,
+ * and Jira's spellings (`jira-credential.json`, `account jira`) are exactly
+ * what they were before this store was parametrized. No migration.
+ */
+export interface CredentialSpec {
+  /** Integration id: 'jira', 'launchdarkly', … Lower-case, no spaces. */
+  id: string;
+  /** Label shown by OS keyring UIs next to the stored secret. */
+  keyringLabel: string;
+  /**
+   * Names of the credential's non-secret fields (Jira: siteUrl, email;
+   * LaunchDarkly: none). These are stored in the metadata file in this order,
+   * reported by `status()`, and validated on read. The token is never one of
+   * them.
+   */
+  nonSecretFields: readonly string[];
+}
 
-const KEYRING_ATTRS = ['service', 'butchr', 'account', 'jira'];
-const KEYRING_LABEL = 'Butchr — Atlassian API token';
+/** Jira's spec — byte-for-byte the storage this module used before it was
+ * per-integration, which is what "no migration" means in practice. */
+export const JIRA_CREDENTIAL_SPEC: CredentialSpec = {
+  id: 'jira',
+  keyringLabel: 'Butchr — Atlassian API token',
+  nonSecretFields: ['siteUrl', 'email']
+};
 
 export interface JiraCredential {
   /** Site base URL, e.g. https://yoursite.atlassian.net (no trailing slash). */
@@ -41,12 +68,15 @@ export interface JiraCredential {
 
 export type CredentialStorage = 'keyring' | 'file';
 
-/** Everything the settings UI is allowed to know. Deliberately token-free. */
+/**
+ * Everything the settings UI is allowed to know. Deliberately token-free: the
+ * integration's non-secret fields appear flat (Jira: siteUrl, email), exactly
+ * as they always have.
+ */
 export interface CredentialStatus {
   configured: boolean;
-  siteUrl?: string;
-  email?: string;
   storage?: CredentialStorage;
+  [field: string]: string | boolean | undefined;
 }
 
 /**
@@ -67,8 +97,8 @@ export interface StorageTarget {
 }
 
 interface Metadata {
-  siteUrl: string;
-  email: string;
+  /** The spec's non-secret fields, validated present. */
+  fields: Record<string, string>;
   storage: CredentialStorage;
   /** Present only when `storage` is 'file'. */
   token?: string;
@@ -109,24 +139,24 @@ function run(
  * only reliable probe is to actually try the thing, so this does a lookup and
  * treats "the helper ran and answered" as available.
  */
-async function keyringAvailable(): Promise<boolean> {
-  const { code } = await run('secret-tool', ['lookup', ...KEYRING_ATTRS]);
+async function keyringAvailable(attrs: readonly string[]): Promise<boolean> {
+  const { code } = await run('secret-tool', ['lookup', ...attrs]);
   // 0 = found, 1 = ran fine but no such secret. Anything else (missing binary,
   // no secret service, D-Bus refusal) means there is no keyring to use.
   return code === 0 || code === 1;
 }
 
-async function keyringStore(token: string): Promise<boolean> {
-  const { code } = await run(
-    'secret-tool',
-    ['store', '--label', KEYRING_LABEL, ...KEYRING_ATTRS],
-    token
-  );
+async function keyringStore(
+  attrs: readonly string[],
+  label: string,
+  token: string
+): Promise<boolean> {
+  const { code } = await run('secret-tool', ['store', '--label', label, ...attrs], token);
   return code === 0;
 }
 
-async function keyringLookup(): Promise<string | null> {
-  const { code, stdout } = await run('secret-tool', ['lookup', ...KEYRING_ATTRS]);
+async function keyringLookup(attrs: readonly string[]): Promise<string | null> {
+  const { code, stdout } = await run('secret-tool', ['lookup', ...attrs]);
   if (code !== 0) return null;
   // secret-tool does not add a trailing newline, but a token never contains
   // surrounding whitespace either way.
@@ -134,55 +164,77 @@ async function keyringLookup(): Promise<string | null> {
   return token || null;
 }
 
-async function keyringClear(): Promise<void> {
-  await run('secret-tool', ['clear', ...KEYRING_ATTRS]);
-}
-
-function readMetadata(): Metadata | null {
-  try {
-    const raw = fs.readFileSync(METADATA_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (
-      typeof parsed?.siteUrl === 'string' &&
-      typeof parsed?.email === 'string' &&
-      (parsed.storage === 'keyring' || parsed.storage === 'file')
-    ) {
-      return parsed as Metadata;
-    }
-    return null;
-  } catch {
-    // Missing or corrupt reads as "not configured" — the caller's job is to
-    // degrade, not to repair.
-    return null;
-  }
-}
-
-function writeMetadata(meta: Metadata): void {
-  ensureButchrDir();
-  // Create with 0600 from the outset. Writing first and chmod-ing after leaves
-  // a window where the token is world-readable.
-  fs.writeFileSync(METADATA_FILE, JSON.stringify(meta, null, 2) + '\n', { mode: 0o600 });
-  // writeFileSync's mode applies only on create; an existing file keeps its
-  // old permissions, so re-assert them.
-  fs.chmodSync(METADATA_FILE, 0o600);
+async function keyringClear(attrs: readonly string[]): Promise<void> {
+  await run('secret-tool', ['clear', ...attrs]);
 }
 
 /**
- * The daemon's Atlassian credential, at rest.
+ * One integration's credential, at rest.
  *
  * Read-only by construction: this stores what is needed to *authenticate* a
- * Jira read and nothing more. There is no write path to Jira anywhere in the
- * daemon, by design (KAN-20).
+ * read against the integration's API and nothing more. There is no write path
+ * to any integration anywhere in the daemon, by design (KAN-20).
+ *
+ * The type parameter is the integration's credential shape — Jira's
+ * `{siteUrl, email, token}`, LaunchDarkly's `{token}` — and defaults to Jira's
+ * so that every pre-existing construction site (`new CredentialStore()`) keeps
+ * meaning exactly what it meant.
  */
-export class CredentialStore {
+export class CredentialStore<T extends { token: string } = JiraCredential> {
+  private metadataFile: string;
+  private keyringAttrs: string[];
+
+  constructor(private spec: CredentialSpec = JIRA_CREDENTIAL_SPEC) {
+    this.metadataFile = path.join(BUTCHR_DIR, `${spec.id}-credential.json`);
+    this.keyringAttrs = ['service', 'butchr', 'account', spec.id];
+  }
+
+  private readMetadata(): Metadata | null {
+    try {
+      const raw = fs.readFileSync(this.metadataFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed?.storage !== 'keyring' && parsed?.storage !== 'file') return null;
+      const fields: Record<string, string> = {};
+      for (const name of this.spec.nonSecretFields) {
+        if (typeof parsed[name] !== 'string') return null;
+        fields[name] = parsed[name];
+      }
+      return {
+        fields,
+        storage: parsed.storage,
+        ...(typeof parsed.token === 'string' ? { token: parsed.token } : {})
+      };
+    } catch {
+      // Missing or corrupt reads as "not configured" — the caller's job is to
+      // degrade, not to repair.
+      return null;
+    }
+  }
+
+  private writeMetadata(meta: Metadata): void {
+    ensureButchrDir();
+    // Non-secret fields first, then storage, then (file backend only) the
+    // token — the same flat shape and key order this file has always had.
+    const onDisk = {
+      ...meta.fields,
+      storage: meta.storage,
+      ...(meta.token !== undefined ? { token: meta.token } : {})
+    };
+    // Create with 0600 from the outset. Writing first and chmod-ing after leaves
+    // a window where the token is world-readable.
+    fs.writeFileSync(this.metadataFile, JSON.stringify(onDisk, null, 2) + '\n', { mode: 0o600 });
+    // writeFileSync's mode applies only on create; an existing file keeps its
+    // old permissions, so re-assert them.
+    fs.chmodSync(this.metadataFile, 0o600);
+  }
+
   /** Non-secret summary — safe to send to the UI and to log. */
   public status(): CredentialStatus {
-    const meta = readMetadata();
+    const meta = this.readMetadata();
     if (!meta) return { configured: false };
     return {
       configured: true,
-      siteUrl: meta.siteUrl,
-      email: meta.email,
+      ...meta.fields,
       storage: meta.storage
     };
   }
@@ -196,7 +248,7 @@ export class CredentialStore {
    * and common state, and it silently produces the file backend.
    */
   public async storageTarget(): Promise<StorageTarget> {
-    if (await keyringAvailable()) {
+    if (await keyringAvailable(this.keyringAttrs)) {
       return {
         storage: 'keyring',
         reason: 'The OS keyring is available, so the token goes there.'
@@ -204,45 +256,44 @@ export class CredentialStore {
     }
     return {
       storage: 'file',
-      path: METADATA_FILE,
+      path: this.metadataFile,
       reason:
         'No OS keyring is available on this machine — either secret-tool (libsecret) is not installed or no secret service is running — so the token is written to a file readable only by you (mode 0600).'
     };
   }
 
   /** The full credential, or null when nothing is configured. */
-  public async load(): Promise<JiraCredential | null> {
-    const meta = readMetadata();
+  public async load(): Promise<T | null> {
+    const meta = this.readMetadata();
     if (!meta) return null;
 
     if (meta.storage === 'file') {
-      return meta.token
-        ? { siteUrl: meta.siteUrl, email: meta.email, token: meta.token }
-        : null;
+      return meta.token ? ({ ...meta.fields, token: meta.token } as T) : null;
     }
 
-    const token = await keyringLookup();
+    const token = await keyringLookup(this.keyringAttrs);
     // Metadata says keyring but the keyring has nothing: the secret was
     // revoked or the service is unreachable. Not configured, as far as
-    // callers are concerned — which means resolution falls back to `task`.
-    return token ? { siteUrl: meta.siteUrl, email: meta.email, token } : null;
+    // callers are concerned — which means resolution falls back to the
+    // integration's default behaviour.
+    return token ? ({ ...meta.fields, token } as T) : null;
   }
 
   /** Persist a credential, preferring the keyring. Returns where it landed. */
-  public async save(cred: JiraCredential): Promise<CredentialStorage> {
-    if (await keyringAvailable()) {
-      if (await keyringStore(cred.token)) {
-        writeMetadata({ siteUrl: cred.siteUrl, email: cred.email, storage: 'keyring' });
+  public async save(cred: T): Promise<CredentialStorage> {
+    const fields: Record<string, string> = {};
+    for (const name of this.spec.nonSecretFields) {
+      fields[name] = String((cred as Record<string, unknown>)[name] ?? '');
+    }
+
+    if (await keyringAvailable(this.keyringAttrs)) {
+      if (await keyringStore(this.keyringAttrs, this.spec.keyringLabel, cred.token)) {
+        this.writeMetadata({ fields, storage: 'keyring' });
         return 'keyring';
       }
     }
 
-    writeMetadata({
-      siteUrl: cred.siteUrl,
-      email: cred.email,
-      storage: 'file',
-      token: cred.token
-    });
+    this.writeMetadata({ fields, storage: 'file', token: cred.token });
     return 'file';
   }
 
@@ -251,9 +302,9 @@ export class CredentialStore {
     // Clear the keyring regardless of what the metadata claims — if the
     // metadata file was lost, the secret would otherwise be orphaned there
     // with nothing left pointing at it.
-    await keyringClear();
+    await keyringClear(this.keyringAttrs);
     try {
-      fs.unlinkSync(METADATA_FILE);
+      fs.unlinkSync(this.metadataFile);
     } catch {
       // Already gone.
     }
