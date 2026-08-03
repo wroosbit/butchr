@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@launchpad-ui/components/style.css';
 import './sidepanel.css'; // Reuse basic styles if needed
 
 import { HerdrStateChip } from './src/components/HerdrStateChip.jsx';
+import { AgentTree } from './src/components/AgentTree.jsx';
 import { StalenessBanner } from './src/components/StalenessBanner.jsx';
 import { MissingAgentsBanner } from './src/components/MissingAgentsBanner.jsx';
 import { PreemptedAgentsBanner } from './src/components/PreemptedAgentsBanner.jsx';
@@ -11,6 +12,7 @@ import { StandbyAgents } from './src/components/StandbyAgents.jsx';
 import { AgentOffControl } from './src/components/AgentOffControl.jsx';
 import { ActivationRefusal } from './src/components/ActivationRefusal.jsx';
 import { useFleetControls } from './src/hooks/useFleetControls.js';
+import { buildAgentTree } from './src/lib/agentTree.js';
 
 function Agents() {
   const [daemonConnected, setDaemonConnected] = useState(false);
@@ -34,6 +36,19 @@ function Agents() {
   // the poll's state above: the poll owns what is running, this owns what was
   // requested, and neither writes to the other. See useFleetControls.js.
   const controls = useFleetControls(agents);
+
+  // The same four lists, arranged by who activated whom. Recomputed only when
+  // one of them is replaced — the poll hands back new arrays every 2s, so this
+  // runs at the poll's rate and not at the render's, and nothing a person is in
+  // the middle of is an input to it.
+  //
+  // Against a daemon that does not send `activatedBy` this is the flat list:
+  // every running agent a root, no children, same order, same keys. There is no
+  // separate fallback rendering to keep in step with this one.
+  const tree = useMemo(
+    () => buildAgentTree({ agents, standbyAgents, preemptedAgents, missingAgents }),
+    [agents, standbyAgents, preemptedAgents, missingAgents]
+  );
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_DAEMON_STATUS' }, (res) => {
@@ -161,18 +176,24 @@ function Agents() {
       ) : agents.length === 0 ? (
         <div style={{ textAlign: 'center', color: '#94a3b8', padding: '40px' }}>No agents currently running.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {agents.map((agent) => (
-            /*
-              Keyed by agent name, not by array index. The index was harmless
-              while the page was read-only, and stops being harmless the moment
-              a row holds state: `agents` is replaced wholesale every 2s, so an
-              agent leaving the list shifts every index after it, and React
-              would carry an open confirmation — or a "Stopping…" — onto
-              whichever agent inherited that position. That is the flicker this
-              ticket asked about, and index keys are where it comes from.
-            */
-            <div key={agent.agentName} className="card" style={{ backgroundColor: '#111827', borderRadius: '8px', border: '1px solid #334155', padding: '16px' }}>
+        /*
+          Nested by who activated whom, and keyed by agent name rather than by
+          array index at every level. The index was harmless while the page was
+          read-only, and stops being harmless the moment a row holds state:
+          `agents` is replaced wholesale every 2s, so an agent leaving the list
+          shifts every index after it, and React would carry an open
+          confirmation — or a "Stopping…" — onto whichever agent inherited that
+          position. That is the flicker this ticket asked about, and index keys
+          are where it comes from. See AgentTree.jsx for the keying at depth.
+
+          The running row itself is drawn here rather than in AgentTree, so the
+          card, its chips, its Off control and that control's confirmation are
+          the same markup wherever in the tree the agent has ended up.
+        */
+        <AgentTree
+          roots={tree.roots}
+          renderRunning={(agent) => (
+            <div className="card" style={{ backgroundColor: '#111827', borderRadius: '8px', border: '1px solid #334155', padding: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
                 <div>
                   <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '4px' }}>
@@ -244,8 +265,8 @@ function Agents() {
                 </div>
               ) : null}
             </div>
-          ))}
-        </div>
+          )}
+        />
       )}
 
       {/* Last, because it is the quietest thing on the page: agents that are
