@@ -207,6 +207,16 @@ contains:
 When several agents will run in parallel, add a coordination note naming the
 shared files and warning that branches will need updating against `main`.
 
+**Link liberally — all four standard types** (standard link types only, used
+heavily: human decision, 2026-08-03). Links are cheap and make the board
+navigable. `parent` records story→epic; everything else is a link: `Blocks`
+for real dependencies and cross-story ordering — a coordination note that says
+"start after X merges" should usually also be a `Blocks` link; `Relates` for
+follow-up work, the incident ticket a fix came from, and sibling tickets
+sharing context; `Duplicate` when duplicate work is discovered — link before
+closing the loser; `Cloners` when a ticket is cloned as the template for
+recurring or parallel work.
+
 Before filing, check for duplicate work: if a ticket covering the same substance
 is Done or already in flight, don't file another.
 

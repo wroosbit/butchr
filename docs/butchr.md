@@ -432,9 +432,13 @@ execute unattended.
 
 **Tasks implement stories.** Story and Task sit at the same hierarchy level in a
 team-managed project, so a task cannot be a *child* of a story; the relationship
-is recorded as an `Implements` issue link (task → story) plus an explicit line
-in each task's description. Where a site has no `Implements` link type
-configured, the agent falls back to `Blocks` and reports that it did.
+is recorded as a `Blocks` issue link — the task blocks the story — plus an
+explicit line in each task's description. `Blocks` is the standing convention
+(standard link types only — human decision, 2026-08-03): a story cannot close
+until its implementing tasks land. Beyond that convention, the prompts direct
+agents to use all four standard link types liberally — `Blocks` for real
+dependencies, `Relates` for loose association, `Duplicate` before closing
+duplicate work, `Cloners` for tickets cloned as templates.
 
 It **activates the task agents for the tasks it files** — agent lifecycle for
 its tasks is its own. It monitors those agents, steers them when they stall,
