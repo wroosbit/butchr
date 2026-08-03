@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
+import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
 import {
@@ -106,6 +106,18 @@ const RUNTIME_CONFIRM_TIMEOUT_MS = 20000;
 
 /** Gap between census checks while waiting for a spawned agent to appear. */
 const AGENT_CONFIRM_POLL_MS = 250;
+
+/**
+ * How many times the initial-prompt write is attempted before the activation
+ * is refused, and the pause between attempts. The retry exists for transient
+ * FS errors — a momentary EAGAIN or ENOSPC that a beat later clears — not as a
+ * way to outlast a workspace that genuinely cannot be written: three failures
+ * in a row is a directory that cannot hold the agent's brief, and no bounded
+ * retry beats that — refusing honestly does (the TRUST_WRITE_ATTEMPTS lesson,
+ * KAN-54).
+ */
+const PROMPT_WRITE_ATTEMPTS = 3;
+const PROMPT_WRITE_RETRY_MS = 60;
 
 /**
  * Whether an agent actually exists, asked after a spawn herdr did not complain
@@ -593,12 +605,41 @@ export class HerdrBridge {
       }
     }
 
+    // The brief is part of the activation (KAN-84). This write used to
+    // log-and-fall-through on failure, so the agent booted with no
+    // instructions and the activation still answered `success: true,
+    // verified: true` — verified proves a live runtime exists, not that it
+    // was instructed, and an agent with no brief burns its budget discovering
+    // that or improvises one. A workspace that cannot hold its own brief is
+    // not a workspace an agent can work in, so a write that fails past the
+    // transient-error retry refuses through the same channel as the refusals
+    // above. When there is no initialPrompt (resumes, launchers without
+    // briefs) there is nothing to write and nothing to refuse over.
     if (initialPrompt) {
       const promptFile = path.join(session.workDir, '.butchr-prompt.md');
-      try {
-        fs.writeFileSync(promptFile, initialPrompt);
-      } catch (e) {
-        console.error('[HerdrBridge] Failed to write prompt file', e);
+      let writeError: string | undefined;
+      for (let attempt = 1; attempt <= PROMPT_WRITE_ATTEMPTS; attempt++) {
+        try {
+          fs.writeFileSync(promptFile, initialPrompt);
+          writeError = undefined;
+          break;
+        } catch (e: any) {
+          writeError = e?.message ?? String(e);
+          console.error(
+            `[HerdrBridge] Prompt-file write ${attempt}/${PROMPT_WRITE_ATTEMPTS} for ` +
+            `${agentName} failed: ${writeError}`
+          );
+          if (attempt < PROMPT_WRITE_ATTEMPTS) sleepSync(PROMPT_WRITE_RETRY_MS);
+        }
+      }
+      if (writeError !== undefined) {
+        session.spawnError =
+          `Could not write the agent's initial prompt to ${promptFile} ` +
+          `(retried; ${PROMPT_WRITE_ATTEMPTS} attempts): ${writeError}. ` +
+          `Nothing was started — an agent spawned without its brief would run uninstructed.`;
+        session.status = 'terminated';
+        console.error(`[HerdrBridge] Refusing to start ${agentName}: ${session.spawnError}`);
+        return;
       }
     }
 

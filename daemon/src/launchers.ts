@@ -133,10 +133,10 @@ export interface TrustResult {
 /**
  * Synchronous sleep. initPty is deliberately synchronous from resolveLauncher
  * to the spawn — no await for another activation to interleave into — and the
- * trust write below must stay inside that property, so its settle delay cannot
- * be a Promise.
+ * retries inside that stretch (the trust write below, the prompt-file write in
+ * herdr.ts) must stay inside that property, so their delays cannot be Promises.
  */
-function sleepSync(ms: number): void {
+export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
