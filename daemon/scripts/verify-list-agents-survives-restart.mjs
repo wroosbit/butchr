@@ -26,6 +26,8 @@ import { HerdrBridge } from '../dist/herdr.js';
 import { MessageRouter } from '../dist/router.js';
 import { PromptLoader } from '../dist/prompt.js';
 import { WorkspaceRegistry } from '../dist/registry.js';
+import { createAtlassianIntegration } from '../dist/integrations/atlassian-integration.js';
+import { IntegrationStateStore } from '../dist/integrations/enablement.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kan28-'));
 const realPath = process.env.PATH;
@@ -49,10 +51,26 @@ function noHerdr() {
   process.env.PATH = empty;
 }
 
+/**
+ * The registry a restarted daemon comes up with: empty, then filled by the
+ * Atlassian integration and switched on, which is what daemon.ts does on a
+ * machine whose credential is configured. No lookup — this script never
+ * resolves a URL, and an epic row here comes from herdr's agent name. The
+ * enabled state goes to a throwaway file rather than the machine's own.
+ */
+function registry() {
+  const registry = new WorkspaceRegistry(
+    new IntegrationStateStore(path.join(tmp, 'integrations.json'))
+  );
+  registry.registerIntegration(createAtlassianIntegration());
+  registry.setEnabled('jira', true);
+  return registry;
+}
+
 function listAgents() {
   let response;
   const router = new MessageRouter(
-    new WorkspaceRegistry(),
+    registry(),
     new PromptLoader(path.resolve('..')),
     // A fresh bridge holds no sessions — exactly the state a daemon restart
     // leaves behind, which is the whole point of the ticket.

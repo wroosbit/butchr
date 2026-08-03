@@ -168,11 +168,37 @@ async function harness(dir, registryFile) {
   const { PromptLoader } = await import(path.join(dir, 'prompt.js'));
   const { AgentRegistry } = await import(path.join(dir, 'agent-registry.js'));
 
+  // Section 1's stack is built from an *older* dist, which is the point of this
+  // script — and a dist from before KAN-85 has no atlassian-integration module:
+  // its registry takes the lookup directly and registers Jira's types itself.
+  // Either way the stack under test gets a registry that resolves a Jira issue
+  // URL to `task`.
+  const jiraRegistry = await (async () => {
+    try {
+      const { createAtlassianIntegration } = await import(
+        path.join(dir, 'integrations', 'atlassian-integration.js')
+      );
+      const { IntegrationStateStore } = await import(
+        path.join(dir, 'integrations', 'enablement.js')
+      );
+      return (issueTypeLookup) => {
+        const registry = new WorkspaceRegistry(
+          new IntegrationStateStore(path.join(scratch, `integrations-${registryFile}.json`))
+        );
+        registry.registerIntegration(createAtlassianIntegration({ issueTypeLookup }));
+        registry.setEnabled('jira', true);
+        return registry;
+      };
+    } catch {
+      return (issueTypeLookup) => new WorkspaceRegistry(issueTypeLookup);
+    }
+  })();
+
   const bridge = new HerdrBridge();
   const agentRegistry = new AgentRegistry(path.join(scratch, registryFile));
   let sent;
   const router = new MessageRouter(
-    new WorkspaceRegistry(async () => 'Task'),
+    jiraRegistry(async () => 'Task'),
     new PromptLoader(repoRoot),
     bridge,
     (msg) => { sent = msg; },

@@ -9,7 +9,12 @@ import { HerdrBridge } from './herdr.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
-import { LaunchDarklyIntegration } from './integrations/launchdarkly.js';
+import {
+  LaunchDarklyIntegration,
+  createLaunchDarklyIntegration
+} from './integrations/launchdarkly.js';
+import { createAtlassianIntegration } from './integrations/atlassian-integration.js';
+import { coreMcpServerDefinitions } from './launchers.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport } from './staleness.js';
@@ -102,7 +107,40 @@ const jira = new JiraIssueTypeService(new CredentialStore());
 // workspace types. The adapter exists so the settings UI has somewhere real
 // to store and validate a token (KAN-86).
 const launchdarkly = new LaunchDarklyIntegration();
-const registry = new WorkspaceRegistry((key) => jira.getIssueTypeName(key));
+
+// The registry is empty until an integration fills it: what workspace types
+// this daemon has is the sum of what its enabled integrations contribute, and
+// this is the only place that sum is decided. Atlassian first, so the settings
+// surface lists it first.
+const registry = new WorkspaceRegistry();
+registry.registerIntegration(
+  createAtlassianIntegration({
+    // The one question the registry asks the outside world. Bounded and
+    // never-throwing inside the service; see jira.ts.
+    issueTypeLookup: (key: string) => jira.getIssueTypeName(key),
+    credential: jira
+  })
+);
+registry.registerIntegration(createLaunchDarklyIntegration(launchdarkly));
+// What this daemon came up with, said plainly at startup. A disabled
+// integration is the difference between "no Jira URL resolves" and "no Jira
+// URL resolves *because Atlassian is switched off*", and that is exactly the
+// question someone will be asking the log.
+for (const integration of registry.integrations()) {
+  const types = integration.workspaceTypes.map((t) => t.type).join(', ') || '(none)';
+  const servers = Object.keys(integration.mcpServers?.() ?? {}).join(', ') || '(none)';
+  log(
+    `Integration ${integration.id} (${integration.name}): ` +
+      (integration.enabled
+        ? `enabled — types: ${types}; MCP servers: ${servers}`
+        : `disabled — registered but contributing nothing until enabled ` +
+          `(would provide types: ${types}; MCP servers: ${servers})`)
+  );
+}
+log(
+  `MCP servers assembled for a spawning agent now: ` +
+    Object.keys({ ...registry.mcpServerDefinitions(), ...coreMcpServerDefinitions() }).join(', ')
+);
 const promptLoader = new PromptLoader(repoRoot);
 const herdrBridge = new HerdrBridge();
 

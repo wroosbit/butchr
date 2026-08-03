@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers.js';
+import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
 import {
@@ -365,7 +366,7 @@ export class HerdrBridge {
   // `url` is `string | undefined` rather than optional: it sits in front of
   // required parameters, and callers who have no URL must pass nothing rather
   // than a placeholder.
-  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[], resume?: ResumeCause): HerdrSession {
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: McpServerDefinitions, resume?: ResumeCause): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
     // routers dedupe by (key, type), but the MCP server and the sidepanel's
     // re-attach path can both ask to activate the same agent at once. A second
@@ -557,7 +558,7 @@ export class HerdrBridge {
     }
   }
 
-  private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: string[]): void {
+  private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: McpServerDefinitions): void {
     const agentName = agentNameFor(session.type, session.key);
 
     // Resolved before anything else happens. An unknown defaultAgent refuses
@@ -584,7 +585,7 @@ export class HerdrBridge {
 
     // Workspace-scoped MCP config, written for every agent type: Claude picks
     // up .mcp.json from its cwd, and the file documents the workspace either way.
-    if (mcpServers && mcpServers.length > 0) {
+    if (mcpServers && Object.keys(mcpServers).length > 0) {
       writeWorkspaceMcpConfig(session.workDir, mcpServers);
     }
 
@@ -596,7 +597,7 @@ export class HerdrBridge {
     // startup dialog behind a `success: true, verified: true` answer.
     if (launcher.setup) {
       try {
-        launcher.setup(session.workDir, mcpServers ?? []);
+        launcher.setup(session.workDir, mcpServers ?? {});
       } catch (e: any) {
         session.spawnError = e?.message ?? String(e);
         session.status = 'terminated';

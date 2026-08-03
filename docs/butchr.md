@@ -21,6 +21,42 @@
 
 Rather than extracting arbitrary page content, Butchr delegates entity fetching and actions to **MCP (Model Context Protocol) tools** tied to distinct **Workspace Types**.
 
+**An integration owns its workspace types.** The unit of extension is an
+*integration* — one outside system: its id and display name, the workspace
+types it contributes, the credential that reaches it, the MCP servers its
+agents get, and whether it is switched on
+(`daemon/src/integrations/integration.ts`). **Atlassian** is the first
+(`integrations/atlassian-integration.ts`, contributing `task`, `story` and
+`epic`, and owning the `atlassian` MCP server); LaunchDarkly is the second and
+contributes no types at all, only a credential (`integrations/launchdarkly.ts`).
+`daemon/src/registry.ts` knows how to *take* an integration — match, refine,
+prioritize, aggregate — and nothing about any particular outside system, so a
+third one is a new module plus one `registerIntegration` call in `daemon.ts`.
+`daemon/scripts/verify-integration-pluggability.mjs` proves that live by
+resolving a URL to a synthetic integration's type and finding its MCP server in
+an assembled workspace config.
+
+The integration is *Atlassian* — one credential, one `mcp-remote` endpoint,
+serving Jira today and Confluence later — but its persisted and on-the-wire
+identity stays `jira`: the credential file `jira-credential.json`, the keyring
+attributes `account jira`, and the `list_integrations` row `id: "jira"` are
+unchanged, because renaming them would cost a migration of a live credential
+and break a shipped settings UI for nothing a user can see.
+
+**Integrations provide MCP servers, and are off until turned on.** A spawning
+agent's `.mcp.json` is assembled from the *enabled and configured*
+integrations, plus Butchr's own `butchr` server, which is core rather than an
+integration and is attached to every agent regardless. An integration's servers
+attach to every spawned agent once it is enabled, not only to agents of the
+types it owns. The enabled state is persisted in
+`~/.local/share/butchr/integrations.json` and defaults to **disabled** — except
+that an integration whose credential is already configured migrates as enabled,
+so an existing install is never silently switched off. A disabled integration
+contributes nothing but keeps its URL patterns for diagnosis, so a Jira URL
+refuses with *"the Atlassian integration is switched off"* rather than
+"unsupported URL". Running agents are never stopped by a toggle; only new
+activations are refused.
+
 Each Workspace Type configures:
 1. **URL Matching & Key Extraction:** Rule to identify if a page matches the type and extract its unique key.
 2. **MCP Tools:** Official or custom MCP toolsets attached to the agent environment.
@@ -74,7 +110,8 @@ issue's real `issuetype`:
 URL ──match──> task (provisional) ──ask Jira──> issuetype name ──map──> task | story | epic
 ```
 
-The mapping lives in one place in `daemon/src/registry.ts`, as data:
+The mapping lives in one place in `daemon/src/integrations/atlassian-integration.ts`,
+as data — Jira's own knowledge, held by the Jira integration:
 
 | Jira issue type | Workspace type |
 | :--- | :--- |

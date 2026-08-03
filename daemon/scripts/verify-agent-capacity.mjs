@@ -236,6 +236,13 @@ function stubBridge(runningAgentNames) {
     listHerdrAgentsChecked: () => ({ reachable: true, agents }),
     listActiveSessions: () => [],
     getSessionByKey: () => undefined,
+    // The same drift again, one ticket later: KAN-83 moved session lookup from
+    // key alone to (key, type) and the router now asks for this one, so every
+    // section below that drives the real router died on a TypeError before
+    // reaching the gate it exists to prove. Answering `undefined` is what
+    // `getSessionByKey` answered — no session exists in these sections — so the
+    // repair restores the proof rather than changing what it asserts.
+    getSessionByAddress: () => undefined,
     spawnSession: () => {
       throw new Error('spawnSession must not be reached when capacity refuses');
     }
@@ -249,7 +256,17 @@ function stubBridge(runningAgentNames) {
 const stubRegistry = {
   get: () => undefined,
   resolve: async () => null,
-  priorityFor: () => 1
+  priorityFor: () => 1,
+  // "No integration is switched off" — the answers that keep this script about
+  // capacity. An unregistered type here is genuinely unknown rather than one
+  // whose integration is disabled, which is a refusal with a different reason
+  // (KAN-85) and a different script.
+  disabledMatch: () => null,
+  disabledIntegrationForType: () => null,
+  // No integrations, so no integration-owned MCP servers. The activations
+  // below never reach a spawn — the gate answers them — and what a spawn would
+  // have written is verify-mcp-assembly.mjs's subject, not this script's.
+  mcpServerDefinitions: () => ({})
 };
 const stubPrompts = { loadAndRender: () => '# prompt' };
 

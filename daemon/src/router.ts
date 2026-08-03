@@ -3,6 +3,8 @@ import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { JiraIssueTypeService } from './jira.js';
 import { LaunchDarklyIntegration } from './integrations/launchdarkly.js';
+import { Integration, McpServerDefinitions } from './integrations/integration.js';
+import { coreMcpServerDefinitions } from './launchers.js';
 import {
   HerdrBridge,
   HerdrSession,
@@ -93,9 +95,10 @@ interface ListedAgent {
    * KAN-38 put an Off button next to every row including the supervisors',
    * and the guard on those rows has to be different in kind — stopping one
    * stops the thing that hands work out. A UI deciding that from a hardcoded
-   * list of types would be a second copy of a rule that already lives in
-   * SUPERVISOR_WORKSPACE_TYPES in registry.ts, and the copy is the one that
-   * gets forgotten when the set changes.
+   * list of types would be a second copy of a rule that lives with the
+   * workspace type itself (`supervisor: true`, declared by the integration
+   * that owns the type and answered by `isSupervisorType` in registry.ts), and
+   * the copy is the one that gets forgotten when a supervisor type is added.
    */
   supervisor: boolean;
 }
@@ -296,6 +299,58 @@ interface GateRequest {
  */
 function unknownIntegration(integration: string): string {
   return `Unknown integration: ${integration || '(none given)'}. Known integrations: jira, launchdarkly.`;
+}
+
+/**
+ * The refusal for a page — or a type — whose integration is switched off.
+ *
+ * A Jira URL failing as "unsupported URL" when the user has merely turned
+ * Atlassian off is a lie, and an expensive one: it sends someone looking for a
+ * pattern bug that is not there. Disabled integrations keep their patterns for
+ * exactly this, never for matching, so the refusal can name the real cause and
+ * the fix. KAN-91 renders this verbatim.
+ */
+function integrationDisabled(name: string, what: string): string {
+  return (
+    `The ${name} integration is switched off, so ${what} does not open a workspace. ` +
+    `Turn ${name} back on in Butchr's settings to activate it again. ` +
+    `Agents that are already running are unaffected.`
+  );
+}
+
+/**
+ * An integration's workspace types, as `list_integrations` reports them.
+ *
+ * `resolution` says how a page becomes this type: `url-matched` types own URL
+ * patterns; the pattern-less ones are reached only by refining a URL match
+ * against what the integration knows the entity really is (see
+ * atlassian-integration.ts on why a Story's URL is byte-identical to a Task's).
+ * Derived from the config rather than declared, which is the meaning this
+ * field has always carried.
+ *
+ * Ordered by descending priority — epic, story, task for Jira — which is the
+ * order the settings page has always rendered and the order the scale reads
+ * in. Registration order is deliberately not used: it is the order that
+ * matters to URL matching, and a UI list is not the place to expose it.
+ */
+function providedTypesOf(integration: Integration): Array<{
+  type: string;
+  name: string;
+  resolution: 'url-matched' | 'refined-from-issue-type';
+  priority: number;
+  supervisor: boolean;
+}> {
+  return [...integration.workspaceTypes]
+    .sort((a, b) => b.priority - a.priority)
+    .map((config) => ({
+      type: config.type,
+      name: config.name,
+      resolution: (config.urlPatterns.length > 0
+        ? 'url-matched'
+        : 'refined-from-issue-type') as 'url-matched' | 'refined-from-issue-type',
+      priority: config.priority,
+      supervisor: !!config.supervisor
+    }));
 }
 
 export class MessageRouter {
@@ -505,6 +560,12 @@ export class MessageRouter {
           'clear_integration_credential'
         );
         break;
+      case 'set_integration_enabled':
+        void guard(
+          this.handleSetIntegrationEnabled(data, respond),
+          'set_integration_enabled'
+        );
+        return;
       case 'list_integrations':
         void guard(this.handleListIntegrations(respond), 'list_integrations');
         break;
@@ -837,10 +898,27 @@ export class MessageRouter {
   private async handleActivate(data: any, respond: Respond) {
     const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
+      // Only after resolution has genuinely failed: a disabled integration's
+      // patterns are diagnosis, never matching, so this can never turn a
+      // refusal into an activation.
+      const disabled = this.registry.disabledMatch(data.url);
       respond({
         action: 'activate_response',
         success: false,
-        error: 'Unsupported URL. No matching Workspace Type found.'
+        error: disabled
+          ? integrationDisabled(
+              disabled.integration.name,
+              disabled.key ? `${disabled.key}` : 'this page'
+            )
+          : 'Unsupported URL. No matching Workspace Type found.',
+        ...(disabled
+          ? {
+              refusedBy: 'integration-disabled',
+              integration: disabled.integration.id,
+              integrationName: disabled.integration.name,
+              ...(disabled.key ? { key: disabled.key } : {})
+            }
+          : {})
       });
       return;
     }
@@ -852,6 +930,7 @@ export class MessageRouter {
     });
 
     const agentName = agentNameFor(config.type, key);
+    const mcpServers = this.mcpServersForSpawn();
     // By (key, type), never by key alone: workspace keys are shared across
     // types by design, so a key-only match here would hand this activation a
     // live agent of another type — whose PTY the confirmation-failure path
@@ -894,7 +973,7 @@ export class MessageRouter {
       // A preempted agent switched back on is resuming interrupted work, not
       // starting it. See resumeCauseFor.
       const resume = this.resumeCauseFor(agentName);
-      session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, config.mcpServers, resume);
+      session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, mcpServers, resume);
       if (!session.spawnError) this.nudgeIfResumed(session, data.defaultAgent);
     }
 
@@ -936,7 +1015,7 @@ export class MessageRouter {
       workDir: session.workDir,
       url: data.url,
       defaultAgent: data.defaultAgent,
-      mcpServers: config.mcpServers
+      mcpServers: Object.keys(mcpServers)
     });
 
     this.broadcast({
@@ -958,7 +1037,7 @@ export class MessageRouter {
       status: session.status,
       workDir: session.workDir,
       createdAt: session.createdAt.toISOString(),
-      mcpServers: config.mcpServers,
+      mcpServers: Object.keys(mcpServers),
       priority: config.priority,
       // Not decoration: it is the difference between this response and the one
       // KAN-23 was filed about. `true` means the agent was found in herdr's
@@ -996,8 +1075,32 @@ export class MessageRouter {
     // come from one place. An unregistered type still works on the old
     // convention — callers may address a type this daemon doesn't know.
     const config = this.registry.get(type);
+    // An unregistered type is ordinarily allowed through on the old convention
+    // — callers may address a type this daemon does not know. But a type that
+    // is unregistered *because its integration is switched off* is a refusal
+    // with a reason, not an unknown.
+    if (!config) {
+      const disabled = this.registry.disabledIntegrationForType(type);
+      if (disabled) {
+        respond({
+          action: 'activate_response',
+          success: false,
+          type,
+          key,
+          error: integrationDisabled(disabled.name, `${type}/${key}`),
+          refusedBy: 'integration-disabled',
+          integration: disabled.id,
+          integrationName: disabled.name
+        });
+        return;
+      }
+    }
     const promptTemplateFile = config?.promptTemplateFile ?? `prompts/${type}.md`;
-    const mcpServers = config?.mcpServers ?? ['atlassian', 'butchr'];
+    // Not read off the config: MCP servers belong to the integrations, not to
+    // the type, so an unregistered type gets the same servers as a registered
+    // one and the old `?? ['atlassian', 'butchr']` fallback — a second copy of
+    // the hardcoded table — has nothing left to stand in for.
+    const mcpServers = this.mcpServersForSpawn();
     const priority = this.registry.priorityFor(type);
     const agentName = agentNameFor(type, key);
     // By (key, type), never by key alone. This was KAN-83's collision:
@@ -1100,7 +1203,7 @@ export class MessageRouter {
       workDir: session.workDir,
       url,
       defaultAgent,
-      mcpServers
+      mcpServers: Object.keys(mcpServers)
     });
 
     this.broadcast({
@@ -1381,7 +1484,17 @@ export class MessageRouter {
   private async handleReset(data: any, respond: Respond) {
     const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
-      respond({ action: 'reset_response', success: false, error: 'Unsupported URL' });
+      const disabled = this.registry.disabledMatch(data.url);
+      respond({
+        action: 'reset_response',
+        success: false,
+        error: disabled
+          ? integrationDisabled(
+              disabled.integration.name,
+              disabled.key ? `${disabled.key}` : 'this page'
+            )
+          : 'Unsupported URL'
+      });
       return;
     }
     const { config, key } = resolved;
@@ -1487,7 +1600,27 @@ export class MessageRouter {
   private async handleStatus(data: any, respond: Respond) {
     const resolved = await this.registry.resolve(data.url);
     if (!resolved) {
-      respond({ action: 'status_response', success: true, supported: false });
+      // `supported: false` either way — the page is not a workspace right now
+      // — but when the reason is a switched-off integration rather than an
+      // unrecognised URL, say so, so the sidepanel can offer the toggle
+      // instead of a shrug.
+      const disabled = this.registry.disabledMatch(data.url);
+      respond({
+        action: 'status_response',
+        success: true,
+        supported: false,
+        ...(disabled
+          ? {
+              refusedBy: 'integration-disabled',
+              integration: disabled.integration.id,
+              integrationName: disabled.integration.name,
+              reason: integrationDisabled(
+                disabled.integration.name,
+                disabled.key ? `${disabled.key}` : 'this page'
+              )
+            }
+          : {})
+      });
       return;
     }
 
@@ -1808,88 +1941,156 @@ export class MessageRouter {
   }
 
   /**
+   * The MCP servers a spawning agent gets: every configured integration's,
+   * plus Butchr's own.
+   *
+   * This is the whole of the "which servers?" decision, and it is made in one
+   * place for both activation paths. It replaced a hardcoded if-chain in
+   * launchers.ts that resolved bare server names — so the Atlassian server's
+   * definition lived in a launcher module that had no idea it was Jira's, and
+   * adding a platform meant editing that chain.
+   *
+   * Core last, deliberately: `butchr` is the daemon's own server and an
+   * integration must not be able to displace it by declaring a server of the
+   * same name. The resulting key order — integrations in registration order,
+   * then core — is also the order the old chain produced, so the `.mcp.json`
+   * this writes is byte-identical to the one it wrote before.
+   */
+  private mcpServersForSpawn(): McpServerDefinitions {
+    return {
+      ...(this.registry ? this.registry.mcpServerDefinitions() : {}),
+      ...coreMcpServerDefinitions()
+    };
+  }
+
+  /**
    * The integrations surface the settings UI renders: one row per
    * integration, each with its provided workspace types and a non-secret
    * credential summary.
    *
-   * Descriptor-driven on purpose. Today the daemon's integrations are a
-   * two-row table built here; KAN-85 re-backs the same response with real
-   * `Integration` objects, and this response shape — KAN-87's contract — is
-   * exactly what must not change when it does.
+   * Backed by the real `Integration` objects the registry holds (KAN-85) —
+   * the two-row table this handler used to build by hand is gone, and a third
+   * integration appears here by being registered in daemon.ts rather than by
+   * being restated.
    *
-   * The Jira rows' `providedTypes` are *read* from the registry's registered
-   * configs rather than restated, so a workspace type added or re-prioritized
-   * there shows up here without a second copy of the fact. (Reshaping the
-   * registry itself is KAN-85's, held.)
+   * KAN-87's fields keep their shapes exactly; the additions are `enabled` and
+   * `providedMcpServers`, and `name` now reads "Atlassian" for the row whose
+   * id is still `jira` (see atlassian-integration.ts for why the identity did
+   * not move). KAN-91 renders the toggle from `enabled` beside what the row
+   * says it provides.
    */
   private async handleListIntegrations(respond: Respond) {
-    // Both storage probes run a keyring lookup; in parallel so the settings
+    // Test constructions pass no registry; an empty list degrades exactly like
+    // the rest of this handler's absent-collaborator cases.
+    const integrations = this.registry ? this.registry.integrations() : [];
+
+    // Every storage probe runs a keyring lookup; in parallel so the settings
     // page pays one probe's latency, not the sum.
-    const [jiraTarget, ldTarget] = await Promise.all([
-      this.jira ? this.jira.storageTarget() : Promise.resolve(undefined),
-      this.launchdarkly ? this.launchdarkly.storageTarget() : Promise.resolve(undefined)
-    ]);
+    const targets = await Promise.all(
+      integrations.map((integration) =>
+        integration.credential ? integration.credential.storageTarget() : Promise.resolve(undefined)
+      )
+    );
 
     respond({
       action: 'list_integrations_response',
       success: true,
-      integrations: [
-        {
-          id: 'jira',
-          name: 'Jira',
-          providedTypes: this.jiraProvidedTypes(),
-          available: !!this.jira,
-          credential: this.jira ? this.jira.status() : { configured: false },
-          ...(jiraTarget ? { storageTarget: jiraTarget } : {})
-        },
-        {
-          id: 'launchdarkly',
-          name: 'LaunchDarkly',
-          // No workspace types yet: the credential lands first (this ticket),
-          // LD-owned types are follow-on stories. An empty list is the honest
-          // answer, not a placeholder.
-          providedTypes: [],
-          available: !!this.launchdarkly,
-          credential: this.launchdarkly ? this.launchdarkly.status() : { configured: false },
-          ...(ldTarget ? { storageTarget: ldTarget } : {})
-        }
-      ]
+      integrations: integrations.map((integration, i) => ({
+        id: integration.id,
+        name: integration.name,
+        // What it provides, whether or not it is switched on — a disabled
+        // integration contributes nothing, but the toggle has to be rendered
+        // next to what turning it on would give you.
+        providedTypes: providedTypesOf(integration),
+        providedMcpServers: Object.keys(integration.mcpServers?.() ?? {}),
+        // "Does this daemon support a credential for it?" — which is what an
+        // integration having a credential adapter means.
+        available: !!integration.credential,
+        enabled: integration.enabled,
+        credential: integration.credential
+          ? integration.credential.status()
+          : { configured: false },
+        ...(targets[i] ? { storageTarget: targets[i] } : {})
+      }))
     });
   }
 
   /**
-   * Jira's workspace types, as the registry has them registered.
+   * Turn an integration on or off — KAN-91's contract, shaped like the
+   * credential actions beside it: `{ integration, enabled }` in,
+   * `<action>_response` with the same `integration` echoed back out.
    *
-   * `resolution` says how a page becomes this type: `url-matched` types own
-   * URL patterns; the pattern-less ones are reached only by refining a task
-   * URL against the issue's real type in Jira (see registry.ts on why a
-   * Story's URL is byte-identical to a Task's).
+   * One action carrying the desired state rather than an enable/disable pair,
+   * because a toggle sends what it now is. The response carries the integration
+   * row's own fields so the UI can re-render from this answer without a second
+   * round trip.
+   *
+   * Disabling is always allowed, even with agents of that integration's types
+   * running: they keep the `.mcp.json` already written into their workspaces
+   * and are left strictly alone. Only new activations are refused, and they are
+   * refused legibly — see `integrationDisabled`. Standing a fleet down before a
+   * toggle could be flipped would be a worse rule than the house one, which is
+   * that the Off control warns and lets the human proceed.
    */
-  private jiraProvidedTypes(): Array<{
-    type: string;
-    name: string;
-    resolution: 'url-matched' | 'refined-from-issue-type';
-    priority: number;
-    supervisor: boolean;
-  }> {
-    // Test constructions pass no registry; an empty list degrades exactly like
-    // the rest of this handler's absent-collaborator cases.
-    if (!this.registry) return [];
-    const provided = [];
-    for (const type of ['epic', 'story', 'task']) {
-      const config = this.registry.get(type);
-      if (!config) continue;
-      provided.push({
-        type,
-        name: config.name,
-        resolution: (config.urlPatterns.length > 0
-          ? 'url-matched'
-          : 'refined-from-issue-type') as 'url-matched' | 'refined-from-issue-type',
-        priority: config.priority,
-        supervisor: isSupervisorType(type)
+  private async handleSetIntegrationEnabled(data: any, respond: Respond) {
+    const action = 'set_integration_enabled_response';
+    const integrationId = typeof data.integration === 'string' ? data.integration : '';
+    if (typeof data.enabled !== 'boolean') {
+      respond({
+        action,
+        integration: integrationId,
+        success: false,
+        error: '`enabled` must be true or false.'
       });
+      return;
     }
-    return provided;
+
+    const integration = this.registry
+      ? this.registry.integrations().find((i) => i.id === integrationId)
+      : undefined;
+    if (!integration) {
+      respond({ action, success: false, error: unknownIntegration(integrationId) });
+      return;
+    }
+
+    this.registry.setEnabled(integrationId, data.enabled);
+    const running = this.agentsOfIntegration(integration);
+    console.log(
+      `integrations: ${integrationId} ${data.enabled ? 'enabled' : 'disabled'}` +
+        (!data.enabled && running.length
+          ? `; ${running.length} running agent(s) of its types left untouched: ${running.join(', ')}`
+          : '')
+    );
+
+    respond({
+      action,
+      integration: integrationId,
+      success: true,
+      enabled: integration.enabled,
+      name: integration.name,
+      providedTypes: providedTypesOf(integration),
+      providedMcpServers: Object.keys(integration.mcpServers?.() ?? {}),
+      // Named, not counted: a human turning Atlassian off deserves to see
+      // which agents go on running under a type that no longer resolves.
+      ...(running.length ? { runningAgentsUnaffected: running } : {})
+    });
+  }
+
+  /** Agent names currently running under one of an integration's types. */
+  private agentsOfIntegration(integration: Integration): string[] {
+    const types = new Set(integration.workspaceTypes.map((config) => config.type));
+    try {
+      return this.herdrBridge
+        .listHerdrAgents()
+        .map((agent) => agent.name)
+        .filter((name) => {
+          const address = addressFromAgentName(name);
+          return !!address && types.has(address.type);
+        });
+    } catch {
+      // Nothing here is worth failing a toggle over; the census is a courtesy.
+      return [];
+    }
   }
 
   /**

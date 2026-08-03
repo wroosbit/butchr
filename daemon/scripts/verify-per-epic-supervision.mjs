@@ -11,12 +11,14 @@
 //   3. the scale             — epic 3 > story 2 > task 1, read back from
 //                              priorityFor(), and epic-versus-epic is a refusal
 //
-// Every section drives the real WorkspaceRegistry; only the IssueTypeLookup is
-// stubbed, because Jira's answer to "what type is this issue?" is the one
-// thing the registry asks anything else.
+// Every section drives the real WorkspaceRegistry carrying the real Jira
+// integration; only the IssueTypeLookup is stubbed, because Jira's answer to
+// "what type is this issue?" is the one thing resolution asks anything else.
 //
 // Usage: node daemon/scripts/verify-per-epic-supervision.mjs [distDir]
 
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -26,6 +28,31 @@ const distDir = process.argv[2] ?? path.join(scriptDir, '..', 'dist');
 const { PRIORITY_EPIC, PRIORITY_STORY, PRIORITY_TASK, outranks } =
   await import(path.join(distDir, 'priority.js'));
 const { WorkspaceRegistry } = await import(path.join(distDir, 'registry.js'));
+const { createAtlassianIntegration } = await import(
+  path.join(distDir, 'integrations', 'atlassian-integration.js')
+);
+const { IntegrationStateStore } = await import(
+  path.join(distDir, 'integrations', 'enablement.js')
+);
+
+/**
+ * The production registry for this proof: empty, then filled by the Atlassian
+ * integration and switched on.
+ *
+ * Its enabled state goes to a throwaway file — a proof script must not write
+ * into the machine's real ~/.local/share/butchr/integrations.json, nor depend
+ * on what is recorded there.
+ */
+const atlassianRegistry = (issueTypeLookup) => {
+  const registry = new WorkspaceRegistry(
+    new IntegrationStateStore(
+      path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kan85-state-')), 'integrations.json')
+    )
+  );
+  registry.registerIntegration(createAtlassianIntegration({ issueTypeLookup }));
+  registry.setEnabled('jira', true);
+  return registry;
+};
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 const verdict = (ok, yes, no) => {
@@ -60,7 +87,7 @@ const cases = [
 
 let ac1Ok = true;
 for (const { label, lookup, want } of cases) {
-  const registry = new WorkspaceRegistry(lookup);
+  const registry = atlassianRegistry(lookup);
   const resolved = await registry.resolve(ISSUE_URL);
   const ok =
     resolved !== null && resolved.config.type === want.type && resolved.key === want.key;
@@ -78,7 +105,7 @@ verdict(
 
 rule('AC2 — a board URL resolves to nothing; an opened issue on a board still resolves');
 
-const registry = new WorkspaceRegistry(async () => 'Task');
+const registry = atlassianRegistry(async () => 'Task');
 const board = await registry.resolve(BOARD_URL);
 const opened = await registry.resolve(BOARD_WITH_ISSUE_URL);
 
