@@ -15,8 +15,9 @@ worth, or what it was doing.
 
 ## The scale
 
-Priority is a property of the **workspace type**, registered in `registry.ts`
-alongside `mcpServers` and `promptTemplateFile`:
+Priority is a property of the **workspace type**, declared by the integration
+that owns it (Jira's three in `integrations/atlassian-integration.ts`) alongside
+`mcpServers` and `promptTemplateFile`, and read back through `registry.ts`:
 
 | type | priority | what it is |
 | --- | --- | --- |

@@ -2,41 +2,44 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { which } from './env.js';
+import { McpServerDefinitions } from './integrations/integration.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PROMPT_CMD = 'Please read and follow the instructions in .butchr-prompt.md to begin.';
 
-// MCP server definitions Butchr can attach to an agent workspace.
-// The official Atlassian MCP is a remote endpoint; mcp-remote bridges it
-// to stdio clients (OAuth browser flow on first use).
-function mcpServerDefinitions(servers: string[]): Record<string, any> {
-  const defs: Record<string, any> = {};
-  // Absolute commands: the agent spawns these with the *pane's* PATH, which
-  // can be thinner than ours (a login-started herdr server has no nvm) and
-  // resolve `node`/`npx` to an ancient system install. The daemon rewrites
-  // this file on every activation, so the baked paths never go stale.
-  if (servers.includes('atlassian')) {
-    defs['atlassian'] = {
-      command: which('npx') ?? 'npx',
-      args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/mcp']
-    };
-  }
-  if (servers.includes('butchr')) {
-    defs['butchr'] = {
+/**
+ * Butchr's own MCP server — core, not an integration.
+ *
+ * It is the daemon talking to itself: the tools an agent uses to see and drive
+ * the fleet it belongs to. Every agent gets it regardless of which
+ * integrations are configured, which is precisely what makes it core rather
+ * than something to be declared and gated. Integration-owned servers (Jira's
+ * `atlassian`, for one) live with their integrations; this used to sit beside
+ * them in a hardcoded if-chain here, and that chain is what KAN-85 removed.
+ *
+ * Resolved on every call for the same reason the integrations' are — the
+ * daemon rewrites `.mcp.json` on every activation so baked paths cannot go
+ * stale.
+ */
+export function coreMcpServerDefinitions(): McpServerDefinitions {
+  return {
+    butchr: {
       command: process.execPath,
       args: [path.join(__dirname, 'mcp.js')]
-    };
-  }
-  return defs;
+    }
+  };
 }
 
 // Claude Code reads .mcp.json from the project root, and each session's
 // workDir is its project — so MCP config is scoped to the workspace instead
 // of being injected into the user's global ~/.claude.json.
-export function writeWorkspaceMcpConfig(workDir: string, servers: string[]): void {
-  const defs = mcpServerDefinitions(servers);
+//
+// The definitions arrive assembled — core plus every configured integration's,
+// see MessageRouter.mcpServersForSpawn — rather than as names this module
+// resolves against a table of its own. Which servers exist is the
+// integrations' knowledge; writing them into the workspace is this module's.
+export function writeWorkspaceMcpConfig(workDir: string, defs: McpServerDefinitions): void {
   if (Object.keys(defs).length === 0) return;
 
   const configPath = path.join(workDir, '.mcp.json');
@@ -62,8 +65,7 @@ export function writeWorkspaceMcpConfig(workDir: string, servers: string[]): voi
 // The antigravity CLI has no project-scoped equivalent, so its global config
 // is merged into — and never written when the existing file cannot be parsed,
 // which would otherwise replace the user's config with just our entries.
-export function configureAgyMcp(servers: string[], configPath?: string): void {
-  const defs = mcpServerDefinitions(servers);
+export function configureAgyMcp(defs: McpServerDefinitions, configPath?: string): void {
   // Nothing to contribute: leave the user's global config alone entirely.
   if (Object.keys(defs).length === 0) return;
 
@@ -305,7 +307,7 @@ export interface AgentLauncher {
    * same channel as an unknown launcher, so setup that did not stick is never
    * papered over with `success: true`.
    */
-  setup?: (workDir: string, mcpServers: string[]) => void;
+  setup?: (workDir: string, mcpServers: McpServerDefinitions) => void;
   /**
    * Re-run immediately before the pane spawn, after everything between setup
    * and the spawn (prompt write, `herdr agent get`) has had time to happen —

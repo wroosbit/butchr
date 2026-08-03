@@ -1,131 +1,156 @@
 import { WorkspaceTypeConfig } from './types.js';
-import {
-  DEFAULT_WORKSPACE_PRIORITY,
-  PRIORITY_EPIC,
-  PRIORITY_STORY,
-  PRIORITY_TASK
-} from './priority.js';
+import { Integration, McpServerDefinitions } from './integrations/integration.js';
+import { IntegrationStateStore } from './integrations/enablement.js';
+import { DEFAULT_WORKSPACE_PRIORITY } from './priority.js';
 
-/**
- * Jira issue-type name → workspace type.
- *
- * Data, not branching: adding a workspace type for Bug later is a line here
- * plus a `register` call, with no control flow to re-read. Keys are compared
- * lower-cased because Jira's type names are display strings and a renamed or
- * localised type should not silently change behaviour by casing alone.
- */
-const WORKSPACE_TYPE_BY_JIRA_ISSUE_TYPE: Record<string, string> = {
-  epic: 'epic',
-  story: 'story'
-};
-
-/**
- * Everything else — Task, Bug, Subtask, an unrecognised custom type, or a
- * lookup that could not be performed at all — is a `task` workspace. This
- * constant is the degradation guarantee in one place: whatever goes wrong,
- * resolution lands here.
- */
-export const DEFAULT_JIRA_WORKSPACE_TYPE = 'task';
-
-export function workspaceTypeForJiraIssueType(issueTypeName: string | null): string {
-  if (!issueTypeName) return DEFAULT_JIRA_WORKSPACE_TYPE;
-  return (
-    WORKSPACE_TYPE_BY_JIRA_ISSUE_TYPE[issueTypeName.trim().toLowerCase()] ??
-    DEFAULT_JIRA_WORKSPACE_TYPE
-  );
-}
+// URL → workspace type, and nothing about any particular outside system.
+//
+// This module used to hardcode Jira: three `register` calls in the
+// constructor, the Jira issue-type mapping beside them, and the lookup that
+// drives refinement injected here. All of that moved to
+// integrations/atlassian-integration.ts, which is now just the first caller of
+// `registerIntegration`. What is left is the part that is true of every
+// integration — match, refine, prioritize, aggregate what they provide, and
+// hold whether they are turned on — so a second system is a module rather than
+// an edit to this one.
 
 /**
  * Workspace types that hand work out rather than doing it: an epic agent
  * staffs its stories, a story agent staffs its tasks.
  *
- * Two callers read this set, and it lives here because this is where workspace
- * types are defined. The capacity model exempts supervisors from the cap —
- * see the header of capacity.ts for the argument. And the fleet UI's
- * stronger Off confirmation is driven by the `supervisor` DTO field in
- * router.ts, which is computed from this set so the UI never carries its own
- * copy of the rule.
+ * Aggregated from the `supervisor` flag on every registered type rather than
+ * listed here, because the fact belongs to the type and the type belongs to
+ * its integration. The set is module-level for one reason: `isSupervisorType`
+ * is a free function that two modules import, and supervisor-ness is a
+ * property of a workspace type rather than of a registry instance — the union
+ * across registries is the same answer any one of them would give.
+ *
+ * Deliberately not exported: the predicate is the whole interface, and every
+ * caller already goes through it (router.ts's capacity gate and its DTO
+ * builders; verify-agent-preemption.mjs). Exporting the raw set would invite
+ * exactly the second copy of the rule the `supervisor` DTO field exists to
+ * prevent. The capacity model exempts supervisors from the cap — see the
+ * header of capacity.ts for the argument.
  */
-export const SUPERVISOR_WORKSPACE_TYPES: ReadonlySet<string> = new Set(['epic', 'story']);
+const SUPERVISOR_TYPES = new Set<string>();
 
 export function isSupervisorType(type: string | null | undefined): boolean {
-  return typeof type === 'string' && SUPERVISOR_WORKSPACE_TYPES.has(type);
+  return typeof type === 'string' && SUPERVISOR_TYPES.has(type);
 }
-
-/** Asks Jira for an issue's type name. Must never throw; null means unknown. */
-export type IssueTypeLookup = (key: string) => Promise<string | null>;
 
 export class WorkspaceRegistry {
   private types: Map<string, WorkspaceTypeConfig> = new Map();
+  /** Keyed by id so re-registering an integration replaces it in place. */
+  private integrationsById: Map<string, Integration> = new Map();
 
   /**
-   * Optional on purpose: with no lookup installed the registry behaves exactly
-   * as it did before Jira access existed — every issue URL resolves to `task`.
-   * That is also the fallback path, so the un-configured case is not a special
-   * case, it is the same code.
+   * `state` is injectable so a proof script can point the persisted decisions
+   * at a temp file instead of writing into the user's real BUTCHR_DIR.
    */
-  constructor(private issueTypeLookup?: IssueTypeLookup) {
-    this.registerDefaults();
+  constructor(private state: IntegrationStateStore = new IntegrationStateStore()) {}
+
+  /**
+   * Take an integration whole: it is remembered so the settings surface can
+   * report what this daemon actually has rather than a list restated
+   * elsewhere, and — if it is enabled — its workspace types are registered in
+   * the order it declares them.
+   *
+   * The enabled decision is resolved here, once, and it is where the migration
+   * lives. An integration nobody has decided about defaults to **off**, except
+   * that one whose credential is already configured is an existing install:
+   * defaulting *that* off would unregister its workspace types on the next
+   * daemon restart, leave its URLs unresolvable and strand a running fleet. So
+   * a configured credential migrates as enabled, and the decision is written
+   * down at that moment rather than re-derived later — clearing a credential
+   * afterwards must not silently disable an integration in use.
+   */
+  public registerIntegration(integration: Integration) {
+    const configured = !!integration.credential?.status().configured;
+    if (this.state.decideIfUndecided(integration.id, configured)) {
+      console.log(
+        `[Integrations] ${integration.id}: no enabled state on record; ` +
+          (configured
+            ? 'its credential is already configured, so it migrates as enabled'
+            : 'defaulting to disabled until it is turned on')
+      );
+    }
+    integration.enabled = this.state.isEnabled(integration.id, configured);
+
+    this.integrationsById.set(integration.id, integration);
+    this.applyEnablement(integration);
   }
 
-  private registerDefaults() {
-    this.register({
-      type: 'task',
-      name: 'Jira Task',
-      urlPatterns: [
-        /https?:\/\/[^\/]+\/browse\/([A-Z0-9]+-\d+)/i,
-        /https?:\/\/[^\/]+\/jira\/[^\/]+\/projects\/[^\/]+\/issues\/([A-Z0-9]+-\d+)/i,
-        /[\?&]selectedIssue=([A-Z0-9]+-\d+)/i
-      ],
-      keyExtractor: (url: string) => {
-        const match = url.match(/\/browse\/([A-Z0-9]+-\d+)/i) ||
-                      url.match(/\/issues\/([A-Z0-9]+-\d+)/i) ||
-                      url.match(/[\?&]selectedIssue=([A-Z0-9]+-\d+)/i);
-        return match ? match[1].toUpperCase() : null;
-      },
-      mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/task.md',
-      priority: PRIORITY_TASK,
-      // Every Jira issue URL matches this type first; which workspace type it
-      // *actually* becomes is then decided by the issue's type in Jira.
-      refineByJiraIssueType: true
-    });
+  /**
+   * Turn an integration on or off, persistently.
+   *
+   * Enabling registers its workspace types and starts contributing its MCP
+   * servers; disabling unregisters and stops. Running agents are deliberately
+   * untouched either way — they keep the `.mcp.json` already written into
+   * their workspace and go on working, because a toggle is not a reason to
+   * kill somebody's work. Only new activations are affected, and a URL that
+   * belonged to a now-disabled integration is refused with that reason rather
+   * than as an unrecognised URL. See `disabledMatch`.
+   *
+   * Returns false for an id this registry does not have.
+   */
+  public setEnabled(id: string, enabled: boolean): boolean {
+    const integration = this.integrationsById.get(id);
+    if (!integration) return false;
+    this.state.setEnabled(id, enabled);
+    integration.enabled = enabled;
+    this.applyEnablement(integration);
+    return true;
+  }
 
-    // Deliberately pattern-less. A Story's URL is byte-identical to a Task's,
-    // so there is nothing to match on — this type is reached only by refining
-    // a `task` URL match against the issue's real type in Jira, or by an
-    // explicit activate_by_key. Giving it patterns would make it compete with
-    // `task` on identical URLs and reintroduce the ambiguity this exists to
-    // resolve.
-    this.register({
-      type: 'story',
-      name: 'Jira Story',
-      urlPatterns: [],
-      keyExtractor: () => null,
-      mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/story.md',
-      // Above `task` because a story agent decomposes a story into the tasks
-      // that task agents execute: it is upstream of them, so taking a task's
-      // slot to run a story unblocks the thing that generates more work.
-      priority: PRIORITY_STORY
-    });
+  /** Register or unregister an integration's types to match its state. */
+  private applyEnablement(integration: Integration) {
+    for (const config of integration.workspaceTypes) {
+      if (integration.enabled) {
+        this.register(config);
+      } else {
+        this.unregister(config.type);
+      }
+    }
+  }
 
-    // Pattern-less for the same reason as `story`: an Epic's URL is
-    // byte-identical to a Task's, so there is nothing to match on — this type
-    // is reached only by refining a `task` URL match against the issue's real
-    // type in Jira, or by an explicit activate_by_key. Giving it patterns
-    // would make it compete with `task` on identical URLs.
-    this.register({
-      type: 'epic',
-      name: 'Jira Epic',
-      urlPatterns: [],
-      keyExtractor: () => null,
-      mcpServers: ['atlassian', 'butchr'],
-      promptTemplateFile: 'prompts/epic.md',
-      // The top of the scale: an epic agent supervises the stories under it,
-      // so nothing outranks it by construction. See priority.ts.
-      priority: PRIORITY_EPIC
-    });
+  /** The integrations registered here, in registration order. */
+  public integrations(): Integration[] {
+    return [...this.integrationsById.values()];
+  }
+
+  /**
+   * The MCP servers every spawning agent gets from the integrations, keyed by
+   * server name and in registration order.
+   *
+   * Not filtered by workspace type: an integration's servers attach to every
+   * agent this daemon spawns, not only to agents of the types that integration
+   * owns. The two readings coincide for Jira, which owns all three types, and
+   * diverge only for a type-less integration — which could otherwise
+   * contribute to nothing at all, and contributing tools to every agent is the
+   * point of being able to add one.
+   *
+   * Gated on enabled, and on the credential where there is one: a disabled
+   * integration contributes nothing at all, and an integration whose
+   * credential is absent must not inject a server its agents cannot
+   * authenticate. An integration with no credential adapter has nothing to be
+   * unconfigured about and contributes whenever it is enabled.
+   *
+   * Core servers are not here — `butchr` is the daemon's own and is added by
+   * the caller, so a name clash cannot let an integration displace it. See
+   * coreMcpServerDefinitions in launchers.ts.
+   */
+  public mcpServerDefinitions(): McpServerDefinitions {
+    const defs: McpServerDefinitions = {};
+    for (const integration of this.integrationsById.values()) {
+      if (!integration.enabled) continue;
+      if (!integration.mcpServers) continue;
+      if (integration.credential && !integration.credential.status().configured) continue;
+      // Assign rather than accumulate: two integrations naming the same server
+      // yield one entry, the later registration winning, so aggregation cannot
+      // produce a duplicate key in the written config.
+      Object.assign(defs, integration.mcpServers());
+    }
+    return defs;
   }
 
   /**
@@ -141,10 +166,74 @@ export class WorkspaceRegistry {
 
   public register(config: WorkspaceTypeConfig) {
     this.types.set(config.type, config);
+    // The aggregate `isSupervisorType` answers from, maintained here so a type
+    // and its supervisor-ness cannot be registered separately and disagree.
+    if (config.supervisor) {
+      SUPERVISOR_TYPES.add(config.type);
+    } else {
+      SUPERVISOR_TYPES.delete(config.type);
+    }
+  }
+
+  /**
+   * Drop a workspace type. A disabled integration's types stop resolving and
+   * stop counting as supervisors; the configs themselves still exist on the
+   * integration, which is what `disabledMatch` and `list_integrations` read.
+   *
+   * The supervisor aggregate is module-level while the types are per-registry,
+   * so in a process holding several registries — proof scripts, not the daemon,
+   * which has exactly one — the last registration or unregistration of a given
+   * type wins. That is the cost of `isSupervisorType` being a free function,
+   * and it is bounded by the fact that supervisor-ness is a property of the
+   * type rather than of any registry.
+   */
+  private unregister(type: string) {
+    this.types.delete(type);
+    SUPERVISOR_TYPES.delete(type);
   }
 
   public get(type: string): WorkspaceTypeConfig | undefined {
     return this.types.get(type);
+  }
+
+  /**
+   * The disabled integration whose patterns claim this URL, if any.
+   *
+   * Diagnosis only — never matching. `resolve()` sees enabled types and
+   * nothing else, so a disabled integration cannot activate anything; but a
+   * Jira URL failing as "unsupported URL" when the user has merely switched
+   * Atlassian off is a lie, and this is what lets the refusal say the true
+   * thing instead. The key is extracted too, so the message can name what it
+   * would have opened.
+   */
+  public disabledMatch(
+    url: string
+  ): { integration: Integration; config: WorkspaceTypeConfig; key: string | null } | null {
+    for (const integration of this.integrationsById.values()) {
+      if (integration.enabled) continue;
+      for (const config of integration.workspaceTypes) {
+        for (const pattern of config.urlPatterns) {
+          if (pattern.test(url)) {
+            return { integration, config, key: config.keyExtractor(url) };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The disabled integration that owns this workspace type, if any. What
+   * `activate_by_key` needs: an unregistered type is ordinarily allowed
+   * through on the old convention, but a type that is unregistered *because
+   * its integration is off* is a refusal with a reason.
+   */
+  public disabledIntegrationForType(type: string): Integration | null {
+    for (const integration of this.integrationsById.values()) {
+      if (integration.enabled) continue;
+      if (integration.workspaceTypes.some((config) => config.type === type)) return integration;
+    }
+    return null;
   }
 
   /** Pure URL-pattern matching — the original, synchronous behaviour. */
@@ -170,29 +259,37 @@ export class WorkspaceRegistry {
    * call is confined to the one branch that needs it, is cached, is bounded by
    * a hard timeout, and answers null on any failure — so this resolves to
    * `task` and activation proceeds normally whenever Jira is unavailable.
+   *
+   * The question itself belongs to the integration that owns the type; this
+   * method knows only that some types are matched provisionally, and what to
+   * do when the refinement declines to answer.
    */
   public async resolve(
     url: string
   ): Promise<{ config: WorkspaceTypeConfig; key: string } | null> {
     const matched = this.match(url);
     if (!matched) return null;
-    if (!matched.config.refineByJiraIssueType || !this.issueTypeLookup) return matched;
+    const refine = matched.config.refine;
+    if (!refine) return matched;
 
-    let issueTypeName: string | null;
+    let refinedType: string | null;
     try {
-      issueTypeName = await this.issueTypeLookup(matched.key);
+      refinedType = await refine(matched.key);
     } catch {
-      // The lookup's contract is "never throw; null means unknown", but the
-      // degradation guarantee must not depend on every injected lookup
-      // honouring it: a throwing lookup is a lookup that could not be
-      // performed, and lands on the same null as any other failure.
-      issueTypeName = null;
+      // The hook's contract is "never throw; null means unknown", but the
+      // degradation guarantee must not depend on every integration honouring
+      // it: a hook that throws is a refinement that could not be performed,
+      // and lands on the same null as any other failure.
+      refinedType = null;
     }
-    const workspaceType = workspaceTypeForJiraIssueType(issueTypeName);
-    if (workspaceType === matched.config.type) return matched;
+    // Null is "no better answer than the URL gave" — keep the URL match, which
+    // is the type whose patterns claimed this URL in the first place. (Jira's
+    // hook maps its own null to `task` before it ever gets here; see
+    // DEFAULT_JIRA_WORKSPACE_TYPE, which is the same type by construction.)
+    if (!refinedType || refinedType === matched.config.type) return matched;
 
-    const refined = this.types.get(workspaceType);
-    // A mapping naming an unregistered type is a bug, but not one worth
+    const refined = this.types.get(refinedType);
+    // A refinement naming an unregistered type is a bug, but not one worth
     // failing an activation over — keep the URL-matched type.
     return refined ? { config: refined, key: matched.key } : matched;
   }

@@ -154,6 +154,19 @@ const seeded = {
 };
 writeFileSync(claudeConfigPath, JSON.stringify(seeded, null, 2));
 
+// --- a fresh install now starts with Atlassian switched off (KAN-85) ---------
+// Integrations are disabled until the user turns them on, and this fake HOME has
+// no credential to migrate as enabled — so without this the daemon below would
+// come up with no `task` type at all and every activation here would be refused
+// with "the Atlassian integration is switched off". Writing the state file is
+// exactly what the settings toggle does; doing it before the daemon starts keeps
+// this script about what it is about.
+mkdirSync(path.dirname(socketPath), { recursive: true });
+writeFileSync(
+  path.join(path.dirname(socketPath), 'integrations.json'),
+  JSON.stringify({ enabled: { jira: true } }, null, 2) + '\n'
+);
+
 // --- a private herdr, so no pane can reach the live server --------------------
 try {
   run('herdr', ['pane', 'list'], { ...process.env, ...isolatedEnv });

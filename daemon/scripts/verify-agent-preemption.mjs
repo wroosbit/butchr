@@ -53,6 +53,19 @@ const {
   selectVictim
 } = await import(path.join(distDir, 'priority.js'));
 const { WorkspaceRegistry, isSupervisorType } = await import(path.join(distDir, 'registry.js'));
+const { createAtlassianIntegration } = await import(
+  path.join(distDir, 'integrations', 'atlassian-integration.js')
+);
+const { IntegrationStateStore } = await import(
+  path.join(distDir, 'integrations', 'enablement.js')
+);
+// A throwaway state file: integrations are disabled until turned on, and a
+// proof script must neither write into nor depend on the machine's real
+// ~/.local/share/butchr/integrations.json.
+const scratchState = () =>
+  new IntegrationStateStore(
+    path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kan85-state-')), 'integrations.json')
+  );
 const { MessageRouter } = await import(path.join(distDir, 'router.js'));
 const { AgentRegistry } = await import(path.join(distDir, 'agent-registry.js'));
 const { PromptLoader } = await import(path.join(distDir, 'prompt.js'));
@@ -181,9 +194,18 @@ function capacityOfFleet(bridge) {
   return readCapacity(fleet, supervisors);
 }
 
-// A registry that answers the one question the real one asks Jira: is this
-// issue a Task or a Story? Everything downstream of that answer is real code.
-const registry = new WorkspaceRegistry(async (key) => (key === 'KAN-50' ? 'Story' : 'Task'));
+// The real registry carrying the real Atlassian integration, whose lookup answers
+// the one question resolution asks Jira: is this issue a Task or a Story?
+// Everything downstream of that answer is real code — including which types
+// count as supervisors, which the integration declares and `isSupervisorType`
+// reads back below.
+const registry = new WorkspaceRegistry(scratchState());
+registry.registerIntegration(
+  createAtlassianIntegration({
+    issueTypeLookup: async (key) => (key === 'KAN-50' ? 'Story' : 'Task')
+  })
+);
+registry.setEnabled('jira', true);
 
 // The priority-2 worker this proof drives preemption with since KAN-57 (see
 // the header). Registered through the real `register`, so `priorityFor` and
@@ -194,7 +216,6 @@ registry.register({
   name: 'Synthetic priority-2 worker (this script only)',
   urlPatterns: [],
   keyExtractor: () => null,
-  mcpServers: ['atlassian', 'butchr'],
   promptTemplateFile: 'prompts/task.md',
   priority: PRIORITY_STORY
 });

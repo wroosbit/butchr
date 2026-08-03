@@ -6,17 +6,16 @@ import {
   StorageTarget
 } from '../credentials.js';
 import { VALIDATE_TIMEOUT_MS, failureKind, redact, truncate } from '../jira.js';
+import { CredentialAdapter, Integration } from './integration.js';
 
 // LaunchDarkly as Butchr's second integration: a stored API token, validated
 // at the moment the user submits it, with the same disclosure and scrubbing
 // discipline as the Jira credential path in jira.ts.
 //
-// This is deliberately a *minimal adapter* — status / storageTarget /
-// setCredential / clearCredential, which is exactly the surface the router's
-// credential handlers need — and not a framework. KAN-85 formalizes a full
-// `Integration` interface later; this adapter is the seed it grows from, so
-// anything added here beyond what the router calls today is scope borrowed
-// from that ticket.
+// The adapter below is the same four operations KAN-86 shipped — status /
+// storageTarget / setCredential / clearCredential — now declared against the
+// `CredentialAdapter` interface those four operations became. Nothing here
+// changed to satisfy it; the interface was written from this class.
 //
 // There are no LD *features* here — no flag reads, no LD-owned workspace
 // types. Those are follow-on stories; this module exists so a token can be
@@ -263,12 +262,12 @@ function trail(legs: LdLegResult[]): string {
 }
 
 /**
- * The LaunchDarkly integration, as the router consumes it: exactly the four
- * operations the credential handlers need, nothing more. KAN-85 turns this
- * shape into a formal `Integration` interface; until then it is defined by
- * use.
+ * The LaunchDarkly credential, as the router consumes it: exactly the four
+ * operations the credential handlers need, nothing more.
  */
-export class LaunchDarklyIntegration {
+export class LaunchDarklyIntegration
+  implements CredentialAdapter<{ token: string }, LdValidationResult & { storage?: CredentialStorage }>
+{
   constructor(
     private store: CredentialStore<LdCredential> = new CredentialStore(
       LAUNCHDARKLY_CREDENTIAL_SPEC
@@ -326,4 +325,27 @@ export class LaunchDarklyIntegration {
   public async clearCredential(): Promise<void> {
     await this.store.clear();
   }
+}
+
+/**
+ * LaunchDarkly as a registrable integration: a credential and no workspace
+ * types.
+ *
+ * The empty `workspaceTypes` is the honest answer rather than a placeholder —
+ * there are no LD-owned workspace types yet, and the settings UI renders the
+ * row with an empty provided-types list because that is what is true. Adding
+ * one later is a config in this array, not a change anywhere else.
+ */
+export function createLaunchDarklyIntegration(credential: LaunchDarklyIntegration): Integration {
+  return {
+    id: 'launchdarkly',
+    name: 'LaunchDarkly',
+    // As every integration is: off until turned on, with the registry
+    // supplying the persisted decision. A LaunchDarkly credential that is
+    // already configured on this machine migrates as enabled, which keeps the
+    // shipped settings UI showing exactly what it showed before.
+    enabled: false,
+    workspaceTypes: [],
+    credential
+  };
 }

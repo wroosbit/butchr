@@ -21,7 +21,7 @@
 // Exit code 0 means every stage passed.
 
 import { execFileSync, spawn } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import net from 'net';
 import path from 'path';
@@ -122,6 +122,19 @@ const herdrAgentNames = () => {
 };
 
 // --- the daemon under test ---------------------------------------------------
+// --- a fresh install now starts with Atlassian switched off (KAN-85) ---------
+// Integrations are disabled until the user turns them on, and this fake HOME has
+// no credential to migrate as enabled — so without this the daemon below would
+// come up with no `task` type at all and every activation here would be refused
+// with "the Atlassian integration is switched off". Writing the state file is
+// exactly what the settings toggle does; doing it before the daemon starts keeps
+// this script about what it is about.
+mkdirSync(path.dirname(socketPath), { recursive: true });
+writeFileSync(
+  path.join(path.dirname(socketPath), 'integrations.json'),
+  JSON.stringify({ enabled: { jira: true } }, null, 2) + '\n'
+);
+
 console.log(`starting a real daemon from ${distDir} with HOME=${fakeHome}`);
 daemon = spawn(process.execPath, [path.join(distDir, 'daemon.js')], {
   env: { ...process.env, ...isolatedEnv },

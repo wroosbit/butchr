@@ -124,6 +124,29 @@ process.env.PATH = `${shimDir}:${process.env.PATH}`;
 const { HerdrBridge, agentNameFor } = await import(path.join(distDir, 'herdr.js'));
 const { MessageRouter } = await import(path.join(distDir, 'router.js'));
 const { WorkspaceRegistry } = await import(path.join(distDir, 'registry.js'));
+const { createAtlassianIntegration } = await import(
+  path.join(distDir, 'integrations', 'atlassian-integration.js')
+);
+const { IntegrationStateStore } = await import(
+  path.join(distDir, 'integrations', 'enablement.js')
+);
+
+// Integrations are disabled until turned on, and their state is persisted — so
+// every registry here gets its own throwaway state file. A proof script must
+// never write into the machine's real ~/.local/share/butchr/integrations.json,
+// and must not depend on what is recorded there either.
+const scratchState = () =>
+  new IntegrationStateStore(
+    path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kan85-state-')), 'integrations.json')
+  );
+/** The production registry: empty, then filled by the Atlassian integration. */
+function atlassianRegistry(issueTypeLookup) {
+  const registry = new WorkspaceRegistry(scratchState());
+  registry.registerIntegration(createAtlassianIntegration({ issueTypeLookup }));
+  registry.setEnabled('jira', true);
+  return registry;
+}
+
 const { PromptLoader } = await import(path.join(distDir, 'prompt.js'));
 const { AgentRegistry } = await import(path.join(distDir, 'agent-registry.js'));
 
@@ -136,7 +159,7 @@ bridge.setSessionEndedListener((e) => {
 
 let last;
 const router = new MessageRouter(
-  new WorkspaceRegistry(async () => 'Task'),
+  atlassianRegistry(async () => 'Task'),
   new PromptLoader(repoRoot),
   bridge,
   (msg) => { last = msg; },

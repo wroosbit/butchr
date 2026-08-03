@@ -34,8 +34,13 @@ const { MessageRouter } = await import(path.join(distDir, 'router.js'));
 const { JiraIssueTypeService } = await import(path.join(distDir, 'jira.js'));
 const { CredentialStore } = await import(path.join(distDir, 'credentials.js'));
 const { WorkspaceRegistry } = await import(path.join(distDir, 'registry.js'));
-const { LaunchDarklyIntegration, LAUNCHDARKLY_CREDENTIAL_SPEC } = await import(
-  path.join(distDir, 'integrations', 'launchdarkly.js')
+const { LaunchDarklyIntegration, LAUNCHDARKLY_CREDENTIAL_SPEC, createLaunchDarklyIntegration } =
+  await import(path.join(distDir, 'integrations', 'launchdarkly.js'));
+const { createAtlassianIntegration } = await import(
+  path.join(distDir, 'integrations', 'atlassian-integration.js')
+);
+const { IntegrationStateStore } = await import(
+  path.join(distDir, 'integrations', 'enablement.js')
 );
 
 const FAKE_TOKEN = 'api-KAN86-CANARY-c0ffee-d00d-cafebabe-1234567890';
@@ -107,13 +112,32 @@ const deadOrigin = await (async () => {
 const outbound = [];
 const send = (msg) => outbound.push(msg);
 const jira = new JiraIssueTypeService(new CredentialStore());
-const registry = new WorkspaceRegistry();
+// Registered exactly as daemon.ts registers them, which is what makes the
+// `list_integrations` response below this machine's production answer rather
+// than a construction of this script's. The one thing that is this script's is
+// the enabled state: it goes to a throwaway file, because a proof script must
+// not write into the machine's real integrations.json — and both are then
+// switched on, which is what this machine's configured credentials migrate to.
+const registry = new WorkspaceRegistry(
+  new IntegrationStateStore(path.join(workDir, 'integrations.json'))
+);
+registry.registerIntegration(
+  createAtlassianIntegration({
+    issueTypeLookup: (key) => jira.getIssueTypeName(key),
+    credential: jira
+  })
+);
+registry.setEnabled('jira', true);
 
 function routerWith(apiOrigin) {
   const ld = new LaunchDarklyIntegration(
     new CredentialStore(LAUNCHDARKLY_CREDENTIAL_SPEC),
     apiOrigin
   );
+  // Re-registering by id replaces in place, so the settings surface reports
+  // the adapter this router is actually driving.
+  registry.registerIntegration(createLaunchDarklyIntegration(ld));
+  registry.setEnabled('launchdarkly', true);
   return new MessageRouter(registry, null, null, send, undefined, jira, undefined, undefined, ld);
 }
 

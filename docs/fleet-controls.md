@@ -112,10 +112,11 @@ supervisor you cannot stop is a worse failure than one you can stop by accident,
 and supervisors are the agents a human is most likely to need stood down. Three
 things make that safe rather than reckless:
 
-1. `list_agents` marks the row `supervisor: true`. The rule lives in
-   `registry.ts` (`SUPERVISOR_WORKSPACE_TYPES`) and is sent over the wire rather
-   than duplicated in the UI, so adding or removing a supervisor type does not
-   leave a stale copy behind.
+1. `list_agents` marks the row `supervisor: true`. The rule is a `supervisor`
+   flag on the workspace type, declared by the integration that owns it and
+   aggregated into `SUPERVISOR_WORKSPACE_TYPES` in `registry.ts`, and it is sent
+   over the wire rather than duplicated in the UI — so adding or removing a
+   supervisor type does not leave a stale copy behind.
 2. Its confirmation is different in kind — red rather than amber, it names the
    agent it will stop (`Stop the supervisor epic/KAN-39?`), and it says what
    stops while it is off, including that nothing its agents finish will be
