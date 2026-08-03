@@ -128,7 +128,8 @@ process.env.PATH = `${shimDir}:${process.env.PATH}`;
 
 // ---------------------------------------------------------- the harness --
 
-const { HerdrBridge, agentNameFor } = await import(path.join(distDir, 'herdr.js'));
+const { HerdrBridge, agentNameFor, AGENT_CONFIRM_TIMEOUT_MS, HERDR_CLI_TIMEOUT_MS } =
+  await import(path.join(distDir, 'herdr.js'));
 const { MessageRouter } = await import(path.join(distDir, 'router.js'));
 const { WorkspaceRegistry } = await import(path.join(distDir, 'registry.js'));
 const { PromptLoader } = await import(path.join(distDir, 'prompt.js'));
@@ -257,20 +258,45 @@ rule('3. timeout — the verification cannot hang activate');
 console.log(`   Section 2's activation returned in ${ghost.elapsedMs}ms, having waited out the`);
 console.log('   whole confirmation window for an agent that never appeared.\n');
 
+// What this section bounds — decided under KAN-66. Every agent in this proof
+// is a `shell` launcher, so what "exists" means for them is a name
+// registration: there is no runtime to wait for, and activate confirms these
+// very sessions with requireRuntime: false (initPty sets expectsRuntime false
+// for `shell`). The probe asks the same question, so the tight
+// AGENT_CONFIRM_TIMEOUT_MS budget is the right one here. The longer
+// RUNTIME_CONFIRM_TIMEOUT_MS ceiling (KAN-58) belongs to runtime-delivering
+// launchers, which this proof deliberately never starts — passing the budget
+// positionally where requireRuntime now lives is how this section once ended
+// up asserting the old ceiling against the new one.
+const PROBE_BUDGET_MS = 1000;
 const t0 = Date.now();
-const shortBound = await bridge.confirmAgentPresent(agentNameFor(TYPE, 'never-exists'), 1000);
+const shortBound = await bridge.confirmAgentPresent(
+  agentNameFor(TYPE, 'never-exists'),
+  false,
+  PROBE_BUDGET_MS
+);
 const shortMs = Date.now() - t0;
-show('confirmAgentPresent(..., timeoutMs: 1000):', { ...shortBound, measuredMs: shortMs });
+show(`confirmAgentPresent(..., requireRuntime: false, timeoutMs: ${PROBE_BUDGET_MS}):`,
+  { ...shortBound, measuredMs: shortMs });
 
-console.log('\n   The bound: activate polls the census for at most AGENT_CONFIRM_TIMEOUT_MS');
-console.log('   (5000ms, every 250ms), and the census call in flight is itself capped by the');
-console.log('   5000ms timeout inside listHerdrAgentsChecked — so the worst case is those two');
-console.log('   added together, and the ordinary case is one call because a started agent is');
-console.log('   listable immediately.');
+console.log('\n   The bound: for these shell agents activate polls the census for at most');
+console.log(`   AGENT_CONFIRM_TIMEOUT_MS (${AGENT_CONFIRM_TIMEOUT_MS}ms, every 250ms), and the census call in`);
+console.log(`   flight is itself capped by HERDR_CLI_TIMEOUT_MS (${HERDR_CLI_TIMEOUT_MS}ms) — so the worst case`);
+console.log('   is those two added together, and the ordinary case is one call because a');
+console.log('   started agent is listable immediately.');
 
+// Both budgets are asserted from the daemon's own exported constants, so the
+// assertion tracks future ceiling changes instead of failing on them — while
+// still failing if the confirmation genuinely overruns its documented bound.
+// The probe's worst case is its explicit budget plus one census in flight;
+// the activation's is the confirmation's documented worst case plus slack
+// for the activate path around it (the swallowed start, the tab
+// bookkeeping), none of which polls.
 verdict(
-  shortBound.present === false && shortMs < 3000 && ghost.elapsedMs < 12000,
-  `bounded: 1000ms budget honoured in ${shortMs}ms, and activate returned in ${ghost.elapsedMs}ms`,
+  shortBound.present === false &&
+    shortMs < PROBE_BUDGET_MS + HERDR_CLI_TIMEOUT_MS &&
+    ghost.elapsedMs < AGENT_CONFIRM_TIMEOUT_MS + HERDR_CLI_TIMEOUT_MS + 2000,
+  `bounded: ${PROBE_BUDGET_MS}ms budget honoured in ${shortMs}ms, and activate returned in ${ghost.elapsedMs}ms`,
   'the confirmation ran past its budget'
 );
 
