@@ -287,6 +287,70 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       sendResponse({ status: 'error', error: 'Native host not connected' });
     }
+  } else if (message.type === 'GET_INTEGRATIONS') {
+    // What the settings page's Integrations section is drawn from: every
+    // integration this daemon has, its provided workspace types, and a
+    // non-secret credential summary. No token is in the answer.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({ action: 'list_integrations' });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
+  } else if (message.type === 'GET_INTEGRATION_CREDENTIAL_STATUS') {
+    // The generalized form of GET_JIRA_CREDENTIAL_STATUS above. The three
+    // Jira-named messages stay: they are what the relocated Jira card speaks,
+    // and rewriting a working credential path to prove a point is not worth
+    // the risk to the one credential people already have stored.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'integration_credential_status',
+        integration: message.integration
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
+  } else if (message.type === 'SET_INTEGRATION_CREDENTIAL') {
+    // The other message that carries a secret, under the same rule as
+    // SET_JIRA_CREDENTIAL: forwarded straight through, and nothing here keeps
+    // a copy — not in a variable, not in chrome.storage, and deliberately not
+    // in a console.log. Fields are forwarded only when the caller sent them,
+    // so a token-only integration posts a token and nothing else.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'set_integration_credential',
+        integration: message.integration,
+        ...(message.siteUrl !== undefined ? { siteUrl: message.siteUrl } : {}),
+        ...(message.email !== undefined ? { email: message.email } : {}),
+        ...(message.token !== undefined ? { token: message.token } : {})
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
+  } else if (message.type === 'CLEAR_INTEGRATION_CREDENTIAL') {
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'clear_integration_credential',
+        integration: message.integration
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
   } else if (message.type === 'OPEN_TAB') {
     chrome.tabs.create({ url: message.url });
     sendResponse({ status: 'opened' });
