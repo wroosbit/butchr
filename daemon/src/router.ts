@@ -533,7 +533,7 @@ export class MessageRouter {
    * Only consulted when a *new* agent would be created: re-attaching to an
    * agent that is already running costs the machine nothing, and refusing that
    * would be refusing to look at work already in flight. The caller's own
-   * `getSessionByKey` miss is not enough to establish that, because the
+   * `getSessionByAddress` miss is not enough to establish that, because the
    * session map dies with the daemon while the herdr pane does not — so
    * `alreadyRunning` asks herdr, and every re-attach after a daemon restart
    * skips the gate. Without it the panel could not get back to agents it was
@@ -852,7 +852,11 @@ export class MessageRouter {
     });
 
     const agentName = agentNameFor(config.type, key);
-    let session = this.herdrBridge.getSessionByKey(key);
+    // By (key, type), never by key alone: workspace keys are shared across
+    // types by design, so a key-only match here would hand this activation a
+    // live agent of another type — whose PTY the confirmation-failure path
+    // would then kill (KAN-83).
+    let session = this.herdrBridge.getSessionByAddress(key, config.type);
     let gate: CapacityGateResult | null = null;
     if (!session) {
       gate = this.capacityGate({
@@ -996,7 +1000,12 @@ export class MessageRouter {
     const mcpServers = config?.mcpServers ?? ['atlassian', 'butchr'];
     const priority = this.registry.priorityFor(type);
     const agentName = agentNameFor(type, key);
-    let session = this.herdrBridge.getSessionByKey(key);
+    // By (key, type), never by key alone. This was KAN-83's collision:
+    // activating type B with a key a live type-A agent held reused A's
+    // session, failed runtime confirmation against B's agent name, and the
+    // failure path's abandonSession killed A's PTY — a healthy, unrelated
+    // agent destroyed by someone else's activation.
+    let session = this.herdrBridge.getSessionByAddress(key, type);
     let gate: CapacityGateResult | null = null;
 
     if (!session) {
@@ -1154,10 +1163,18 @@ export class MessageRouter {
 
   public handleDeactivateByKey(data: any, respond: Respond) {
     const { key } = data;
+    // The address's type half, honoured when the caller states it — the
+    // sidepanel and the preemption path both do. Without it a key shared
+    // across types would stand down whichever type's session was created
+    // first, not the one the caller meant (KAN-83). A caller that names no
+    // type gets the key-only match it asked for: deliberately type-agnostic,
+    // for clients addressing an agent whose type they never knew.
+    const requestedType =
+      typeof data.type === 'string' && data.type.trim() ? data.type.trim() : undefined;
     // Set only by the capacity gate, never by a client: it is the record of why
     // this stand-down was not the agent's own idea. See PreemptionRecord.
     const preemption: PreemptionRecord | undefined = data.preemption;
-    const session = this.herdrBridge.getSessionByKey(key);
+    const session = this.herdrBridge.getSessionByAddress(key, requestedType);
 
     if (session) {
       const { success, error } = this.herdrBridge.terminateSession(session.sessionId);
@@ -1196,7 +1213,7 @@ export class MessageRouter {
     // No session, but the agent may well be alive: the session map dies with
     // the daemon and the herdr pane does not. Close it through the fallback
     // rather than telling the caller an obviously-running agent is gone.
-    const result = this.herdrBridge.closeAgentByKey(key);
+    const result = this.herdrBridge.closeAgentByKey(key, requestedType);
 
     // The type comes from the agent herdr just closed, or — when herdr has no
     // such agent — from the registry.
@@ -1211,7 +1228,7 @@ export class MessageRouter {
     // A caller that already knows the type says so and is believed first — the
     // capacity gate does, having just picked this agent out of a census.
     const closedType =
-      (typeof data.type === 'string' && data.type.trim() ? data.type.trim() : undefined) ??
+      requestedType ??
       (result.agentName ? typeFromAgentName(result.agentName, key) : undefined) ??
       this.registeredTypeFor(key);
 
@@ -1368,7 +1385,10 @@ export class MessageRouter {
       return;
     }
     const { config, key } = resolved;
-    const session = this.herdrBridge.getSessionByKey(key);
+    // By (key, type): the URL resolved to a typed workspace, and this reset is
+    // about to delete that workspace's directory — tearing down a same-key
+    // agent of another type instead would destroy a bystander (KAN-83).
+    const session = this.herdrBridge.getSessionByAddress(key, config.type);
 
     // Same ordering rule as handleResetByKey: the agent goes first, whether we
     // reach it through the session map or the herdr-list fallback.
@@ -1381,7 +1401,7 @@ export class MessageRouter {
     // fact, and a caller that cannot see it cannot know to go looking.
     const closed = session
       ? this.herdrBridge.terminateSession(session.sessionId)
-      : this.herdrBridge.closeAgentByKey(key);
+      : this.herdrBridge.closeAgentByKey(key, config.type);
 
     // A reset destroys the workspace as well as the agent, so it is the most
     // deliberate stand-down there is. Restoring it on the next boot would
@@ -1400,7 +1420,9 @@ export class MessageRouter {
 
   public handleResetByKey(data: any, respond: Respond) {
     const { type, key } = data;
-    const session = this.herdrBridge.getSessionByKey(key);
+    // By (key, type), for handleReset's reason: reset destroys type/key's
+    // workspace, so type/key's agent is the only one it may touch (KAN-83).
+    const session = this.herdrBridge.getSessionByAddress(key, type);
 
     // Tear the agent down *before* resetWorkspace deletes the directory it is
     // running in. Without a session the agent is still reachable through the
@@ -1408,7 +1430,7 @@ export class MessageRouter {
     // that no longer exists.
     const { success: agentClosed, error: agentError } = session
       ? this.herdrBridge.terminateSession(session.sessionId)
-      : this.herdrBridge.closeAgentByKey(key);
+      : this.herdrBridge.closeAgentByKey(key, type);
 
     // Same reasoning as handleReset: the workspace is about to be deleted, so
     // this agent must not be brought back by reconciliation.
@@ -1477,7 +1499,10 @@ export class MessageRouter {
       key: resolved.key
     };
 
-    const session = this.herdrBridge.getSessionByKey(resolved.key);
+    // By (key, type): the page resolved to a typed workspace, and answering
+    // with a same-key session of another type would report a different
+    // agent's attachment as this page's (KAN-83).
+    const session = this.herdrBridge.getSessionByAddress(resolved.key, resolved.config.type);
     if (session) {
       const agent = this.toAgentDto(session, this.herdrBridge.listHerdrStatuses());
       respond({
@@ -2258,7 +2283,13 @@ export class MessageRouter {
     // The live session knows where it actually is; the registry remembers for
     // the agents that outlived their session; the convention is the fallback,
     // and is what `initPty` would have used anyway.
-    const session = this.herdrBridge.getSessionByKey(key);
+    //
+    // By (key, type) when the caller gives a type — a same-key session of
+    // another type is a different agent in a different directory, and its
+    // work state would answer for the wrong workspace (KAN-83). With no type
+    // there is only the key to go by, and the key-only match is the best
+    // available answer rather than a collision.
+    const session = this.herdrBridge.getSessionByAddress(key, type);
     const recorded =
       typeof type === 'string'
         ? this.agentRegistry?.intents().get(agentNameFor(type, key))?.record.workDir

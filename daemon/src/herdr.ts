@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { resolveLauncher, writeWorkspaceMcpConfig } from './launchers.js';
+import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
 import {
@@ -106,6 +106,18 @@ const RUNTIME_CONFIRM_TIMEOUT_MS = 20000;
 
 /** Gap between census checks while waiting for a spawned agent to appear. */
 const AGENT_CONFIRM_POLL_MS = 250;
+
+/**
+ * How many times the initial-prompt write is attempted before the activation
+ * is refused, and the pause between attempts. The retry exists for transient
+ * FS errors — a momentary EAGAIN or ENOSPC that a beat later clears — not as a
+ * way to outlast a workspace that genuinely cannot be written: three failures
+ * in a row is a directory that cannot hold the agent's brief, and no bounded
+ * retry beats that — refusing honestly does (the TRUST_WRITE_ATTEMPTS lesson,
+ * KAN-54).
+ */
+const PROMPT_WRITE_ATTEMPTS = 3;
+const PROMPT_WRITE_RETRY_MS = 60;
 
 /**
  * Whether an agent actually exists, asked after a spawn herdr did not complain
@@ -355,10 +367,10 @@ export class HerdrBridge {
   // than a placeholder.
   public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[], resume?: ResumeCause): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
-    // routers dedupe by key alone, which misses a second workspace *type* on
-    // the same key, and the MCP server and the sidepanel's re-attach path can
-    // both ask to activate the same agent at once. A second attach would evict
-    // the first, so the only safe answer is the session we already have.
+    // routers dedupe by (key, type), but the MCP server and the sidepanel's
+    // re-attach path can both ask to activate the same agent at once. A second
+    // attach would evict the first, so the only safe answer is the session we
+    // already have.
     const agentName = agentNameFor(type, key);
     const existing = this.liveAttachFor(agentName);
     if (existing) {
@@ -593,12 +605,41 @@ export class HerdrBridge {
       }
     }
 
+    // The brief is part of the activation (KAN-84). This write used to
+    // log-and-fall-through on failure, so the agent booted with no
+    // instructions and the activation still answered `success: true,
+    // verified: true` — verified proves a live runtime exists, not that it
+    // was instructed, and an agent with no brief burns its budget discovering
+    // that or improvises one. A workspace that cannot hold its own brief is
+    // not a workspace an agent can work in, so a write that fails past the
+    // transient-error retry refuses through the same channel as the refusals
+    // above. When there is no initialPrompt (resumes, launchers without
+    // briefs) there is nothing to write and nothing to refuse over.
     if (initialPrompt) {
       const promptFile = path.join(session.workDir, '.butchr-prompt.md');
-      try {
-        fs.writeFileSync(promptFile, initialPrompt);
-      } catch (e) {
-        console.error('[HerdrBridge] Failed to write prompt file', e);
+      let writeError: string | undefined;
+      for (let attempt = 1; attempt <= PROMPT_WRITE_ATTEMPTS; attempt++) {
+        try {
+          fs.writeFileSync(promptFile, initialPrompt);
+          writeError = undefined;
+          break;
+        } catch (e: any) {
+          writeError = e?.message ?? String(e);
+          console.error(
+            `[HerdrBridge] Prompt-file write ${attempt}/${PROMPT_WRITE_ATTEMPTS} for ` +
+            `${agentName} failed: ${writeError}`
+          );
+          if (attempt < PROMPT_WRITE_ATTEMPTS) sleepSync(PROMPT_WRITE_RETRY_MS);
+        }
+      }
+      if (writeError !== undefined) {
+        session.spawnError =
+          `Could not write the agent's initial prompt to ${promptFile} ` +
+          `(retried; ${PROMPT_WRITE_ATTEMPTS} attempts): ${writeError}. ` +
+          `Nothing was started — an agent spawned without its brief would run uninstructed.`;
+        session.status = 'terminated';
+        console.error(`[HerdrBridge] Refusing to start ${agentName}: ${session.spawnError}`);
+        return;
       }
     }
 
@@ -986,7 +1027,7 @@ export class HerdrBridge {
    * Give up on a session whose agent is known not to exist.
    *
    * Without this the failure is sticky rather than merely reported: a session
-   * left `active` is what {@link getSessionByKey} and {@link liveAttachFor}
+   * left `active` is what {@link getSessionByAddress} and {@link liveAttachFor}
    * answer with, so the next activate would be handed this dead session and
    * refuse to spawn a real one — the caller could never retry its way out.
    *
@@ -1081,8 +1122,18 @@ export class HerdrBridge {
    * matters most here (messaging an agent that has been running a while).
    */
   private resolveAgentName(key: string): string {
-    const session = this.getSessionByKey(key);
-    if (session) return agentNameFor(session.type, session.key);
+    // All sessions on the key, not the first (getSessionByKey): two types can
+    // hold one key at once (KAN-83), and a bare key naming two agents must be
+    // refused here exactly as the herdr-list fallback below refuses it —
+    // silently picking one would deliver someone's message, close, or reset
+    // to whichever agent happened to be created first.
+    const sessionNames = this.listActiveSessions()
+      .filter(session => session.key === key)
+      .map(session => agentNameFor(session.type, session.key));
+    if (sessionNames.length > 1) {
+      throw new Error(`Key '${key}' is ambiguous; it matches agents: ${sessionNames.join(', ')}`);
+    }
+    if (sessionNames.length === 1) return sessionNames[0];
 
     const suffix = `-${key.toLowerCase()}`;
     const matches = Array.from(this.listHerdrStatuses().keys())
@@ -1109,13 +1160,21 @@ export class HerdrBridge {
    * The session for an address, if this daemon owns one. An explicit type has
    * to match: a session for a different type is a different agent, and
    * answering with it would silently ignore the address the caller gave.
+   *
+   * Searched by (key, type) directly, not by filtering getSessionByKey's
+   * answer. Two types legitimately hold the same key at once (KAN-83), and
+   * key-first would only ever see whichever session was created first — the
+   * other type's session would exist and be unaddressable.
    */
   public getSessionByAddress(key: string, type?: string): HerdrSession | undefined {
-    const session = this.getSessionByKey(key);
-    if (!session) return undefined;
     const trimmedType = typeof type === 'string' ? type.trim() : '';
-    if (trimmedType && session.type !== trimmedType) return undefined;
-    return session;
+    if (!trimmedType) return this.getSessionByKey(key);
+    for (const session of this.sessions.values()) {
+      if (session.key === key && session.type === trimmedType && session.status === 'active') {
+        return session;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1184,16 +1243,17 @@ export class HerdrBridge {
   }
 
   /**
-   * Tear down the agent behind a workspace key without needing a session. The
-   * session map dies with the daemon while the herdr pane outlives it, so both
-   * deactivate and reset resolve the agent through the same herdr-list
-   * fallback `sendToAgent` uses. Never throws — the caller is a request
-   * handler that owes its client a response either way.
+   * Tear down the agent behind a workspace address without needing a session.
+   * The session map dies with the daemon while the herdr pane outlives it, so
+   * both deactivate and reset resolve the agent the same way `sendToAgent`
+   * does: exactly, when the caller names a type; through the herdr-list
+   * fallback when it does not. Never throws — the caller is a request handler
+   * that owes its client a response either way.
    */
-  public closeAgentByKey(key: string): { success: boolean; agentName?: string; error?: string } {
+  public closeAgentByKey(key: string, type?: string): { success: boolean; agentName?: string; error?: string } {
     let agentName: string;
     try {
-      agentName = this.resolveAgentName(key);
+      agentName = this.agentNameForAddress(key, type);
     } catch (e: any) {
       const error = e?.message ?? String(e);
       console.error(`[HerdrBridge] Could not resolve an agent for key '${key}':`, error);
