@@ -355,10 +355,10 @@ export class HerdrBridge {
   // than a placeholder.
   public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: string[], resume?: ResumeCause): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
-    // routers dedupe by key alone, which misses a second workspace *type* on
-    // the same key, and the MCP server and the sidepanel's re-attach path can
-    // both ask to activate the same agent at once. A second attach would evict
-    // the first, so the only safe answer is the session we already have.
+    // routers dedupe by (key, type), but the MCP server and the sidepanel's
+    // re-attach path can both ask to activate the same agent at once. A second
+    // attach would evict the first, so the only safe answer is the session we
+    // already have.
     const agentName = agentNameFor(type, key);
     const existing = this.liveAttachFor(agentName);
     if (existing) {
@@ -986,7 +986,7 @@ export class HerdrBridge {
    * Give up on a session whose agent is known not to exist.
    *
    * Without this the failure is sticky rather than merely reported: a session
-   * left `active` is what {@link getSessionByKey} and {@link liveAttachFor}
+   * left `active` is what {@link getSessionByAddress} and {@link liveAttachFor}
    * answer with, so the next activate would be handed this dead session and
    * refuse to spawn a real one — the caller could never retry its way out.
    *
@@ -1081,8 +1081,18 @@ export class HerdrBridge {
    * matters most here (messaging an agent that has been running a while).
    */
   private resolveAgentName(key: string): string {
-    const session = this.getSessionByKey(key);
-    if (session) return agentNameFor(session.type, session.key);
+    // All sessions on the key, not the first (getSessionByKey): two types can
+    // hold one key at once (KAN-83), and a bare key naming two agents must be
+    // refused here exactly as the herdr-list fallback below refuses it —
+    // silently picking one would deliver someone's message, close, or reset
+    // to whichever agent happened to be created first.
+    const sessionNames = this.listActiveSessions()
+      .filter(session => session.key === key)
+      .map(session => agentNameFor(session.type, session.key));
+    if (sessionNames.length > 1) {
+      throw new Error(`Key '${key}' is ambiguous; it matches agents: ${sessionNames.join(', ')}`);
+    }
+    if (sessionNames.length === 1) return sessionNames[0];
 
     const suffix = `-${key.toLowerCase()}`;
     const matches = Array.from(this.listHerdrStatuses().keys())
@@ -1109,13 +1119,21 @@ export class HerdrBridge {
    * The session for an address, if this daemon owns one. An explicit type has
    * to match: a session for a different type is a different agent, and
    * answering with it would silently ignore the address the caller gave.
+   *
+   * Searched by (key, type) directly, not by filtering getSessionByKey's
+   * answer. Two types legitimately hold the same key at once (KAN-83), and
+   * key-first would only ever see whichever session was created first — the
+   * other type's session would exist and be unaddressable.
    */
   public getSessionByAddress(key: string, type?: string): HerdrSession | undefined {
-    const session = this.getSessionByKey(key);
-    if (!session) return undefined;
     const trimmedType = typeof type === 'string' ? type.trim() : '';
-    if (trimmedType && session.type !== trimmedType) return undefined;
-    return session;
+    if (!trimmedType) return this.getSessionByKey(key);
+    for (const session of this.sessions.values()) {
+      if (session.key === key && session.type === trimmedType && session.status === 'active') {
+        return session;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1184,16 +1202,17 @@ export class HerdrBridge {
   }
 
   /**
-   * Tear down the agent behind a workspace key without needing a session. The
-   * session map dies with the daemon while the herdr pane outlives it, so both
-   * deactivate and reset resolve the agent through the same herdr-list
-   * fallback `sendToAgent` uses. Never throws — the caller is a request
-   * handler that owes its client a response either way.
+   * Tear down the agent behind a workspace address without needing a session.
+   * The session map dies with the daemon while the herdr pane outlives it, so
+   * both deactivate and reset resolve the agent the same way `sendToAgent`
+   * does: exactly, when the caller names a type; through the herdr-list
+   * fallback when it does not. Never throws — the caller is a request handler
+   * that owes its client a response either way.
    */
-  public closeAgentByKey(key: string): { success: boolean; agentName?: string; error?: string } {
+  public closeAgentByKey(key: string, type?: string): { success: boolean; agentName?: string; error?: string } {
     let agentName: string;
     try {
-      agentName = this.resolveAgentName(key);
+      agentName = this.agentNameForAddress(key, type);
     } catch (e: any) {
       const error = e?.message ?? String(e);
       console.error(`[HerdrBridge] Could not resolve an agent for key '${key}':`, error);
