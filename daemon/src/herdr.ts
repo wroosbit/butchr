@@ -52,6 +52,16 @@ export interface HerdrSession {
    * caller uses this to decide whether to nudge; undefined outside a resume.
    */
   resumedConversation?: boolean;
+  /**
+   * Whether a live agent runtime is what this session's launcher delivers.
+   * False only for `shell`, where a bare prompt with no runtime behind the
+   * pane is the delivered product — the same exemption router.ts's
+   * expectsRuntime() draws. Set by initPty once the launcher is resolved, and
+   * read wherever "does an agent exist here?" is answered: for every other
+   * launcher, a pane herdr reports no runtime for is not an agent, however
+   * many name registrations point at it (KAN-58).
+   */
+  expectsRuntime?: boolean;
 }
 
 /**
@@ -78,6 +88,21 @@ const HERDR_CLI_TIMEOUT_MS = 5000;
  * a caller blocked on an activation is not left wondering.
  */
 const AGENT_CONFIRM_TIMEOUT_MS = 5000;
+
+/**
+ * How long {@link HerdrBridge.confirmAgentPresent} waits for a *runtime* to
+ * appear behind the pane, when the launcher is one that delivers a runtime.
+ *
+ * Longer than {@link AGENT_CONFIRM_TIMEOUT_MS} because it covers a different
+ * gap: not herdr registering the name — near-instant — but the launcher's
+ * process chain actually reaching claude (`bash -c "claude --continue ||
+ * claude …"`, where the `--continue` probe can exit and fall back before the
+ * process herdr reports as the pane's agent exists). On the healthy path the
+ * poll returns at the first census that shows the runtime, so this ceiling is
+ * only ever paid in full when no agent is coming — the case where a slow
+ * honest answer beats a fast false one (KAN-58).
+ */
+const RUNTIME_CONFIRM_TIMEOUT_MS = 20000;
 
 /** Gap between census checks while waiting for a spawned agent to appear. */
 const AGENT_CONFIRM_POLL_MS = 250;
@@ -529,14 +554,21 @@ export class HerdrBridge {
     // spawnError — the same channel a spawn herdr refused uses — so activate
     // answers `success: false` with the message naming the valid launchers.
     let launcher: AgentLauncher;
+    let launcherName: string;
     try {
-      ({ launcher } = resolveLauncher(defaultAgent));
+      ({ name: launcherName, launcher } = resolveLauncher(defaultAgent));
     } catch (e: any) {
       session.spawnError = e?.message ?? String(e);
       session.status = 'terminated';
       console.error(`[HerdrBridge] Refusing to start ${agentName}: ${session.spawnError}`);
       return;
     }
+
+    // Recorded on the session because the question outlives this call: the
+    // activation-confirmation path needs to know whether "no runtime behind
+    // the pane" means "not an agent" (every real launcher) or "working as
+    // asked" (`shell`).
+    session.expectsRuntime = launcherName !== 'shell';
 
     // Workspace-scoped MCP config, written for every agent type: Claude picks
     // up .mcp.json from its cwd, and the file documents the workspace either way.
@@ -570,12 +602,62 @@ export class HerdrBridge {
       }
     }
 
+    // Whether to spawn is decided by what is *behind* the name, not by whether
+    // the name is taken. herdr keeps a name registration for any pane it ever
+    // started an agent into — including panes restored after a reboot as bare
+    // shells with nothing running in them — so `herdr agent get` answering is
+    // not evidence of an agent. The record's inner `agent` field is: it is
+    // herdr's report of a live runtime in the pane, the same field
+    // listHerdrAgentsChecked surfaces as agentRuntime and list_agents uses to
+    // split agents from unbackedPanes. Reading mere registration as existence
+    // skipped the launcher, attached this session to a dead prompt, and still
+    // answered `verified: true` (KAN-58).
     let agentExists = false;
+    let staleRecord: any;
     try {
-      const output = execSync(`herdr agent get ${agentName}`, { encoding: 'utf8' });
-      const json = JSON.parse(output);
-      if (json.result && json.result.agent) agentExists = true;
-    } catch(e) {}
+      const record = this.runHerdr(['agent', 'get', agentName])?.result?.agent;
+      if (record) {
+        const backed = typeof record.agent === 'string' && record.agent !== '';
+        if (backed || !session.expectsRuntime) agentExists = true;
+        else staleRecord = record;
+      }
+    } catch (e) {
+      // `agent_not_found` — the ordinary fresh start — and "herdr did not
+      // answer" both land here, and both take the spawn path: for the second,
+      // the spawn itself will surface herdr's error through spawnError rather
+      // than this probe guessing at it.
+    }
+
+    // A stale registration blocks both roads: `agent start` would refuse the
+    // taken name, and attaching would type at a dead shell. Release it the way
+    // deactivate does — closing the pane drops the registration — so the
+    // launcher actually runs. A release herdr refuses stops the activation
+    // here: carrying on would hit AGENT_NAME_TAKEN and fall into the attach
+    // path, which is the very false success this branch exists to prevent.
+    if (staleRecord) {
+      console.log(
+        `[HerdrBridge] ${agentName} is a herdr name registration with no agent behind it ` +
+        `(pane ${staleRecord.pane_id ?? 'unknown'}, status ${staleRecord.agent_status ?? 'unknown'}); ` +
+        `closing the stale pane and taking the spawn path`
+      );
+      try {
+        if (typeof staleRecord.pane_id === 'string' && staleRecord.pane_id) {
+          this.runHerdr(['pane', 'close', staleRecord.pane_id]);
+        }
+      } catch (e: any) {
+        const code = (e as HerdrCliError)?.herdrCode;
+        // Already gone is the outcome we wanted, not a failure.
+        if (code !== PANE_NOT_FOUND && code !== AGENT_NOT_FOUND) {
+          session.spawnError =
+            `Agent name '${agentName}' is held by a stale herdr registration with no agent ` +
+            `running behind it, and the stale pane could not be closed: ${e?.message ?? String(e)}. ` +
+            `Nothing was started.`;
+          session.status = 'terminated';
+          console.error(`[HerdrBridge] Refusing to activate ${agentName}: ${session.spawnError}`);
+          return;
+        }
+      }
+    }
 
     if (!agentExists) {
       // What the agent is told when there is no conversation to continue. On a
@@ -824,6 +906,15 @@ export class HerdrBridge {
    * `list_agents` reports from, deliberately, so that activate and the fleet
    * list can never disagree about whether an agent exists.
    *
+   * `requireRuntime` is what "exists" means. herdr's census lists every name
+   * registration, including panes that are bare shells with no agent process
+   * behind them — the entries list_agents reports as unbackedPanes — so for
+   * any launcher that delivers a runtime, presence-by-name is not presence.
+   * The agent is confirmed only when the census shows a runtime behind the
+   * pane, which is why `verified: true` can no longer be answered off a name
+   * that survived its agent (KAN-58). `false` is for `shell` workspaces,
+   * where the name is all there is to see.
+   *
    * Bounded by `timeoutMs` of polling: the wait cannot exceed it, and the last
    * census in flight is itself capped by the 5s timeout inside
    * listHerdrAgentsChecked, so the whole call is bounded by the two added
@@ -831,20 +922,26 @@ export class HerdrBridge {
    */
   public async confirmAgentPresent(
     agentName: string,
-    timeoutMs: number = AGENT_CONFIRM_TIMEOUT_MS
+    requireRuntime: boolean,
+    timeoutMs: number = requireRuntime ? RUNTIME_CONFIRM_TIMEOUT_MS : AGENT_CONFIRM_TIMEOUT_MS
   ): Promise<AgentPresence> {
     const startedAt = Date.now();
     const deadline = startedAt + timeoutMs;
     let checks = 0;
     let reachable = false;
+    let registered = false;
 
     for (;;) {
       const census = this.listHerdrAgentsChecked();
       checks++;
       reachable = census.reachable;
 
-      if (reachable && census.agents.some(agent => agent.name === agentName)) {
-        return { present: true, waitedMs: Date.now() - startedAt, checks };
+      if (reachable) {
+        const record = census.agents.find(agent => agent.name === agentName);
+        registered = record !== undefined;
+        if (record && (!requireRuntime || record.agentRuntime !== null)) {
+          return { present: true, waitedMs: Date.now() - startedAt, checks };
+        }
       }
 
       if (Date.now() + AGENT_CONFIRM_POLL_MS >= deadline) break;
@@ -862,11 +959,15 @@ export class HerdrBridge {
           reason: 'absent',
           waitedMs,
           checks,
-          error:
-            `herdr reported no error starting agent '${agentName}', but the agent was not in ` +
-            `\`herdr agent list\` ${waitedMs}ms and ${checks} checks later. No agent is running ` +
-            `for this activation. Check ~/.config/herdr/herdr-server.log for the pane.spawn line ` +
-            `covering this attempt.`
+          error: registered
+            ? `herdr has a pane registered under '${agentName}' but reported no agent runtime ` +
+              `behind it for ${waitedMs}ms (${checks} checks): the pane is a shell, not a ` +
+              `running agent. The launcher's command never became a live agent process. ` +
+              `Check ~/.config/herdr/herdr-server.log and the pane itself for what it printed.`
+            : `herdr reported no error starting agent '${agentName}', but the agent was not in ` +
+              `\`herdr agent list\` ${waitedMs}ms and ${checks} checks later. No agent is running ` +
+              `for this activation. Check ~/.config/herdr/herdr-server.log for the pane.spawn line ` +
+              `covering this attempt.`
         }
       : {
           present: false,
