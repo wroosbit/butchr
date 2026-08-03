@@ -20,7 +20,12 @@
 // load or headroom grounds; their cost was never charged, so there was
 // nothing for the gate to ration. Section 14 proves it at zero headroom.
 //
-// Fourteen sections:
+// Extended for KAN-60: what a refusal *says* now names the constraint that
+// bound. A load-bound refusal had been headlined "at capacity" with the cap
+// count leading — false by its own figures. Section 15 proves the headline
+// renders from headroomBoundBy on both the load-bound and count-bound paths.
+//
+// Fifteen sections:
 //
 //   1. derivation    — the cap on THIS machine, with the arithmetic
 //   2. reservation   — the removed manager reservation, before and after
@@ -36,6 +41,7 @@
 //  12. degrade       — the instrument breaks; capacity answers from the seed
 //  13. precedence    — env overrides beat the measurement beats the seed
 //  14. supervisor gate — epic/story activate at zero headroom, no override
+//  15. refusal headline — the headline names the constraint that bound
 //
 // Sections 5 through 7 and 9 drive the real MessageRouter — handleCapacity
 // and handleActivateByKey, the same calls an MCP caller makes — so what they
@@ -61,6 +67,8 @@ const {
   HERDR_OVERHEAD_CORES,
   MEASURED_AGENT_COST,
   optionsFromEnv,
+  capacityRefusal,
+  summarizeCapacity,
   GIB
 } = await import(path.join(distDir, 'capacity.js'));
 const { dampCost, sampleFromMeasurement, ALPHA_UP, ALPHA_DOWN } =
@@ -605,5 +613,77 @@ console.log(
 
 if (savedCores === undefined) delete process.env.BUTCHR_AGENT_CORES;
 else process.env.BUTCHR_AGENT_CORES = savedCores;
+
+// ---------------------------------------------- 15. refusal headline --
+rule('15. REFUSAL HEADLINE — the headline names the constraint that bound');
+
+// KAN-60. An epic activation during a load spike was refused with a message
+// read as "2 of 10, at capacity" — false by its own numbers (2 running
+// against a cap of 10), and leading with the count when what bound was the
+// load. The refusal string, the one-line summary and the sidepanel headline
+// all render from headroomBoundBy now, so "at capacity" appears only when
+// the count is what bound.
+
+// Load-bound, count headroom positive: the same env trick as section 14 —
+// a per-agent core cost so large the load term answers 0 on any machine this
+// script runs on, while the count term still has room (nothing is running).
+{
+  const saved = process.env.BUTCHR_AGENT_CORES;
+  process.env.BUTCHR_AGENT_CORES = '1000';
+
+  const loadBound = await activate([], { type: 'task', key: 'KAN-99' });
+  const error = String(loadBound.response?.error ?? '');
+  const headline = error.split('\n')[0];
+  const summary = String(loadBound.response?.capacity?.summary ?? '');
+
+  console.log('load-bound (headroomByLoad 0, headroomByCap positive), the refusal headline:\n');
+  console.log(`  ${headline}\n`);
+  console.log(`and the one-line summary:\n\n  ${summary}\n`);
+
+  const headlineOk =
+    /load too high/.test(headline) &&
+    /load average is \d/.test(headline) &&
+    !/at capacity/i.test(headline) &&
+    !/\d+ of \d+|\d+\/\d+/.test(headline);
+  console.log(
+    headlineOk && summary.startsWith('load too high')
+      ? '  → the headline names load, quotes the live load figure and the cores, and\n' +
+        '    says neither "at capacity" nor "N of cap". The summary leads the same way.'
+      : '  → THE HEADLINE DID NOT NAME LOAD, OR STILL SAYS AT CAPACITY / N-OF-CAP — CHECK THIS.'
+  );
+
+  if (saved === undefined) delete process.env.BUTCHR_AGENT_CORES;
+  else process.env.BUTCHR_AGENT_CORES = saved;
+}
+
+// Count-bound: the cap genuinely reached, on an otherwise idle machine.
+// Synthetic facts through the pure function, so a busy host running this
+// script cannot flip the binding constraint to load.
+{
+  const idle = {
+    cores: 8,
+    totalBytes: 16 * GIB,
+    availableBytes: 12 * GIB,
+    load1: 0.5
+  };
+  const c = computeCapacity(idle, computeCapacity(idle, 0).cap);
+  const headline = capacityRefusal(c, 'task/KAN-99').split('\n')[0];
+  const summary = summarizeCapacity(c);
+
+  console.log(`\ncount-bound (${c.running} running against a cap of ${c.cap}, load ${idle.load1}), the refusal headline:\n`);
+  console.log(`  ${headline}\n`);
+  console.log(`and the one-line summary:\n\n  ${summary}\n`);
+
+  const headlineOk =
+    c.headroomBoundBy === 'cap' &&
+    /at capacity/.test(headline) &&
+    headline.includes(`${c.running} task agents are already running against a cap of ${c.cap}`);
+  console.log(
+    headlineOk && summary.startsWith(`at capacity: ${c.running}/${c.cap}`)
+      ? '  → at capacity is said here, with N of cap — because here the count is\n' +
+        '    the constraint that bound, and the headline is rendered from it.'
+      : '  → THE COUNT-BOUND HEADLINE DID NOT SAY AT CAPACITY WITH N OF CAP — CHECK THIS.'
+  );
+}
 
 console.log('\n== done ==');

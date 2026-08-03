@@ -401,8 +401,16 @@ rule('4. CONSENT — what is shown BEFORE anything is killed');
   console.log('what the caller receives:\n');
   console.log(JSON.stringify({ success: res.success, type: res.type, key: res.key, priority: res.priority, preemption: res.preemption }, null, 2));
   console.log('\nwhat a panel renders from it (ActivationRefusal.jsx):\n');
+  // The same headline rule the component applies (KAN-60): the binding
+  // constraint leads, and "at capacity" is said only when the count bound.
+  const headline =
+    res.capacity.headroomBoundBy === 'load'
+      ? 'Load is too high'
+      : res.capacity.headroomBoundBy === 'memory'
+        ? 'Not enough memory'
+        : 'This machine is at capacity';
   console.log(`  ⚠️  Can't start this agent`);
-  console.log(`  This machine is at capacity — ${res.reason}.`);
+  console.log(`  ${headline} — ${res.reason}.`);
   console.log(`  ┃ This agent outranks one that is running`);
   console.log(`  ┃ Starting hotfix/KAN-50 (priority ${res.priority}) can free a slot by standing down`);
   console.log(`  ┃ ${res.preemption.type}/${res.preemption.key} (priority ${res.preemption.priority}), which is currently ${res.preemption.herdrStatus}.`);
