@@ -36,5 +36,6 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
 - Open a PR with `gh pr create`, referencing **{{KEY}}** in the title and linking the Jira issue in the body.
 - Run the ticket's acceptance-criteria proof and paste its **real** output into the PR body — the pasted output is the author's honesty; the reviewer re-runs it against your PR head. Never paste output you did not produce.
 - Verify CI with `gh pr checks`; required checks must pass before the PR can merge. If a check fails, fix it and push again rather than trying to bypass it.
+- **Do not merge — review and merge belong to your epic agent.** Your job ends with the PR open, CI green, and the task transitioned to In Review; the epic agent reviews and merges it.
 - Use the `gh` CLI for all GitHub operations.
 - If you find yourself blocked by branch protection, that is the rule working as intended — open a PR; do not attempt to force-push, disable protection, or push to `main`.
