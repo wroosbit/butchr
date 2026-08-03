@@ -27,6 +27,7 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
 - Execute the required code changes, feature additions, or bug fixes based on the Jira task description.
 - Run tests and linting to verify implementation correctness.
 - Post progress updates or completion status back to the Jira issue via Atlassian MCP tools.
+- If you file or discover a follow-up ticket, link it `Relates` to **{{KEY}}** so the connection is one click away for whoever reads either ticket.
 
 ### 4. Submitting Work (Pull Request Only)
 **Never commit or push directly to `main`.** The default branch is protected; direct pushes are rejected. All work lands through a pull request.

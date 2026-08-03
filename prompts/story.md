@@ -64,21 +64,36 @@ Story and Task sit at the same level in this project's hierarchy, so a task
 cannot be a *child* of the story. **Tasks implement stories** — that is the
 relationship, and you record it two ways, both of them:
 
-1. **An `Implements` link** — the task *implements* the story.
+1. **A `Blocks` link — the task blocks the story.** This is the standing
+   convention (standard link types only — human decision, 2026-08-03), and the
+   semantics are sound: a story cannot close until its implementing tasks land,
+   so each task genuinely blocks it.
 
-   Check the site's configured link types first (`getIssueLinkTypes`) and use the
-   one whose outward description is *implements*. If this site has not had that
-   link type added yet, fall back to `Blocks` — the task blocks the story, which
-   is true but weaker — and **say in your report on the story that you fell
-   back**, so it gets fixed rather than silently becoming the convention.
-
-   Direction matters and is easy to get backwards: the **task** is the issue that
-   implements, so it is the `inwardIssue`; the **story** is the
+   Direction matters and is easy to get backwards: the **task** is the blocker,
+   so it is the `inwardIssue`; the **story** is the blocked issue, so it is the
    `outwardIssue`.
 
 2. **A line in the task's own description** naming the story: *"Implements story
    {{KEY}} — <one sentence on how this slice fits>."* Links are easy to miss; the
    description is what the executing agent actually reads.
+
+### Link liberally — all four standard types
+
+Links are cheap and they are what makes the board navigable, so use every
+standard type wherever the relationship actually exists — not only the
+story→task convention above:
+
+- **`Blocks`** — real dependencies: sequenced tasks, cross-story ordering. A
+  coordination note that says "start after X merges" should usually also be a
+  `Blocks` link.
+- **`Relates`** — loose association: follow-up work, the incident ticket a fix
+  came from, sibling tickets sharing context a future reader would want one
+  click away.
+- **`Duplicate`** — when duplicate work is discovered, link the two before
+  closing the loser. This pairs with the check-for-duplicates-before-filing
+  rule below.
+- **`Cloners`** — when a ticket is cloned as the template for a recurring or
+  parallel piece of work.
 
 ## What a good decomposition looks like
 
@@ -125,7 +140,7 @@ to merge `origin/main` before review. Do not leave that discovery to the agents.
 
 Before filing, check for duplicate work: `butchr_list_agents` and a search of the
 board. If a ticket covering the same substance is Done or already in flight,
-don't file another — link it to the story instead.
+don't file another — link the existing one `Relates` to the story instead.
 
 ## Handoff — you file, and you staff what you file
 
