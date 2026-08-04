@@ -1,6 +1,16 @@
 // Proof for KAN-77: the daemon records who activated each agent, and tells that
 // party — once — when the agent's runtime changes state without saying so.
 //
+// WHAT FAILURE THIS WOULD CATCH: a supervisor woken by an agent's ordinary turn
+// boundary — herdr reports `done` at the end of *every* turn, so wiring that to
+// a nudge would make each one an interruption — or woken twice for a single
+// loss, or not woken at all when a child's runtime dies. It also catches the
+// quieter halves: a notice that names neither the child nor what it was doing,
+// a supervisor of record that was invented, self-referential, or dropped on
+// restore, and an Enter lost mid-tool-call so the nudge is typed into the pane
+// and never submitted — the failure a substring check over the scrollback
+// passes rather than catches, which is why section 3 exists.
+//
 // Six sections, one per thing the ticket asks to be true:
 //
 //   1. supervisor of record  — written at activation from the caller's own
