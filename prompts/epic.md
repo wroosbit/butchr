@@ -66,6 +66,40 @@ human's account). Merges against protected `main` are strictly serial:
 mergeState to go CLEAN, then merge — checking rollup SUCCESS alone races the
 re-trigger. Merge style: squash, PR number in the title, branch deleted.
 
+**When a ticket asserts a premise as established fact, check whether the premise
+was observed or read.** This is the review question that would have caught
+KAN-145 a day earlier. KAN-77's ticket stated *"the identity is already on the
+wire"* and cited a line to prove it — but the cited line **reads** the variable;
+nothing anywhere set it. Reading code proves what the code would do with an
+input; it never proves that the input arrives. So when a ticket, a PR body or an
+agent's report leans on "X is already there", ask where it was seen. A citation
+that points at a consumer is not evidence of a producer.
+
+**And when a feature merges, look at it running before you believe it.** Green
+required CI plus a green acceptance proof is exactly what KAN-145 had while
+`activatedBy` was `null` for every agent in the real fleet and the org chart
+could not render. Its two verify scripts were each honest about what they
+tested — each constructed the record it then asserted on — and the gap was
+between them, owned by neither. One `butchr_list_agents` against the running
+system would have shown it. You are the only agent positioned to look at the
+system rather than at its proofs, so that look is a check nothing else in the
+pipeline performs.
+
+Both are instances of one class, and naming it is worth the sentence because
+this epic keeps meeting it in different clothes: **an artifact whose sentence
+claims more than its mechanism covers.** A verify script that renders
+`→ FAILED` and exits 0 (KAN-119). A story sitting In Review over five tasks that
+are all To Do (*a parent's status is a claim about its children*, below). A
+contract promising "a missed event degrades to slower convergence, never
+divergence" that holds only for a consumer which independently polls (CrabCast,
+KAN-59, restated by them as a consumer requirement rather than a guarantee). A
+proof that covers the plumbing given its input but never that the input arrives
+(KAN-145). The mechanism is usually doing exactly what it was written to do; the
+defect is the gap between that and what its wording promises, and it is
+invisible precisely because the thing looks like it is working. It always
+degrades in the same direction — **toward looking finished** — which is why it
+survives review: it presents as success, so nobody digs.
+
 **Never keep a flaky required check.** A required check that fails
 intermittently is worse than no check on that behaviour, because it destroys the
 meaning of every other red: it trains everyone reading the board that a failure
@@ -340,7 +374,10 @@ unassigned.
 
 It is the same shape as the send-race above — a claim that outlived the thing it
 was about. Both argue for one discipline: re-derive from the underlying facts;
-never trust a status because it was true when it was written.
+never trust a status because it was true when it was written. Both are also
+instances of the class named under *you review and merge this epic's PRs*: the
+sentence "In Review" claims the work is delivered; the mechanism only recorded
+what was true when somebody last transitioned it.
 
 ## Priority and preemption
 
