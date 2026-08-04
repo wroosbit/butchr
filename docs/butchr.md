@@ -207,8 +207,9 @@ Rather than extracting arbitrary page content, Butchr delegates entity fetching 
 types it contributes, the credential that reaches it, the MCP servers its
 agents get, and whether it is switched on
 (`daemon/src/integrations/integration.ts`). **Atlassian** is the first
-(`integrations/atlassian-integration.ts`, contributing `task`, `story` and
-`epic`, and owning the `atlassian` MCP server); LaunchDarkly is the second and
+(`integrations/atlassian-integration.ts`, contributing Jira's `task`, `story`
+and `epic` plus Confluence's `confluence`, and owning the `atlassian` MCP
+server); LaunchDarkly is the second and
 contributes no types at all, only a credential (`integrations/launchdarkly.ts`).
 `daemon/src/registry.ts` knows how to *take* an integration — match, refine,
 prioritize, aggregate — and nothing about any particular outside system, so a
@@ -218,7 +219,7 @@ resolving a URL to a synthetic integration's type and finding its MCP server in
 an assembled workspace config.
 
 The integration is *Atlassian* — one credential, one `mcp-remote` endpoint,
-serving Jira today and Confluence later — but its persisted and on-the-wire
+serving Jira and Confluence alike — but its persisted and on-the-wire
 identity stays `jira`: the credential file `jira-credential.json`, the keyring
 attributes `account jira`, and the `list_integrations` row `id: "jira"` are
 unchanged, because renaming them would cost a migration of a live credential
@@ -276,6 +277,47 @@ Same URLs, same key format, different prompt — `prompts/epic.md`.
 | **Entity Key** | Jira Work Item ID |
 | **MCP Tools** | Official Atlassian MCP Server tools |
 | **Initial Prompt File** | `prompts/epic.md` |
+
+### 📌 Type: `confluence` (Confluence)
+
+The second Atlassian product, and the proof that adding one is a declaration:
+`confluence` is one more element in `atlassianWorkspaceTypes()` plus
+`prompts/confluence.md`. It declares no MCP server — servers belong to the
+integration and attach to every agent it spawns, so it inherits `atlassian`,
+which serves Confluence's tools as well as Jira's.
+
+| Parameter | Configuration |
+| :--- | :--- |
+| **Workspace Type** | `confluence` |
+| **Target Platform** | Confluence (`https://*.atlassian.net/wiki/…`) |
+| **URL Patterns** | the four page forms below |
+| **Entity Key** | Confluence page id (e.g. `196787`) |
+| **MCP Tools** | Official Atlassian MCP Server tools (inherited, not declared) |
+| **Initial Prompt File** | `prompts/confluence.md` |
+| **Priority** | `task` (1) — a peer of the hierarchy, not a rung on it |
+
+**The page id is the key**, because it survives a retitle, an edit-versus-view
+and a draft being published, all of which move the slug or the path. Four forms
+match, each with or without a query string or fragment, and with the space key
+being either ordinary (`SD`) or a `~`-prefixed personal space:
+
+| URL form | Key |
+| :--- | :--- |
+| `/wiki/spaces/<SPACE>/pages/<pageId>` | `<pageId>` |
+| `/wiki/spaces/<SPACE>/pages/<pageId>/<slug>` | `<pageId>` |
+| `/wiki/spaces/<SPACE>/pages/edit-v2/<pageId>` | `<pageId>` |
+| `/wiki/pages/resumedraft.action?draftId=<pageId>` | `<pageId>` |
+
+**Everything else under `/wiki/` resolves to nothing** — space homes, the bare
+`/pages` listing, whiteboards, databases, blog posts, and (until KAN-143) tiny
+links `/wiki/x/<tinyId>`. That is deliberate and is the same behaviour a Jira
+board URL gets: a Confluence URL is never degraded to `task`.
+
+A Confluence workspace has **no ticket lifecycle**, and needs none. A page has
+neither assignee nor status, so the reconciler's `Default` state has nothing to
+answer from and resolves to off: a Confluence agent runs only while it is
+explicitly switched **On**. `daemon/scripts/verify-confluence-workspaces.mjs`
+proves the resolution, the exclusions and the single inherited MCP server.
 
 ### 🔎 Why Jira types need a lookup
 

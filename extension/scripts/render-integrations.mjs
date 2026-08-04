@@ -330,7 +330,7 @@ const blocks = [
   ),
   sectionBlock(
     'the summary rows on their own — types, and the servers beside them',
-    "Jira's three types with the distinction that matters: <code>task</code> is recognised from the page URL, while <code>epic</code> and <code>story</code> cannot be — their URLs are byte-identical to a Task's — so they are resolved by asking Jira what the issue really is. That difference is what the credential buys, and it is read from the response rather than written down here." +
+    "Atlassian's types with the distinction that matters: <code>task</code> is recognised from the page URL, while <code>epic</code> and <code>story</code> cannot be — their URLs are byte-identical to a Task's — so they are resolved by asking Jira what the issue really is. <code>confluence</code> is URL-matched like <code>task</code>: a page URL carries the page id, so nothing has to be asked. That difference is what the credential buys, and it is read from the response rather than written down here." +
       ' Under each type list is the half the page used to omit (KAN-106): the MCP servers that integration hands <em>every</em> agent this daemon spawns. Names and command lines both come from <code>providedMcpServers</code>; a definition built from a stored credential is reported by name alone and says so, so a token cannot reach this page through a server definition any more than it can through the credential card. <code>butchr</code> is above the rows rather than in one — it is core, and no switch here adds or removes it.',
     R.summaries(rows, {}, core)
   ),

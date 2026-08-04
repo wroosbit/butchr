@@ -39,6 +39,14 @@ import { HerdrAgentStatus } from './herdr.js';
  *             it is upstream of them: preempting a task to let a story run
  *             unblocks the thing that generates more work.
  *   task  (1) does the work.
+ *
+ * A type that is not a rung on that ladder sits at the level its behaviour
+ * matches rather than getting one of its own. `confluence` (KAN-142) is the
+ * first: a Confluence page agent does work rather than handing it out, and it
+ * is a *peer* of the hierarchy rather than part of it — a page has no standing
+ * relationship to a Jira epic — so it is PRIORITY_TASK. The scale stays three
+ * levels; adding a fourth would have to mean something about what the types
+ * are to each other, and this does not.
  */
 
 /** Epic supervision. The top of the scale: nothing outranks it. */
