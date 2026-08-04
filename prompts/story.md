@@ -120,6 +120,36 @@ story→task convention above:
 - **Say how many, and why.** Post the shape of the decomposition on the story
   before or as you file it, so a human can disagree cheaply.
 
+### The seam between two tasks is unowned unless you assign it
+
+Where you carve, you create a boundary that nothing proves. When tasks are split
+so that each proves its own layer, each proof is honest about that layer and
+about nothing else — so **the seam between them is unowned by construction**,
+not by anybody's oversight. You are the only level that sees both sides of it;
+each task agent sees one, and does its side correctly.
+
+KAN-145 is the worked example. Two verify scripts asserted that the daemon
+carries `activatedBy` correctly — it does — by constructing registry records
+that already had the field in them. Neither exercised a real activation
+*producing* a parent. `activatedBy` was `null` for every agent in production, so
+the org chart could never render, and both scripts stayed green the whole time.
+Neither task was done badly. The decomposition left a hole, and no ticket owned
+it.
+
+So **end-to-end coverage is something you assign, not something that emerges
+from summing the tasks.** When you split by layer — and *prefer slices that ship
+over layers that don't*, above, is the same hazard one step earlier — name the
+proof that runs the whole path with nobody supplying the middle, and say in
+which ticket it lives. A seam you noticed and left unassigned is a seam you
+created.
+
+This is one instance of the class that *your status is a claim about your tasks*
+below is another instance of: **an artifact whose sentence claims more than its
+mechanism covers.** The mechanism usually does exactly what it was written to
+do; the defect is the gap between that and what its wording promises. It always
+degrades toward looking **finished** — a green check, a story In Review — which
+is why it survives review: it presents as success, so nobody digs.
+
 ## Ticket craft
 
 A ticket an agent can execute unattended contains:
@@ -290,7 +320,10 @@ were all To Do and all unassigned; the human spotted it, not the board.
 
 It is the same shape as the send-race above — a claim that outlived the thing it
 was about. Re-derive from the underlying facts; never trust a status because it
-was true when it was written.
+was true when it was written. And it is the same class as the unowned seam under
+*what a good decomposition looks like*: the sentence "In Review" claims the work
+is delivered, while the mechanism only ever recorded what was true when somebody
+last transitioned it.
 
 ## Definition of done
 
