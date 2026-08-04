@@ -27,6 +27,17 @@ import { LaunchDarklyCredentialCard } from './LaunchDarklyCredentialCard.jsx';
 // and no new agent of those types can start. That is the same class of action
 // as the Agents page's Off control, and it is guarded the same way: a
 // confirmation that states what is lost, over a button that names the target.
+//
+// KAN-106 draws the other half of what an integration provides: the MCP servers
+// its agents get. The page had said "some workspace types" about a switch whose
+// truer answer is "these workspace types *and* these tools, for every agent
+// this daemon spawns" — and the tools were the half nobody could see. They come
+// from the daemon's `providedMcpServers` for the same reason the types do, and
+// with the same rule: nothing about any server is written down in this file, so
+// a server added inside an integration appears here with no edit to the
+// extension. `butchr` is not one of them — it is core, the daemon's own, and it
+// reaches every agent whatever is switched on, so it is drawn once for the
+// section rather than attributed to any row.
 
 /**
  * How a page becomes a workspace type, in the user's terms.
@@ -141,6 +152,168 @@ function ProvidedTypes({ providedTypes, enabled = true }) {
 }
 
 /**
+ * The reported servers as objects, whatever the daemon on the other end is.
+ *
+ * A daemon older than KAN-106 reports `providedMcpServers` as bare names, and
+ * the extension is reloaded in Chrome independently of the daemon being
+ * restarted — the drift the settings page's own staleness check exists for. A
+ * name is still a true and useful answer, so an old daemon renders as names
+ * with no command lines rather than as a broken list.
+ */
+const serverRows = (servers) =>
+  (servers || []).map((server) => (typeof server === 'string' ? { name: server } : server));
+
+/** One server's command line, as the daemon reported it — or why it did not. */
+function ServerDetail({ server }) {
+  if (server.detailWithheld) {
+    // The daemon withholds the command line of a definition built from a stored
+    // credential (router.ts, describeMcpServers). Saying so is the honest
+    // rendering: a bare name with no explanation reads like missing data, and
+    // the reason — this one is configured from your credential — is itself
+    // worth knowing.
+    return (
+      <span style={{ color: '#94a3b8', fontSize: '12px' }}>
+        configured from the stored credential, so only its name is shown
+      </span>
+    );
+  }
+
+  // An older daemon sends the name alone and says nothing about why. Nothing is
+  // the right thing to say about a reason it did not give.
+  if (!server.command) return null;
+
+  return (
+    <span
+      style={{
+        fontFamily: 'monospace',
+        fontSize: '12px',
+        color: '#94a3b8',
+        wordBreak: 'break-all'
+      }}
+    >
+      {[server.command, ...(server.args || [])].join(' ')}
+    </span>
+  );
+}
+
+/**
+ * The MCP servers an integration hands its agents.
+ *
+ * The consequential half of the switch, and the one the page used to omit: a
+ * workspace type decides which pages open an agent, but a server decides what
+ * every agent this daemon spawns can *do*. Rendered beside the types, from the
+ * same response, under the same rule — the daemon reports them whether the
+ * integration is on or off, so a switched-off entry can say what turning it on
+ * would add.
+ *
+ * `attaches` is the third state this section has to be honest about. An
+ * integration can be switched on and still contribute no servers: the registry
+ * attaches them only while the credential is configured, so an agent never
+ * boots with a server it cannot authenticate (KAN-85). Enabled-but-not-connected
+ * is therefore not "provides these" — it is "provides these once connected",
+ * and the difference is exactly the kind of thing a settings page is for.
+ */
+function ProvidedMcpServers({ servers: reported, enabled = true, attaches = true, name }) {
+  const servers = serverRows(reported);
+
+  if (servers.length === 0) {
+    // The honest empty case, as ProvidedTypes has. An integration that
+    // contributes no tools is a real and unremarkable thing to be.
+    return (
+      <div style={{ fontSize: '13px', color: '#94a3b8' }}>Adds no MCP servers.</div>
+    );
+  }
+
+  return (
+    <div style={enabled ? undefined : { opacity: 0.55 }}>
+      <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '8px' }}>
+        {enabled ? 'Adds' : 'Would add'} {servers.length} MCP{' '}
+        {servers.length === 1 ? 'server' : 'servers'} to every agent:
+      </div>
+      <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        {servers.map((server) => (
+          <li
+            key={server.name}
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              flexWrap: 'wrap',
+              gap: '8px',
+              fontSize: '13px',
+              padding: '4px 0'
+            }}
+          >
+            <code
+              style={{
+                ...chipStyle,
+                fontFamily: 'monospace',
+                ...(enabled ? {} : { textDecoration: 'line-through' })
+              }}
+            >
+              {server.name}
+            </code>
+            <ServerDetail server={server} />
+          </li>
+        ))}
+      </ul>
+      {!enabled ? (
+        <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '8px', lineHeight: 1.45 }}>
+          None of these reach an agent while this integration is off. Turning it on writes them
+          into the workspace of every agent that starts afterwards; agents already running keep
+          the configuration they were started with.
+        </div>
+      ) : !attaches ? (
+        <div style={{ fontSize: '12px', color: '#fbbf24', marginTop: '8px', lineHeight: 1.45 }}>
+          Not attached yet — {name} is on but not connected, and a server whose credential is
+          missing is never written into an agent's workspace. Connecting it below is what adds
+          these.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The servers every agent gets regardless — `butchr`, the daemon's own.
+ *
+ * Drawn once for the section, deliberately not inside any integration's entry.
+ * It is core: no switch on this page adds or removes it, and listing it under
+ * whichever integration happened to be first would teach the reader something
+ * false about what that switch does. Read from the response's own
+ * `coreMcpServers` rather than named here, for the same reason nothing else on
+ * this page is named here.
+ */
+function CoreMcpServers({ servers: reported }) {
+  const servers = serverRows(reported);
+  if (servers.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        marginTop: '12px',
+        padding: '10px 12px',
+        borderRadius: '6px',
+        background: '#0b1220',
+        border: '1px solid #1e293b',
+        fontSize: '12px',
+        color: '#94a3b8',
+        lineHeight: 1.5
+      }}
+    >
+      Every agent also gets{' '}
+      {servers.map((server, i) => (
+        <React.Fragment key={server.name}>
+          {i > 0 && (i === servers.length - 1 ? ' and ' : ', ')}
+          <code style={{ ...chipStyle, fontFamily: 'monospace' }}>{server.name}</code>
+        </React.Fragment>
+      ))}
+      {' '}— core, not from any integration below. It is Butchr talking to itself: the tools an
+      agent uses to see and drive the fleet it belongs to. No switch here adds or removes it.
+    </div>
+  );
+}
+
+/**
  * The switch itself.
  *
  * `role="switch"` rather than a checkbox: this is a control whose two states
@@ -232,6 +405,11 @@ function EnabledToggle({ integration, pending, onEnable, onRequestDisable }) {
  */
 function DisableConfirmation({ integration, onCancel, onConfirm }) {
   const types = (integration.providedTypes || []).map((t) => t.type);
+  // KAN-106: the other half of the cost, named the same way the types are. The
+  // panel already said this for a type-less integration ("none of its MCP
+  // servers reach the agents that start") and said nothing about it for one
+  // with types, which is the case where the tools actually matter.
+  const servers = serverRows(integration.providedMcpServers).map((s) => s.name);
 
   return (
     <div
@@ -261,6 +439,19 @@ function DisableConfirmation({ integration, onCancel, onConfirm }) {
             ))}
             . While it is off, a page that would become one of those does not open a workspace,
             and no new agent of those types can be started.
+            {servers.length > 0 && (
+              <>
+                {' '}
+                No agent that starts afterwards gets{' '}
+                {servers.map((s, i) => (
+                  <React.Fragment key={s}>
+                    {i > 0 && (i === servers.length - 1 ? ' or ' : ', ')}
+                    <code style={{ fontFamily: 'monospace', fontWeight: 700 }}>{s}</code>
+                  </React.Fragment>
+                ))}
+                {' '}either.
+              </>
+            )}
           </>
         ) : (
           <>
@@ -378,6 +569,13 @@ function IntegrationEntry({ integration, card, toggle = {} }) {
 
   const enabled = !!integration.enabled;
   const switchable = !!onEnable && !!onRequestDisable;
+  // The daemon's own gate, restated from the row rather than guessed: servers
+  // attach while the integration is on *and* — where it has a credential at all
+  // — that credential is configured. An integration this daemon holds no
+  // credential for (`available: false`) has nothing to be unconfigured about.
+  const attaches =
+    enabled &&
+    (integration.available === false || !!(integration.credential || {}).configured);
 
   return (
     <div style={{ marginTop: '16px' }}>
@@ -425,6 +623,13 @@ function IntegrationEntry({ integration, card, toggle = {} }) {
         }}
       >
         <ProvidedTypes providedTypes={integration.providedTypes} enabled={enabled} />
+        <div style={{ height: '1px', background: '#1e293b', margin: '12px 0' }} />
+        <ProvidedMcpServers
+          servers={integration.providedMcpServers}
+          enabled={enabled}
+          attaches={attaches}
+          name={integration.name}
+        />
       </div>
 
       {card}
@@ -447,7 +652,13 @@ function IntegrationEntry({ integration, card, toggle = {} }) {
  * confirmation open without a browser. Omit it and the switches are not drawn
  * at all, which is what the harness wants for the plain summary rows.
  */
-export function IntegrationsSectionView({ integrations, error = null, renderCard, toggle }) {
+export function IntegrationsSectionView({
+  integrations,
+  coreMcpServers = null,
+  error = null,
+  renderCard,
+  toggle
+}) {
   const card = (integration) => {
     if (renderCard) return renderCard(integration);
     const Card = CREDENTIAL_CARDS[integration.id];
@@ -458,12 +669,15 @@ export function IntegrationsSectionView({ integrations, error = null, renderCard
     <div style={{ marginTop: '30px' }}>
       <div style={{ fontSize: '20px', fontWeight: 700, marginBottom: '6px' }}>Integrations</div>
       <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '4px' }}>
-        What Butchr can talk to, whether it is connected, and which workspace types each one
-        contributes. A type is either recognised from the page URL or refined afterwards by asking
-        the integration what the page really is — both are shown, because the difference is what
-        a credential buys you. Each integration is off until you switch it on; a switched-off one
-        still says what it would provide, so the switch is a choice rather than a guess.
+        What Butchr can talk to, whether it is connected, and what each one contributes — the
+        workspace types it registers, and the MCP servers it hands every agent that starts. A type
+        is either recognised from the page URL or refined afterwards by asking the integration what
+        the page really is — both are shown, because the difference is what a credential buys you.
+        Each integration is off until you switch it on; a switched-off one still says what it would
+        provide, so the switch is a choice rather than a guess.
       </div>
+
+      <CoreMcpServers servers={coreMcpServers} />
 
       {error ? (
         <div style={{ marginTop: '16px', fontSize: '14px', color: '#f87171' }}>{error}</div>
@@ -507,6 +721,12 @@ const INVALIDATING_RESPONSES = new Set([
  */
 export function IntegrationsSection() {
   const [integrations, setIntegrations] = useState(null);
+  /**
+   * The servers every agent gets whatever is switched on. Held beside the rows
+   * rather than inside them because that is what they are: not one
+   * integration's, and not changed by any toggle on this page.
+   */
+  const [coreMcpServers, setCoreMcpServers] = useState(null);
   const [error, setError] = useState(null);
   /** The id whose disable confirmation is open; one at a time. */
   const [confirmingId, setConfirmingId] = useState(null);
@@ -532,6 +752,10 @@ export function IntegrationsSection() {
       if (msg.action === 'list_integrations_response') {
         setError(msg.success === false ? msg.error || 'The daemon refused to list integrations.' : null);
         if (Array.isArray(msg.integrations)) setIntegrations(msg.integrations);
+        // A daemon too old to send them says nothing about core servers, which
+        // is different from saying there are none — leave the previous answer
+        // rather than drawing an empty claim.
+        if (Array.isArray(msg.coreMcpServers)) setCoreMcpServers(msg.coreMcpServers);
         return;
       }
       if (msg.action === 'set_integration_enabled_response') {
@@ -626,5 +850,12 @@ export function IntegrationsSection() {
     onConfirmDisable: (integration) => send(integration, false)
   };
 
-  return <IntegrationsSectionView integrations={integrations} error={error} toggle={toggle} />;
+  return (
+    <IntegrationsSectionView
+      integrations={integrations}
+      coreMcpServers={coreMcpServers}
+      error={error}
+      toggle={toggle}
+    />
+  );
 }

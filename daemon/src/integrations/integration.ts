@@ -42,6 +42,14 @@ export interface CredentialAdapter<Fields = any, Result = any> {
  * One MCP server, in the shape Claude Code's `.mcp.json` and the other agent
  * CLIs read: a command and its arguments. Written verbatim into the
  * workspace's config by writeWorkspaceMcpConfig.
+ *
+ * A definition is also *described* to the settings page (KAN-106), and there is
+ * one rule about that which belongs here rather than only at the far end: if a
+ * definition is built from a stored credential, the credential goes in `env`.
+ * `describeMcpServers` in router.ts reports an `env`-carrying definition by
+ * name alone and never reports `env` itself, so that convention is what keeps a
+ * token out of a UI. A token smuggled into `args` would be rendered like any
+ * other argument.
  */
 export interface McpServerDefinition {
   command: string;

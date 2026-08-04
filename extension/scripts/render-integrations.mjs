@@ -38,6 +38,23 @@
 // agents already running are unaffected either way (KAN-85), and a new
 // activation attempted inside that window is refused legibly rather than
 // silently. Nothing is written to a credential at any point.
+//
+// Optional: --socket <path> asks a daemon other than the installed one. This is
+// how KAN-106 was proved without restarting the machine's live daemon out from
+// under a running fleet: build this worktree, start a daemon with HOME pointed
+// at a scratch directory (BUTCHR_DIR, and so the socket, hang off the home
+// directory — see daemon/src/ipc.ts), and point this at its socket.
+//
+//   cd extension && node scripts/render-integrations.mjs /tmp/kan106 \
+//     --socket /tmp/kan106-home/.local/share/butchr/butchr.sock --toggle jira
+//
+// KAN-106: what the render now shows beside each integration's workspace types
+// is the MCP servers it hands every agent — read from `providedMcpServers`,
+// which the daemon fills in with each server's name and, where it can be shown
+// without leaking anything credential-derived, its command line. The `butchr`
+// server is not one of them: it is core, arrives in the response's own
+// `coreMcpServers`, and is drawn once for the section rather than attributed to
+// an integration.
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import net from 'net';
@@ -55,17 +72,25 @@ const payloadsIdx = argv.indexOf('--payloads');
 const payloadDir = payloadsIdx === -1 ? null : argv[payloadsIdx + 1];
 const toggleIdx = argv.indexOf('--toggle');
 const toggleId = toggleIdx === -1 ? null : argv[toggleIdx + 1];
+const socketIdx = argv.indexOf('--socket');
 const probeRejection = argv.includes('--probe-rejection');
 const consumed = new Set(
   [
     ...(payloadsIdx === -1 ? [] : [payloadsIdx, payloadsIdx + 1]),
-    ...(toggleIdx === -1 ? [] : [toggleIdx, toggleIdx + 1])
+    ...(toggleIdx === -1 ? [] : [toggleIdx, toggleIdx + 1]),
+    ...(socketIdx === -1 ? [] : [socketIdx, socketIdx + 1])
   ]
 );
 const positional = argv.filter((a, i) => !consumed.has(i) && !a.startsWith('--'));
 const outDir = positional[0] ?? path.join(extensionDir, 'kan87-render');
 
-const SOCKET_PATH = path.join(os.homedir(), '.local', 'share', 'butchr', 'butchr.sock');
+// The installed daemon by default; --socket points at another one. Both are
+// real daemons answering the real action — the flag changes which process is
+// asked, not how, and never what is rendered from the answer.
+const SOCKET_PATH =
+  socketIdx === -1
+    ? path.join(os.homedir(), '.local', 'share', 'butchr', 'butchr.sock')
+    : path.resolve(argv[socketIdx + 1]);
 
 // A token whose shape nothing else could produce by accident, so its absence
 // from the rendered proof is checkable by grep.
@@ -228,14 +253,21 @@ const withToggle = (extra = {}) => ({
   ...extra
 });
 
-export const section = (integrations, toggle) =>
-  r(React.createElement(IntegrationsSectionView, { integrations, toggle: toggle && withToggle(toggle) }));
-
-/** The section without its cards — the summary rows on their own. */
-export const summaries = (integrations, toggle) =>
+export const section = (integrations, toggle, coreMcpServers) =>
   r(
     React.createElement(IntegrationsSectionView, {
       integrations,
+      coreMcpServers,
+      toggle: toggle && withToggle(toggle)
+    })
+  );
+
+/** The section without its cards — the summary rows on their own. */
+export const summaries = (integrations, toggle, coreMcpServers) =>
+  r(
+    React.createElement(IntegrationsSectionView, {
+      integrations,
+      coreMcpServers,
       renderCard: () => null,
       toggle: toggle && withToggle(toggle)
     })
@@ -269,6 +301,14 @@ const R = await import(pathToFileURL(path.join(bundleDir, 'render.js')).href);
 
 const rows = listIntegrations.integrations;
 const ld = rows.find((i) => i.id === 'launchdarkly');
+/** The daemon's own servers, reported beside the rows rather than inside one. */
+const core = listIntegrations.coreMcpServers ?? null;
+
+/** `name` plus its command line, or the reason there isn't one. */
+const describeServer = (server) =>
+  server.detailWithheld || !server.command
+    ? `${server.name} (name only — configured from the stored credential)`
+    : `${server.name} → ${[server.command, ...(server.args ?? [])].join(' ')}`;
 
 const sidepanelCss = readFileSync(path.join(extensionDir, 'sidepanel.css'), 'utf8');
 
@@ -286,12 +326,13 @@ const blocks = [
     'the section, as the settings page draws it',
     'Every word of it comes from one <code>list_integrations</code> response: which integrations exist, whether each is connected, and the workspace types each contributes. Nothing in the page repeats those facts, so a type added or re-prioritized in the daemon shows up here without anyone editing the extension.' +
       ' <strong>The two cards say “Checking…” on purpose</strong>: this is a static server render, so their <code>useEffect</code> never runs and they never ask the daemon for their own status. In Chrome they answer within a frame. The connection state beside each integration’s name is live either way — it comes from the response above, not from the card.',
-    R.section(rows, {})
+    R.section(rows, {}, core)
   ),
   sectionBlock(
-    'the summary rows on their own',
-    "Jira's three types with the distinction that matters: <code>task</code> is recognised from the page URL, while <code>epic</code> and <code>story</code> cannot be — their URLs are byte-identical to a Task's — so they are resolved by asking Jira what the issue really is. That difference is what the credential buys, and it is read from the response rather than written down here.",
-    R.summaries(rows, {})
+    'the summary rows on their own — types, and the servers beside them',
+    "Jira's three types with the distinction that matters: <code>task</code> is recognised from the page URL, while <code>epic</code> and <code>story</code> cannot be — their URLs are byte-identical to a Task's — so they are resolved by asking Jira what the issue really is. That difference is what the credential buys, and it is read from the response rather than written down here." +
+      ' Under each type list is the half the page used to omit (KAN-106): the MCP servers that integration hands <em>every</em> agent this daemon spawns. Names and command lines both come from <code>providedMcpServers</code>; a definition built from a stored credential is reported by name alone and says so, so a token cannot reach this page through a server definition any more than it can through the credential card. <code>butchr</code> is above the rows rather than in one — it is core, and no switch here adds or removes it.',
+    R.summaries(rows, {}, core)
   ),
   sectionBlock(
     'LaunchDarkly, before a token has ever been entered',
@@ -324,23 +365,24 @@ if (toggleTrip) {
   const rowIn = (payload) => payload.integrations.find((i) => i.id === t.integration);
   const disabledRows = t.whileDisabled.integrations;
   const enabledRows = t.whileEnabled.integrations;
+  const coreIn = (payload) => payload.coreMcpServers ?? null;
   const name = rowIn(t.whileEnabled)?.name ?? t.integration;
 
   blocks.push(
     sectionBlock(
       `${name} switched on — the toggle, and what it provides`,
-      `Drawn from the <code>list_integrations</code> the daemon answered immediately after <code>set_integration_enabled { integration: "${t.integration}", enabled: true }</code>. The switch reads its position from the row's <code>enabled</code> field; the types beside it are the same <code>providedTypes</code> this page has always rendered.`,
-      R.summaries(enabledRows, {})
+      `Drawn from the <code>list_integrations</code> the daemon answered immediately after <code>set_integration_enabled { integration: "${t.integration}", enabled: true }</code>. The switch reads its position from the row's <code>enabled</code> field; the types beside it are the same <code>providedTypes</code> this page has always rendered, and the servers under them the <code>providedMcpServers</code> it now renders too.`,
+      R.summaries(enabledRows, {}, coreIn(t.whileEnabled))
     ),
     sectionBlock(
-      `${name} switched off — the same types, inert`,
-      'Not an empty entry. The daemon reports what a disabled integration <em>would</em> provide, and this renders it greyed out and struck through, under a line saying none of them are registered. That is what makes the switch a choice rather than a mystery: with everything off by default, an entry that showed nothing would give a new user no reason to turn it on. The connection state and the credential card are untouched — switching an integration off is not forgetting its token.',
-      R.summaries(disabledRows, {})
+      `${name} switched off — the same types and servers, inert`,
+      'Not an empty entry. The daemon reports what a disabled integration <em>would</em> provide, and this renders it greyed out and struck through, under a line saying none of them are registered. That is what makes the switch a choice rather than a mystery: with everything off by default, an entry that showed nothing would give a new user no reason to turn it on. The MCP servers are drawn the same inert way and for the same reason (KAN-106) — they are the more consequential half of what the switch does, so hiding them until it is flipped is exactly backwards. The connection state and the credential card are untouched — switching an integration off is not forgetting its token.',
+      R.summaries(disabledRows, {}, coreIn(t.whileDisabled))
     ),
     sectionBlock(
       `the confirmation, before ${name} goes off`,
-      "Turning one <em>on</em> is one click; turning it off is not, because it unregisters the types the fleet runs on. The panel names them, says what stops, and — this is KAN-85's rule, reported rather than softened — says that agents already running are left strictly alone and only new activations are refused. The credential line is there because the obvious fear about a switch like this is that it throws the token away; it does not, and Clear stays its own control.",
-      R.summaries(enabledRows, { confirmingId: t.integration })
+      "Turning one <em>on</em> is one click; turning it off is not, because it unregisters the types the fleet runs on. The panel names them, names the servers new agents stop getting, says what stops, and — this is KAN-85's rule, reported rather than softened — says that agents already running are left strictly alone and only new activations are refused. The credential line is there because the obvious fear about a switch like this is that it throws the token away; it does not, and Clear stays its own control.",
+      R.summaries(enabledRows, { confirmingId: t.integration }, coreIn(t.whileEnabled))
     ),
     sectionBlock(
       `what the daemon answered when ${name} went off`,
@@ -349,15 +391,19 @@ if (toggleTrip) {
           ? `This run caught ${t.disableResponse.runningAgentsUnaffected.length} of them.`
           : 'This run caught none running, so only the plain confirmation shows.'
       }`,
-      R.summaries(disabledRows, {
-        results: {
-          [t.integration]: {
-            ok: true,
-            text: `${name} is off.`,
-            runningAgentsUnaffected: t.disableResponse.runningAgentsUnaffected || []
+      R.summaries(
+        disabledRows,
+        {
+          results: {
+            [t.integration]: {
+              ok: true,
+              text: `${name} is off.`,
+              runningAgentsUnaffected: t.disableResponse.runningAgentsUnaffected || []
+            }
           }
-        }
-      })
+        },
+        coreIn(t.whileDisabled)
+      )
     )
   );
 }
@@ -437,7 +483,31 @@ console.log('== KAN-87: the Integrations section, rendered from a live daemon ==
 console.log(`   source: ${payloadDir ? `payloads in ${payloadDir}` : SOCKET_PATH}`);
 console.log(`   integrations reported: ${rows.map((i) => i.id).join(', ')}`);
 
-show('the section — both entries, their connection state, and their workspace types', R.summaries(rows));
+// KAN-106: what the daemon says each integration hands its agents, printed as
+// the payload carries it — so the rendered section below can be read against
+// the response it came from rather than taken on trust.
+console.log(`\n   MCP servers, as \`list_integrations\` reports them:`);
+for (const row of rows) {
+  const servers = row.providedMcpServers ?? [];
+  console.log(
+    `     ${row.id.padEnd(13)} ${
+      servers.length ? servers.map(describeServer).join('\n' + ' '.repeat(20)) : '(none)'
+    }`
+  );
+}
+console.log(
+  `     ${'(core)'.padEnd(13)} ${
+    core === null
+      ? '(this daemon does not report core servers)'
+      : core.map(describeServer).join('\n' + ' '.repeat(20))
+  }`
+);
+console.log('     core servers reach every agent regardless of any integration or switch.');
+
+show(
+  'the section — both entries, their connection state, their workspace types and their MCP servers',
+  R.summaries(rows, undefined, core)
+);
 show('LaunchDarkly, before a token is entered — the storage disclosure', R.ldCard({
   status: {
     available: true,
@@ -464,15 +534,17 @@ if (toggleTrip) {
   console.log(`\n${'='.repeat(78)}\nKAN-91: THE SWITCH, ROUND-TRIPPED AGAINST THE LIVE DAEMON\n${'='.repeat(78)}`);
   console.log(`\n  integration : ${t.integration} (displayed as "${name}")`);
   console.log(`  before      : enabled=${t.enabledBefore}`);
+  const serversOf = (payload) =>
+    (rowIn(payload)?.providedMcpServers ?? []).map((s) => s.name).join(', ');
   console.log(
     `  disabled    : enabled=${rowIn(t.whileDisabled).enabled}  ` +
       `providedTypes still reported: [${typesOf(t.whileDisabled)}]  ` +
-      `providedMcpServers: [${(rowIn(t.whileDisabled).providedMcpServers ?? []).join(', ')}]`
+      `providedMcpServers still reported: [${serversOf(t.whileDisabled)}]`
   );
   console.log(
     `  enabled     : enabled=${rowIn(t.whileEnabled).enabled}  ` +
       `providedTypes: [${typesOf(t.whileEnabled)}]  ` +
-      `providedMcpServers: [${(rowIn(t.whileEnabled).providedMcpServers ?? []).join(', ')}]`
+      `providedMcpServers: [${serversOf(t.whileEnabled)}]`
   );
   if (t.disableResponse.runningAgentsUnaffected?.length) {
     console.log(
@@ -486,16 +558,20 @@ if (toggleTrip) {
   );
 
   show(
-    `${name} switched OFF — the types still listed, and said to be unregistered`,
-    R.summaries(t.whileDisabled.integrations, {})
+    `${name} switched OFF — the types and servers still listed, and said to be inert`,
+    R.summaries(t.whileDisabled.integrations, {}, t.whileDisabled.coreMcpServers ?? null)
   );
   show(
     `the confirmation that guards switching ${name} off`,
-    R.summaries(t.whileEnabled.integrations, { confirmingId: t.integration })
+    R.summaries(
+      t.whileEnabled.integrations,
+      { confirmingId: t.integration },
+      t.whileEnabled.coreMcpServers ?? null
+    )
   );
   show(
     `${name} switched back ON`,
-    R.summaries(t.whileEnabled.integrations, {})
+    R.summaries(t.whileEnabled.integrations, {}, t.whileEnabled.coreMcpServers ?? null)
   );
 }
 
@@ -521,12 +597,52 @@ for (const key of ['token', 'apiToken', 'accessToken']) {
   }
 }
 
+// KAN-106 gave this page a second thing that could carry a secret: a server
+// definition, which an integration may build out of its stored credential. The
+// daemon's rule is that such a definition is reported by name alone and that
+// `env` is never reported at all (describeMcpServers in router.ts). This is
+// that rule checked at the far end, where a regression would actually be seen —
+// scanned rather than asserted about, on the payload *and* on the rendered
+// page, because the page is what gets pasted into a ticket.
+//
+// The word scan is deliberately broad. It costs nothing on definitions like
+// today's (`npx -y mcp-remote https://mcp.atlassian.com/v1/mcp`,
+// `node …/mcp.js`) and would fire on the `--header "Authorization: Bearer …"`
+// shape that the structural `env` rule cannot see.
+const SECRET_WORD = /token|secret|password|passwd|bearer|authorization|credential|api[-_]?key/i;
+const scanServer = (where, server) => {
+  if (server.env !== undefined) leaks.push(`${where}.env was reported at all`);
+  for (const [field, value] of Object.entries(server)) {
+    for (const text of Array.isArray(value) ? value : [value]) {
+      if (typeof text === 'string' && SECRET_WORD.test(text)) {
+        leaks.push(`${where}.${field} reads like a secret`);
+      }
+    }
+  }
+};
+const scannedServers = [
+  ...rows.flatMap((row) =>
+    (row.providedMcpServers ?? []).map((server) => [`${row.id}.${server.name}`, server])
+  ),
+  ...(core ?? []).map((server) => [`core.${server.name}`, server])
+];
+for (const [where, server] of scannedServers) scanServer(where, server);
+
 console.log(`\n${'='.repeat(78)}\nSECRET HYGIENE\n${'='.repeat(78)}`);
+console.log(
+  `\n  MCP server definitions scanned: ${
+    scannedServers.length ? scannedServers.map(([where]) => where).join(', ') : '(none reported)'
+  }`
+);
 if (leaks.length) {
   console.log(`\n  ✗ token-derived text in the proof or the payload: ${leaks.join(', ')}`);
   process.exitCode = 1;
 } else {
-  console.log('\n  ✓ no token, and no token-derived text, in the payload or the rendered page.');
+  console.log(
+    '\n  ✓ no token, and no token-derived text, in the payload or the rendered page:\n' +
+      '    no credential summary carries a secret field, no server definition carries `env`,\n' +
+      '    and no reported command or argument reads like one.'
+  );
 }
 
 console.log(`\nrendered HTML: ${htmlPath}`);
