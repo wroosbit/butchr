@@ -1,6 +1,34 @@
 // Proof for KAN-80: every category of `list_agents` row carries the supervisor
 // of record, so the Agents page can draw the org chart from the DTO alone.
 //
+// WHAT FAILURE THIS WOULD CATCH: the Agents page drawing the wrong org chart, or
+// no org chart, because the daemon answered the parentage question badly. Four
+// shapes of that, and the last is the one that silently costs the most:
+//
+//   * a row nesting under the wrong agent, or under nothing — `activatedBy`
+//     naming an agent that did not staff it, or dropped from one of the four
+//     lists so that whole category renders rootless;
+//   * a parent invented for an agent nobody supervising activated — a human's
+//     sidepanel toggle is parentless, and guessing a supervisor for it puts
+//     somebody else's name on work they never staffed;
+//   * a stood-down, lost or preempted child losing the parent it had, so a
+//     story switched off under a live epic disappears from the structure
+//     instead of showing that the epic has a child and the child is off;
+//   * a parentless agent coming back with the key *omitted* rather than
+//     `null`. That one is not a bad row, it is a bad page: the extension reads
+//     an absent field as "this daemon cannot answer", so a single omission
+//     flattens the entire tree — every nesting relationship in the fleet lost
+//     to make one row honest about something it was not confused about.
+//
+// It also catches the field drifting out from under KAN-81 and CrabCast:
+// renamed, reshaped, `type`/`key` swapped or blank, extra keys, or the
+// `(type, key)` match folded on one side only — which orphans every child while
+// each individual row still looks correct.
+//
+// What it cannot catch is the router reading the wrong thing off a *correct*
+// registry write, because the records here are seeded rather than activated
+// through. Recording is KAN-77's, proved in verify-status-change-nudges.mjs.
+//
 // THIS SCRIPT IS THE INTERFACE, NOT THE IMPLEMENTATION
 //
 // The daemon-side exposure below is expected to be deleted: under KAN-104 the
