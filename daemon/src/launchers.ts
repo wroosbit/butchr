@@ -24,9 +24,90 @@ const PROMPT_CMD = 'Please read and follow the instructions in .butchr-prompt.md
  */
 export function coreMcpServerDefinitions(): McpServerDefinitions {
   return {
-    butchr: {
+    [CORE_MCP_SERVER]: {
       command: process.execPath,
       args: [path.join(__dirname, 'mcp.js')]
+    }
+  };
+}
+
+/** The one server this module owns; `withWorkspaceIdentity` stamps only it. */
+export const CORE_MCP_SERVER = 'butchr';
+
+/**
+ * The argv flags the core MCP server reads its caller's identity from.
+ *
+ * Declared here, beside the writer, and imported by the reader (mcp.ts) so the
+ * two spellings cannot drift apart. A mismatch here would reproduce KAN-145
+ * exactly: a value written where nothing reads it.
+ */
+export const WORKSPACE_TYPE_FLAG = '--workspace-type';
+export const WORKSPACE_KEY_FLAG = '--workspace-key';
+
+/** The workspace an agent belongs to, as the daemon addresses it. */
+export interface WorkspaceIdentity {
+  type: string;
+  key: string;
+}
+
+/**
+ * Stamp a workspace's own identity onto the core server's command line.
+ *
+ * This is the first link of the parentage chain, and KAN-145 is what happens
+ * when it is missing: `mcp.ts` attaches the caller's `workspaceType`/`Key` to
+ * every daemon request and `supervisorOfRecord` (router.ts) records them, but
+ * *nothing set them in the agent's process*. The only setter was an env block
+ * on the `herdr agent attach` PTY in herdr.ts — a client process that is not in
+ * the agent's ancestry — so every activation came back `activatedBy: null` and
+ * the org chart had nothing to draw. See docs/agent-tree.md.
+ *
+ * WHY ARGV AND NOT `env`, WHICH IS THE OTHER OBVIOUS HOME (task 2 of KAN-145):
+ *
+ *   1. It leaves KAN-106's withholding rule exactly as strict. `describeMcpServers`
+ *      in router.ts reports any `env`-carrying definition by name alone, because
+ *      `env` is where a credential would ride. Giving `butchr` an `env` would
+ *      have hidden the core server's command line from the settings page for no
+ *      security reason — and the fix for that would have been an exemption to a
+ *      security rule, bought by a plumbing change. Nothing here loosens it.
+ *   2. A workspace type and key are provably not secret: they are the ticket
+ *      key, rendered in the sidepanel, the Agents page and every log line. The
+ *      convention stated on `McpServerDefinition` is that credentials go in
+ *      `env` — non-secret configuration in `args` is that convention observed,
+ *      not bent.
+ *   3. argv is the mechanism with the fewest assumptions left in it. A client
+ *      that spawns the server at all necessarily passes its argv; whether a
+ *      client forwards a declared `env` is a feature it could lack. Both were
+ *      measured against the real Claude Code before this was written — see the
+ *      probe transcript in the KAN-145 PR — and argv additionally shows up in
+ *      `ps` and `/proc/<pid>/cmdline`, which is precisely what nobody could
+ *      check while this bug was live.
+ *
+ * Applied to the workspace `.mcp.json` only, never to the global agy config
+ * (`configureAgyMcp`): that file is one file for every workspace, so a
+ * per-workspace identity written into it would name whichever agent was
+ * activated last. Recording the wrong supervisor is worse than recording none,
+ * so anti-gravity agents stay parentless until their CLI grows a
+ * project-scoped config. Stated in docs/agent-tree.md rather than left to be
+ * discovered.
+ *
+ * Takes freshly-built definitions (`coreMcpServerDefinitions()` resolves on
+ * every call, by design) so appending cannot accumulate across activations.
+ */
+export function withWorkspaceIdentity(
+  defs: McpServerDefinitions,
+  identity: WorkspaceIdentity
+): McpServerDefinitions {
+  const core = defs[CORE_MCP_SERVER];
+  if (!core || !identity.type || !identity.key) return defs;
+  return {
+    ...defs,
+    [CORE_MCP_SERVER]: {
+      ...core,
+      args: [
+        ...core.args,
+        WORKSPACE_TYPE_FLAG, identity.type,
+        WORKSPACE_KEY_FLAG, identity.key
+      ]
     }
   };
 }
@@ -39,6 +120,12 @@ export function coreMcpServerDefinitions(): McpServerDefinitions {
 // see MessageRouter.mcpServersForSpawn — rather than as names this module
 // resolves against a table of its own. Which servers exist is the
 // integrations' knowledge; writing them into the workspace is this module's.
+//
+// Caller-stamped, not stamped here: herdr.ts passes these through
+// `withWorkspaceIdentity` first, because the identity belongs to the workspace
+// being written and this function is also how a plain assembly is written in
+// the proof scripts. What lands on disk for a real activation therefore carries
+// the two identity flags on the core server; see withWorkspaceIdentity.
 export function writeWorkspaceMcpConfig(workDir: string, defs: McpServerDefinitions): void {
   if (Object.keys(defs).length === 0) return;
 

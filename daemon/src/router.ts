@@ -454,6 +454,18 @@ export interface ProvidedMcpServer {
  * atlassian-integration.ts) — so its command and args are reported in full.
  * LaunchDarkly provides no servers yet, and the core `butchr` server is
  * `process.execPath` plus a path to the daemon's own mcp.js.
+ *
+ * KAN-145 had to carry a workspace's identity into its own MCP server process
+ * and deliberately did **not** use `env` for it, so this rule is untouched and
+ * no exemption was carved for the core server. The identity rides in `args`
+ * (`--workspace-type task --workspace-key KAN-1`) because it is provably not a
+ * secret — it is the ticket key, already rendered on every surface — and
+ * because putting it in `env` would have closed `butchr`'s command line down to
+ * its name here for no security reason at all. A plumbing change must not be
+ * allowed to buy itself a loosened security rule; see `withWorkspaceIdentity`
+ * in launchers.ts for the full argument. Note that what this function is handed
+ * for the settings page is `coreMcpServerDefinitions()` — the unstamped
+ * definition, since "what every agent gets" has no one workspace to name.
  */
 function describeMcpServers(defs: McpServerDefinitions): ProvidedMcpServer[] {
   return Object.entries(defs).map(([name, definition]) => {

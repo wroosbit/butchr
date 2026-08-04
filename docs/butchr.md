@@ -646,7 +646,7 @@ whenever its polling loop next looked.
 `isSupervisorType` answers whether a *kind* of agent supervises, and nothing
 recorded which story staffed which task. `AgentRecord` now carries
 `activatedBy: { type, key } | null`, written at activation from the identity the
-butchr MCP already attaches to every request (`workspaceType`/`workspaceKey`,
+butchr MCP attaches to every request (`workspaceType`/`workspaceKey`,
 `daemon/src/mcp.ts`). Nothing is invented: a human toggling an agent on from the
 sidepanel records an explicit `null`, and an agent that activates itself is
 nobody's child. The null is explicit rather than omitted because over JSON an
@@ -655,6 +655,33 @@ absent field reads as "the daemon didn't answer that" while `null` reads as
 records, so the two behave differently through a round-trip. Boot-time
 reconciliation passes the recorded parentage back through the activation it
 replays, so a reboot does not orphan a fleet that had parents.
+
+**And the identity has to reach the caller's process, which for the feature's
+whole first life it did not (KAN-145).** `mcp.ts` read
+`BUTCHR_WORKSPACE_TYPE`/`_KEY` from its environment; the only thing that ever
+set them put them on the `herdr agent attach` PTY, which is a *client* of the
+pane herdr already runs the agent in and not an ancestor of it. So the read was
+correct, the recording was correct, and `activatedBy` was `null` for every agent
+in every fleet — the org chart could not draw an edge, ever, and the feature
+looked shipped. The identity now travels on the core MCP server's **command
+line**, written into each workspace's `.mcp.json` at activation
+(`withWorkspaceIdentity` in `launchers.ts`) and read back off `process.argv` by
+the server the agent's CLI spawns from that file. `args` rather than `env`
+because a definition carrying `env` is reported to the settings page by name
+alone (KAN-106) and a workspace key is not a secret; see
+[docs/agent-tree.md](agent-tree.md) for the full argument, including why the
+global agy config deliberately does not get it.
+
+Two consequences worth stating plainly. **There is no backfill**: parentage is
+recorded at activation and an agent already running was spawned from the old
+file, so every agent live when this shipped stays parentless until it is
+switched off and on again — inventing an answer is the one thing this field must
+never do. And **the proof is the write path**, not the read path:
+`node daemon/scripts/verify-activation-records-real-parentage.mjs` spawns a real
+`mcp.js` from a real workspace's `.mcp.json`, activates a child through the real
+`butchr_activate_agent` tool, and reads the parent back out of `list_agents` —
+never writing a parentage record itself, which is precisely what the two earlier
+scripts did and why neither could see this.
 
 **On the wire, on every row.** The nudge is one consumer of that field; the
 other is the Agents page, which draws the org chart and needs the parentage of

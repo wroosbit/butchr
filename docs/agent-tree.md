@@ -33,6 +33,54 @@ keys, issue types, or naming conventions to guess who is above whom. If the
 daemon does not say, the page does not know, and an agent it does not know the
 parent of renders at top level — which is the honest rendering, not a fallback.
 
+### How the caller's identity gets there (KAN-145)
+
+The whole chain hangs off one link that was missing for the feature's entire
+first life: **the agent's own MCP server has to know which workspace it belongs
+to.** It learns that from its command line. At activation the daemon writes the
+workspace's `.mcp.json` with the identity stamped onto the core server:
+
+```jsonc
+"butchr": {
+  "command": "…/node",
+  "args": ["…/daemon/dist/mcp.js", "--workspace-type", "story", "--workspace-key", "KAN-90"]
+}
+```
+
+The agent's CLI spawns that server from that file, `mcp.ts` reads the two flags
+off its own argv and attaches them to every daemon request, and
+`supervisorOfRecord` in `router.ts` records them as the activated agent's
+parent. Anyone doubting a link can read the middle of it out of
+`/proc/<pid>/cmdline`.
+
+Three things about that are decisions rather than details:
+
+* **`args`, not `env`.** A definition carrying `env` is reported to the settings
+  page by its **name alone** (KAN-106, `describeMcpServers`), because `env` is
+  where a credential would ride. A workspace type and key are the ticket key —
+  not a secret, and already on every surface — so putting them in `env` would
+  have hidden the core server's command line for no security reason and made a
+  security rule bend for a plumbing fix. Nothing about that rule was loosened.
+* **Never in the global agy config.** `configureAgyMcp` writes one file for
+  every workspace, so a per-workspace identity written there would name whichever
+  agent was activated last. Anti-gravity agents are therefore parentless until
+  that CLI grows a project-scoped config: recording the wrong supervisor is worse
+  than recording none.
+* **No backfill.** Parentage is recorded at activation, and there is nothing to
+  recover it from for an agent already running — its MCP server was spawned from
+  the old file and cannot be told anything now. Every agent live at the moment
+  this shipped stays `activatedBy: null` until it is switched off and on again.
+  A migration would have to invent the answer, and inventing one is exactly what
+  this field must never do.
+
+Before KAN-145 the identity was set as `BUTCHR_WORKSPACE_TYPE`/`_KEY` on the
+`herdr agent attach` PTY — a client of the agent's pane, not an ancestor of the
+agent — so nothing ever read it and every agent in every fleet came back
+parentless while each individual link looked correct. The proof that this cannot
+silently happen again is `daemon/scripts/verify-activation-records-real-parentage.mjs`,
+which starts at the `.mcp.json` and ends at `list_agents` without writing a
+parentage record anywhere in between.
+
 ### Indexed by `(type, key)`, never by key
 
 The live fleet has both `epic/KAN-39` and `task/KAN-39` — a supervisor and a

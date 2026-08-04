@@ -9,6 +9,15 @@
 // less means the refactor quietly changed which tools a live agent comes up
 // holding.
 //
+// SCOPE, NARROWED SINCE KAN-145: what is compared here is the *assembly* — which
+// servers a workspace gets and where each one comes from — and that is still
+// byte-identical to main's. It is no longer the whole of the file a real
+// activation writes: herdr.ts passes the assembly through `withWorkspaceIdentity`
+// on the way to disk, so the core server additionally carries
+// `--workspace-type <type> --workspace-key <key>` naming that workspace. That
+// stamp is proved by verify-activation-records-real-parentage.mjs, which is also
+// where the argument for putting it in `args` rather than `env` lives.
+//
 // Before: `mcpServerDefinitions()` in launchers.ts, a hardcoded if-chain
 // resolving the bare strings a workspace type listed — `atlassian` → npx
 // mcp-remote, `butchr` → node dist/mcp.js. After: the Atlassian integration

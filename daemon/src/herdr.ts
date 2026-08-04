@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers.js';
+import { resolveLauncher, sleepSync, withWorkspaceIdentity, writeWorkspaceMcpConfig } from './launchers.js';
 import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
@@ -589,8 +589,18 @@ export class HerdrBridge {
 
     // Workspace-scoped MCP config, written for every agent type: Claude picks
     // up .mcp.json from its cwd, and the file documents the workspace either way.
+    //
+    // Stamped with this workspace's identity on the way past (KAN-145). This is
+    // the only place the daemon can put it where the agent's *own* MCP server
+    // process will see it: everything else about a spawn goes through herdr,
+    // and herdr's agent is a child of the herdr daemon rather than of anything
+    // this method spawns. `launcher.setup` below gets the unstamped
+    // definitions on purpose — agy's config is global, see withWorkspaceIdentity.
     if (mcpServers && Object.keys(mcpServers).length > 0) {
-      writeWorkspaceMcpConfig(session.workDir, mcpServers);
+      writeWorkspaceMcpConfig(
+        session.workDir,
+        withWorkspaceIdentity(mcpServers, { type: session.type, key: session.key })
+      );
     }
 
     // Agent-specific provisioning, also on every activation: it is idempotent,
@@ -800,6 +810,14 @@ export class HerdrBridge {
     );
 
     try {
+      // No BUTCHR_WORKSPACE_TYPE/_KEY here, deliberately, and the deletion is
+      // the KAN-145 fix as much as the stamping above is. This PTY runs
+      // `herdr agent attach` — a *client* of a pane the herdr daemon already
+      // holds the agent in. The agent, and the MCP server the agent spawns, are
+      // children of the herdr daemon and inherit its environment; nothing
+      // downstream of this process ever read these variables, which is why
+      // every agent came back parentless while `mcp.ts` dutifully read them.
+      // The identity now travels in the workspace's own .mcp.json instead.
       const ptyProcess = pty.spawn('herdr', attachArgs, {
         name: 'xterm-256color',
         cols: 80,
@@ -807,9 +825,7 @@ export class HerdrBridge {
         cwd: session.workDir,
         env: {
           ...process.env,
-          TERM: 'xterm-256color',
-          BUTCHR_WORKSPACE_TYPE: session.type,
-          BUTCHR_WORKSPACE_KEY: session.key
+          TERM: 'xterm-256color'
         } as Record<string, string>
       });
 
