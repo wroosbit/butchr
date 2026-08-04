@@ -534,6 +534,50 @@ router and against a real herdr respectively.
 
 ---
 
+## 📣 When an agent transitions its own ticket
+
+Status changes used to travel by hand and by luck. `prompts/task.md`,
+`prompts/story.md` and `prompts/epic.md` each told an agent to transition its
+ticket — To Do → In Progress → In Review → Done — and none of them told the
+transitioning agent to *tell anyone*. So an agent whose work depended on that
+status found out when its own polling loop next looked, or not at all: KAN-61's
+completed story sat silently done after its one hand-back nudge was eaten by a
+daemon restart, and the epic agent's polling loop exists largely because a lost
+nudge is otherwise invisible.
+
+**The convention: the agent that transitions announces it, at the moment it
+transitions.** This is prompt text, not daemon code — there is nothing to build,
+because the agent making the change is the one process that certainly knows
+about it.
+
+**The link graph is the notification topology.** A status change is interesting
+precisely to the issues linked to the one that moved and to its parent, which is
+the same convention the board's liberal linking already serves. The transitioning
+agent reads its own `issuelinks`, identifies its parent (a task's *Implements
+story* line, a story's `parent` epic; an epic has none), asks
+`butchr_list_agents` which of those issues have a **live** agent, and sends each
+one exactly one short `butchr_send_to_agent` nudge naming the issue, the
+transition and what it means for them. An issue with no live agent gets nothing
+extra: the ticket comment the agent already posts is its durable inbox, and
+starting an agent in order to inform it would be staffing work as a side effect
+of a notification.
+
+**Storm guards, stated the same way in all three prompts.** Notify on meaningful
+transitions only (To Do ↔ In Progress, → In Review, → Done) and not on edits,
+comments or assignment; never notify the agent whose action caused the event;
+a nudge you receive must never itself generate nudges — react by reading tickets
+and acting, not by re-broadcasting; and never send two nudges in a row to the
+same agent, because the second kills its session. The first three bound the
+fan-out of a single event; the last is the pre-existing interrupt rule, kept
+adjacent because this convention is what makes an agent likely to break it.
+
+This is the prompts half of status propagation. Its complement is daemon-side and
+lands separately: the next section covers what an agent *cannot* announce —
+dying, or going `blocked` — where the daemon nudges the supervisor of record on
+the agent's behalf.
+
+---
+
 ## 📣 When an agent changes state without saying so
 
 > **Pre-cutover, deliberately.** Supervisor-of-record parentage and a delivery

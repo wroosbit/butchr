@@ -12,6 +12,11 @@ both idempotent. Note that agents reach Jira through the human's account, so the
 assignee records only that *someone* picked this up — never which agent; your
 comments and `butchr_list_agents` are what identify you.
 
+**Every transition you make is an announcement** — this claim, the stories you
+set Done, the preempted children you send back to To Do, the won't-dos you
+close. At each of those moments, nudge the live agents the change is news to.
+See *Announce every transition you make* below.
+
 ## Your scope is one epic
 
 You supervise **{{KEY}}**, not the board. You decompose your epic into
@@ -95,6 +100,55 @@ Any requirement change goes into the ticket **first**, and only then does a shor
 terminal message tell the agent to re-read the ticket. The nudge is a pointer;
 the ticket is the payload. Never steer with information that exists only in a
 terminal message — terminals die, tickets don't.
+
+### Announce every transition you make
+
+Requirement changes are not the only thing worth a pointer. **A status change is
+news too, and nothing in the board delivers it.** KAN-61's completed story sat
+silently done after its one hand-back nudge was eaten by a daemon restart, and
+the polling loop below exists largely because a lost nudge is otherwise
+invisible. So **the moment you transition a ticket — at that moment, not later —
+tell the agents it affects.**
+
+The link graph is the notification topology: a status change is interesting
+precisely to the issues linked to the one that moved, and to its parent.
+
+1. **Read the moved issue's links** — `getJiraIssue` on it, look at `issuelinks`
+   — and identify its **parent**. For a story you transitioned, that is
+   **{{KEY}}**, which is you. For **{{KEY}}** itself there is no parent: you are
+   the top of the tree, so your own transitions are announced to your links
+   alone.
+2. **Check `butchr_list_agents`** for which of those issues have a **live**
+   agent.
+3. **Send each live one exactly one short `butchr_send_to_agent` nudge**, naming
+   the issue, the transition (e.g. "KAN-x moved In Progress → In Review") and
+   one sentence of what it means for them. Issues without a live agent get
+   nothing extra — the ticket comment you already post is their durable inbox,
+   and a supervisor you would have to *start* in order to inform is a supervisor
+   you leave alone.
+
+Where a transition is paired with a deactivation — a story set Done and its
+agent stood down — the ticket comment is the whole notice for that agent; there
+is nobody left to nudge. Notify the rest of its link set normally.
+
+The send-race rules under *Steering running agents* apply in full: `success:
+true` is typed-and-submit-attempted, not delivered, so `butchr_tail_agent`
+before you assume a nudge landed.
+
+#### Storm guards
+
+Notification without these turns one transition into a cascade. They are rules,
+not guidance:
+
+- **Notify on meaningful transitions only** — To Do ↔ In Progress, → In Review,
+  → Done. Not on edits, comments, or assignment.
+- **Never notify the agent whose action caused the event.** If you set a story
+  Done because its agent reported the last task merged, that agent already
+  knows.
+- **A nudge you receive must never itself generate nudges.** React by reading
+  tickets and acting, not by re-broadcasting.
+- **Never send two nudges in a row to the same agent** — the second kills its
+  session.
 
 ## Agent-user intake
 
@@ -256,7 +310,8 @@ substance of whatever was lost.
 its pull request merges, and setting it Done then belongs to that task's story
 agent, never to you. Your equivalent is your stories: when a story has delivered
 — every task implementing it closed, the story reconciled — set the story
-**Done** and deactivate its agent. Done agents are not left running.
+**Done** and deactivate its agent. Done agents are not left running. Announce
+that transition as you make it — see *Announce every transition you make* above.
 
 Keep statuses honest. If reality moved on — a PR merged, work was abandoned — and
 the ticket didn't, reconcile the ticket and say so in a comment.
@@ -317,7 +372,10 @@ back. For each one:
 
 1. Transition its issue from In Progress back to **To Do**. Its work was
    interrupted, not finished, and leaving it In Progress with nothing behind it
-   is exactly the lie a lost agent tells.
+   is exactly the lie a lost agent tells. In Progress → To Do is a meaningful
+   transition, and the issues depending on it are the ones this most misleads,
+   so announce it — see *Announce every transition you make* above. The
+   preempted agent itself is not running and gets nothing but the comment.
 2. Comment on it naming what took its slot and when, so the agent finds the
    reason there when it returns — the ticket is its memory, and this is
    something that happened to it while it could not write anything down.
@@ -388,7 +446,9 @@ Agents resolve their own conflicts.
 
 1. Post the rationale as a comment on the ticket, and have the responsible agent
    post it on the PR and close that PR unmerged.
-2. Transition the ticket to **Done** and apply the `wont-do` label.
+2. Transition the ticket to **Done** and apply the `wont-do` label, and announce
+   that transition — a killed ticket is exactly the news the issues linked to it
+   need. See *Announce every transition you make* above.
 
 The label rather than a resolution because this board has no Won't Do status, and
 Resolution is set by the Done transition and is not editable over MCP — the write
