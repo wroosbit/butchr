@@ -17,7 +17,7 @@
 // never heard of can be plugged in from outside and be resolved, and assembled
 // into a workspace's `.mcp.json`, by the same code paths Atlassian's are.
 //
-// Five sections:
+// Six sections:
 //
 //   1. before      — the synthetic URL resolves to nothing and the synthetic
 //                    server is absent, so nothing below is a coincidence
@@ -28,8 +28,11 @@
 //   4. alongside   — Atlassian's own resolution and its `atlassian` server are
 //                    unchanged on the same registry: plugging in is additive
 //   5. reported    — the synthetic integration appears in `list_integrations`
-//                    beside Atlassian, with its provided type, MCP server,
+//                    beside Atlassian, with its provided type, MCP servers,
 //                    priority, supervisor flag and enabled state
+//   6. withheld    — and the one of its servers that is configured from a
+//                    credential is reported by name alone, while `butchr` is
+//                    reported as core rather than as any integration's (KAN-106)
 //
 // The synthetic integration lives only in this script — no new real workspace
 // type is registered anywhere in the daemon. Everything else is production
@@ -104,6 +107,17 @@ const supportDesk = {
     'support-desk': {
       command: '/usr/bin/env',
       args: ['support-desk-mcp', '--stdio']
+    },
+    // A second server, configured the way an integration with a real secret
+    // would configure one: the credential in `env`. Nothing here is a real
+    // token — it is the *shape* that matters, because that shape is what
+    // KAN-106's reporting rule keys on. Section 5 checks that this one reaches
+    // the settings surface as a name and nothing else, while the plain server
+    // above reaches it with its command line intact.
+    'support-desk-private': {
+      command: '/usr/bin/env',
+      args: ['support-desk-mcp', '--authenticated'],
+      env: { SUPPORT_DESK_TOKEN: 'sd-not-a-real-token-0123456789' }
     }
   })
 };
@@ -236,14 +250,60 @@ verdict(
     row.name === 'Support Desk (this script only)' &&
     row.enabled === true &&
     row.available === false &&
-    row.providedMcpServers.join(',') === 'support-desk' &&
+    row.providedMcpServers.map((s) => s.name).join(',') ===
+      'support-desk,support-desk-private' &&
     row.providedTypes.length === 1 &&
     row.providedTypes[0].type === 'ticket' &&
     row.providedTypes[0].resolution === 'url-matched' &&
     row.providedTypes[0].supervisor === false &&
     listed.integrations.some((i) => i.id === 'jira' && i.name === 'Atlassian'),
-  'the integration is reported with its type, its server, url-matched, non-supervisor, enabled.',
+  'the integration is reported with its type, its servers, url-matched, non-supervisor, enabled.',
   'the settings surface did not report the registered integration faithfully.'
+);
+
+// ------------------------------------------------------------ 6. withheld --
+
+rule('AC6 — a server built from a credential is reported by name alone (KAN-106)');
+
+// The settings page draws what an integration adds to every agent, so a server
+// definition is now something a token could ride out on. The daemon's rule is
+// structural — a definition carrying `env` is where a credential arrives, so
+// that definition is reported as its name and nothing else, and `env` itself is
+// never reported at all (describeMcpServers in router.ts).
+//
+// WHAT FAILURE THIS WOULD CATCH: the rule quietly stopping — a future edit that
+// spreads the definition into the response, or drops the `env` test, would hand
+// every settings page the token that configured the server. It is checked here
+// rather than in the extension because the daemon is what decides; the page can
+// only render what it is sent.
+const plain = row?.providedMcpServers.find((s) => s.name === 'support-desk');
+const withheld = row?.providedMcpServers.find((s) => s.name === 'support-desk-private');
+const jiraRow = listed.integrations.find((i) => i.id === 'jira');
+const atlassian = jiraRow?.providedMcpServers.find((s) => s.name === 'atlassian');
+
+console.log('');
+console.log(indent(JSON.stringify({ plain, withheld, atlassian, core: listed.coreMcpServers }, null, 2)));
+
+const leaked = JSON.stringify(listed).includes('sd-not-a-real-token-0123456789');
+console.log(`\n  the token that configured support-desk-private appears in the response: ${leaked}`);
+console.log(`  core servers, reported apart from every integration: ${(listed.coreMcpServers ?? []).map((s) => s.name).join(', ') || '(none)'}`);
+
+verdict(
+  !leaked &&
+    !!plain &&
+    plain.command === '/usr/bin/env' &&
+    plain.args?.join(' ') === 'support-desk-mcp --stdio' &&
+    !!withheld &&
+    withheld.detailWithheld === true &&
+    withheld.command === undefined &&
+    withheld.args === undefined &&
+    withheld.env === undefined &&
+    !!atlassian &&
+    atlassian.args?.includes('mcp-remote') &&
+    (listed.coreMcpServers ?? []).some((s) => s.name === 'butchr') &&
+    !listed.integrations.some((i) => i.providedMcpServers.some((s) => s.name === 'butchr')),
+  'the credential-configured server is a bare name, the others carry their command lines, and `butchr` is reported as core rather than as any integration\'s.',
+  'a credential-configured definition was reported in detail, a safe one was withheld, or the core server was attributed to an integration.'
 );
 
 console.log('\n== done ==');

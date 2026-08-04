@@ -391,6 +391,92 @@ function providedTypesOf(integration: Integration): Array<{
     }));
 }
 
+/**
+ * One MCP server, as `list_integrations` reports it — the settings page's half
+ * of KAN-85.
+ *
+ * KAN-87 shipped an integration's `providedTypes`; KAN-106 gives the same
+ * treatment to the other, more consequential half of what enabling an
+ * integration does, which is hand every agent this daemon spawns a new set of
+ * tools. A name alone answers "which server", so the name is always here; the
+ * command and its arguments answer "what is it, actually" — `npx -y mcp-remote
+ * https://mcp.atlassian.com/v1/mcp` tells a reader that Atlassian's tools come
+ * over a remote endpoint — and those are here whenever they can be shown
+ * safely. See `providedMcpServersOf` for when they cannot.
+ */
+export interface ProvidedMcpServer {
+  /** The key of the `mcpServers` entry — a literal in the integration's source. */
+  name: string;
+  /** The resolved executable. Absent when detail is withheld. */
+  command?: string;
+  /** Its arguments, verbatim. Absent when detail is withheld. */
+  args?: string[];
+  /**
+   * Set when only the name could be reported, so the UI says so rather than
+   * silently drawing a server with no detail.
+   */
+  detailWithheld?: true;
+}
+
+/**
+ * An integration's MCP servers, in the shape above — and the one place that
+ * decides how much of a server definition is safe to send to a UI.
+ *
+ * THE RULE: a definition carrying `env` is reported as its **name only**.
+ *
+ * WHY, AND WHY THE TEST IS STRUCTURAL. A server provider is a closure over its
+ * integration (see `McpServerProvider`), so it can build a definition out of
+ * the stored credential — that is what a credential is *for* here. The daemon
+ * cannot detect a secret by looking at the value: a `CredentialAdapter` never
+ * hands back the secret, by design, so there is nothing to compare a string
+ * against. What is left is where a credential can arrive, and the house
+ * convention is `env` — an environment variable the agent's MCP client sets,
+ * not a plaintext argv parameter (integration.ts says exactly this about why
+ * Butchr writes per-workspace 0600-sourced config rather than registering a
+ * vendor server globally). So `env` is treated as the mark of a
+ * credential-configured definition and closes the whole definition down to its
+ * name, and `env` itself — keys as well as values — is never reported at all.
+ *
+ * That is deliberately blunt in the safe direction. A definition with a
+ * perfectly innocuous `env` loses its command line here, which costs a line of
+ * display; the opposite mistake costs a token in a settings page.
+ *
+ * THE LIMIT, STATED SO THE NEXT AUTHOR KEEPS THE CONVENTION: an integration
+ * that baked a token into `args` instead — `--header "Authorization: Bearer …"`
+ * is a real MCP pattern — would defeat this, because nothing here can tell that
+ * string from a URL. If you write such a definition, do not rely on this
+ * function to notice: give it an `env` (which is where it belongs and which
+ * this rule already covers).
+ *
+ * Today's definitions were checked against this before it was written.
+ * Atlassian's carries no token and no `env` at all — the official Atlassian MCP
+ * is a remote endpoint and mcp-remote does its own OAuth (see
+ * atlassian-integration.ts) — so its command and args are reported in full.
+ * LaunchDarkly provides no servers yet, and the core `butchr` server is
+ * `process.execPath` plus a path to the daemon's own mcp.js.
+ */
+function describeMcpServers(defs: McpServerDefinitions): ProvidedMcpServer[] {
+  return Object.entries(defs).map(([name, definition]) => {
+    if (definition.env && Object.keys(definition.env).length > 0) {
+      return { name, detailWithheld: true as const };
+    }
+    return { name, command: definition.command, args: [...definition.args] };
+  });
+}
+
+/**
+ * What this integration would give every spawning agent.
+ *
+ * "Would": reported whether or not the integration is switched on, exactly as
+ * `providedTypes` is and for the same reason — a switch is only a choice if
+ * what it turns on is legible before it is flipped. The registry is what
+ * actually gates them (enabled, and configured where there is a credential);
+ * this is the settings page's description of them, not the assembly.
+ */
+function providedMcpServersOf(integration: Integration): ProvidedMcpServer[] {
+  return describeMcpServers(integration.mcpServers?.() ?? {});
+}
+
 export class MessageRouter {
   private activePtyListeners = new Map<string, () => void>();
 
@@ -2079,6 +2165,15 @@ export class MessageRouter {
    * id is still `jira` (see atlassian-integration.ts for why the identity did
    * not move). KAN-91 renders the toggle from `enabled` beside what the row
    * says it provides.
+   *
+   * KAN-106 fills `providedMcpServers` out from bare names to `ProvidedMcpServer`
+   * objects and adds `coreMcpServers` beside the list. The core servers are
+   * deliberately *not* a row and not attributed to any integration: `butchr` is
+   * the daemon's own, every agent gets it whatever is switched on, and a
+   * settings page that listed it under Atlassian would be teaching the reader
+   * something false about what the switch does. Sent as a sibling of
+   * `integrations` so the page can say "and every agent also gets these"
+   * without inventing the fact itself.
    */
   private async handleListIntegrations(respond: Respond) {
     // Test constructions pass no registry; an empty list degrades exactly like
@@ -2096,6 +2191,9 @@ export class MessageRouter {
     respond({
       action: 'list_integrations_response',
       success: true,
+      // The daemon's own, named as such. Resolved through the same describer as
+      // the integrations' so one rule governs what a settings page may see.
+      coreMcpServers: describeMcpServers(coreMcpServerDefinitions()),
       integrations: integrations.map((integration, i) => ({
         id: integration.id,
         name: integration.name,
@@ -2103,7 +2201,7 @@ export class MessageRouter {
         // integration contributes nothing, but the toggle has to be rendered
         // next to what turning it on would give you.
         providedTypes: providedTypesOf(integration),
-        providedMcpServers: Object.keys(integration.mcpServers?.() ?? {}),
+        providedMcpServers: providedMcpServersOf(integration),
         // "Does this daemon support a credential for it?" — which is what an
         // integration having a credential adapter means.
         available: !!integration.credential,
@@ -2170,7 +2268,7 @@ export class MessageRouter {
       enabled: integration.enabled,
       name: integration.name,
       providedTypes: providedTypesOf(integration),
-      providedMcpServers: Object.keys(integration.mcpServers?.() ?? {}),
+      providedMcpServers: providedMcpServersOf(integration),
       // Named, not counted: a human turning Atlassian off deserves to see
       // which agents go on running under a type that no longer resolves.
       ...(running.length ? { runningAgentsUnaffected: running } : {})
