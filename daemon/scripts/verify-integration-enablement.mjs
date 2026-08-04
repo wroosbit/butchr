@@ -135,19 +135,28 @@ const types = existingIntegration.workspaceTypes
   .filter((t) => !!existing.registry.get(t));
 
 console.log(`  enabled                 ${existingIntegration.enabled}`);
-console.log(`  types registered        ${types.join(', ')}`);
+console.log(
+  `  types registered        ${types.join(', ')} ` +
+    `(${types.length} of ${existingIntegration.workspaceTypes.length} declared)`
+);
 console.log(`  MCP servers assembled   ${serversOf(existing.registry).join(', ')}`);
 console.log(`  state written           ${fs.readFileSync(existing.statePath, 'utf8').trim()}`);
 
 const migratedResolve = await existing.registry.resolve(ISSUE_URL);
 console.log(`\n  resolving ${ISSUE_URL}\n            → ${migratedResolve ? `{ type: '${migratedResolve.config.type}', key: '${migratedResolve.key}' }` : 'null'}`);
 
+// Counted against what the integration declares, not against a literal 3: this
+// read `types.length === 3` until KAN-142 added `confluence` and made the
+// literal wrong. The claim was never "Atlassian has three types" — it is "every
+// type it declares came back registered", which is what the migration has to
+// guarantee and what stays true the next time a type is added.
 verdict(
   existingIntegration.enabled === true &&
-    types.length === 3 &&
+    types.length === existingIntegration.workspaceTypes.length &&
+    types.length > 0 &&
     serversOf(existing.registry).includes('atlassian') &&
     migratedResolve !== null,
-  'the existing install keeps working: enabled, all three types, its server, URLs resolving.',
+  'the existing install keeps working: every declared type, its server, URLs resolving.',
   'a configured install was switched off by the new default — this is the stranding bug.'
 );
 
