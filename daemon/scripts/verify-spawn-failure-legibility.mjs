@@ -1,6 +1,14 @@
 // Live proof that a failed agent spawn is reported rather than swallowed —
 // the KAN-24 legibility fix, exercised against a real herdr.
 //
+// WHAT FAILURE THIS WOULD CATCH: a refused spawn that comes back looking like
+// a success — a session left marked `active` with no `spawnError`, so
+// `activate` answers `success: true` for an agent that does not exist. That is
+// the KAN-24 outage exactly, and it stayed invisible for an afternoon. It also
+// catches the softer regression the fix was really about: a `spawnError` that
+// carries the raw operating-system error with none of the diagnosis that tells
+// you which of the two failures you are looking at.
+//
 // Before the fix, `herdr agent start` was a bare spawnSync whose result was
 // discarded. A refused spawn produced a session marked 'active' and an
 // activate response of `success: true`, which is how an outage stayed
@@ -70,7 +78,24 @@ console.log(`   pid ${server.pid}, socket ${process.env.HERDR_SOCKET_PATH}`);
 const { HerdrBridge } = await import(path.join(distDir, 'herdr.js'));
 const bridge = new HerdrBridge();
 
-function report(label, session) {
+const failures = [];
+// `detail` explains the failure, so it is printed only when there is one —
+// otherwise every PASS line carries the reason it would have had for failing.
+const check = (name, ok, detail) => {
+  console.log(`   ${ok ? 'PASS' : 'FAIL'}  ${name}${!ok && detail ? ` — ${detail}` : ''}`);
+  if (!ok) failures.push(name);
+};
+
+/**
+ * Print what the bridge reported for a refused spawn, and hold it to the three
+ * things KAN-24 requires: the failure is recorded, the session is not passed off
+ * as running, and the error says enough to act on.
+ *
+ * `diagnosis` is the phrase that distinguishes this failure mode from the other
+ * one. Asserting it is the difference between "an error came back" and "the
+ * error told you which outage you are in", which is the whole subject here.
+ */
+function report(label, session, diagnosis) {
   console.log(`   session.status ...... ${session.status}`);
   console.log(`   session.spawnError .. ${session.spawnError ?? '(none)'}`);
   // What handleActivateByKey would answer for this session.
@@ -78,6 +103,35 @@ function report(label, session) {
     ? { success: false, error: session.spawnError }
     : { success: true, sessionId: session.sessionId, status: session.status };
   console.log(`   activate would say .. ${JSON.stringify(activateSaid, null, 2).replace(/\n/g, '\n' + ' '.repeat(27))}`);
+  console.log('');
+
+  // If the spawn succeeded, the failure mode was never induced and this section
+  // has proved nothing — which is a failure of the proof, not a pass.
+  check(
+    `${label}: the spawn actually failed (the mode was induced)`,
+    session.status !== 'active' || Boolean(session.spawnError),
+    `status ${session.status} with no spawnError — nothing was refused, so nothing was proved`
+  );
+  check(
+    `${label}: the failure is recorded on the session`,
+    typeof session.spawnError === 'string' && session.spawnError.length > 0,
+    session.spawnError ? undefined : 'spawnError is empty — the refusal was swallowed'
+  );
+  check(
+    `${label}: the session is not left marked active`,
+    session.status !== 'active',
+    `status: ${session.status}`
+  );
+  check(
+    `${label}: activate would report the failure, not success`,
+    activateSaid.success === false,
+    `activate would have said success: ${activateSaid.success}`
+  );
+  check(
+    `${label}: the error diagnoses the cause rather than only quoting the OS`,
+    diagnosis.test(session.spawnError ?? ''),
+    `expected ${diagnosis} in: ${session.spawnError ?? '(none)'}`
+  );
 }
 
 // ---------------------------------------------------------------- geometry --
@@ -92,7 +146,7 @@ await sleep(3000);
 
 const geometrySession = bridge.spawnSession('k24proof', 'geometry', undefined, '');
 await sleep(500);
-report('geometry', geometrySession);
+report('geometry', geometrySession, /pane-geometry failure, not a resource failure/);
 
 tinyClient.kill('SIGKILL');
 tinyClient = null;
@@ -102,17 +156,31 @@ await sleep(2000);
 console.log('\n== failure mode 2: file-descriptor exhaustion (prlimit, as the ticket asks) ==');
 const openNow = readdirSync(`/proc/${server.pid}/fd`).length;
 console.log(`   server currently holds ${openNow} fds; dropping its soft limit to ${openNow + 1}`);
+let fdLimitApplied = true;
 try {
   execFileSync('prlimit', ['--pid', String(server.pid), `--nofile=${openNow + 1}:1048576`]);
 } catch (e) {
-  console.log(`   prlimit failed (${e.message}); skipping this mode`);
+  fdLimitApplied = false;
+  console.log(`   prlimit failed (${e.message})`);
 }
+// A mode that could not be induced is a mode this script did not prove. Saying
+// "skipping" and exiting 0 is precisely the shape KAN-119 exists to remove.
+check(
+  'fdlimit: the failure mode could be induced at all',
+  fdLimitApplied,
+  'prlimit could not drop the herdr server\'s fd limit, so nothing below exercises the fd path'
+);
 console.log(`   limit now: ${readFileSync(`/proc/${server.pid}/limits`, 'utf8')
   .split('\n').find(l => l.startsWith('Max open files')).trim()}`);
 
 const fdSession = bridge.spawnSession('k24proof', 'fdlimit', undefined, '');
 await sleep(500);
-report('fdlimit', fdSession);
+report('fdlimit', fdSession, /Resource pressure at the time/);
 
+console.log(
+  failures.length
+    ? `\n${failures.length} FAILED:\n${failures.map((f) => `  - ${f}`).join('\n')}`
+    : '\nALL PASS — both refused spawns were reported, diagnosed, and never passed off as running.'
+);
 console.log('\n== done ==');
-process.exit(0);
+process.exit(failures.length ? 1 : 0);

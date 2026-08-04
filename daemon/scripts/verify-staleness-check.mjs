@@ -2,6 +2,13 @@
 // can silently stop being the code that was merged — and, just as important,
 // that it stays quiet when nothing is wrong.
 //
+// WHAT FAILURE THIS WOULD CATCH: a staleness check that stops reporting a real
+// gap — an unpulled main, a dist older than its sources, a rebuilt dist the
+// running daemon never loaded — or that starts crying wolf over an agent
+// building in its own worktree, an unrelated branch moving on origin, or a
+// deliberate feature-branch checkout. Every case below is a real clone damaged
+// one way at a time, and every one asserts the verdict it must produce.
+//
 // Every case is manufactured against a *real* clone of this repository with a
 // real `origin`, not a mock: the repo under test is cloned to a temp directory,
 // then deliberately damaged one way at a time. Nothing touches the live install
@@ -56,8 +63,28 @@ const backdateSources = (root, agoSeconds, rel = '') => {
   }
 };
 
+// --- verdicts ---------------------------------------------------------------
+//
+// Each case below states the verdict it must produce, and a case that produces
+// anything else is a failure carried to the exit code. Printing the report is
+// not the proof; the expectation next to it is.
+
+const failures = [];
+const check = (name, ok, detail) => {
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  if (!ok) failures.push(name);
+};
+
 let caseNumber = 0;
-function report(title, repoRoot, opts = {}) {
+/**
+ * Run the check against `repoRoot` and hold its answer to `expect`.
+ *
+ * `expect.stale` is the alarm the whole report raises; `expect.items` names the
+ * state each individual item must be in, keyed by StalenessItemId. Naming the
+ * items rather than only the boolean is what makes a case fail when the right
+ * alarm is raised for the wrong reason.
+ */
+function report(title, repoRoot, opts = {}, expect = null) {
   caseNumber++;
   console.log(`\n${'='.repeat(78)}`);
   console.log(`case ${caseNumber}: ${title}`);
@@ -66,6 +93,30 @@ function report(title, repoRoot, opts = {}) {
   const r = getStalenessReport({ repoRoot, force: true, ...opts });
   console.log(`  stale: ${r.stale}   summary: ${r.summary ?? '(none — nothing to say)'}`);
   console.log(formatStalenessReport(r).slice(1).join('\n'));
+
+  if (!expect) return r;
+  console.log('');
+  check(
+    `case ${caseNumber}: stale is ${expect.stale}`,
+    r.stale === expect.stale,
+    `got stale: ${r.stale}${r.summary ? ` (${r.summary})` : ''}`
+  );
+  for (const [id, state] of Object.entries(expect.items ?? {})) {
+    const item = r.items.find((i) => i.id === id);
+    check(
+      `case ${caseNumber}: ${id} is ${state}`,
+      item?.state === state,
+      item ? `got ${item.state} — ${item.headline}` : 'no such item in the report'
+    );
+  }
+  if (expect.headline) {
+    const item = r.items.find((i) => i.id === expect.headline.id);
+    check(
+      `case ${caseNumber}: ${expect.headline.id} headline says ${expect.headline.match}`,
+      expect.headline.match.test(item?.headline ?? ''),
+      `got: ${item?.headline ?? '(no item)'}`
+    );
+  }
   return r;
 }
 
@@ -106,7 +157,10 @@ const restoreBaseline = () => {
 restoreBaseline();
 
 // ---------------------------------------------------------------------------
-report('clean install — everything current, the check should stay quiet', repo);
+report('clean install — everything current, the check should stay quiet', repo, {}, {
+  stale: false,
+  items: { git: 'fresh', 'daemon-build': 'fresh', 'extension-build': 'fresh' }
+});
 
 // ---------------------------------------------------------------------------
 // (a) local main behind origin. Move the clone's main back two commits; origin
@@ -117,7 +171,13 @@ run('git', ['-C', repo, 'reset', '--hard', '--quiet', 'origin/main~2']);
 // otherwise make the builds look stale too. Isolating the git case is the
 // point — one fault at a time, or the proof proves nothing.
 restoreBaseline();
-report('(a) local main is behind origin/main', repo);
+// Only git is damaged, so only git may go stale: an alarm that also fired on
+// the builds here would be reporting damage this case did not do.
+report('(a) local main is behind origin/main', repo, {}, {
+  stale: true,
+  items: { git: 'stale', 'daemon-build': 'fresh', 'extension-build': 'fresh' },
+  headline: { id: 'git', match: /2 commits behind origin\/main/ }
+});
 
 run('git', ['-C', repo, 'reset', '--hard', '--quiet', 'origin/main']);
 restoreBaseline();
@@ -126,14 +186,22 @@ restoreBaseline();
 // (b) daemon source newer than daemon/dist.
 // ---------------------------------------------------------------------------
 touch(path.join(repo, 'daemon/src/router.ts'), 0);
-report('(b) daemon/src is newer than daemon/dist', repo);
+report('(b) daemon/src is newer than daemon/dist', repo, {}, {
+  stale: true,
+  items: { git: 'fresh', 'daemon-build': 'stale', 'extension-build': 'fresh' },
+  headline: { id: 'daemon-build', match: /daemon\/dist is older than daemon\/src/ }
+});
 touch(path.join(repo, 'daemon/src/router.ts'), -3600);
 
 // ---------------------------------------------------------------------------
 // (c) extension source newer than extension/dist.
 // ---------------------------------------------------------------------------
 touch(path.join(repo, 'extension/sidepanel.jsx'), 0);
-report('(c) extension sources are newer than extension/dist', repo);
+report('(c) extension sources are newer than extension/dist', repo, {}, {
+  stale: true,
+  items: { git: 'fresh', 'daemon-build': 'fresh', 'extension-build': 'stale' },
+  headline: { id: 'extension-build', match: /extension\/dist is older than extension/ }
+});
 touch(path.join(repo, 'extension/sidepanel.jsx'), -3600);
 
 // ---------------------------------------------------------------------------
@@ -141,8 +209,14 @@ touch(path.join(repo, 'extension/sidepanel.jsx'), -3600);
 //     when the caller is the daemon and can say when it started.
 // ---------------------------------------------------------------------------
 buildFixture('daemon/dist', 0); // just rebuilt
+// The build on disk is current — it is the *process* that is behind it. So
+// daemon-build must stay fresh while daemon-process alone raises the alarm.
 report('(d) daemon/dist rebuilt after the running daemon started', repo, {
   daemonStartedAt: new Date(Date.now() - 3 * 3600 * 1000)
+}, {
+  stale: true,
+  items: { git: 'fresh', 'daemon-build': 'fresh', 'daemon-process': 'stale' },
+  headline: { id: 'daemon-process', match: /started before the build it is meant to be running/ }
 });
 buildFixture('daemon/dist', 60);
 
@@ -161,7 +235,10 @@ touch(path.join(worktree, 'daemon/src/router.ts'), 0);
 touch(path.join(worktree, 'extension/sidepanel.jsx'), 0);
 mkdirSync(path.join(worktree, 'daemon/dist'), { recursive: true });
 writeFileSync(path.join(worktree, 'daemon/dist/bundle.js'), '// agent build\n');
-report('no false alarm: an agent is building in a worktree inside this checkout', repo);
+report('no false alarm: an agent is building in a worktree inside this checkout', repo, {}, {
+  stale: false,
+  items: { git: 'fresh', 'daemon-build': 'fresh', 'extension-build': 'fresh' }
+});
 run('git', ['-C', repo, 'worktree', 'remove', '--force', worktree]);
 
 // ---------------------------------------------------------------------------
@@ -173,7 +250,10 @@ run('git', ['-C', repo, 'worktree', 'remove', '--force', worktree]);
 run('git', ['-C', sourceRepo, 'update-ref', 'refs/heads/kan30-unrelated-branch', 'HEAD']);
 try {
   run('git', ['-C', repo, 'fetch', '--quiet', 'origin']);
-  report('no false alarm: origin gained an unrelated branch (origin/main unmoved)', repo);
+  report('no false alarm: origin gained an unrelated branch (origin/main unmoved)', repo, {}, {
+    stale: false,
+    items: { git: 'fresh' }
+  });
 } finally {
   run('git', ['-C', sourceRepo, 'update-ref', '-d', 'refs/heads/kan30-unrelated-branch']);
 }
@@ -187,16 +267,37 @@ try {
 // ---------------------------------------------------------------------------
 run('git', ['-C', repo, 'checkout', '--quiet', '-b', 'feature/some-work', 'origin/main~3']);
 restoreBaseline();
-report('no false alarm: checkout is on a feature branch, 3 behind origin/main', repo);
+// `not-applicable`, not `fresh`: the checkout genuinely is behind, and the
+// check must say so without alarm rather than pretend it is level.
+report('no false alarm: checkout is on a feature branch, 3 behind origin/main', repo, {}, {
+  stale: false,
+  items: { git: 'not-applicable' },
+  headline: { id: 'git', match: /on branch feature\/some-work, not main/ }
+});
 
 // ---------------------------------------------------------------------------
 // And the live install, read-only, exactly as the daemon sees it.
+//
+// Deliberately NOT asserted, and this is the one case where that is the honest
+// choice: whatever it says is a fact about this machine at this moment, not
+// about the code under test. Whether ~/code/wroosbit/butchr happens to be level
+// with origin right now is not something this script may pass or fail on — an
+// assertion here would go red when a colleague pulls, which is a check that
+// cries wolf, and green-by-luck the rest of the time. It is printed because
+// seeing the real installation judged is worth something; it is excluded from
+// the count because it proves nothing about the checker.
 // ---------------------------------------------------------------------------
 const liveRoot = path.join(process.env.HOME, 'code', 'wroosbit', 'butchr');
 try {
-  report(`the live install at ${liveRoot} (read-only)`, liveRoot);
+  report(`the live install at ${liveRoot} (read-only, informational — not asserted)`, liveRoot);
 } catch (err) {
   console.log(`\n(skipped live install: ${err.message})`);
 }
 
+console.log(
+  failures.length
+    ? `\n${failures.length} FAILED: ${failures.join(', ')}`
+    : `\nALL PASS — ${caseNumber - 1} asserted cases, every verdict as specified.`
+);
 console.log('\n== done ==');
+process.exit(failures.length ? 1 : 0);

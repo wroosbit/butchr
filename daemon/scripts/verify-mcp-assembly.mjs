@@ -3,6 +3,12 @@
 // nothing else: the `.mcp.json` a spawning agent boots with is byte-identical
 // to the one `origin/main` writes today.
 //
+// WHAT FAILURE THIS WOULD CATCH: the `.mcp.json` a spawning agent boots with
+// changing when the definitions moved out of the launcher and into the
+// integrations that own them. The claim is byte-identical output, and anything
+// less means the refactor quietly changed which tools a live agent comes up
+// holding.
+//
 // Before: `mcpServerDefinitions()` in launchers.ts, a hardcoded if-chain
 // resolving the bare strings a workspace type listed — `atlassian` → npx
 // mcp-remote, `butchr` → node dist/mcp.js. After: the Atlassian integration

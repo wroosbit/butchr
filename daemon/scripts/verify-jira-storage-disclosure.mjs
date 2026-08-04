@@ -1,6 +1,11 @@
 // Proof that the settings page tells the user where their token will be
 // stored *before* they type it — KAN-31 task 4.
 //
+// WHAT FAILURE THIS WOULD CATCH: a settings page that names the wrong store
+// before the user types a secret — LaunchDarkly's file, or a keyring on a
+// machine that will actually fall back to a file — or a credential file left
+// readable by anyone but its owner.
+//
 // Butchr prefers the OS keyring and silently falls back to a 0600 file when
 // libsecret is missing or no secret service is running. Which one you get is
 // invisible from the outside, and until now it was only reported in the
@@ -44,6 +49,25 @@ console.log(`    storage ... ${target.storage}`);
 console.log(`    path ...... ${target.path ?? '(n/a — keyring)'}`);
 console.log(`    reason .... ${target.reason}\n`);
 
+// The disclosure has to be coherent before its wording is worth looking at: a
+// backend this page knows how to describe, a reason to show under it, and — on
+// the file path — Jira's own store rather than another integration's. Its
+// LaunchDarkly twin has always asserted that last one; this script had no
+// assertion at all until KAN-119, and on a machine with no credential file yet
+// it could not have gone red for any reason whatsoever.
+if (target.storage !== 'keyring' && target.storage !== 'file') {
+  console.log(`  ✗ storageTarget() named a backend the settings page cannot describe: ${target.storage}`);
+  process.exitCode = 1;
+}
+if (!target.reason) {
+  console.log('  ✗ storageTarget() gave no reason to show the user');
+  process.exitCode = 1;
+}
+if (target.path && !path.basename(target.path).startsWith('jira-')) {
+  console.log(`  ✗ disclosed path is not the Jira store: ${target.path}`);
+  process.exitCode = 1;
+}
+
 // -- the exact text options.jsx renders from it ---------------------------
 //
 // Mirrors the JSX: a bold headline chosen by backend, then the reason, then
@@ -77,9 +101,14 @@ if (target.path) {
   }
 }
 
-console.log(
-  `\n  ✓ the backend is disclosed at entry time, and it is "${target.storage}" on this machine.`
-);
+// Said only when nothing above objected — an unconditional ✓ is the same lie in
+// miniature that KAN-119 exists to remove.
+if (!process.exitCode) {
+  console.log(
+    `\n  ✓ the backend is disclosed at entry time, and it is "${target.storage}" on this machine.`
+  );
+}
+process.exit(process.exitCode ?? 0);
 
 function wrap(text, width) {
   const out = [];

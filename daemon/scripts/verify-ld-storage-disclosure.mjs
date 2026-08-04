@@ -2,6 +2,11 @@
 // will be stored *before* they type it — KAN-86, mirroring
 // verify-jira-storage-disclosure.mjs.
 //
+// WHAT FAILURE THIS WOULD CATCH: a settings page that names the wrong store
+// before the user types a secret — Jira's file rather than LaunchDarkly's,
+// which is exactly what a regressed parametrization would produce — or a
+// credential file left readable by anyone but its owner.
+//
 // Butchr prefers the OS keyring and silently falls back to a 0600 file when
 // libsecret is missing or no secret service is running. Which one you get is
 // invisible from the outside; reporting it only in the success message would

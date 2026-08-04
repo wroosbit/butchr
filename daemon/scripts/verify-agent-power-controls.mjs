@@ -1,6 +1,12 @@
 // Proof for KAN-38: the Agents page can switch an agent off and back on, and
 // every way that could go wrong has an answer rather than a discovery.
 //
+// WHAT FAILURE THIS WOULD CATCH: an Off that leaves the agent running, an On
+// that offers a workspace which no longer exists, a stand-down that discards
+// the activation record needed to bring the agent back, or a destructive
+// control firing without first showing the human whose uncommitted work it is
+// about to end.
+//
 // Eight sections, one per thing the ticket asked to be decided:
 //
 //   1. off            — the message the page sends, and the agent gone from the census

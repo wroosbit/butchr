@@ -2,6 +2,11 @@
 // refused — never a `success: true, verified: true` answer wrapped around an
 // agent that booted with no instructions.
 //
+// WHAT FAILURE THIS WOULD CATCH: an activation whose brief could not be
+// written answering `success: true, verified: true` — an agent that came up
+// with no instructions at all, "verified" only in the sense that a live
+// runtime exists behind the name.
+//
 // The ticket's symptom: when the `.butchr-prompt.md` write failed, initPty
 // logged `Failed to write prompt file` and fell through to spawn. The agent
 // came up, found no instructions, and the activation still answered

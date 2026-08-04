@@ -1,6 +1,12 @@
 // KAN-28: `list_agents` must answer from what exists, not from the daemon's
 // session map — which a restart empties while the herdr panes keep running.
 //
+// WHAT FAILURE THIS WOULD CATCH: `list_agents` answering from the daemon's
+// session map rather than from what exists, so a daemon restart empties the
+// board while the herdr panes keep running. It also catches the two edge cases
+// going the other way: an empty board or a missing herdr becoming an error
+// instead of an empty list.
+//
 // The live proof for that is on the ticket: a real daemon restart with real
 // agents. What a live run *cannot* show is the two edge cases, because this
 // machine always has agents and always has a herdr. Those are covered here by
