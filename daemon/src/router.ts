@@ -108,6 +108,23 @@ interface ListedAgent {
    * the copy is the one that gets forgotten when a supervisor type is added.
    */
   supervisor: boolean;
+  /**
+   * The agent whose activation call started this one, or `null` when nobody's
+   * did. See {@link AgentRecord.activatedBy} for what is and is not recorded.
+   *
+   * Read off the registry on every poll rather than cached here, so a parent
+   * written down after this daemon booted shows up on the next list without a
+   * second copy of the fact existing to go stale. It is the only edge the
+   * Agents page's org chart draws with — the extension makes no Jira call and
+   * infers nothing from key or type — so an agent whose parent this does not
+   * name renders at top level.
+   *
+   * `null` rather than an omitted key, for the reason the doc comment above
+   * gives and for one more specific to this field: an older daemon sends no
+   * `activatedBy` at all, and the page tells "this agent has no parent" from
+   * "this daemon cannot answer that" by exactly that difference.
+   */
+  activatedBy: SupervisorOfRecord | null;
 }
 
 /**
@@ -203,6 +220,13 @@ interface MissingAgent {
   /** When the registry last recorded this agent as activated. */
   since: string;
   reason: string;
+  /**
+   * Who activated it, from the same record that says it should be running.
+   * Carried here for the same reason as on {@link ListedAgent}: a loss is
+   * owed to whoever staffed the work, and the tree that shows it has to be
+   * able to put the row under that agent.
+   */
+  activatedBy: SupervisorOfRecord | null;
 }
 
 /**
@@ -237,6 +261,13 @@ interface StandbyAgent {
   /** When the registry recorded the stand-down. */
   since: string;
   reason: string;
+  /**
+   * Who activated it, kept across the stand-down because the stand-down did
+   * not change who staffed it. A story switched off under a live epic is
+   * information — it says the epic has a child and the child is off — and
+   * without this the tree could only show it as a rootless orphan.
+   */
+  activatedBy: SupervisorOfRecord | null;
 }
 
 /**
@@ -2330,6 +2361,9 @@ export class MessageRouter {
       key: entry.record.key,
       workDir: entry.record.workDir,
       url: entry.record.url ?? null,
+      // The preemption record already holds who took the slot; this is the
+      // other party — who is owed the decision about putting the work back.
+      activatedBy: entry.record.activatedBy ?? null,
       at: entry.at,
       priority: entry.preemption.priority,
       herdrStatusWhenPreempted: entry.preemption.herdrStatus,
@@ -2463,6 +2497,7 @@ export class MessageRouter {
         key: intent.record.key,
         workDir: intent.record.workDir,
         url: intent.record.url ?? null,
+        activatedBy: intent.record.activatedBy ?? null,
         since: intent.at,
         // Both cases are "not running", but they are not the same event and a
         // reader acting on this deserves the difference: an agent that never
@@ -2520,6 +2555,7 @@ export class MessageRouter {
         workDir,
         url: intent.record.url ?? null,
         defaultAgent: intent.record.defaultAgent ?? null,
+        activatedBy: intent.record.activatedBy ?? null,
         since: intent.at,
         reason:
           'Switched off deliberately. Its workspace is still on disk, so switching it back ' +
@@ -2688,7 +2724,11 @@ export class MessageRouter {
         workDir: dto.workDir,
         herdrStatus: dto.herdrStatus,
         agentRuntime: byName.get(agentName)?.agentRuntime ?? null,
-        supervisor: isSupervisorType(dto.type)
+        supervisor: isSupervisorType(dto.type),
+        // Through the same helper the notifier resolves parentage with, so
+        // the row the page nests by and the supervisor a nudge is delivered to
+        // can never be two different answers to one question.
+        activatedBy: this.supervisorFor(agentName)
       });
     }
 
@@ -2727,7 +2767,11 @@ export class MessageRouter {
         workDir: record.workDir,
         herdrStatus: record.herdrStatus,
         agentRuntime: record.agentRuntime,
-        supervisor: isSupervisorType(address.type)
+        supervisor: isSupervisorType(address.type),
+        // Not a session-only field, so not null-by-construction here: the
+        // registry outlives the session map, which is the whole reason an
+        // agent that survived a daemon restart still knows who staffed it.
+        activatedBy: this.supervisorFor(record.name)
       });
     }
 
