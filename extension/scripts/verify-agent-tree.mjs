@@ -10,11 +10,14 @@
 //
 // WHY THE PAYLOAD IS SYNTHETIC
 //
-// Because the daemon does not send `activatedBy` yet — that is sibling task
-// KAN-80, itself waiting on KAN-77 to write the field. This half was cleared to
-// build against the agreed wire contract and rebase, which makes a synthetic
-// payload the intended proof rather than a stand-in for one: the contract is
-// `activatedBy: { type: string, key: string } | null` on every row of `agents`,
+// Because this half was cleared to build against the agreed wire contract and
+// rebase, ahead of the daemon sending it — sibling task KAN-80 has since put
+// `activatedBy` on all four lists, and proves that end against the real router
+// in `daemon/scripts/verify-parentage-in-list-agents.mjs`. The synthetic
+// payload stays the intended proof rather than a stand-in for one, because
+// what is under test here is the rendering of fleets a live daemon cannot be
+// asked to produce on demand — including one that omits the field. The
+// contract is `activatedBy: { type: string, key: string } | null` on every row of `agents`,
 // `standbyAgents`, `preemptedAgents` and `missingAgents`, and an older daemon
 // omitting the field entirely. Both are exercised below, the second by deleting
 // the field from the first.
