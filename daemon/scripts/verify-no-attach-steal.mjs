@@ -1,6 +1,10 @@
 // Live check of the KAN-16 fix against a real herdr, at the level the bug
 // actually lived: HerdrBridge.
 //
+// WHAT FAILURE THIS WOULD CATCH: a second activation for an agent opening a
+// second `--takeover` attach, which evicts the first and leaves the sidepanel
+// rendering a terminal that will never produce another byte.
+//
 // Before the fix, a second spawnSession for one agent opened a second
 // `herdr agent attach --takeover`, which evicted the first and left the
 // sidepanel rendering a dead frame. This drives exactly that sequence and

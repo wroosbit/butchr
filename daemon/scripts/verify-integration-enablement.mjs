@@ -4,6 +4,12 @@
 // install that already had a configured credential is never silently switched
 // off.
 //
+// WHAT FAILURE THIS WOULD CATCH: an integration that is live before anyone
+// turned it on, a disabled one still contributing workspace types or MCP
+// servers, a URL it would have claimed being refused as merely unrecognised
+// rather than as switched off, or an upgrade silently disabling an install
+// that already had a working credential.
+//
 // Six sections:
 //
 //   1. default        — a fresh install with no credential comes up disabled,

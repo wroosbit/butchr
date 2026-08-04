@@ -2,6 +2,14 @@
 // travels between machines, refuses legibly, moves with load, and can be
 // overridden on purpose.
 //
+// WHAT FAILURE THIS WOULD CATCH: a capacity model that stops rationing — a cap
+// that is not the minimum of what CPU and memory allow, a gate that admits an
+// agent past a full board, a supervisor charged a slot it was never meant to
+// cost (or refused on a load average it does not contribute to), a measured
+// per-agent cost adopted undamped or from a window that measured nothing, or a
+// refusal whose headline blames a constraint that did not bind. Each of those
+// has happened at least once on this board; each has a section below.
+//
 // Extended for KAN-36, which re-measured what an agent costs and reserved a
 // slot off the top for the then always-on board manager. Reworked for KAN-41:
 // KAN-39 replaced that single manager with epic and story agents that are
@@ -51,6 +59,8 @@
 //
 // Usage: node daemon/scripts/verify-agent-capacity.mjs [distDir]
 
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -74,8 +84,28 @@ const {
 const { dampCost, sampleFromMeasurement, ALPHA_UP, ALPHA_DOWN } =
   await import(path.join(distDir, 'agent-cost-damping.js'));
 const { MessageRouter } = await import(path.join(distDir, 'router.js'));
+const { WorkspaceRegistry } = await import(path.join(distDir, 'registry.js'));
+const { createAtlassianIntegration } = await import(
+  path.join(distDir, 'integrations', 'atlassian-integration.js')
+);
+const { IntegrationStateStore } = await import(
+  path.join(distDir, 'integrations', 'enablement.js')
+);
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
+
+// --- verdicts ---------------------------------------------------------------
+//
+// Until KAN-119 this script had no exit path of any kind: fifteen sections of
+// real output, several of which computed the right boolean and rendered it as
+// "CHECK THIS" prose, and then exited 0 whatever it found. Those booleans are
+// now verdicts, and the sections that had none have been given them — a section
+// that only prints is a demonstration, and this file is cited as a proof.
+const failures = [];
+const verdict = (ok, yes, no) => {
+  if (!ok) failures.push(no);
+  console.log(`\n  ${ok ? '→ ' + yes : '→ FAILED — ' + no}`);
+};
 
 // ------------------------------------------------------- 1. derivation --
 rule('1. DERIVATION — the cap on this machine, and the arithmetic behind it');
@@ -89,6 +119,19 @@ console.log(
 );
 console.log(
   '  The incident that opened KAN-34 was seven agents on this hardware.'
+);
+
+// The derivation's own invariant: the cap is whichever resource runs out first,
+// and it says which. A cap that exceeded either term would be admitting agents
+// the hardware cannot hold — the KAN-34 incident exactly.
+verdict(
+  here.cap === Math.min(here.capByCpu, here.capByMemory) &&
+    here.cap >= 1 &&
+    here.capBoundBy === (here.capByCpu <= here.capByMemory ? 'cpu' : 'memory'),
+  `the cap is the binding minimum (CPU allows ${here.capByCpu}, memory allows ${here.capByMemory}), ` +
+    `at least 1, and names ${here.capBoundBy} as what bound.`,
+  `the cap ${here.cap} is not min(cpu ${here.capByCpu}, memory ${here.capByMemory}) ` +
+    `or capBoundBy (${here.capBoundBy}) names the wrong constraint.`
 );
 
 // ------------------------------------------------------ 2. reservation --
@@ -141,10 +184,15 @@ console.log(
 console.log('\nthe live derivation line, with no manager term in it:\n');
 console.log(describeCapacity(after));
 console.log(
-  `\n  → the cap rises by exactly the slot the reservation held: ${oldCap} → ${after.cap}. ` +
-  'The reservation\n' +
-  '    was right while there was one always-on manager; KAN-39 removed that\n' +
-  '    agent, and the slot was being held for something that may not exist.'
+  '  The reservation was right while there was one always-on manager; KAN-39\n' +
+  '  removed that agent, and the slot was being held for something that may not\n' +
+  '  exist.'
+);
+verdict(
+  after.cap === oldCap + RESERVED_SLOTS,
+  `the cap rises by exactly the slot the reservation held: ${oldCap} → ${after.cap}.`,
+  `expected the cap to rise by exactly ${RESERVED_SLOTS} slot when the reservation went ` +
+    `(${oldCap} → ${oldCap + RESERVED_SLOTS}), got ${after.cap}.`
 );
 
 // ------------------------------------------------------ 3. supervisors --
@@ -159,16 +207,21 @@ for (const [label, c] of [['supervisorsRunning: 0', quiet], ['supervisorsRunning
     `headroomByCap ${c.headroomByCap}, supervisors ${c.supervisors}`
   );
 }
-const unmoved =
-  quiet.cap === staffed.cap &&
-  quiet.headroom === staffed.headroom &&
-  quiet.headroomByCap === staffed.headroomByCap;
 console.log(
-  `\n  → cap, headroom and headroomByCap identical: ${unmoved ? 'yes' : 'NO — CHECK THIS'}. ` +
-  'Only the reported\n' +
-  '    count differs. Epic and story agents read Jira, file tickets and wait;\n' +
-  '    their real (usually small) usage is felt through the measured load and\n' +
-  '    available memory, not charged in the model.'
+  '\n  Epic and story agents read Jira, file tickets and wait; their real (usually\n' +
+  '  small) usage is felt through the measured load and available memory, not\n' +
+  '  charged in the model.'
+);
+verdict(
+  quiet.cap === staffed.cap &&
+    quiet.headroom === staffed.headroom &&
+    quiet.headroomByCap === staffed.headroomByCap &&
+    staffed.supervisors === 3,
+  'cap, headroom and headroomByCap are identical with three supervisors running and\n' +
+    '    with none. Only the reported count differs.',
+  `three running supervisors moved the arithmetic: cap ${quiet.cap}→${staffed.cap}, ` +
+    `headroom ${quiet.headroom}→${staffed.headroom}, headroomByCap ` +
+    `${quiet.headroomByCap}→${staffed.headroomByCap}, reported supervisors ${staffed.supervisors}.`
 );
 
 // ------------------------------------------------------ 4. portability --
@@ -190,6 +243,7 @@ console.log(
 console.log(
   'machine                 cores      RAM   cap   by CPU   by RAM   bound by'
 );
+const caps = {};
 for (const m of machines) {
   const totalBytes = m.gib * GIB;
   const c = computeCapacity(
@@ -202,6 +256,7 @@ for (const m of machines) {
     },
     0
   );
+  caps[m.label] = c;
   console.log(
     `${m.label.padEnd(22)} ${String(m.cores).padStart(5)} ${String(m.gib + 'G').padStart(8)}` +
     ` ${String(c.cap).padStart(5)} ${String(c.capByCpu).padStart(8)} ${String(c.capByMemory).padStart(8)}` +
@@ -209,11 +264,27 @@ for (const m of machines) {
   );
 }
 console.log(
-  '\n  → the number moves with the hardware. The last row is the case a fixed\n' +
-  '    constant gets wrong in the other direction: plenty of cores, not enough\n' +
-  '    memory to feed them, and memory is what kills rather than slows.\n' +
-  '    The first row is the one KAN-36 asked about: the smallest machine here\n' +
-  '    still answers with a number the product can be used with, not zero.'
+  '\n  The last row is the case a fixed constant gets wrong in the other direction:\n' +
+  '  plenty of cores, not enough memory to feed them, and memory is what kills\n' +
+  '  rather than slows.'
+);
+
+const pi = caps['Raspberry Pi 4'];
+const skewed = caps['CPU-rich, RAM-poor'];
+const iron = caps['big iron'];
+verdict(
+  // Three separate claims the table is making, each of which a fixed constant
+  // would get wrong: the number tracks the hardware, the smallest machine is
+  // still usable rather than zero, and memory binds when memory is what is short.
+  iron.cap > pi.cap &&
+    pi.cap >= 1 &&
+    skewed.capBoundBy === 'memory' &&
+    skewed.cap < skewed.capByCpu,
+  `the number moves with the hardware (Pi ${pi.cap} → big iron ${iron.cap}), the smallest\n` +
+    `    machine still answers ${pi.cap} rather than zero, and the CPU-rich/RAM-poor row is\n` +
+    `    bound by memory (${skewed.cap}, though CPU alone would allow ${skewed.capByCpu}).`,
+  `portability broke: Pi ${pi.cap}, big iron ${iron.cap}, ` +
+    `CPU-rich/RAM-poor ${skewed.cap} bound by ${skewed.capBoundBy} (CPU allows ${skewed.capByCpu}).`
 );
 
 // --------------------------------------------- 5, 6, 7 & 9: the real path --
@@ -249,12 +320,36 @@ function stubBridge(runningAgentNames) {
   };
 }
 
+// The real workspace types, registered for one reason: supervisor-ness is not a
+// property of this stub at all. `isSupervisorType` answers from a module-level
+// set that `WorkspaceRegistry.register` maintains, so a stub that registers
+// nothing leaves *every* type looking like a charged worker — the epic and story
+// agents in the fleets below get counted in `running`, and the supervisor
+// exemption section 14 exists to prove cannot fire at all.
+//
+// This is the third time this stub has drifted from the code it stands in for
+// (KAN-21's census shape, KAN-83's session lookup, now this), and the first time
+// the drift was load-bearing on a verdict rather than on a crash: with no exit
+// code, sections 5, 6 and 14 printed the wrong numbers and the script still went
+// green. Registering the real types restores what the sections assert rather
+// than changing it — verify-agent-preemption.mjs section 6 proves the same
+// exemption against the real registry, and agrees.
+const typeRegistry = new WorkspaceRegistry(
+  new IntegrationStateStore(
+    path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kan119-capacity-')), 'integrations.json')
+  )
+);
+typeRegistry.registerIntegration(createAtlassianIntegration());
+typeRegistry.setEnabled('jira', true);
+
 // `priorityFor` answers the floor for everything, which is what an unregistered
 // type gets from the real registry too. That keeps this script about capacity:
 // nothing here can outrank anything, so no refusal below is softened into a
 // preemption offer. KAN-37's ordering is proved by verify-agent-preemption.mjs.
 const stubRegistry = {
-  get: () => undefined,
+  // Delegated so the router's DTOs read the same supervisor flag the census
+  // does; everything else below stays stubbed.
+  get: (type) => typeRegistry.get(type),
   resolve: async () => null,
   priorityFor: () => 1,
   // "No integration is switched off" — the answers that keep this script about
@@ -314,13 +409,12 @@ let censusResponse;
 makeRouter(MIXED_FLEET, (msg) => { censusResponse = msg; }).handle({ action: 'capacity' });
 console.log('what butchr_capacity answers:\n');
 console.log(JSON.stringify(censusResponse, null, 2));
-console.log(
-  `\n  → running: ${censusResponse.running} (the task agent), ` +
-  `supervisors: ${censusResponse.supervisors} (the epic and story agents,\n` +
-  '    visible in the report, absent from every figure the arithmetic uses).' +
-  (censusResponse.running === 1 && censusResponse.supervisors === 2
-    ? ''
-    : '\n    EXPECTED running 1 and supervisors 2 — CHECK THIS.')
+verdict(
+  censusResponse.running === 1 && censusResponse.supervisors === 2,
+  `running: ${censusResponse.running} (the task agent), supervisors: ${censusResponse.supervisors} ` +
+    '(the epic and story\n    agents, visible in the report, absent from every figure the arithmetic uses).',
+  `expected running 1 and supervisors 2 from ${MIXED_FLEET.length} agents, got running ` +
+    `${censusResponse.running} and supervisors ${censusResponse.supervisors}.`
 );
 
 // ---------------------------------------------------------- 6. refusal --
@@ -343,13 +437,20 @@ console.log(`running: ${running.join(', ')}\n`);
 const refused = await activate(running, { type: 'task', key: 'KAN-99' });
 console.log('what the caller receives:\n');
 console.log(JSON.stringify(refused.response, null, 2));
-console.log(
-  `\n  → success: ${refused.response.success}, refusedBy: ${refused.response.refusedBy}. ` +
-  'The reason and the numbers are\n' +
-  '    fields on the response, not buried in a log the caller cannot see and not\n' +
-  '    only inside a paragraph the sidepanel would have to parse.\n' +
-  `    running counts ${refused.response.capacity.running} task agent(s) and reports the ` +
-  `epic and story agents\n    separately as supervisors: ${refused.response.capacity.supervisors}.`
+verdict(
+  refused.response.success === false &&
+    refused.response.refusedBy === 'capacity' &&
+    refused.reachedSpawn === false &&
+    refused.response.capacity.running === here.cap &&
+    refused.response.capacity.supervisors === 2,
+  `success: ${refused.response.success}, refusedBy: ${refused.response.refusedBy}, and nothing ` +
+    'reached the spawn.\n    The reason and the numbers are fields on the response, not buried in a log the\n' +
+    `    caller cannot see. running counts ${refused.response.capacity.running} task agent(s) and reports the epic and\n` +
+    `    story agents separately as supervisors: ${refused.response.capacity.supervisors}.`,
+  `a full board did not refuse: success=${refused.response.success} ` +
+    `refusedBy=${refused.response.refusedBy} reachedSpawn=${refused.reachedSpawn} ` +
+    `running=${refused.response.capacity?.running} (cap ${here.cap}) ` +
+    `supervisors=${refused.response.capacity?.supervisors}.`
 );
 
 // -------------------------------------------------------- 7. re-attach --
@@ -369,30 +470,46 @@ console.log(
   (reattach.response?.reason ? ` (${reattach.response.reason})` : '') + '\n' +
   `  reached the spawn/attach path: ${reattach.reachedSpawn}\n`
 );
-console.log(
-  reattach.reachedSpawn && reattach.response?.success !== false
-    ? '  → allowed through. Attaching to an agent that already exists starts nothing\n' +
-      '    and costs the machine nothing, so the gate has nothing to ration. This\n' +
-      '    is the path the sidepanel takes after every daemon restart; gating it\n' +
-      '    would strand the panel away from work already in flight.'
-    : '  → REFUSED — CHECK THIS. A re-attach must never be gated on capacity.'
+verdict(
+  reattach.reachedSpawn && reattach.response?.success !== false,
+  'allowed through. Attaching to an agent that already exists starts nothing\n' +
+    '    and costs the machine nothing, so the gate has nothing to ration. This\n' +
+    '    is the path the sidepanel takes after every daemon restart; gating it\n' +
+    '    would strand the panel away from work already in flight.',
+  'a re-attach to an already-running agent was gated on capacity — the sidepanel ' +
+    'would be stranded away from work already in flight after every daemon restart.'
 );
 
 // ------------------------------------------------------------- 8. load --
 rule('8. LOAD SENSITIVITY — same machine, same agent count, different load');
 
 const facts = readMachineFacts();
+const byLoad = {};
 for (const [label, load1] of [['idle fleet', 0.15], ['busy fleet (compiling)', facts.cores * 2]]) {
   const c = computeCapacity({ ...facts, load1 }, 1);
+  byLoad[label] = c;
   console.log(
     `${label.padEnd(24)} load ${String(load1.toFixed(2)).padStart(5)}  →  headroom ${c.headroom} ` +
     `(count says ${c.headroomByCap}, load says ${c.headroomByLoad}, memory says ${c.headroomByMemory}; ` +
     `bound by ${c.headroomBoundBy})`
   );
 }
-console.log(
-  '\n  → one agent is running in both rows. A count-only cap cannot tell these\n' +
-  '    apart; the load average is what the human actually felt.'
+
+const idleFleet = byLoad['idle fleet'];
+const busyFleet = byLoad['busy fleet (compiling)'];
+verdict(
+  // Same machine, same one agent running, same count headroom — and a different
+  // answer. If these two rows ever agree, the load term has stopped working and
+  // the model has silently become the count-only cap KAN-34 replaced.
+  busyFleet.headroom < idleFleet.headroom &&
+    busyFleet.headroomByLoad === 0 &&
+    busyFleet.headroomBoundBy === 'load' &&
+    idleFleet.headroomByCap === busyFleet.headroomByCap,
+  `one agent is running in both rows and the count says ${idleFleet.headroomByCap} in both, yet ` +
+    `headroom falls\n    ${idleFleet.headroom} → ${busyFleet.headroom} and the busy row is bound by load. A count-only cap cannot\n` +
+    '    tell these apart; the load average is what the human actually felt.',
+  `load made no difference: headroom ${idleFleet.headroom} idle vs ${busyFleet.headroom} busy ` +
+    `(busy headroomByLoad ${busyFleet.headroomByLoad}, bound by ${busyFleet.headroomBoundBy}).`
 );
 
 // --------------------------------------------------------- 9. override --
@@ -401,13 +518,17 @@ rule('9. OVERRIDE — the same call, deliberately');
 const overridden = await activate(running, { type: 'task', key: 'KAN-99', override: true });
 console.log('the gate now allows it, and records that it did:\n');
 console.log(JSON.stringify(overridden.events, null, 2));
-console.log(
-  '\n  → broadcast as capacity_override_event, logged to the daemon log with the\n' +
-  '    full derivation, and echoed to the caller as capacityOverride on the\n' +
-  '    activate response. The spawn itself then proceeds — this stub throws on\n' +
-  `    spawnSession, which is how we know the gate was passed: ${
-    overridden.reachedSpawn ? 'it was' : 'IT WAS NOT — CHECK THIS'
-  }.`
+verdict(
+  // An override that is not recorded is indistinguishable from a gate that
+  // never fired — the deliberate part is the whole point of the feature.
+  overridden.reachedSpawn &&
+    overridden.events.some((e) => e.action === 'capacity_override_event'),
+  'broadcast as capacity_override_event, logged to the daemon log with the\n' +
+    '    full derivation, and echoed to the caller as capacityOverride on the\n' +
+    '    activate response. The spawn itself then proceeds — this stub throws on\n' +
+    '    spawnSession, which is how we know the gate was passed.',
+  `override did not both pass the gate and record itself: reachedSpawn=${overridden.reachedSpawn}, ` +
+    `capacity_override_event broadcast=${overridden.events.some((e) => e.action === 'capacity_override_event')}.`
 );
 
 // ----------------------------------------------------- 10. provenance --
@@ -432,11 +553,19 @@ console.log('with nothing measured — the seed, and the report says so:\n');
 console.log(describeCapacity(seeded));
 console.log("\nwith the daemon's damped measurement in place of the seed:\n");
 console.log(describeCapacity(measuredCap));
-console.log(
-  `\n  → cap ${seeded.cap} → ${measuredCap.cap} on the same hardware, because the measured tree ` +
-  `(${MEASURED.cores} core)\n    is cheaper than the seed's calibrated 0.75. Every figure above carries its\n` +
-  '    provenance — (seed) or (measured) — plus the window, tree count and\n' +
-  '    timestamp, so the moving divisor stays checkable by hand.'
+verdict(
+  // The divisor must actually move the answer, and the answer must say which
+  // divisor it used. A report that silently switched provenance would leave
+  // every cap in the logs unattributable after the fact.
+  measuredCap.cap > seeded.cap &&
+    /\(seed\)/.test(describeCapacity(seeded)) &&
+    /\(measured\)/.test(describeCapacity(measuredCap)),
+  `cap ${seeded.cap} → ${measuredCap.cap} on the same hardware, because the measured tree ` +
+    `(${MEASURED.cores} core)\n    is cheaper than the seed's calibrated 0.75. Every figure carries its provenance —\n` +
+    '    (seed) or (measured) — plus the window, tree count and timestamp, so the moving\n' +
+    '    divisor stays checkable by hand.',
+  `provenance broke: seeded cap ${seeded.cap}, measured cap ${measuredCap.cap}, ` +
+    `and the two reports did not label themselves (seed) and (measured) respectively.`
 );
 
 // -------------------------------------------------------- 11. damping --
@@ -480,13 +609,24 @@ for (let i = 1; i <= 24; i++) {
   }
 }
 console.log(
-  `\n  → the cap falls within ${upWindows} window(s) of the fleet getting expensive and needs ` +
-  `${downWindows || '>24'}\n    windows to believe it got cheap — at the daemon's 60s window, minutes down,\n` +
-  '    the better part of half an hour back up. A single good-looking reading is\n' +
-  '    not evidence of damping; this staircase is. Under-estimating cost makes\n' +
-  '    the desktop unusable; over-estimating refuses an activation — the errors\n' +
-  '    are not symmetric, so neither are the alphas.' +
-  (capAfterUp <= capFor(EXPENSIVE) + 1 ? '' : '\n    EXPECTED the cap near its expensive-fleet value — CHECK THIS.')
+  "\n  At the daemon's 60s window that is minutes down and the better part of half\n" +
+  '  an hour back up. A single good-looking reading is not evidence of damping;\n' +
+  '  this staircase is. Under-estimating cost makes the desktop unusable;\n' +
+  '  over-estimating refuses an activation — the errors are not symmetric, so\n' +
+  '  neither are the alphas.'
+);
+verdict(
+  // The asymmetry IS the feature. Equal alphas would pass a "does it damp?"
+  // check while throwing away the protection the damping exists to give.
+  upWindows > 0 &&
+    (downWindows === 0 || downWindows > upWindows) &&
+    capAfterUp <= capFor(EXPENSIVE) + 1,
+  `the cap falls within ${upWindows} window(s) of the fleet getting expensive and needs ` +
+    `${downWindows || '>24'}\n    windows to believe it got cheap — the protective direction is the fast one, and\n` +
+    '    the cap ends where the expensive fleet puts it.',
+  `damping is not asymmetric or did not converge: up in ${upWindows} window(s), down in ` +
+    `${downWindows || '>24'}, cap after the rise ${capAfterUp} against an expensive-fleet cap of ` +
+    `${capFor(EXPENSIVE)}.`
 );
 
 // -------------------------------------------------------- 12. degrade --
@@ -511,15 +651,22 @@ for (const [label, m] of badWindows) {
   console.log(`  ${label} → ${s === null ? 'null (rejected)' : JSON.stringify(s) + ' — CHECK THIS'}`);
 }
 console.log(
-  `\n  → every bad window rejects to null${allRejected ? '' : ' — EXCEPT SOME, CHECK THIS'}. ` +
-  'The daemon clears the live measurement on\n' +
-  '    null (and on a /proc read throwing), so what capacity answers is:\n'
+  '\n  The daemon clears the live measurement on null (and on a /proc read\n' +
+  '  throwing), so what capacity answers is:\n'
 );
-console.log(describeCapacity(computeCapacity(FACTS, 1, { measured: null })));
-console.log(
-  '\n  → the figures are the seed constants and the report *says* seed — the same\n' +
-  '    guarantee the Jira lookup makes: whatever breaks, capacity still answers,\n' +
-  '    conservatively, and a figure nobody measured is labelled as such.'
+const degraded = describeCapacity(computeCapacity(FACTS, 1, { measured: null }));
+console.log(degraded);
+verdict(
+  // A bad window adopted as a divisor is worse than no measurement: it would
+  // set the cap from noise and label the result as measured.
+  allRejected && /\(seed\)/.test(degraded) && !/\(measured\)/.test(degraded),
+  'every bad window rejects to null, and the figures that follow are the seed\n' +
+    '    constants with the report *saying* seed — the same guarantee the Jira lookup\n' +
+    '    makes: whatever breaks, capacity still answers, conservatively, and a figure\n' +
+    '    nobody measured is labelled as such.',
+  allRejected
+    ? 'the degraded report did not fall back to the seed, or did not label itself (seed).'
+    : 'a window that measured nothing was accepted as a per-agent cost.'
 );
 
 // ----------------------------------------------------- 13. precedence --
@@ -528,22 +675,34 @@ rule('13. PRECEDENCE — the operator beats the measurement beats the seed');
 console.log(
   'BUTCHR_AGENT_CORES=0.75 set by hand, memory left alone, measurement live:\n'
 );
-console.log(
-  describeCapacity(computeCapacity(FACTS, 0, { measured: MEASURED, overrides: { cores: 0.75 } }))
+const perDimension = describeCapacity(
+  computeCapacity(FACTS, 0, { measured: MEASURED, overrides: { cores: 0.75 } })
 );
-console.log(
-  '\n  → cores says (override) and the measured 0.3 is named as ignored; memory\n' +
-  '    stays (measured). Overrides are per-dimension: overriding cores does not\n' +
-  '    silently discard the memory measurement.\n'
+console.log(perDimension);
+verdict(
+  // Per-dimension is the whole claim. An override that quietly reverted the
+  // other dimension to the seed would discard a live measurement nobody asked
+  // it to discard, and the report would not say so.
+  /\(override\)/.test(perDimension) && /\(measured\)/.test(perDimension),
+  'cores says (override) and the measured 0.3 is named as ignored; memory stays\n' +
+    '    (measured). Overrides are per-dimension: overriding cores does not silently\n' +
+    '    discard the memory measurement.',
+  'the override was not per-dimension — the report did not show both (override) and ' +
+    '(measured) side by side.'
 );
 
-console.log('BUTCHR_MAX_AGENTS=2 on top of everything:\n');
-console.log(
-  describeCapacity(
-    computeCapacity(FACTS, 0, { measured: MEASURED, overrides: { cores: 0.75 }, configuredCap: 2 })
-  )
+console.log('\nBUTCHR_MAX_AGENTS=2 on top of everything:\n');
+const pinned = computeCapacity(FACTS, 0, {
+  measured: MEASURED,
+  overrides: { cores: 0.75 },
+  configuredCap: 2
+});
+console.log(describeCapacity(pinned));
+verdict(
+  pinned.cap === 2,
+  'the configured cap pins the answer and skips the derivation entirely.',
+  `BUTCHR_MAX_AGENTS=2 did not pin the cap — got ${pinned.cap}.`
 );
-console.log('\n  → the configured cap pins the answer and skips the derivation entirely.\n');
 
 // The env plumbing itself, with the variables controlled for the demo and
 // restored after it.
@@ -554,14 +713,21 @@ for (const name of ['BUTCHR_AGENT_CORES', 'BUTCHR_AGENT_MEMORY_MB', 'BUTCHR_MAX_
 }
 process.env.BUTCHR_AGENT_CORES = '0.15';
 console.log('optionsFromEnv() with only BUTCHR_AGENT_CORES=0.15 in the environment:\n');
-console.log(`  ${JSON.stringify(optionsFromEnv())}`);
+const fromEnv = optionsFromEnv();
+console.log(`  ${JSON.stringify(fromEnv)}`);
 for (const [name, value] of Object.entries(savedEnv)) {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
-console.log(
-  '\n  → only the dimension actually set becomes an override; an unset variable\n' +
-  '    leaves room for the measurement rather than pinning the seed.'
+verdict(
+  // `configuredCap` is reported as null rather than omitted — "asked and not
+  // set", which is the distinction the precedence chain is built on.
+  fromEnv.overrides?.cores === 0.15 &&
+    fromEnv.overrides?.residentBytes == null &&
+    fromEnv.configuredCap == null,
+  'only the dimension actually set becomes an override; an unset variable leaves\n' +
+    '    room for the measurement rather than pinning the seed.',
+  `an unset variable still produced an override: ${JSON.stringify(fromEnv)}.`
 );
 
 // ------------------------------------------------ 14. supervisor gate --
@@ -612,20 +778,26 @@ const taskStillRefused =
   taskAtZero.response?.refusedBy === 'capacity' &&
   String(taskAtZero.response?.reason ?? '').includes('load average');
 
-console.log(
-  supervisorsPassed
-    ? '  → both supervisors pass the gate with no override asked for and none\n' +
-      '    recorded. Their cost was reserved by the model from the start —\n' +
-      '    never counted in running, never charged a slot — so a refusal here\n' +
-      '    was the gate arguing with its own arithmetic.'
-    : '  → A SUPERVISOR WAS REFUSED OR AN OVERRIDE WAS RECORDED — CHECK THIS.'
+verdict(
+  supervisorsPassed,
+  'both supervisors pass the gate with no override asked for and none\n' +
+    '    recorded. Their cost was reserved by the model from the start —\n' +
+    '    never counted in running, never charged a slot — so a refusal here\n' +
+    '    was the gate arguing with its own arithmetic.',
+  `a supervisor was refused at zero headroom, or an override was recorded to let it ` +
+    `through: epic reached spawn=${epicAtZero.reachedSpawn}, story reached spawn=` +
+    `${storyAtZero.reachedSpawn}, override events=${overrideEvents.length}.`
 );
-console.log(
-  taskStillRefused
-    ? '  → the task agent is still refused, load-bound, with the same legible\n' +
-      '    reason as before: the exemption is exactly as wide as the supervisor\n' +
-      '    set and no wider.'
-    : '  → THE TASK AGENT WAS NOT REFUSED LOAD-BOUND — CHECK THIS.'
+verdict(
+  // The other half, and the one that keeps the exemption honest: if the task
+  // agent also sailed through, the gate would have stopped rationing anything.
+  taskStillRefused,
+  'the task agent is still refused, load-bound, with the same legible\n' +
+    '    reason as before: the exemption is exactly as wide as the supervisor\n' +
+    '    set and no wider.',
+  `the task agent was not refused load-bound at zero headroom: success=` +
+    `${taskAtZero.response?.success}, refusedBy=${taskAtZero.response?.refusedBy}, ` +
+    `reason=${taskAtZero.response?.reason ?? '(none)'}.`
 );
 
 if (savedCores === undefined) delete process.env.BUTCHR_AGENT_CORES;
@@ -662,11 +834,12 @@ rule('15. REFUSAL HEADLINE — the headline names the constraint that bound');
     /load average is \d/.test(headline) &&
     !/at capacity/i.test(headline) &&
     !/\d+ of \d+|\d+\/\d+/.test(headline);
-  console.log(
-    headlineOk && summary.startsWith('load too high')
-      ? '  → the headline names load, quotes the live load figure and the cores, and\n' +
-        '    says neither "at capacity" nor "N of cap". The summary leads the same way.'
-      : '  → THE HEADLINE DID NOT NAME LOAD, OR STILL SAYS AT CAPACITY / N-OF-CAP — CHECK THIS.'
+  verdict(
+    headlineOk && summary.startsWith('load too high'),
+    'the headline names load, quotes the live load figure and the cores, and\n' +
+      '    says neither "at capacity" nor "N of cap". The summary leads the same way.',
+    'a load-bound refusal was headlined with the count — the KAN-60 defect exactly: ' +
+      `"${headline}" / summary "${summary}".`
   );
 
   if (saved === undefined) delete process.env.BUTCHR_AGENT_CORES;
@@ -695,12 +868,19 @@ rule('15. REFUSAL HEADLINE — the headline names the constraint that bound');
     c.headroomBoundBy === 'cap' &&
     /at capacity/.test(headline) &&
     headline.includes(`${c.running} task agents are already running against a cap of ${c.cap}`);
-  console.log(
-    headlineOk && summary.startsWith(`at capacity: ${c.running}/${c.cap}`)
-      ? '  → at capacity is said here, with N of cap — because here the count is\n' +
-        '    the constraint that bound, and the headline is rendered from it.'
-      : '  → THE COUNT-BOUND HEADLINE DID NOT SAY AT CAPACITY WITH N OF CAP — CHECK THIS.'
+  verdict(
+    headlineOk && summary.startsWith(`at capacity: ${c.running}/${c.cap}`),
+    'at capacity is said here, with N of cap — because here the count is\n' +
+      '    the constraint that bound, and the headline is rendered from it.',
+    'a count-bound refusal did not say "at capacity" with N of cap: ' +
+      `"${headline}" / summary "${summary}" (bound by ${c.headroomBoundBy}).`
   );
 }
 
+console.log(
+  failures.length
+    ? `\n${failures.length} of 15 sections FAILED:\n${failures.map((f) => `  - ${f}`).join('\n')}`
+    : '\nALL PASS — all 15 sections.'
+);
 console.log('\n== done ==');
+process.exit(failures.length ? 1 : 0);

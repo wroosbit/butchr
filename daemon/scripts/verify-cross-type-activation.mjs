@@ -1,6 +1,11 @@
 // Live proof for KAN-83: activating type B with a workspace key a live type-A
 // agent holds starts B as its own agent, and leaves A alone.
 //
+// WHAT FAILURE THIS WOULD CATCH: an activation resolving a live session by key
+// alone. Keys are shared across types by design, so that is how activating
+// epic/K while task/K is live reuses task/K's session — and how the failure
+// path's cleanup destroys a healthy, unrelated agent's PTY.
+//
 // The ticket's symptom: `handleActivateByKey` resolved the session with
 // `getSessionByKey(key)` — a key-only match, on keys that are shared across
 // types by design. Activating epic/K while task/K was live reused task/K's

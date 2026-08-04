@@ -2,6 +2,14 @@
 // log, on demand over the socket, and alongside every `list_agents` poll (which
 // is what feeds the Agents-page banner).
 //
+// WHAT FAILURE THIS WOULD CATCH: a daemon that computes staleness correctly
+// but fails to *deliver* it — a startup log that never mentions it, a
+// `staleness_check` action that stops answering, or a `list_agents` payload
+// that drops the `staleness` field the Agents-page banner renders from. Any
+// one of those makes a stale install look healthy to the only surfaces anyone
+// reads. In `--clean` mode it catches the opposite failure: a daemon that
+// reports staleness on an install that is not stale.
+//
 // A genuine daemon process is started against a genuine, deliberately stale
 // checkout. Isolation is by $HOME: BUTCHR_DIR and the socket path are both
 // derived from os.homedir(), so a temp HOME gives this daemon its own socket
@@ -81,6 +89,25 @@ process.on('exit', () => {
 const run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// --- verdicts ---------------------------------------------------------------
+//
+// The three surfaces below are each asserted, not merely printed. Note that the
+// `process.exit(1)`s above this line are setup guards — "the daemon never came
+// up" is a reason this script could not run, not a verdict on the daemon. Only
+// the failures counted here are verdicts, and only they decide the exit code.
+
+const failures = [];
+const check = (name, ok, detail) => {
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  if (!ok) failures.push(name);
+};
+
+// What this run is entitled to expect. The fixture is either two commits behind
+// origin/main or level with it, and every surface must agree with whichever it
+// is: `--clean` is not a weaker run, it is the no-false-alarm half of the proof.
+const expectStale = !clean;
+const expectedHeadline = /main is 2 commits behind origin\/main/;
+
 // A real clone, moved two commits back — the exact shape of "two PRs merged and
 // nobody pulled". The compiled daemon is copied in so the process's own
 // repoRoot (dist/../..) is this stale checkout.
@@ -129,11 +156,26 @@ if (!existsSync(socketPath)) {
 console.log('\n' + '='.repeat(78));
 console.log('1. what the daemon logged at startup (its own daemon.log)');
 console.log('='.repeat(78));
-console.log(
-  readFileSync(logPath, 'utf8')
-    .split('\n')
-    .filter((l) => /staleness|STALE|OK  |fix:|note:|\?   |-   /.test(l))
-    .join('\n')
+const logLines = readFileSync(logPath, 'utf8')
+  .split('\n')
+  .filter((l) => /staleness|STALE|OK  |fix:|note:|\?   |-   /.test(l));
+console.log(logLines.join('\n'));
+
+const logText = logLines.join('\n');
+console.log('');
+check(
+  'the daemon says something about staleness in its own log at startup',
+  /staleness:/.test(logText),
+  logLines.length ? `${logLines.length} matching line(s)` : 'no staleness line in daemon.log at all'
+);
+check(
+  expectStale
+    ? 'the startup log names the stale checkout'
+    : 'the startup log reports nothing stale',
+  expectStale
+    ? /STALE local checkout/.test(logText) && expectedHeadline.test(logText)
+    : /staleness: nothing stale/.test(logText) && !/STALE/.test(logText),
+  logText.split('\n')[0] ?? '(nothing logged)'
 );
 
 // --- socket client ----------------------------------------------------------
@@ -168,7 +210,24 @@ const call = (action, data = {}) =>
 console.log('\n' + '='.repeat(78));
 console.log("2. on demand over the socket: {action: 'staleness_check'}");
 console.log('='.repeat(78));
-console.log(JSON.stringify(await call('staleness_check'), null, 2));
+const onDemand = await call('staleness_check');
+console.log(JSON.stringify(onDemand, null, 2));
+
+const gitItem = onDemand.items?.find((i) => i.id === 'git');
+console.log('');
+check('staleness_check answers at all', onDemand?.success === true, `success: ${onDemand?.success}`);
+check(
+  'staleness_check returns the itemised report, not just a boolean',
+  Array.isArray(onDemand.items) && onDemand.items.some((i) => i.id === 'daemon-build'),
+  `${onDemand.items?.length ?? 0} item(s)`
+);
+check(
+  expectStale ? 'staleness_check reports the checkout stale' : 'staleness_check reports nothing stale',
+  expectStale
+    ? onDemand.stale === true && gitItem?.state === 'stale' && expectedHeadline.test(onDemand.summary ?? '')
+    : onDemand.stale === false && gitItem?.state !== 'stale' && onDemand.summary === null,
+  `stale: ${onDemand.stale}, git: ${gitItem?.state}, summary: ${onDemand.summary ?? '(none)'}`
+);
 
 console.log('\n' + '='.repeat(78));
 console.log("3. riding along on list_agents — the payload the Agents page polls");
@@ -182,6 +241,22 @@ console.log(
       .replace(/\n/g, '\n  ')
 );
 
+// The banner is fed by list_agents, not by staleness_check — a daemon could
+// answer the on-demand action perfectly and still drop the field the Agents
+// page actually renders, which is the failure this pair of checks exists for.
+const bannerGit = agents.staleness?.items?.find((i) => i.id === 'git');
+console.log('');
+check(
+  'list_agents carries the staleness report the banner renders from',
+  Boolean(agents.staleness) && Array.isArray(agents.staleness.items),
+  agents.staleness ? `${agents.staleness.items?.length ?? 0} item(s)` : 'no staleness field on the payload'
+);
+check(
+  'the banner receives the same verdict the on-demand check gave',
+  agents.staleness?.summary === onDemand.summary && bannerGit?.state === gitItem?.state,
+  `list_agents: ${agents.staleness?.summary ?? '(none)'} / staleness_check: ${onDemand.summary ?? '(none)'}`
+);
+
 if (dumpPath) {
   const { id, ...body } = agents;
   writeFileSync(dumpPath, JSON.stringify(body, null, 2));
@@ -189,5 +264,10 @@ if (dumpPath) {
 }
 
 socket.end();
+console.log(
+  failures.length
+    ? `\n${failures.length} FAILED: ${failures.join(', ')}`
+    : `\nALL PASS — all three surfaces agree the install is ${expectStale ? 'stale' : 'clean'}.`
+);
 console.log('\n== done ==');
-process.exit(0);
+process.exit(failures.length ? 1 : 0);
