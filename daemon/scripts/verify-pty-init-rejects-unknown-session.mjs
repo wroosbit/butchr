@@ -2,6 +2,10 @@
 // a session it does not have, instead of substituting an arbitrary session or
 // spawning a `default/workspace` shell nobody asked for.
 //
+// WHAT FAILURE THIS WOULD CATCH: a daemon that answers a PTY request naming a
+// session it does not hold — substituting some arbitrary session, or spawning
+// a `default/workspace` shell nobody asked for — instead of refusing.
+//
 // Everything here runs against real processes. Isolation is by $HOME and by
 // HERDR_SOCKET_PATH: BUTCHR_DIR, the daemon socket and every workspace
 // directory derive from os.homedir(), so a temp HOME gives this daemon its own

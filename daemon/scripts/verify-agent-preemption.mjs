@@ -1,6 +1,14 @@
 // Proof for KAN-37: a higher-priority agent can take a lower-priority one's
 // slot when the machine is full — visibly, reversibly, and never automatically.
 //
+// WHAT FAILURE THIS WOULD CATCH: a preemption that takes the wrong agent (a
+// working one over an idle one, or an epic supervisor at all), that happens
+// without the caller asking for it, that leaves no record of who took whose
+// slot, or that brings the victim back cold — resumed with no conversation and
+// no word of what happened to it, which is KAN-21's idle-forever failure
+// reached by a new route. It also catches the reverse: an equal-priority
+// activation being *offered* a victim it is not entitled to.
+//
 // Reworked for KAN-57. When KAN-37 was written, `story` was a charged worker
 // type and the natural demonstration of preemption; KAN-46/KAN-52 then made
 // epic and story uncharged supervisors, and KAN-57 made the gate honour that —
@@ -75,7 +83,17 @@ const { claudeTranscriptDir, hasRestorableConversation, resumeNudge } =
   await import(path.join(distDir, 'resume.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
-const verdict = (ok, yes, no) => console.log(`\n  ${ok ? '→ ' + yes : '→ FAILED — ' + no}`);
+
+// Every section ends in a verdict, and a failed verdict is counted here and
+// carried to the exit code. It renders `FAILED` *and* propagates: this helper
+// printed the word and returned undefined until KAN-119, so nine real
+// assertions were evaluated, rendered, and thrown away — a script that showed a
+// human its own failure while telling every automated reader it had passed.
+const failures = [];
+const verdict = (ok, yes, no) => {
+  if (!ok) failures.push(no);
+  console.log(`\n  ${ok ? '→ ' + yes : '→ FAILED — ' + no}`);
+};
 
 // A supervisor plus however many task agents this machine's own derivation
 // says it can carry. Filling to the derived cap rather than to a number this
@@ -720,4 +738,11 @@ rule('9. THE REGISTRY — why a reboot does NOT bring a preempted agent back');
 // wrote at the path the real one would use.
 fs.rmSync(TMP, { recursive: true, force: true });
 for (const dir of TRANSCRIPTS) fs.rmSync(dir, { recursive: true, force: true });
+
+console.log(
+  failures.length
+    ? `\n${failures.length} of 9 sections FAILED:\n${failures.map((f) => `  - ${f}`).join('\n')}`
+    : '\nALL PASS — all 9 sections.'
+);
 console.log('\n== done ==');
+process.exit(failures.length ? 1 : 0);

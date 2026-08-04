@@ -2,6 +2,12 @@
 // agent (`claude`) — never a silent shell — and an unknown defaultAgent
 // refuses, naming the valid launchers.
 //
+// WHAT FAILURE THIS WOULD CATCH: an activation with no `defaultAgent` quietly
+// starting a shell instead of claude, or an unknown launcher name being warned
+// about and then fallen back on rather than refused. Either way a ticket is
+// "staffed" by a bare bash prompt that answers `success: true, verified: true`
+// and executes every `butchr_send_to_agent` message as a shell command.
+//
 // The ticket's symptom: `resolveLauncher` treated an omitted name as `shell`
 // and warned-then-fell-back on an unknown one, so `butchr_activate_agent`
 // without the field "staffed" a ticket with a bare bash prompt that answered

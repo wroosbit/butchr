@@ -1,6 +1,11 @@
 // Proof for KAN-46: the `epic` workspace type exists, `manage` does not, and
 // the priority scale reads epic 3 > story 2 > task 1 off the real registry.
 //
+// WHAT FAILURE THIS WOULD CATCH: the `epic` workspace type or the priority
+// scale drifting from what the registry actually holds, a bare board URL
+// resolving to a workspace it should not, or an issue-type lookup that throws
+// taking the activation down with it instead of degrading to `task`.
+//
 // Three sections, one per acceptance criterion:
 //
 //   1. issue-type refinement — an Epic issue resolves to an `epic` workspace,
