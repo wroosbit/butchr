@@ -538,6 +538,50 @@ router and against a real herdr respectively.
 
 ---
 
+## 📣 When an agent transitions its own ticket
+
+Status changes used to travel by hand and by luck. `prompts/task.md`,
+`prompts/story.md` and `prompts/epic.md` each told an agent to transition its
+ticket — To Do → In Progress → In Review → Done — and none of them told the
+transitioning agent to *tell anyone*. So an agent whose work depended on that
+status found out when its own polling loop next looked, or not at all: KAN-61's
+completed story sat silently done after its one hand-back nudge was eaten by a
+daemon restart, and the epic agent's polling loop exists largely because a lost
+nudge is otherwise invisible.
+
+**The convention: the agent that transitions announces it, at the moment it
+transitions.** This is prompt text, not daemon code — there is nothing to build,
+because the agent making the change is the one process that certainly knows
+about it.
+
+**The link graph is the notification topology.** A status change is interesting
+precisely to the issues linked to the one that moved and to its parent, which is
+the same convention the board's liberal linking already serves. The transitioning
+agent reads its own `issuelinks`, identifies its parent (a task's *Implements
+story* line, a story's `parent` epic; an epic has none), asks
+`butchr_list_agents` which of those issues have a **live** agent, and sends each
+one exactly one short `butchr_send_to_agent` nudge naming the issue, the
+transition and what it means for them. An issue with no live agent gets nothing
+extra: the ticket comment the agent already posts is its durable inbox, and
+starting an agent in order to inform it would be staffing work as a side effect
+of a notification.
+
+**Storm guards, stated the same way in all three prompts.** Notify on meaningful
+transitions only (To Do ↔ In Progress, → In Review, → Done) and not on edits,
+comments or assignment; never notify the agent whose action caused the event;
+a nudge you receive must never itself generate nudges — react by reading tickets
+and acting, not by re-broadcasting; and never send two nudges in a row to the
+same agent, because the second kills its session. The first three bound the
+fan-out of a single event; the last is the pre-existing interrupt rule, kept
+adjacent because this convention is what makes an agent likely to break it.
+
+This is the prompts half of status propagation. Its complement is daemon-side and
+lands separately: the next section covers what an agent *cannot* announce —
+dying, or going `blocked` — where the daemon nudges the supervisor of record on
+the agent's behalf.
+
+---
+
 ## 📣 When an agent changes state without saying so
 
 > **Pre-cutover, deliberately.** Supervisor-of-record parentage and a delivery
@@ -569,6 +613,45 @@ absent field reads as "the daemon didn't answer that" while `null` reads as
 records, so the two behave differently through a round-trip. Boot-time
 reconciliation passes the recorded parentage back through the activation it
 replays, so a reboot does not orphan a fleet that had parents.
+
+**On the wire, on every row.** The nudge is one consumer of that field; the
+other is the Agents page, which draws the org chart and needs the parentage of
+agents nobody is nudging about. So `list_agents` reports `activatedBy` on every
+row of all four of its lists — `agents`, `standbyAgents`, `missingAgents` and
+`preemptedAgents` — with the same meaning in each: **the supervisor of record
+at activation**, and `null` for *no known parent*. `null` is a real answer, not
+an unknown one; the field being absent altogether is what "this daemon cannot
+tell you" looks like, and a client that cannot tell those apart draws either a
+false root or no tree at all.
+
+Two properties the shape depends on, both load-bearing:
+
+* **Read, never cached.** The rows resolve parentage through
+  `MessageRouter.supervisorFor` — the same registry read the notifier uses — on
+  every poll. One fact, one place: a parent recorded after this daemon booted
+  appears on the next list, and the agent the page nests under can never differ
+  from the agent a notice is delivered to.
+* **Addressed by `(type, key)`, never by key alone.** The live fleet routinely
+  holds both an `epic/KAN-39` and a `task/KAN-39`. `activatedBy` carries the key
+  as the registry recorded it (`KAN-900`), while a sessionless row recovers its
+  own key from the agent name and so reads case-folded (`kan-900`); matching
+  folds both sides. Folding one side only silently orphans every child.
+
+A stand-down does not change who staffed the work, which is why the three
+not-running categories carry the field too: a story switched off under a live
+epic is information — the epic has a child and the child is off — and a lost or
+preempted agent is a decision owed to whoever staffed it.
+
+`node daemon/scripts/verify-parentage-in-list-agents.mjs` proves all of it
+against the real router and a real on-disk registry: the epic→story→task chain
+rebuilt from the DTO alone, the explicit `null` surviving a JSON round-trip,
+and the standby, missing and preempted rows each keeping their parent.
+
+> The implementation is throwaway and the interface is permanent (decision 4).
+> The exposure here is deleted at CrabCast cutover; `activatedBy: { type, key }
+> | null` is not, so the verify script is written as the executable
+> specification of the contract rather than as a regression test for the code
+> that currently satisfies it.
 
 **What is worth a nudge, and what is not.** herdr's `agent_status` is not this
 daemon's judgement — `toAgentStatus` whitelists whatever `herdr agent list`

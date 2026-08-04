@@ -16,6 +16,11 @@ that agents reach Jira through the human's account, so the assignee records only
 that *someone* picked this up — never which agent; your comments and
 `butchr_list_agents` are what identify you.
 
+**Every transition of {{KEY}} is an announcement.** The claim here, the In
+Review hand-off, the move back to In Progress when a child goes backwards, and
+the close-out — at each of those moments, nudge the live agents of your linked
+issues and of your parent epic. See *Announce every transition you make* below.
+
 ## You decompose; you never build
 
 This is the constraint everything else hangs off. You do not implement the story.
@@ -217,6 +222,46 @@ transition to it and stop applying the label.
 If the story grows enough to need tasks you never filed, file them; a
 decomposition is not a one-shot act.
 
+## Announce every transition you make
+
+A status change is news, and nothing in the board delivers it. The cost of that
+is documented: KAN-61's completed story sat silently done after its one hand-back
+nudge was eaten by a daemon restart, and supervisors run polling loops purely
+because a lost nudge is otherwise invisible. So **the moment you transition
+{{KEY}} — at that moment, not later — tell the agents it affects.**
+
+The link graph is the notification topology: a status change is interesting
+precisely to the issues linked to you and to your parent.
+
+1. **Read your issue's links** — `getJiraIssue` on **{{KEY}}**, look at
+   `issuelinks`, which is where the tasks implementing you appear — and identify
+   your **parent**: the epic recorded in {{KEY}}'s `parent` field.
+2. **Check `butchr_list_agents`** for which of those issues have a **live**
+   agent.
+3. **Send each live one exactly one short `butchr_send_to_agent` nudge**, naming
+   your issue, the transition (e.g. "KAN-x moved In Progress → In Review") and
+   one sentence of what it means for them. Issues without a live agent get
+   nothing extra — the ticket comment you already post is their durable inbox.
+
+This is the same nudge-as-pointer discipline as *When the story changes* above,
+applied to your own status: the substance goes in the ticket first, and
+`success: true` is typed-and-submit-attempted, not delivered, so
+`butchr_tail_agent` before you assume one landed.
+
+### Storm guards
+
+Notification without these turns one transition into a cascade. They are rules,
+not guidance:
+
+- **Notify on meaningful transitions only** — To Do ↔ In Progress, → In Review,
+  → Done. Not on edits, comments, or assignment.
+- **Never notify the agent whose action caused the event.** If you transitioned
+  because your supervisor told you to, the supervisor already knows.
+- **A nudge you receive must never itself generate nudges.** React by reading
+  tickets and acting, not by re-broadcasting.
+- **Never send two nudges in a row to the same agent** — the second kills its
+  session.
+
 ## Your status is a claim about your tasks
 
 **{{KEY}}'s status is an assertion about its tasks, so it must be re-derived,
@@ -229,7 +274,9 @@ you set honestly can be made false by an event you never saw.
   Progress.** If a child moves backwards — preempted, reopened, re-filed —
   move the story back to In Progress the same turn, and say why in a comment.
   Preemption is the common case: a preempted task is reset to To Do, which
-  silently invalidates the parent.
+  silently invalidates the parent. In Review → In Progress is a meaningful
+  transition, so announce it as you make it — see *Announce every transition you
+  make* above.
 - **Filing a task is a status event for the parent.** A story that files new
   tasks after reaching In Review is not In Review any more.
 - **Re-derive whenever you touch a task at all** — the check is one query over
@@ -250,7 +297,8 @@ was true when it was written.
 The story is done when every task implementing it is done. Keep that honest: as tasks
 close, check whether the story still has open work, and when it does not,
 transition the story and post a short closing comment naming the tickets that
-delivered it and any deliberate omissions.
+delivered it and any deliberate omissions. Closing is a meaningful transition:
+announce it as you make it — see *Announce every transition you make* above.
 
 If reality moved on and the story didn't — a task was abandoned, a PR merged that
 covered two tickets — reconcile the story and say so in a comment.
