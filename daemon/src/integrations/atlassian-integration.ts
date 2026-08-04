@@ -106,6 +106,102 @@ export interface AtlassianIntegrationOptions {
 }
 
 /**
+ * A Confluence tiny id (`/wiki/x/<tinyId>`) → the page id it encodes, or null.
+ *
+ * **Why this is local arithmetic and not a lookup.** A tiny link *carries* the
+ * page id rather than referring to one, so decoding it needs no Confluence call
+ * — which is what keeps resolution synchronous and keeps KAN-90's "the URL
+ * carries the id, so the daemon needs no Confluence credential to resolve a
+ * URL" property true for this form as well as the canonical one.
+ *
+ * **Why decoding is the whole point.** The workspace key is baked into
+ * `workspaces/confluence/<key>`, the agent name `butchr-confluence-<key>` and
+ * the registry. Keying a tiny link by its tiny id would give one page two
+ * workspaces with two conversation histories that never converge, depending on
+ * which URL a human happened to paste. So the tiny id is decoded to the page id
+ * or the URL resolves to nothing; it never becomes a key itself.
+ *
+ * **The encoding**, in the direction we need it:
+ *
+ *   1. Undo Confluence's URL-safe alphabet: `-` → `/` and `_` → `+`. Note this
+ *      is *not* standard base64url, which maps the pair the other way round.
+ *      Getting it backwards silently mis-decodes every id that uses those
+ *      characters — about one in eight — so it is verified below, not assumed.
+ *   2. Right-pad with `A` to a multiple of four. `A` is base64 for six zero
+ *      *bits*; `=` means "stop, the data ended". Confluence trims trailing `A`s
+ *      from the encoded form, so a truncated tiny id is missing zero bits and
+ *      not missing bytes — padding with `=` instead throws those bytes away.
+ *   3. Base64-decode, then read the bytes as a **little-endian** unsigned
+ *      integer, trailing zero bytes contributing nothing.
+ *
+ * **The evidence, and how far it actually goes.** KAN-143 was handed one pair
+ * (page `65823` ↔ `/x/HwEB`, KAN-90 comment 10385). One pair is a hypothesis.
+ * It was widened to **2407 real (page id, tiny link) pairs**, every tiny link
+ * read from Confluence's own `_links.tinyui` rather than computed:
+ *
+ *   - all six pages on wroosbit.atlassian.net, via
+ *     `GET /wiki/rest/api/content/<id>` — 196725 `/x/dQAD`, 196761 `/x/mQAD`,
+ *     196774 `/x/pgAD`, 196787 `/x/swAD`, 163933 `/x/XYAC`, 163935 `/x/X4AC`
+ *   - 2400 more from two public Confluence sites with ids large enough to
+ *     exercise the parts this site's five-digit ids never reach —
+ *     cwiki.apache.org and confluence.atlassian.com, ids up to 59,806,090,
+ *     of which **133 use `-` or `_`** and so discriminate step 1's direction
+ *
+ * This decoder returns the right page id for **all 2407**. Two things were
+ * caught by widening the sample that one pair could not have shown:
+ *
+ *   - the alphabet swap is the non-standard one (step 1). All 133 substitution
+ *     pairs match it; standard base64url mismatches every one of them.
+ *   - **the `A` padding of step 2 is load-bearing.** Restoring `=` padding
+ *     instead — the obvious reading of "base64 with the padding dropped" — is
+ *     wrong for 54 of the 2407, and wrong in the worst way available: `/x/BD`
+ *     is page `12292` but decodes to `4`, a perfectly plausible page id. That
+ *     is the silently-wrong key this task exists to avoid, so it is asserted
+ *     against in `verify-confluence-workspaces.mjs` rather than left to a
+ *     comment.
+ *
+ * Non-canonical spellings converge rather than splitting: `/x/BD` and
+ * `/x/BDAA` are the same page id, so a hand-edited tiny link opens the same
+ * workspace as the one Confluence minted.
+ *
+ * A successful decode is not proof the target is a *page* — `/wiki/x/` is also
+ * the prefix for whiteboards, databases and blog posts, and their ids decode
+ * just as well. Keying by the decoded id is still correct: it is the id of
+ * whatever was linked, it is stable, and an agent that opens a non-page finds
+ * that out with the Atlassian MCP tools it already has. Deciding otherwise
+ * would need a Confluence lookup on the resolution path, which KAN-90 rules
+ * out.
+ */
+function pageIdFromTinyId(tinyId: string): string | null {
+  // Belt and braces: the pattern's capture is already this alphabet, but the
+  // decoder is what guarantees a bad segment resolves to nothing, so it does
+  // not lean on its caller. Node's base64 decoder silently skips characters it
+  // does not recognise, which would turn `!!!!` into an id rather than a null.
+  if (!/^[A-Za-z0-9_-]+$/.test(tinyId)) return null;
+
+  const base64 = tinyId.replace(/-/g, '/').replace(/_/g, '+');
+  const padding = (4 - (base64.length % 4)) % 4;
+  const bytes = Buffer.from(base64 + 'A'.repeat(padding), 'base64');
+
+  // Trailing zero bytes carry no value in a little-endian integer, and the
+  // encoder trimmed them in the first place. Dropping them here is also what
+  // keeps the eight-byte ceiling honest: eleven base64 characters pad out to
+  // nine bytes whose last is always zero.
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end--;
+  if (end === 0 || end > 8) return null;
+
+  // BigInt rather than Number: a content id is a 64-bit value, and the key must
+  // be the exact digits Confluence uses, not the nearest double.
+  let id = 0n;
+  for (let i = end - 1; i >= 0; i--) id = (id << 8n) | BigInt(bytes[i]);
+
+  // Zero and anything that did not decode to a positive integer resolve to
+  // nothing — never to a guessed key.
+  return id > 0n ? id.toString() : null;
+}
+
+/**
  * The URL forms that are a Confluence **page**, and how the page id is read
  * out of each.
  *
@@ -145,11 +241,9 @@ export interface AtlassianIntegrationOptions {
  * to nothing. That is KAN-90's rule: a `/wiki/` URL that is not a supported
  * page must resolve to *nothing*, never degrade to `task`.
  *
- * Tiny links (`/wiki/x/<tinyId>`) are absent too, and unmatched is the honest
- * answer until KAN-143 lands: the tiny id is not a page id, so resolving one
- * needs a decode this table has nowhere to put a bare pattern. `pageIdFrom` is
- * the seam it will use — one more entry whose function decodes rather than
- * returning the capture verbatim.
+ * Tiny links (`/wiki/x/<tinyId>`) are the last entry, added by KAN-143. They
+ * are the one form whose `pageIdFrom` decodes rather than returning the capture
+ * verbatim — see `pageIdFromTinyId` above for the encoding and its evidence.
  */
 const CONFLUENCE_PAGE_URL_FORMS: Array<{
   pattern: RegExp;
@@ -172,6 +266,16 @@ const CONFLUENCE_PAGE_URL_FORMS: Array<{
   {
     pattern: /https?:\/\/[^\/]+\/wiki\/pages\/resumedraft\.action\?(?:[^#]*&)?draftId=(\d+)/i,
     pageIdFrom: (match) => match[1]
+  },
+  // The tiny link — what Confluence's own share button and its REST API hand
+  // out (KAN-143). The only entry whose key is computed rather than read: the
+  // captured segment encodes the page id, and `pageIdFromTinyId` decodes it or
+  // answers null. The character class is base64's URL-safe alphabet, so
+  // `/wiki/x/!!!!` does not match at all and `/wiki/x/` has nothing to capture
+  // — both resolve to nothing without the decoder being consulted.
+  {
+    pattern: /https?:\/\/[^\/]+\/wiki\/x\/([A-Za-z0-9_-]+)(?:[\/?#]|$)/i,
+    pageIdFrom: (match) => pageIdFromTinyId(match[1])
   }
 ];
 

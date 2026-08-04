@@ -1,22 +1,29 @@
-// Proof for KAN-142 (story KAN-90): a real Confluence page URL opens a
-// `confluence` workspace keyed by the page id, a `/wiki/` URL that is not a
-// page opens nothing, and the type inherits the Atlassian MCP server rather
-// than declaring one.
+// Proof for KAN-142 and KAN-143 (story KAN-90): a real Confluence page URL
+// opens a `confluence` workspace keyed by the page id, a `/wiki/` URL that is
+// not a page opens nothing, a tiny link opens the *same* workspace as the
+// canonical URL for the same page, and the type inherits the Atlassian MCP
+// server rather than declaring one.
 //
 // WHAT FAILURE THIS WOULD CATCH: a Confluence page URL that stops resolving or
 // resolves to the wrong key — the personal-space and `edit-v2` forms are where
 // a lazy space pattern breaks; a non-page `/wiki/` URL (a space home, the bare
-// `/pages` listing, a whiteboard, a database, a blog post, a tiny link) being
-// claimed by the `confluence` type instead of resolving to nothing; a Jira
-// `/browse/` URL being stolen by a Confluence pattern; the `atlassian` MCP
-// server appearing twice or not at all in a Confluence workspace's `.mcp.json`;
-// `confluence` resolving while the Atlassian integration is switched off, or
-// its refusal degrading to "unsupported URL"; and the three behaviours this
-// type inherits rather than declares — the Jira poller ignoring a numeric page
-// id, agent names round-tripping, and `list_integrations` reporting the right
-// `resolution`.
+// `/pages` listing, a whiteboard, a database, a blog post) being claimed by the
+// `confluence` type instead of resolving to nothing; a Jira `/browse/` URL being
+// stolen by a Confluence pattern; the `atlassian` MCP server appearing twice or
+// not at all in a Confluence workspace's `.mcp.json`; `confluence` resolving
+// while the Atlassian integration is switched off, or its refusal degrading to
+// "unsupported URL"; the three behaviours this type inherits rather than
+// declares — the Jira poller ignoring a numeric page id, agent names
+// round-tripping, and `list_integrations` reporting the right `resolution`;
+// and, from KAN-143, a tiny link keyed by its tiny id rather than by the page
+// id it encodes — which would give one page two workspaces with two
+// conversation histories — or a tiny-link decoder that is right *most* of the
+// time, which is the same bug wearing a disguise. The two decoder mistakes that
+// are easy to make and impossible to notice by inspection each have a real
+// counter-example asserted in section 7: the non-standard `-`/`_` alphabet, and
+// `A` rather than `=` padding.
 //
-// Six sections, one per acceptance criterion, plus the inherited behaviours:
+// Seven sections, one per acceptance criterion, plus the inherited behaviours:
 //
 //   1. page URLs     — all four forms resolve to { confluence, <pageId> },
 //                      including a personal space, an edit URL with a query
@@ -33,11 +40,23 @@
 //   6. inherited     — the Jira poller does not poll a page id, and
 //                      addressFromAgentName('butchr-confluence-196787')
 //                      round-trips
+//   7. tiny links    — (KAN-143) the canonical URL and the tiny link for the
+//                      same real page resolve to the same { type, key }; the
+//                      decoder agrees with tiny links Confluence itself
+//                      reported; and a tiny link that does not decode to a
+//                      positive id resolves to nothing
 //
 // The URLs are this site's real ones, read back from the Atlassian MCP on
 // 2026-08-04: page 196787 in space SD (`getConfluencePage(196787).webUrl`),
 // page 196761 as a smart link inside a real page body, and the personal space
 // key `~712020619ec5ec2e92492f897991ccda318230`.
+//
+// Section 7's tiny links were read from Confluence's own `_links.tinyui` on
+// 2026-08-04 — `GET /wiki/rest/api/content/<id>` on wroosbit.atlassian.net for
+// this site's six pages, and the same endpoint on two public Confluence sites
+// for the cases this site's five-digit ids cannot reach. None of them is
+// computed; the whole point of the section is comparing what Confluence says
+// against what the decoder says.
 //
 // Every registry here gets its own throwaway state file, and the credential is
 // a stub: a proof script must not write into the machine's real
@@ -190,7 +209,14 @@ const nonPages = [
   { label: 'whiteboard            ', url: `${SITE}/wiki/spaces/~766660823/whiteboard/3078363456` },
   { label: 'database              ', url: `${SITE}/wiki/spaces/SD/database/196800` },
   { label: 'blog post             ', url: `${SITE}/wiki/spaces/SD/blog/2026/08/04/196900/A+post` },
-  { label: 'tiny link (KAN-143)   ', url: `${SITE}/wiki/x/HwEB` }
+  // KAN-142 listed `/wiki/x/HwEB` here, expecting null, and said in as many
+  // words that it was unmatched "until KAN-143 decodes it". KAN-143 has, so
+  // that row moved to section 7 and now asserts the opposite — the one
+  // expectation in this script this ticket is entitled to invert, because it
+  // was written as a placeholder for exactly this change. What stays here is
+  // the half that does not change: a tiny link whose segment does not decode
+  // to a positive page id is still nothing, the same as a whiteboard.
+  { label: 'tiny link, undecodable', url: `${SITE}/wiki/x/AAAA` }
 ];
 
 console.log('');
@@ -214,7 +240,8 @@ console.log(
   '  forms are spelled out rather than approximated by one loose pattern.\n' +
   '\n  Nothing resolving is the honest answer, not a gap: a whiteboard is not a page,\n' +
   '  and degrading it to `task` would open an agent briefed on a Jira issue that does\n' +
-  '  not exist. The tiny link is unmatched by the same rule until KAN-143 decodes it.'
+  '  not exist. `/wiki/x/AAAA` decodes to the id 0, which is not a page id either, so\n' +
+  '  it gets the same answer — see section 7 for the tiny links that do decode.'
 );
 
 verdict(
@@ -391,6 +418,136 @@ verdict(
     address.key === '196787',
   'the poller ignores the page id, and the agent name round-trips to confluence/196787.',
   'the poller tried to read a page id as a Jira issue, or the agent name did not round-trip.'
+);
+
+// ------------------------------------------------------------ 7. tiny links --
+
+rule('KAN-143 — a tiny link and the canonical URL open ONE workspace, not two');
+
+// (a) The criterion that matters. Each row is one real page on this site,
+// reached two ways: the canonical URL a human copies from the address bar, and
+// the tiny link Confluence's own share button and REST API hand out. If these
+// two ever disagree, that page has two workspaces — `workspaces/confluence/<a>`
+// and `workspaces/confluence/<b>` — with two conversation histories that never
+// converge. That is the whole hazard KAN-143 exists to prevent, so it is
+// asserted rather than described.
+//
+// tinyui values below are what `GET /wiki/rest/api/content/<id>` on
+// wroosbit.atlassian.net returned on 2026-08-04, not values this script
+// computed.
+const identity = [
+  { id: '196761', tiny: 'mQAD', canonical: `${SITE}/wiki/spaces/SD/pages/196761/Template+-+Product+requirements` },
+  { id: '196774', tiny: 'pgAD', canonical: `${SITE}/wiki/spaces/SD/pages/196774/Template+-+Meeting+notes` },
+  { id: '196787', tiny: 'swAD', canonical: `${SITE}/wiki/spaces/SD/pages/196787/Template+-+Decision+documentation` },
+  { id: '163935', tiny: 'X4AC', canonical: `${SITE}/wiki/spaces/${PERSONAL}/pages/163935/Getting+started+in+Confluence+from+Jira` }
+];
+
+console.log('\n  (a) the same page, reached two ways:\n');
+let identityOk = true;
+for (const { id, tiny, canonical } of identity) {
+  const viaCanonical = await registry.resolve(canonical);
+  const viaTiny = await registry.resolve(`${SITE}/wiki/x/${tiny}`);
+  const same =
+    viaCanonical !== null &&
+    viaTiny !== null &&
+    viaCanonical.config.type === viaTiny.config.type &&
+    viaCanonical.key === viaTiny.key &&
+    viaTiny.config.type === 'confluence' &&
+    viaTiny.key === id;
+  identityOk &&= same;
+  console.log(`      canonical  ${canonical}`);
+  console.log(`                 → ${show(viaCanonical)}`);
+  console.log(`      tiny link  ${SITE}/wiki/x/${tiny}`);
+  console.log(`                 → ${show(viaTiny)}`);
+  console.log(`                 ${same ? 'SAME workspace' : 'DIFFERENT — one page would get two workspaces'}\n`);
+}
+
+// (b) The encoding, checked against tiny links Confluence reported rather than
+// against itself. One pair is a hypothesis with a good story; these are the
+// samples that turned it into a fact, and each of the last four is here because
+// it fails a decoder that is *nearly* right.
+//
+// Provenance: the 196xxx/163xxx rows are this site, via
+// `GET /wiki/rest/api/content/<id>`; 65823 is the pair recorded on KAN-90
+// comment 10385; the rest are the same REST endpoint on two public Confluence
+// sites, used because every id on this site is five digits and so never
+// exercises the two traps below. All 2407 pairs collected that way decode
+// correctly; these fourteen are the ones worth keeping in the repository.
+const observed = [
+  { id: '196725', tiny: 'dQAD',     note: 'wroosbit — space home (see note below)' },
+  { id: '196761', tiny: 'mQAD',     note: 'wroosbit' },
+  { id: '196774', tiny: 'pgAD',     note: 'wroosbit' },
+  { id: '196787', tiny: 'swAD',     note: 'wroosbit' },
+  { id: '163933', tiny: 'XYAC',     note: 'wroosbit — personal space home' },
+  { id: '163935', tiny: 'X4AC',     note: 'wroosbit — personal space' },
+  { id: '65823',  tiny: 'HwEB',     note: 'KAN-90 comment 10385, the original pair' },
+  { id: '59806090', tiny: 'ipGQAw', note: 'confluence.atlassian.com — largest id checked' },
+  { id: '7676',   tiny: '-B0',      note: "TRAP: '-' is '/', not '+' as base64url would have it" },
+  { id: '12027',  tiny: '_y4',      note: "TRAP: '_' is '+', not '/'" },
+  { id: '12292',  tiny: 'BD',       note: "TRAP: 'A' padding — '=' padding decodes this to 4" },
+  { id: '12310',  tiny: 'Fj',       note: "TRAP: 'A' padding — '=' padding decodes this to 22" },
+  { id: '12536',  tiny: '_D',       note: 'TRAP: both at once — 248 if either is wrong' },
+  { id: '12540',  tiny: '-D',       note: 'TRAP: both at once — 252 if either is wrong' }
+];
+
+console.log('  (b) tiny links as Confluence reported them, against what the decoder makes of them:\n');
+console.log(`      ${'page id'.padStart(9)}  ${'tiny link'.padEnd(14)} ${'decoder says'.padEnd(13)} ok   provenance / why this row is here`);
+let observedOk = true;
+for (const { id, tiny, note } of observed) {
+  const resolved = await registry.resolve(`${SITE}/wiki/x/${tiny}`);
+  const got = resolved && resolved.config.type === 'confluence' ? resolved.key : null;
+  const ok = got === id;
+  observedOk &&= ok;
+  console.log(
+    `      ${id.padStart(9)}  ${('/wiki/x/' + tiny).padEnd(14)} ${String(got).padEnd(13)} ${ok ? 'YES ' : 'NO  '} ${note}`
+  );
+}
+
+// (c) What must not resolve. The pattern's character class means `!!!!` and an
+// empty segment never match at all; `AAAA` and `A` match and are refused by the
+// decoder, which is the `string | null` seam KAN-142 left for exactly this.
+const garbage = [
+  { label: 'not base64 at all      ', url: `${SITE}/wiki/x/!!!!` },
+  { label: 'nothing after /x/      ', url: `${SITE}/wiki/x/` },
+  { label: 'decodes to 0           ', url: `${SITE}/wiki/x/AAAA` },
+  { label: 'decodes to 0, one char ', url: `${SITE}/wiki/x/A` },
+  { label: 'more than 8 bytes      ', url: `${SITE}/wiki/x/AQAAAAAAAAABAQ` }
+];
+
+console.log('\n  (c) a tiny link that does not decode to a positive page id resolves to nothing:\n');
+let garbageOk = true;
+for (const { label, url } of garbage) {
+  const resolved = await registry.resolve(url);
+  const ok = resolved === null;
+  garbageOk &&= ok;
+  console.log(`      ${label} ${url.padEnd(46)} → ${show(resolved)}${ok ? '' : '   (expected null)'}`);
+}
+
+console.log(
+  '\n      Nothing is the honest answer here, and the important half of it: a tiny id\n' +
+  '      must never itself become a key. `workspaces/confluence/AAAA` alongside\n' +
+  '      `workspaces/confluence/196787` is the split this task exists to prevent.'
+);
+
+console.log(
+  '\n  One asymmetry this leaves behind, named rather than hidden: 196725 and 163933\n' +
+  '  are space *home* pages. They are real pages with real ids and real tiny links,\n' +
+  '  so their tiny links now resolve — while their canonical URL is the space\n' +
+  '  overview form, which KAN-142 deliberately does not match. So those two pages\n' +
+  '  open from one address and not the other. That is not the two-workspaces hazard\n' +
+  '  — it is one key or no key, never two — and narrowing it would need a Confluence\n' +
+  '  lookup on the resolution path, which KAN-90 rules out. Filed as a follow-up.'
+);
+
+verdict(
+  identityOk && observedOk && garbageOk,
+  'the tiny link and the canonical URL are one workspace, the decoder matches every\n' +
+  '    tiny link Confluence reported, and what does not decode resolves to nothing.',
+  identityOk
+    ? 'the decoder disagreed with a tiny link Confluence reported, or something that\n' +
+      '    does not decode resolved to a key — see the rows above.'
+    : 'a tiny link and the canonical URL for the same page resolved DIFFERENTLY — that\n' +
+      '    page now gets two workspaces with two conversation histories. See section 7(a).'
 );
 
 console.log('\n== done ==');
