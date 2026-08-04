@@ -8,18 +8,48 @@ import {
 // A minimal, strictly read-only Jira client, and the seam that lets its auth
 // be replaced later without touching anything that calls it.
 //
-// The daemon needs Jira for exactly one reason: a Jira issue URL does not say
-// whether the issue is a Task or a Story, and those map to different workspace
-// types. So there is exactly one domain operation here — "what type is this
-// issue?" — plus the credential-validation read that the settings UI needs.
+// WHAT THIS IS ALLOWED TO READ, AND WHY THAT CHANGED
+//
+// This header used to assert one domain operation. That was true and is no
+// longer: on 2026-08-03 the human deciding KAN-75 widened the credential
+// surface to **status and comment reads**, and chose polling over webhooks
+// explicitly, so that a ticket moved on the board or commented on while its
+// agent was mid-turn reaches the agents it concerns instead of waiting for
+// somebody to remember to nudge. Two domain operations now:
+//
+//   1. "what type is this issue?" — a Jira issue URL does not say whether the
+//      issue is a Task or a Story, and those map to different workspace types.
+//   2. "what does this issue look like right now?" — status, `updated`,
+//      comment ids, and issue links, for the poller in jira-poll.ts.
+//
+// Plus the credential-validation read the settings UI needs. Both operations
+// fit inside the same `read:jira-work` scope the settings page has always asked
+// for, so the widening costs the user nothing to grant.
+//
+// THE RULE THAT DID NOT CHANGE
 //
 // There are deliberately no write methods. Not "not yet": an unused write
 // method is an argument for a wider credential scope waiting to happen, and
 // writes already belong to agents, which hold their own scoped interactive
-// auth. (KAN-20)
+// auth. (KAN-20, unchanged by KAN-75.) Nothing here posts a comment, moves a
+// status, or edits a field, and a poller that discovers news reports it by
+// typing at a terminal rather than by writing to Jira.
 
 /** How long a lookup may take, end to end, before the caller gives up. */
 export const LOOKUP_TIMEOUT_MS = 2000;
+
+/**
+ * How long a *poll* read may take.
+ *
+ * Deliberately its own budget rather than `LOOKUP_TIMEOUT_MS`. That 2s figure
+ * is a latency budget: an issue-type lookup runs on every tab change with a
+ * user waiting on the result, so a slow Jira has to become a fallback quickly.
+ * Nothing waits on a poll — it is a background timer, and giving up on a merely
+ * slow response would turn a slow link into permanent blindness to comments.
+ * Still bounded well inside the poll interval, so a stalled read cannot pile
+ * ticks on top of each other.
+ */
+export const POLL_TIMEOUT_MS = 5000;
 
 /**
  * How long *validation* may take. Deliberately far more generous than
@@ -613,10 +643,59 @@ function hostOf(endpoint: string): string {
 }
 
 /**
- * The read-only Jira client. One domain operation, plus validation.
+ * What one issue looks like at the instant it was read.
+ *
+ * Deliberately the *smallest* shape the poller can do its job with. Notably
+ * absent: comment bodies and authors. Bodies are not needed because a nudge is
+ * a pointer and never content — the recipient re-reads the ticket, which is
+ * where the words live and stay current. Authors are not needed because they
+ * cannot answer the only question that would justify keeping them: every agent
+ * reaches Jira through the same shared account, so `author` on a comment says
+ * "somebody in this fleet" and never which agent. Holding data that cannot
+ * decide anything is how a read-only client grows a reason to widen its scope.
+ */
+export interface JiraIssueSnapshot {
+  /** The key as Jira spells it, echoed back from the response when it has one. */
+  key: string;
+  /** `In Progress`, `Done`, … or null when the response carried no status. */
+  statusName: string | null;
+  /** Jira's own `updated` stamp. Diagnostic only; the poller diffs on events. */
+  updated: string | null;
+  /** Comment ids, in the order Jira returned them. Ids only — see above. */
+  commentIds: string[];
+  /** Keys of every issue linked to this one, in either direction, de-duplicated. */
+  linkedKeys: string[];
+}
+
+/** The `fields` this read asks for. One GET, no expansion, nothing extra. */
+const WATCH_FIELDS = 'status,updated,comment,issuelinks';
+
+/**
+ * The read-only Jira client. Two domain operations, plus validation.
  */
 export class JiraClient {
   constructor(private transport: JiraTransport) {}
+
+  /**
+   * The status, comment ids, and links of one issue, in a single GET.
+   *
+   * One request per key rather than a JQL search over the whole fleet. A search
+   * would be fewer requests, and it cannot carry `issuelinks` or comment ids
+   * per issue in the same response — so it would trade one request per issue
+   * for one request per issue *plus* a search, which is not a saving. Per-key
+   * also fails per-key: a renamed or deleted ticket costs its own poll a 404
+   * instead of taking the whole sweep down with it.
+   */
+  public async getIssueSnapshot(key: string, signal: AbortSignal): Promise<JiraIssueSnapshot> {
+    const { status, body } = await this.transport.get(
+      `/rest/api/3/issue/${encodeURIComponent(key)}?fields=${WATCH_FIELDS}`,
+      signal
+    );
+    if (status !== 200) {
+      throw new JiraRequestError(`issue snapshot returned HTTP ${status}`, status);
+    }
+    return snapshotFrom(key, body);
+  }
 
   /**
    * The issue's type name as Jira spells it (`Task`, `Story`, `Bug`, …), or
@@ -701,6 +780,58 @@ export class JiraClient {
 }
 
 /**
+ * Read a snapshot out of whatever Jira returned, trusting none of it.
+ *
+ * Every field is optional on the way in and defaulted on the way out: a
+ * response missing `comment` is an issue with no comments to this reader, not
+ * an exception on a background timer. The one thing that is *not* softened is
+ * the issue key — a snapshot that cannot name its issue would be filed against
+ * the wrong one — so the requested key stands in when the body has none.
+ */
+export function snapshotFrom(key: string, body: any): JiraIssueSnapshot {
+  const fields = body?.fields ?? {};
+
+  const commentIds: string[] = Array.isArray(fields?.comment?.comments)
+    ? fields.comment.comments
+        .map((comment: any) => (comment?.id === undefined ? '' : String(comment.id)))
+        .filter((id: string) => id.length > 0)
+    : [];
+
+  // Both directions, because "blocks" and "is blocked by" are the same link
+  // seen from two ends and both ends are parties to the news. De-duplicated
+  // because two link types between the same pair of issues is one neighbour.
+  const linked = new Set<string>();
+  if (Array.isArray(fields?.issuelinks)) {
+    for (const link of fields.issuelinks) {
+      for (const side of [link?.inwardIssue, link?.outwardIssue]) {
+        const linkedKey = typeof side?.key === 'string' ? side.key.trim() : '';
+        if (linkedKey) linked.add(linkedKey);
+      }
+    }
+  }
+
+  return {
+    key: typeof body?.key === 'string' && body.key ? body.key : key,
+    statusName: typeof fields?.status?.name === 'string' ? fields.status.name : null,
+    updated: typeof fields?.updated === 'string' ? fields.updated : null,
+    commentIds,
+    linkedKeys: [...linked]
+  };
+}
+
+/**
+ * The outcome of a poll read, with the one distinction the poller acts on.
+ *
+ * `backOff` is not "did it fail" — it is "is Jira asking to be left alone".
+ * A 404 on a renamed ticket is a failure and must *not* slow the sweep down;
+ * a 429 or a 503 must. Collapsing the two would either ignore a rate limit or
+ * let one dead ticket pace the whole fleet.
+ */
+export type JiraSnapshotOutcome =
+  | { ok: true; snapshot: JiraIssueSnapshot }
+  | { ok: false; backOff: boolean; status?: number; error: string };
+
+/**
  * A rejection from the transport, rendered as a verdict.
  *
  * The legs ride on the error precisely so this is possible: a thrown request
@@ -725,6 +856,12 @@ function failedValidation(err: any): ValidationResult {
  * Every failure mode — no credential, network down, 401, 404, timeout,
  * malformed response — resolves to null. Callers treat null as "assume the
  * default type", which is what keeps Butchr working when Jira does not.
+ *
+ * It is also where the poll read lives ({@link pollIssue}), because it owns the
+ * credential and the transport and a second owner would be a second thing to
+ * migrate when the auth seam is used. The two reads share nothing else — not
+ * the cache, not the timeout, not the failure cooldown — and the reasons are on
+ * `pollIssue`.
  */
 export class JiraIssueTypeService {
   private cache = new Map<string, string>();
@@ -751,7 +888,9 @@ export class JiraIssueTypeService {
     private makeTransport: (cred: JiraCredential) => JiraTransport = (cred) =>
       new TokenJiraTransport(cred),
     /** Separate from `timeoutMs`: see VALIDATE_TIMEOUT_MS. */
-    private validateTimeoutMs: number = VALIDATE_TIMEOUT_MS
+    private validateTimeoutMs: number = VALIDATE_TIMEOUT_MS,
+    /** Separate again, and for the opposite reason: see POLL_TIMEOUT_MS. */
+    private pollTimeoutMs: number = POLL_TIMEOUT_MS
   ) {}
 
   public status(): CredentialStatus {
@@ -882,6 +1021,64 @@ export class JiraIssueTypeService {
           `falling back to the default workspace type`
       );
       return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * One issue's current status, comment ids, and links — or why not.
+   *
+   * WHY THIS LIVES ON THE ISSUE-TYPE SERVICE
+   *
+   * Because this class is the daemon's only holder of a Jira transport, and a
+   * second holder would mean a second credential load, a second cloud-ID
+   * lookup, and two places that have to be taught about OAuth on the day the
+   * seam is finally used. The poller borrows the transport; it does not learn
+   * what a token is. (KAN-79.)
+   *
+   * WHY IT DOES NOT TOUCH THE FAILURE COOLDOWN
+   *
+   * `failingUntil` exists so that an unreachable Jira does not cost the full
+   * timeout on every tab change, and the price of it is that lookups answer
+   * `null` — "assume the default workspace type" — for 30 seconds. Letting a
+   * poll set that flag would mean a Jira rate limit hit by a background timer
+   * silently downgraded a user's Story workspace to a `task` one. Letting a
+   * poll *read* it would mean an unrelated tab-change failure blinded the
+   * poller. The two degrade separately, on their own evidence; the poller's
+   * own back-off is in jira-poll.ts.
+   *
+   * Never throws, like everything else this service exposes.
+   */
+  public async pollIssue(key: string): Promise<JiraSnapshotOutcome> {
+    const transport = await this.getTransport();
+    if (!transport) {
+      // The ordinary state for a machine with no credential. Not an error, and
+      // deliberately not a reason to back off: there is nothing to back off
+      // from, and the poller checks this before it counts a failure.
+      return { ok: false, backOff: false, error: 'no Jira credential configured' };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.pollTimeoutMs);
+    try {
+      const snapshot = await new JiraClient(transport).getIssueSnapshot(key, controller.signal);
+      return { ok: true, snapshot };
+    } catch (err: any) {
+      const status: number | undefined = typeof err?.status === 'number' ? err.status : undefined;
+      // 429 and 5xx are Jira asking for room. A transport failure joins them:
+      // hammering a host that is not answering is the same mistake with a
+      // different cause. Everything else — 401, 403, 404 — is about this one
+      // request and pacing the fleet on it would be wrong.
+      const backOff = status === 429 || (status !== undefined && status >= 500) || status === undefined;
+      return {
+        ok: false,
+        backOff,
+        ...(status !== undefined ? { status } : {}),
+        // Message only, never the error object: on a fetch failure its
+        // properties can include the request that produced it.
+        error: err?.message ?? 'unknown error'
+      };
     } finally {
       clearTimeout(timer);
     }

@@ -22,6 +22,7 @@ import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion 
 import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
+import { JiraPoller } from './jira-poll.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
 import { AgentCost, MEASURED_AGENT_COST, setMeasuredAgentCost } from './capacity.js';
@@ -328,6 +329,35 @@ const supervision = new SupervisionNotifier({
   log
 });
 
+/**
+ * The other direction the same news travels: Jira, watched (KAN-79).
+ *
+ * The sweep above notices what happens to an agent's *runtime*. This notices
+ * what happens to its *ticket* — a status moved on the board, a comment posted
+ * while the agent was mid-turn — which no amount of watching herdr can see and
+ * which, for a comment, is the human's only way of steering work already in
+ * flight. Same fleet census, same durable parentage, same delivery primitive;
+ * a different thing being read. See jira-poll.ts for the interval arithmetic,
+ * the back-off, and the limits of self-echo suppression.
+ */
+const jiraPoller = new JiraPoller({
+  jira,
+  herdrBridge,
+  liveAgents: () =>
+    daemonRouter
+      .surveyFleet()
+      .agents.filter((agent) => agent.type)
+      .map((agent) => ({
+        agentName: agent.agentName,
+        type: agent.type as string,
+        // The registry's spelling, because an agent *name* is built from a
+        // lower-cased key and `kan-79` is not what a Jira URL takes.
+        key: daemonRouter.recordedKeyFor(agent.agentName) ?? agent.key
+      })),
+  supervisorFor: (agentName) => daemonRouter.supervisorFor(agentName),
+  log
+});
+
 function sweepForMissingAgents() {
   let fleet;
   try {
@@ -517,6 +547,11 @@ function onListen() {
   sampleFleetCost();
   const costSampler = setInterval(sampleFleetCost, COST_SAMPLE_INTERVAL_MS);
   costSampler.unref();
+
+  // Unlike the two above, this one schedules its own next tick rather than
+  // running on a fixed interval — it has to be able to slow down when Jira
+  // says so. Its first tick is one interval away by design; see start().
+  jiraPoller.start();
 }
 
 const shutdown = () => {
