@@ -257,6 +257,13 @@ rule('AC4 — a Confluence workspace is spawned with exactly one `atlassian`, in
 // Exactly what the daemon assembles at spawn time: MessageRouter's
 // mcpServersForSpawn() — the registry's aggregate over enabled, configured
 // integrations, plus core — handed to writeWorkspaceMcpConfig by herdr.ts.
+//
+// The assembly, and not quite the whole file: since KAN-145 herdr.ts stamps the
+// workspace's own identity onto the core server's args on the way to disk, so a
+// real confluence workspace's `butchr` entry names that workspace and a real
+// task workspace's names that one. The byte comparison below is therefore about
+// the servers — which is what this section is asking — and the identity is
+// proved by verify-activation-records-real-parentage.mjs.
 const spawnDefs = { ...registry.mcpServerDefinitions(), ...coreMcpServerDefinitions() };
 
 const confluenceWorkspace = path.join(scratch, 'workspaces', 'confluence', '196787');

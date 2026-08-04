@@ -8,6 +8,42 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import * as net from 'net';
 import { connectToDaemon, onJsonLines, writeJsonLine } from './ipc.js';
+import { WORKSPACE_KEY_FLAG, WORKSPACE_TYPE_FLAG } from './launchers.js';
+
+/**
+ * Which agent this server belongs to, read off this process's own argv.
+ *
+ * The daemon writes the flags into the workspace's `.mcp.json` at activation
+ * (`withWorkspaceIdentity` in launchers.ts), and the agent's CLI spawns this
+ * process from that file — so the identity arrives on the command line of the
+ * process that actually reaches the daemon, and can be read back out of
+ * `/proc/<pid>/cmdline` by anyone who doubts it.
+ *
+ * It used to be read from `BUTCHR_WORKSPACE_TYPE`/`_KEY` in the environment,
+ * and nothing ever set those in this process (KAN-145): the only writer put
+ * them on the `herdr agent attach` PTY, which is a client of the agent's pane
+ * rather than an ancestor of it. The env read is gone rather than kept as a
+ * fallback — an unexercised second source is how the first one went unnoticed
+ * for as long as it did.
+ *
+ * An absent or malformed flag yields `undefined`, which is the honest answer
+ * and the one `supervisorOfRecord` already treats as "no supervisor": a human
+ * activating from the sidepanel has no parent, and nothing should be invented
+ * for one.
+ */
+function workspaceIdentityFromArgv(argv: string[]): { type?: string; key?: string } {
+  const read = (flag: string): string | undefined => {
+    const at = argv.indexOf(flag);
+    if (at === -1) return undefined;
+    const value = argv[at + 1];
+    // A flag with nothing behind it, or with the next flag behind it, is a
+    // malformed command line — not a workspace called '--workspace-key'.
+    return value && !value.startsWith('--') ? value : undefined;
+  };
+  return { type: read(WORKSPACE_TYPE_FLAG), key: read(WORKSPACE_KEY_FLAG) };
+}
+
+const callerIdentity = workspaceIdentityFromArgv(process.argv.slice(2));
 
 const server = new Server(
   {
@@ -90,8 +126,11 @@ async function callDaemonAPI(action: string, data: any = {}): Promise<any> {
       action,
       ...data,
       id,
-      workspaceType: process.env.BUTCHR_WORKSPACE_TYPE || undefined,
-      workspaceKey: process.env.BUTCHR_WORKSPACE_KEY || undefined
+      // Who is asking. `supervisorOfRecord` (router.ts) records this as the
+      // activated agent's supervisor, so a story agent staffing a task is
+      // written down as that task's parent by the ordinary act of staffing it.
+      workspaceType: callerIdentity.type,
+      workspaceKey: callerIdentity.key
     });
   });
 }
