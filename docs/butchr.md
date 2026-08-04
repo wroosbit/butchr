@@ -315,11 +315,15 @@ The lookup needs read access to Jira, which the daemon did not previously have.
 The user supplies an **Atlassian API token** (site URL + account email + token)
 on the extension's **Settings** page. Design constraints, all deliberate:
 
-- **Read-only, one operation.** `daemon/src/jira.ts` can fetch an issue's type
-  and validate a credential. There are no write methods, and none should be
-  added: agents already hold their own scoped interactive auth for writes.
-  Prefer a **scoped** token limited to `read:jira-work` over a classic
-  full-permission one.
+- **Read-only, two operations.** `daemon/src/jira.ts` can fetch an issue's type,
+  read an issue's status/comment-ids/links for the poller (widened by the
+  human's KAN-75 decision on 2026-08-03 — see [When a ticket changes and its
+  agent is mid-turn](#-when-a-ticket-changes-and-its-agent-is-mid-turn)), and
+  validate a credential. Both reads fit inside the same `read:jira-work` scope
+  the settings page has always asked for, so the widening costs the user nothing
+  to grant. There are **no write methods**, and none should be added: agents
+  already hold their own scoped interactive auth for writes. Prefer a **scoped**
+  token limited to `read:jira-work` over a classic full-permission one.
 - **The token travels user → settings UI → daemon and stops.** The daemon
   stores it in the OS keyring where one is available (libsecret / `secret-tool`,
   secret passed on stdin, never argv), otherwise in a `0600` file. The
@@ -686,6 +690,95 @@ another nudge.
 the real router and the real registry; `--live` adds a section that starts two
 real agents, closes the child's pane, and reads the notice back out of the
 supervisor's real terminal.
+
+---
+
+## 📨 When a ticket changes and its agent is mid-turn
+
+> **Pre-cutover.** The poller reads Jira and delivers through the same
+> primitives decision 4 hands to CrabCast; what must survive the swap is the
+> behaviour described here, which the verify script below is written against.
+
+The section above watches an agent's **runtime**. This watches its **ticket**.
+An agent reads its ticket at the start of a turn and not again, so a human
+moving it on the board — or commenting on it while the agent is mid-turn — was
+discovered only if somebody remembered to nudge. For a comment that is the whole
+steering channel: a comment is how a human redirects work already in flight, and
+every steer typed at a busy agent's ticket was landing in a file nobody was
+going to open until the turn ended.
+
+**Polling, not webhooks** — decided by the human on 2026-08-03 and not a
+shortcut. A webhook is an inbound network surface on a developer laptop, and
+Butchr's posture is outbound-only: a Unix socket whose permissions are the auth
+boundary, and no listening port at all. A poll costs a request a minute and
+keeps that true.
+
+**Only issues with live agents.** An issue whose agent is not running has its
+ticket as a durable inbox — it reads it when it starts — so polling it would pay
+requests to notify nobody. The fleet comes from the same census the
+missing-agent sweep uses, and two agents on one ticket are one read.
+
+**Who gets told.** On a status change or a new comment on a watched issue:
+the live agents of its **linked issues** (from the same GET's `issuelinks`), and
+its **parent agent** (the `activatedBy` supervisor of record). Plus, for a **new
+comment only**, the issue's **own** agent — that is the mid-turn steer, and it
+is the point. A **status change** deliberately does *not* go to the issue's own
+agent: its own transitions are announced to it by the prompts layer, and telling
+an agent that the ticket it just moved has moved is noise it caused itself. A
+target that is not running is logged and left alone, for the same reason as
+above.
+
+**The Jira `status` field is not herdr's agent status.** They share a word and
+nothing else. herdr's `done` is the agent's own per-turn hook boundary, fires at
+the end of every turn, and is wired to nothing (see the section above, and
+`verify-status-change-nudges.mjs` AC2, which asserts that absence). A Jira
+transition is rare, deliberate, performed by a human or an agent, and is exactly
+the news a linked ticket needs — **including a transition to Done**. Nothing in
+the poller reads herdr's agent status.
+
+**The nudge is a pointer, never content.** "`KAN-79` status changed to In
+Review" or "`KAN-79` has a new comment", plus why you are being told, plus
+"re-read it when you next look". The comment's text is not copied: a second,
+ageing copy of a steer in a terminal nobody can edit is worse than none, and the
+ticket is where a reply belongs. Delivery goes through `deliverToAgent`, so it
+is confirmed against the pane rather than dispatched.
+
+**Self-echo suppression, and its stated limit.** Every agent reaches Jira
+through the same shared Atlassian account, so a comment's author reads "somebody
+in this fleet" and never *which* agent — there is no authorship signal to
+suppress an agent's own actions with. Suppression is event-based instead: last-
+seen status and highest-seen comment id per issue, in
+`~/.local/share/butchr/jira-poll.json` beside `agents.jsonl`, written by the same
+atomic write-fsync-rename-fsync the registry's compaction uses. One event, one
+nudge, ever. **The limit, stated rather than hidden: an agent that comments on
+its own ticket receives one redundant pointer to its own comment.** Bounded to
+exactly one by the dedupe, a pointer rather than an echo, and accepted as the
+cost of having no authorship signal — the alternative, not nudging an issue's
+own agent, would drop the steer this exists to deliver.
+
+**Restarts do not replay history.** An issue the poller has never seen is
+recorded silently — its status and its whole comment history at once, notifying
+nobody, so a fresh install is not a broadcast of the past. A *restart* is not
+that case: the state file survives, so a restarted daemon diffs against what it
+recorded before it went down. Already-notified events are never re-sent; a
+comment posted during the downtime still arrives, because that is what a watcher
+is for. Discarding state on boot would satisfy the letter of "do not replay" and
+make the file ornamental.
+
+**Rate limits.** One GET per distinct watched issue every **60 seconds** — the
+interval is paced by the recipient rather than by Jira, since every nudge begins
+with a Ctrl+C at somebody's working agent. At the stated ceiling of 19 task
+agents plus supervisors, 25 issues × 1 GET ÷ 60s ≈ **0.42 requests/second**,
+about one request every 2.4 seconds from one account. On a **429 or a 5xx** (or
+an unreachable host) the interval lengthens to five minutes **with a log line**,
+and recovery is logged too — never to silence, on the same reasoning that gave
+the issue-type lookup a bounded cooldown rather than a kill switch.
+
+`node daemon/scripts/verify-jira-poller-nudges.mjs` proves all of it against the
+real poller, a real on-disk state file, real Jira response bodies through the
+real parser, and the real delivery primitive against stubbed panes; `--live`
+adds a section that starts three real agents and polls the real Jira API while a
+real transition and a real comment are made.
 
 ---
 
