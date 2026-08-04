@@ -38,6 +38,16 @@
 // daemon under test gets its own socket, its own workspaces root and its own
 // private herdr server. The live daemon and live herdr are never contacted.
 //
+// WHAT THIS SCRIPT SUPPLIES FOR ITSELF, AND WHO COVERS IT
+//
+// That temp $HOME has no credential, so the Atlassian integration would come up
+// disabled and the `task` type would not exist for the seeded agent below — so
+// this script writes `integrations.json` with jira enabled before starting its
+// daemon, exactly as the settings toggle does. It therefore does not test that
+// a real install arrives with Atlassian on; the enablement rule is owned by
+// daemon/scripts/verify-integration-enablement.mjs, and no script covers the
+// join between the two. KAN-129 names that gap rather than closing it.
+//
 // Usage:
 //   cd daemon && npm run build
 //   cd extension && npm run build
@@ -48,7 +58,7 @@
 
 import { createServer } from 'http';
 import { execFileSync, spawn } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -107,6 +117,19 @@ mkdirSync(isolatedEnv.XDG_CONFIG_HOME, { recursive: true });
 mkdirSync(isolatedEnv.XDG_STATE_HOME, { recursive: true });
 const socketPath = path.join(fakeHome, '.local', 'share', 'butchr', 'butchr.sock');
 const chromeProfile = path.join(scratch, 'chrome');
+
+// --- a fresh install now starts with Atlassian switched off (KAN-85) ---------
+// Integrations are disabled until the user turns them on, and this fake HOME has
+// no credential to migrate as enabled — so without this the daemon below would
+// come up with no `task` type at all and every activation here would be refused
+// with "the Atlassian integration is switched off". Writing the state file is
+// exactly what the settings toggle does; doing it before the daemon starts keeps
+// this script about what it is about.
+mkdirSync(path.dirname(socketPath), { recursive: true });
+writeFileSync(
+  path.join(path.dirname(socketPath), 'integrations.json'),
+  JSON.stringify({ enabled: { jira: true } }, null, 2) + '\n'
+);
 
 let daemon = null;
 let herdrServer = null;
@@ -658,15 +681,37 @@ record(
   staleRequests.length > 0 && refusals.length >= 1,
   `${staleRequests.length} request(s) named it, ${refusals.length} refused`
 );
+// Answered rather than refused: a success naming the id this daemon never
+// issued. This is the pre-KAN-25 behaviour in its exact shape, and asserting on
+// it is what makes the check below about the phantom rather than about the
+// wording of refusals that may not exist.
+const phantomAccepts = since(
+  markA,
+  'daemon→ext',
+  (m) => m.action?.startsWith('pty_') && m.success === true && m.sessionId === staleSessionId
+);
+// Both of the next two used to pass with zero refusals, which is the one
+// outcome they exist to rule out (KAN-129). `[].every(…)` is true, and
+// `refusals[0]?.at + 500` is NaN so nothing is ever greater than it — so a
+// daemon that answered the stale id instead of refusing it scored two PASSes,
+// under sentences that say the opposite. Requiring a refusal to have happened
+// is what makes them falsifiable; the caveat text was already there and was
+// printed beside the word PASS.
 record(
   'no phantom: the refusals named the session instead of answering with one',
-  refusals.every((e) => (e.msg.error ?? '').includes(staleSessionId)),
-  refusals.length ? 'each error names the id it was given' : 'no refusals to check'
+  refusals.length > 0 &&
+    refusals.every((e) => (e.msg.error ?? '').includes(staleSessionId)) &&
+    phantomAccepts.length === 0,
+  refusals.length
+    ? `each error names the id it was given; ${phantomAccepts.length} success(es) at the stale id`
+    : `no refusals to check — ${phantomAccepts.length} request(s) at the stale id were ANSWERED`
 );
 record(
   'the panel stopped using the refused session',
-  staleRequests.filter((e) => e.at > refusals[0]?.at + 500).length === 0,
-  `${staleRequests.length} total request(s) at the refused id`
+  refusals.length > 0 && staleRequests.filter((e) => e.at > refusals[0].at + 500).length === 0,
+  refusals.length
+    ? `${staleRequests.length} total request(s) at the refused id`
+    : 'nothing was refused, so there was no refusal for the panel to act on'
 );
 record(
   'the panel re-resolved and attached to a session this daemon holds',

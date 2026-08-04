@@ -31,11 +31,26 @@
 // close on command, and starting a real language model to demonstrate that
 // would cost money to prove nothing extra.
 //
+// WHAT THIS SCRIPT SUPPLIES FOR ITSELF, AND WHO COVERS IT
+//
+// The temp $HOME has no credential, so the Atlassian integration would come up
+// disabled and `task` would not be a registered type — so this script writes
+// `integrations.json` with jira enabled before starting its daemon, exactly as
+// the settings toggle does. That means it does NOT test that a real install
+// arrives here with Atlassian on, or that the enablement default is right: the
+// record it depends on is one it wrote. The enablement rule itself — the
+// default, the configured-credential migration, the refusal wording, and the
+// persistence across a restart — is owned by
+// daemon/scripts/verify-integration-enablement.mjs. What is left uncovered by
+// both is the join: no script observes a real install's recorded state
+// reaching a real daemon's registry. KAN-129 names that gap rather than
+// closing it.
+//
 // Usage: node daemon/scripts/verify-fleet-switch-live.mjs
 // Run it after `npm run build` in daemon/, on a machine with herdr running.
 
 import { execFileSync, spawn } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import net from 'net';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -124,9 +139,33 @@ function cleanup() {
   cleanedUp = true;
   try {
     if ((herdrAgents() ?? []).includes(PROBE_AGENT)) {
-      execFileSync('herdr', ['agent', 'close', PROBE_AGENT], { stdio: 'ignore', timeout: 15000 });
+      // `herdr agent get` → `herdr pane close <pane_id>`, which is what
+      // HerdrBridge.closePaneForAgent does. There is no `herdr agent close`
+      // subcommand: this read `agent close` until KAN-129, so every exit path
+      // that actually needed it failed silently inside the catch below and
+      // left an orphan pane on a machine whose capacity is rationed. It was
+      // invisible because the happy path never reaches here — section 6 has
+      // already stood the probe down through the daemon — so the one guarantee
+      // in this function's own header was only ever exercised when the script
+      // was already failing, and nobody was watching that.
+      const out = execFileSync('herdr', ['agent', 'get', PROBE_AGENT], {
+        encoding: 'utf8',
+        timeout: 15000,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      const paneId = JSON.parse(out)?.result?.agent?.pane_id;
+      if (paneId) {
+        execFileSync('herdr', ['pane', 'close', paneId], { stdio: 'ignore', timeout: 15000 });
+      } else {
+        console.error(`could not resolve a pane for ${PROBE_AGENT}; close it by hand.`);
+      }
     }
-  } catch {}
+  } catch (e) {
+    // Loud, not silent: an orphan pane the operator does not know about is
+    // worse than a noisy exit.
+    console.error(`FAILED to close the probe pane ${PROBE_AGENT}: ${e?.message ?? e}`);
+    console.error('close it by hand — `herdr agent get` for its pane, then `herdr pane close`.');
+  }
   daemon?.kill('SIGKILL');
   rmSync(scratch, { recursive: true, force: true });
 }
@@ -137,6 +176,19 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { cleanup()
 
 const socketPath = path.join(fakeHome, '.local', 'share', 'butchr', 'butchr.sock');
 const registryPath = path.join(fakeHome, '.local', 'share', 'butchr', 'agents.jsonl');
+
+// --- a fresh install now starts with Atlassian switched off (KAN-85) ---------
+// Integrations are disabled until the user turns them on, and this fake HOME has
+// no credential to migrate as enabled — so without this the daemon below would
+// come up with no `task` type at all and every activation here would be refused
+// with "the Atlassian integration is switched off". Writing the state file is
+// exactly what the settings toggle does; doing it before the daemon starts keeps
+// this script about what it is about.
+mkdirSync(path.dirname(socketPath), { recursive: true });
+writeFileSync(
+  path.join(path.dirname(socketPath), 'integrations.json'),
+  JSON.stringify({ enabled: { jira: true } }, null, 2) + '\n'
+);
 
 console.log(`starting a real daemon from ${daemonDir}/dist with HOME=${fakeHome}`);
 console.log(`(its registry: ${registryPath} — the live install's is untouched)`);
@@ -246,7 +298,7 @@ if (firstTry.success === false && firstTry.refusedBy === 'capacity') {
     '    KAN-36 was filed about, on the second surface, saying why rather than nothing.',
     'the activation was refused and something started anyway.'
   );
-} else {
+} else if (firstTry.success === true) {
   console.log(JSON.stringify({ success: firstTry.success, sessionId: firstTry.sessionId }, null, 2));
   console.log(
     '\n  This machine had headroom, so there was nothing to refuse and the probe simply\n' +
@@ -255,7 +307,18 @@ if (firstTry.success === false && firstTry.refusedBy === 'capacity') {
     '  derives before asking. Re-run this script while the board is full to see the\n' +
     '  live refusal here.'
   );
-  verdict(firstTry.success === true, 'the machine had room and said so.', 'the activation failed for a reason other than capacity.');
+  verdict(true, 'the machine had room and said so.', '');
+} else {
+  // Neither a capacity refusal nor a start. Whatever this is, it is not the
+  // headroom story the branch above tells, and saying so here is the difference
+  // between a red run somebody can act on and a red run under a paragraph that
+  // reads as if everything went fine.
+  console.log(JSON.stringify({ success: firstTry.success, refusedBy: firstTry.refusedBy ?? null, error: firstTry.error ?? null }, null, 2));
+  verdict(
+    false,
+    '',
+    `the activation failed for a reason other than capacity: ${firstTry.error ?? '(no error given)'}`
+  );
 }
 
 // ------------------------------------------------------------------ 3. on ---
