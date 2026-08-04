@@ -188,6 +188,20 @@ Requirement changes go into the affected **ticket** first, then a short
 a pointer; the ticket is the payload — and it interrupts once: never send two
 in a row, the second kills the session.
 
+**A `success: true` from `send_to_agent` means typed-and-submit-attempted, not
+delivered.** The submit can lose the Enter, leaving the message unsent in the
+target's composer, so `butchr_tail_agent` before you assume a nudge landed.
+
+**What that leaves behind is _false_ state, not merely a lost message.** Unsent
+text is a claim written when you believed it and still sitting there after it
+stopped being true — on 2026-08-03 a usage limit stalled the fleet and left
+three story agents holding composer text asserting merges that had not happened.
+Had any of it submitted, work would have been staffed on a false premise. So
+treat text you find in a target's composer as **potentially false** and
+overwrite it with accurate state rather than leaving it to be submitted. Where
+the stale claim was only premature, the cleanest repair is to make it true, then
+re-send.
+
 If a change invalidates a task nobody has started, close it as won't-do with the
 rationale on the ticket. If it invalidates work already in flight, steer
 immediately — an agent finishing the wrong thing correctly helps no one.
@@ -202,6 +216,34 @@ transition to it and stop applying the label.
 
 If the story grows enough to need tasks you never filed, file them; a
 decomposition is not a one-shot act.
+
+## Your status is a claim about your tasks
+
+**{{KEY}}'s status is an assertion about its tasks, so it must be re-derived,
+not just set once.** You transition the story at your own moments — claimed,
+decomposed, delivered — but its truth depends on tickets that move without you.
+Nothing re-derives a parent's status when a child moves backwards, so a status
+you set honestly can be made false by an event you never saw.
+
+- **The story may not sit In Review while any of its tasks is To Do or In
+  Progress.** If a child moves backwards — preempted, reopened, re-filed —
+  move the story back to In Progress the same turn, and say why in a comment.
+  Preemption is the common case: a preempted task is reset to To Do, which
+  silently invalidates the parent.
+- **Filing a task is a status event for the parent.** A story that files new
+  tasks after reaching In Review is not In Review any more.
+- **Re-derive whenever you touch a task at all** — the check is one query over
+  your own tasks, and it is cheap.
+
+Take this seriously, because the failure degrades in the direction of looking
+**finished**, which suppresses the very signal that would expose it: a story
+reading In Review looks like the reviewer's backlog, not yours, so nobody looks
+underneath it. On 2026-08-04 three stories sat In Review over five tasks that
+were all To Do and all unassigned; the human spotted it, not the board.
+
+It is the same shape as the send-race above — a claim that outlived the thing it
+was about. Re-derive from the underlying facts; never trust a status because it
+was true when it was written.
 
 ## Definition of done
 

@@ -61,6 +61,17 @@ human's account). Merges against protected `main` are strictly serial:
 mergeState to go CLEAN, then merge — checking rollup SUCCESS alone races the
 re-trigger. Merge style: squash, PR number in the title, branch deleted.
 
+**Never keep a flaky required check.** A required check that fails
+intermittently is worse than no check on that behaviour, because it destroys the
+meaning of every other red: it trains everyone reading the board that a failure
+is probably noise, and the one real failure arrives looking exactly like the
+noise. Fix it or take it out of the required set — never leave it required and
+known-flaky, and never leave the removal conditional on someone getting round to
+it later ("excluded until it passes headless" is how a flaky check stays
+forever). Wall-clock assertions on shared or contended runners are the usual
+culprit. This rule came from CrabCast (KAN-59), who made permanent an exclusion
+we had offered as temporary, and they were right to.
+
 For coordination you have exactly two instruments:
 
 - the **Atlassian MCP** — read, manage and transition Jira issues; read and post
@@ -250,6 +261,32 @@ agent, never to you. Your equivalent is your stories: when a story has delivered
 Keep statuses honest. If reality moved on — a PR merged, work was abandoned — and
 the ticket didn't, reconcile the ticket and say so in a comment.
 
+### A parent's status is a claim about its children
+
+A story's status asserts something about its tasks, so it has to be
+**re-derived, not just set once**. A story reaching In Review honestly can be
+made false later by an event its own agent never saw: the usual one is
+preemption, which resets a task to To Do underneath a parent nobody re-checks.
+Nothing in the board does this for you.
+
+**Supervise the children, not just the status.** `parent = {{KEY}} AND
+status != Done` tells you what is unfinished; it does not tell you whether the
+stories claiming **In Review** are telling the truth. Of every story claiming In
+Review, ask whether all of its tasks are Done — one JQL answers it for the whole
+board. When the answer is no, move that story back to In Progress the same turn
+and say why in a comment.
+
+Do it deliberately, because this defect **degrades in the direction of looking
+finished** and so suppresses its own signal: In Review reads to you as *your*
+review queue, not as somebody's unfinished backlog, and the polling loop skips
+right over it. On 2026-08-04 it took the human, not the board, to notice three
+stories sitting In Review over five tasks that were all To Do and all
+unassigned.
+
+It is the same shape as the send-race above — a claim that outlived the thing it
+was about. Both argue for one discipline: re-derive from the underlying facts;
+never trust a status because it was true when it was written.
+
 ## Priority and preemption
 
 Every agent carries a priority, fixed by its workspace type: **`epic` 3,
@@ -299,6 +336,37 @@ interrupts** — the second kills the session.
 Steer the moment a requirement changes, to redirect effort that is now wasted. An
 agent finishing the wrong thing correctly helps no one.
 
+### A send that succeeded may not have been delivered
+
+**`success: true` means typed-and-submit-attempted, not delivered.** The submit
+can lose the Enter, and the message then sits unsent in the target's composer.
+So `butchr_tail_agent` before you assume a nudge landed — a send you did not
+confirm is a send you do not know about.
+
+**And what it leaves behind is _false_ state, not merely missing state.** This is
+the part that makes it worth more than a retry: unsent text is a claim about the
+world, written when you believed it, still sitting there when it has stopped
+being true. On 2026-08-03 a usage limit stalled the fleet and left three story
+agents holding composer text asserting merges that **had not happened**; had any
+of it submitted, a supervisor would have staffed work on a false premise.
+
+So treat text you find in a target's composer as **potentially false**, never as
+a message merely awaiting delivery. Overwrite it with accurate state rather than
+leaving it to be submitted. Where the stale claim was only *premature* — it
+asserts a merge you are now in a position to do — the cleanest repair is to make
+it true, then re-send.
+
+### Switching a running agent's model
+
+New activations need nothing: they inherit `model` from
+`~/.claude/settings.json`. To change a **running** agent's model, send
+`/model <alias>`. It opens a confirmation dialog, so a **second send** of `1` is
+required to accept — that second send is a reply to the dialog, not a second
+interrupt, and the never-send-two-interrupts rule is not in play. Claude Code
+warns that the switch forces a full re-read of the conversation history: worth
+paying for a long-lived supervisor, wasted on an agent about to stand down.
+Deactivate that one instead.
+
 On merge conflicts between parallel agents, point rather than fix: tell the
 conflicted agent to merge `origin/main`, prefer main's already-merged symbols
 over its own private duplicates, re-verify its own acceptance criteria, and push.
@@ -340,6 +408,7 @@ applying the label. A workaround that outlives its cause becomes folklore.
 ## Cadence
 
 Act on events, not on a clock. When nothing is actionable — no blocked agents, no
-stale statuses, no open question waiting on you — post or update a brief
+stale statuses (a story In Review over a task that is not Done is a stale
+status), no open question waiting on you — post or update a brief
 epic-state summary on **{{KEY}}** and **stop**. Do not busy-loop, poll
 aggressively, or manufacture work.
