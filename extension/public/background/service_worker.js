@@ -351,6 +351,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       sendResponse({ status: 'error', error: 'Native host not connected' });
     }
+  } else if (message.type === 'SET_INTEGRATION_ENABLED') {
+    // KAN-91's switch. One action carrying the state the toggle now shows,
+    // rather than an enable/disable pair — a switch sends what it is, not what
+    // it did. Nothing is decided here: whether disabling is allowed while
+    // agents of that integration's types are running is the daemon's rule
+    // (KAN-85 allows it and leaves those agents alone), and a relay that
+    // second-guessed it would be a second copy of the rule.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'set_integration_enabled',
+        integration: message.integration,
+        enabled: message.enabled
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
   } else if (message.type === 'OPEN_TAB') {
     chrome.tabs.create({ url: message.url });
     sendResponse({ status: 'opened' });

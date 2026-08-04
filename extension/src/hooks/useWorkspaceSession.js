@@ -21,6 +21,10 @@ const PTY_REPLIES = new Set(['pty_init_response', 'pty_input_response', 'pty_res
 export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView, termRef) {
   const [pageStatus, setPageStatus] = useState('checking');
   const [statusError, setStatusError] = useState(null);
+  // Set only when `unsupported` has a reason worth saying — today, that the
+  // page's integration is switched off. Null for an ordinarily unrecognised
+  // URL, which is a different answer and gets the words it always had.
+  const [unsupportedReason, setUnsupportedReason] = useState(null);
   const [active, setActive] = useState(false);
   // Whether this daemon holds a session for the agent. `active` says the agent
   // exists at all — it outlives the daemon, so the two come apart after a
@@ -126,6 +130,22 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
         } else {
           setPageStatus('unsupported');
           setStatusError(null);
+          // Not every unsupported page is an unrecognised one. When the URL
+          // *would* have matched but its integration is switched off, the
+          // daemon says so (`refusedBy: 'integration-disabled'`, KAN-85) and
+          // this keeps that answer so the panel can render it instead of
+          // "does not match a supported Workspace Type" — which, for a Jira
+          // URL with Atlassian off, is simply untrue. KAN-91.
+          setUnsupportedReason(
+            payload.refusedBy === 'integration-disabled'
+              ? {
+                  refusedBy: payload.refusedBy,
+                  integration: payload.integration ?? null,
+                  integrationName: payload.integrationName ?? null,
+                  reason: payload.reason ?? null
+                }
+              : null
+          );
           if (activeTabView === 'info') setActiveTabView('terminal');
         }
       } else if (payload.action === 'error_response') {
@@ -385,6 +405,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   return {
     pageStatus,
     statusError,
+    unsupportedReason,
     supported: pageStatus === 'supported',
     active,
     attached,
