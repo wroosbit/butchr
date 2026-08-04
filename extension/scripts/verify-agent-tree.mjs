@@ -2,6 +2,12 @@
 // activated whom, and that arranging it costs nothing the four honest
 // categories were carrying.
 //
+// WHAT FAILURE THIS WOULD CATCH: the Agents page losing the activated-by
+// arrangement, or paying for it by dropping rows: an agent that appears in no
+// category, a category that gains or loses members against the four honest
+// counts, or an older daemon that omits `activatedBy` breaking the page
+// instead of flattening it.
+//
 // WHY THE PAYLOAD IS SYNTHETIC
 //
 // Because this half was cleared to build against the agreed wire contract and

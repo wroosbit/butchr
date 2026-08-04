@@ -4,6 +4,12 @@
 // of answering `success: true` with an agent wedged on the folder-trust
 // dialog.
 //
+// WHAT FAILURE THIS WOULD CATCH: the pre-trust write to ~/.claude.json being
+// lost to a competing writer, so the agent boots wedged on the folder-trust
+// dialog while the activation answers `success: true`. And the worse half: a
+// clobber that cannot be repaired being reported as a successful start rather
+// than refusing.
+//
 // Everything here runs against real processes: a real daemon from dist/, a
 // private herdr server, real panes. Isolation is by $HOME and by
 // HERDR_SOCKET_PATH, exactly as in the other verify-*.mjs scripts; the live

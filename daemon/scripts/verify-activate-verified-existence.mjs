@@ -1,6 +1,12 @@
 // Live proof for KAN-23: `activate` reports success only for an agent that
 // verifiably exists.
 //
+// WHAT FAILURE THIS WOULD CATCH: `activate` answering success for an agent
+// that was never created — herdr reporting a start that started nothing — or
+// the existence check losing the distinction between "not there yet" and "not
+// there at all", which is what turns a bounded wait into either a false alarm
+// or an unbounded hang.
+//
 // The ticket's symptom was a response of `success: true` with a plausible
 // session id for an agent that was never created. KAN-24's PR #21 closed the
 // half of that where herdr *told* us the spawn failed and we discarded the

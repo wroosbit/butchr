@@ -2,6 +2,12 @@
 // real MessageRouter and a real on-disk log file. KAN-86, mirroring
 // verify-jira-log-hygiene.mjs.
 //
+// WHAT FAILURE THIS WOULD CATCH: a token surviving the round trip to disk: any
+// encoded form of the secret appearing in the daemon's real log file, in an
+// outbound message, or in the `list_integrations` response the settings page
+// renders. It equally catches the redaction ceasing to fire — redacting
+// nothing fails as loudly as leaking.
+//
 // The companion script (verify-ld-credential-diagnostics.mjs) exercises the
 // validator directly. This one goes the whole way: it drives
 // `router.handle({action: 'set_integration_credential', integration:

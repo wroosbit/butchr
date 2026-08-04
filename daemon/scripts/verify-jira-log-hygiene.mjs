@@ -1,6 +1,12 @@
 // End-to-end secret hygiene for the KAN-31 diagnostics, through the real
 // MessageRouter and a real on-disk log file.
 //
+// WHAT FAILURE THIS WOULD CATCH: a token surviving the round trip to disk: any
+// encoded form of the secret appearing in the daemon's real log file or in an
+// outbound message. It equally catches the redaction silently ceasing to fire
+// — a run that redacts nothing fails as loudly as a run that leaks, because
+// the two look identical to a grep.
+//
 // The companion script (verify-jira-credential-diagnostics.mjs) exercises the
 // transport and client directly. This one goes the whole way: it drives
 // `router.handle({action: 'set_jira_credential', …})` exactly as the native

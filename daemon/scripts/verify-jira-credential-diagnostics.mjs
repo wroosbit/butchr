@@ -2,6 +2,12 @@
 // and why — the KAN-31 fix — plus proof that no encoded form of the token
 // reaches any message, log line, or response along the way.
 //
+// WHAT FAILURE THIS WOULD CATCH: a rejected credential reported as one
+// undifferentiated failure, with the four legs — bad token, LD-side
+// permission, timeout, network — collapsed into a message that tells you
+// nothing about which to fix. And, at the same time, any encoded form of the
+// token reaching a message, a log line or a response.
+//
 // The constraint that shapes this script: no agent may hold a real credential
 // (KAN-20). So every case is produced against a local stub with a fake token.
 // That is not a weaker test than the real thing — the stub can produce a

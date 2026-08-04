@@ -3,6 +3,12 @@
 // proof that no encoded form of the token reaches any message, log line, or
 // response along the way. KAN-86, mirroring verify-jira-credential-diagnostics.
 //
+// WHAT FAILURE THIS WOULD CATCH: a rejected LaunchDarkly token reported as one
+// undifferentiated failure, with the legs — bad token, LD-side permission,
+// timeout, network — collapsed into a message that names none of them. And, at
+// the same time, any encoded form of the token reaching a message, a log line
+// or a response.
+//
 // The constraint that shapes this script: no agent may hold a real credential
 // (KAN-20). So every case is produced against a local stub with a fake token.
 // That is not a weaker test than the real thing — the stub can produce a 403,

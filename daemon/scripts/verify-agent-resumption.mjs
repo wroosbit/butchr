@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 // Verifies the parts of KAN-21 that can be checked without rebooting the host.
 //
+// WHAT FAILURE THIS WOULD CATCH: a registry that does not survive an unclean
+// death — a torn tail destroying the whole file, history being replayed where
+// intent should be honoured, or a wait budget computed from the wall clock,
+// which a clock adjustment mid-wait turns into a hang no timeout ever ends.
+//
 // The reboot proof is the one this cannot stand in for, and the ticket says so
 // explicitly: a simulated daemon restart is not evidence for a power cut. What
 // this DOES establish is every property the reboot proof depends on — that the

@@ -3,6 +3,12 @@
 // both take effect live, with nothing in registry.ts or launchers.ts edited to
 // make it happen.
 //
+// WHAT FAILURE THIS WOULD CATCH: the plug coming loose — a workspace type or
+// an MCP server that only takes effect because the daemon hardcodes the
+// integration's name. If a module the daemon has never heard of cannot be
+// resolved and assembled by the same paths Atlassian's are, the extraction did
+// not happen.
+//
 // The claim being tested is the architectural one. Before this ticket, adding
 // a workspace type meant editing `registerDefaults()` inside the registry, and
 // adding an MCP server meant editing a hardcoded if-chain in launchers.ts that

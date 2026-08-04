@@ -1,6 +1,12 @@
 // Live check of the KAN-32 fix against a real herdr, at the level the bug
 // actually lived: HerdrBridge.
 //
+// WHAT FAILURE THIS WOULD CATCH: agents piling back into one tab, so an
+// agent's terminal width depends on how many other agents exist. That is what
+// made `butchr_tail_agent` return four-column gibberish at seven agents, and
+// it degrades silently: every agent is still running, and every one of them is
+// unreadable.
+//
 // Before the fix, `herdr agent start` was called with no placement flags, so
 // every agent split whatever pane was current and the whole fleet piled into
 // one tab. Panes in a rendered tab are sized by the app's split layout, so the

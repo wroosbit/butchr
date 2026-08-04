@@ -1,6 +1,11 @@
 // The live half of KAN-38's proof: a real daemon, a real herdr, and
 // `herdr agent list` as the ground truth for whether an agent is running.
 //
+// WHAT FAILURE THIS WOULD CATCH: a switch the page reports as thrown while the
+// pane is still there. The decisions are proved against a stubbed herdr in
+// verify-agent-power-controls; a stub cannot show that a pane actually closed,
+// and this is the half that `herdr agent list` is able to contradict.
+//
 // verify-agent-power-controls.mjs proves the decisions — the confirmation, the
 // candidate list, the refusal, the ordering — against a stubbed herdr, which is
 // what makes it fast and deterministic. It cannot prove that a pane actually

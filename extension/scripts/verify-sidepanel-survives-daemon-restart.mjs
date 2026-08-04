@@ -2,6 +2,12 @@
 // the real background service worker, against a real Butchr daemon that is
 // killed and restarted underneath them.
 //
+// WHAT FAILURE THIS WOULD CATCH: the panel doing something useless with the
+// daemon's refusal after the daemon is killed and restarted underneath it —
+// rendering a dead terminal, or hanging with no indication that the session it
+// is attached to no longer exists. A refusal is only an improvement if the
+// client acts on it.
+//
 // The daemon now refuses a PTY request naming a session it does not hold. A
 // refusal is only an improvement if the panel does something sensible with it,
 // so this drives the path end to end and prints both halves of the evidence:
