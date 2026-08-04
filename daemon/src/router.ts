@@ -18,7 +18,14 @@ import {
 } from './herdr.js';
 import { readWorkState } from './work-state.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
-import { AgentRecord, AgentRegistry, PreemptionRecord } from './agent-registry.js';
+import {
+  AgentRecord,
+  AgentRegistry,
+  PreemptionRecord,
+  SupervisorOfRecord,
+  sameSupervisorOfRecord,
+  toSupervisorOfRecord
+} from './agent-registry.js';
 import { ResumeCause } from './resume.js';
 import { nudgeResumedAgent } from './nudge.js';
 import {
@@ -392,18 +399,73 @@ export class MessageRouter {
    * no-op, and the sidepanel re-activates often enough that recording each one
    * would fill the log with restatements of the same intent.
    */
-  private rememberActivated(record: AgentRecord): void {
+  private rememberActivated(incoming: AgentRecord): void {
     if (!this.agentRegistry) return;
-    const current = this.agentRegistry.intents().get(record.agentName);
+    const current = this.agentRegistry.intents().get(incoming.agentName);
+
+    // A parent already recorded is not un-recorded by a request that simply
+    // does not know one. The sidepanel calls `activate` every time a human
+    // opens the agent's Jira tab, and those calls carry no caller identity —
+    // so without this, looking at a supervised agent's ticket would quietly
+    // orphan it, and the Agents page's org chart would lose the edge between
+    // one visit and the next. Only an activation that *names* a supervisor
+    // changes who the supervisor is; nothing here invents one.
+    const record: AgentRecord = {
+      ...incoming,
+      activatedBy: incoming.activatedBy ?? current?.record.activatedBy ?? null
+    };
+
     if (
       current?.event === 'activated' &&
       current.record.workDir === record.workDir &&
       current.record.url === record.url &&
-      current.record.defaultAgent === record.defaultAgent
+      current.record.defaultAgent === record.defaultAgent &&
+      // Part of the comparison, not merely part of the record: an agent first
+      // activated parentless — by a human, from the sidepanel — and later
+      // re-activated by the supervisor that adopted it would otherwise match on
+      // the three fields above, be treated as a restatement, and never have its
+      // parent written down at all.
+      sameSupervisorOfRecord(current.record.activatedBy, record.activatedBy)
     ) {
       return;
     }
     this.agentRegistry.recordActivated(record);
+  }
+
+  /**
+   * Who activated this agent, as far as the daemon can honestly tell.
+   *
+   * Two sources, in order. An explicit `activatedBy` is restoration: boot-time
+   * reconciliation re-runs an activation somebody else originally made, and it
+   * passes the parentage it read out of the registry so a reboot does not
+   * orphan a fleet that had parents before the power went out. Otherwise the
+   * answer is the caller's own identity, which the butchr MCP attaches to every
+   * request it makes (`workspaceType`/`workspaceKey`, mcp.ts) — so a story
+   * agent staffing a task is recorded as that task's supervisor by the ordinary
+   * act of staffing it, with nothing new for it to remember to send.
+   *
+   * A request carrying neither has no supervisor of record and gets `null`: the
+   * sidepanel and the Agents page are humans, and a human activation has no
+   * parent. Nothing is invented for it.
+   *
+   * An agent that activates itself is nobody's child either. Recording that
+   * would make it its own supervisor, and the notifier would then send it
+   * bulletins about itself — the self-nudge loop the storm guards exist to
+   * prevent, seeded at the point where the fact is first written down.
+   */
+  private supervisorOfRecord(data: any, agent: { type: string; key: string }): SupervisorOfRecord | null {
+    const claimed =
+      toSupervisorOfRecord(data?.activatedBy) ??
+      toSupervisorOfRecord({ type: data?.workspaceType, key: data?.workspaceKey });
+    if (!claimed) return null;
+    if (agentNameFor(claimed.type, claimed.key) === agentNameFor(agent.type, agent.key)) {
+      console.warn(
+        `[Router] Ignoring a self-referential supervisor of record: ` +
+        `${claimed.type}/${claimed.key} cannot have activated itself.`
+      );
+      return null;
+    }
+    return claimed;
   }
 
   /**
@@ -449,6 +511,12 @@ export class MessageRouter {
         // and the registry's is the fallback for the by-key paths that have no
         // session to read one from.
         workDir: workDir ?? previous?.workDir ?? '',
+        // Carried forward for the same reason the rest of the argument list is:
+        // a stood-down agent is still somebody's, and the Agents page draws its
+        // standby and preempted rows in the same tree as the running ones. This
+        // is preservation, not invention — the parentage is whatever the last
+        // activation recorded, and a stand-down learns nothing new about it.
+        activatedBy: previous?.activatedBy ?? null,
         ...(previous?.url ? { url: previous.url } : {}),
         ...(previous?.defaultAgent ? { defaultAgent: previous.defaultAgent } : {}),
         ...(previous?.mcpServers ? { mcpServers: previous.mcpServers } : {})
@@ -1015,7 +1083,8 @@ export class MessageRouter {
       workDir: session.workDir,
       url: data.url,
       defaultAgent: data.defaultAgent,
-      mcpServers: Object.keys(mcpServers)
+      mcpServers: Object.keys(mcpServers),
+      activatedBy: this.supervisorOfRecord(data, { type: config.type, key })
     });
 
     this.broadcast({
@@ -1203,7 +1272,8 @@ export class MessageRouter {
       workDir: session.workDir,
       url,
       defaultAgent,
-      mcpServers: Object.keys(mcpServers)
+      mcpServers: Object.keys(mcpServers),
+      activatedBy: this.supervisorOfRecord(data, { type, key })
     });
 
     this.broadcast({
@@ -2515,8 +2585,46 @@ export class MessageRouter {
    * a client, and must ask the same question the list answers.
    */
   public findMissingAgents(): MissingAgent[] {
+    return this.surveyFleet().missing;
+  }
+
+  /**
+   * Both halves of what the periodic sweep needs, from one census.
+   *
+   * The sweep asks two questions — what is gone, and what is each survivor
+   * doing — and they have to be asked of the same instant. Two calls would put
+   * a `herdr agent list` between them, which is long enough for an agent to
+   * appear in one answer and not the other: an agent reported both alive and
+   * lost in the same tick would nudge its supervisor about a death that had not
+   * happened.
+   */
+  public surveyFleet(): { agents: ListedAgent[]; missing: MissingAgent[] } {
     const { agents, staleSessions } = this.surveyAgents();
-    return this.missingAgents(agents, staleSessions);
+    return { agents, missing: this.missingAgents(agents, staleSessions) };
+  }
+
+  /**
+   * The supervisor of record for an agent, read back off the durable registry.
+   *
+   * Public because the notifier is not a request handler: the sweep runs on a
+   * timer and has no client, and it must resolve parentage through the same
+   * registry the activation wrote it to rather than keeping a second copy.
+   */
+  public supervisorFor(agentName: string): SupervisorOfRecord | null {
+    return this.agentRegistry?.intents().get(agentName)?.record.activatedBy ?? null;
+  }
+
+  /**
+   * The key as the registry spells it, when it has one.
+   *
+   * An agent *name* is built from a lower-cased key, so an agent addressed from
+   * a census comes back as `kan-98` — and a notice that names `task/kan-98` is
+   * read by a supervisor sitting next to a ticket spelled KAN-98.
+   * `rememberDeactivated` prefers the registry's spelling for exactly this
+   * reason, and a message a person or an agent will read deserves it more.
+   */
+  public recordedKeyFor(agentName: string): string | undefined {
+    return this.agentRegistry?.intents().get(agentName)?.record.key;
   }
 
   private surveyAgents(): {

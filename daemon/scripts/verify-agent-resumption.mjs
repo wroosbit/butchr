@@ -59,6 +59,11 @@ const record = (key, extra = {}) => ({
   type: 'task',
   key,
   workDir: path.join(tmp, 'workspaces', 'task', key),
+  // Part of the activation argument list since KAN-77, and always present:
+  // `null` is the answer for an agent nobody's activation started, and the
+  // registry normalises a record without the key to exactly this on the way
+  // back in — which is what the round-trip check below is asserting.
+  activatedBy: null,
   ...extra
 });
 
@@ -469,11 +474,16 @@ check('the restore wait is monotonic, so sleeping through it does not consume it
     !/deadline\s*=\s*Date\.now\(\)/.test(src),
     'a wait deadline is still computed from the wall clock'
   );
+  // Three since KAN-77 added a third wait to nudge.js: after a nudge is typed,
+  // the sender watches the pane until the message appears as submitted output.
+  // That budget bounds waiting exactly as the other two do, so a suspend must
+  // not consume it either.
   const monotonicDeadlines = src.match(/deadline\s*=\s*monotonicNow\(\)/g) ?? [];
   assert.strictEqual(
     monotonicDeadlines.length,
-    2,
-    `expected both wait budgets (herdr-ready, agent-ready) to be monotonic, found ${monotonicDeadlines.length}`
+    3,
+    `expected every wait budget (herdr-ready, agent-ready, delivery-confirm) to be ` +
+    `monotonic, found ${monotonicDeadlines.length}`
   );
   assert.ok(/performance\.now\(\)/.test(src), 'the waits do not use a monotonic clock');
 });

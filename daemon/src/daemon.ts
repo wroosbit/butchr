@@ -21,6 +21,7 @@ import { getStalenessReport, formatStalenessReport } from './staleness.js';
 import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
 import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
 import { reconcileAgents } from './reconcile.js';
+import { SupervisionNotifier } from './nudge.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
 import { AgentCost, MEASURED_AGENT_COST, setMeasuredAgentCost } from './capacity.js';
@@ -310,14 +311,50 @@ const MISSING_SWEEP_INTERVAL_MS = 30_000;
  */
 const announcedMissing = new Set<string>();
 
+/**
+ * The other half of the same tick: who to *tell*.
+ *
+ * The broadcast above reaches whatever clients are connected, which is the
+ * right answer for a board somebody is looking at and no answer at all for the
+ * story agent whose task agent just died — nobody types into an agent's
+ * terminal on the strength of a WebSocket frame. This is the party that has to
+ * hear it, resolved through the supervisor of record the activation recorded.
+ * See nudge.ts for which transitions qualify and for the storm guards.
+ */
+const supervision = new SupervisionNotifier({
+  herdrBridge,
+  supervisorFor: (agentName) => daemonRouter.supervisorFor(agentName),
+  recordedKeyFor: (agentName) => daemonRouter.recordedKeyFor(agentName),
+  log
+});
+
 function sweepForMissingAgents() {
-  let missing;
+  let fleet;
   try {
-    missing = daemonRouter.findMissingAgents();
+    fleet = daemonRouter.surveyFleet();
   } catch (e: any) {
     log('Missing-agent sweep failed:', e?.message ?? String(e));
     return;
   }
+  const missing = fleet.missing;
+
+  // Fire-and-forget, and deliberately after nothing: a nudge waits on a pane
+  // tail to confirm delivery, and blocking the sweep on that would delay the
+  // loss broadcast — the report path this ticket is not allowed to re-pace —
+  // behind a message to somebody who may not even be running.
+  void supervision.onSweep({
+    agents: fleet.agents.map((agent) => ({
+      agentName: agent.agentName,
+      type: agent.type,
+      key: agent.key,
+      herdrStatus: agent.herdrStatus
+    })),
+    missing: missing.map((agent) => ({
+      agentName: agent.agentName,
+      type: agent.type,
+      key: agent.key
+    }))
+  });
 
   const names = new Set(missing.map((agent) => agent.agentName));
   for (const name of announcedMissing) {

@@ -534,6 +534,78 @@ router and against a real herdr respectively.
 
 ---
 
+## 📣 When an agent changes state without saying so
+
+> **Pre-cutover, deliberately.** Supervisor-of-record parentage and a delivery
+> primitive that confirms rather than dispatches are two of the requirements
+> CrabCast accepted from us, so the implementation here is throwaway and the
+> interface is permanent (decision 4). Deleting this at cutover is the plan
+> working. What must survive the swap unchanged is the field name and shape —
+> `activatedBy: { type, key } | null` — because it is what the Agents page's org
+> chart and CrabCast's extension-point API are both written against.
+
+An agent announces its own progress in its ticket. What it cannot announce is
+the thing that stopped it: an agent that died, or went `blocked`, says nothing,
+because it is not running or not proceeding. The 30-second missing-agent sweep
+already *detected* that and broadcast `agent_lost_event` to whatever clients
+were connected — which is the right answer for a board somebody is watching and
+no answer at all for the story agent whose task agent just died. It found out
+whenever its polling loop next looked.
+
+**The supervisor of record.** Supervision used to be type-level only —
+`isSupervisorType` answers whether a *kind* of agent supervises, and nothing
+recorded which story staffed which task. `AgentRecord` now carries
+`activatedBy: { type, key } | null`, written at activation from the identity the
+butchr MCP already attaches to every request (`workspaceType`/`workspaceKey`,
+`daemon/src/mcp.ts`). Nothing is invented: a human toggling an agent on from the
+sidepanel records an explicit `null`, and an agent that activates itself is
+nobody's child. The null is explicit rather than omitted because over JSON an
+absent field reads as "the daemon didn't answer that" while `null` reads as
+"there is nothing to report" — and because `intents()` strips and re-spreads
+records, so the two behave differently through a round-trip. Boot-time
+reconciliation passes the recorded parentage back through the activation it
+replays, so a reboot does not orphan a fleet that had parents.
+
+**What is worth a nudge, and what is not.** herdr's `agent_status` is not this
+daemon's judgement — `toAgentStatus` whitelists whatever `herdr agent list`
+reports — and it tracks the agent's own hook-reported turn boundaries. So `done`
+fires at the end of every *turn*, not at the end of the work, and on 2026-08-03
+it was observed reporting `done` for `task/KAN-72` while a tail of the same
+agent showed a live diff scrolling. Nudging on `working` → `done` would deliver
+a false "your agent finished" several times an hour per agent, so it is not
+wired, and corroborating it across two sweeps would not help: an agent between
+turns is still `done` a minute later. What is wired is what is unambiguous —
+**newly missing** per `findMissingAgents`, and **`working` → `blocked`**, which
+`prompts/epic.md` already tells supervisors to investigate immediately.
+
+**Delivery is confirmed, not dispatched.** `sendToAgent` answering `success:
+true` means the keystrokes were typed, which is not the same claim as the
+message landing: on 2026-08-03 a nudge returned success and two consecutive
+tails showed the text sitting unsubmitted at the recipient's `❯` composer with
+the tool call above it reading `Interrupted`. `deliverToAgent`
+(`daemon/src/nudge.ts`, exported so the Jira poller consumes it rather than
+reimplementing it) sends, then reads the pane back and requires the message to
+appear as **submitted output** — text after the final composer caret has not
+been sent, and a plain substring check passes on exactly the frame that proves
+the failure. It retries once and no more, because every send begins with a
+Ctrl+C at somebody's working agent.
+
+**Storm guards.** One event, one nudge, remembered until the condition clears,
+so a standing block is not news twice a minute and an unblock-then-block is two
+events rather than one. Nobody is told about themselves. A supervisor that is
+not running is logged and left alone — its ticket comments and its own polling
+are its durable inbox, and starting it to receive a notice would be the daemon
+staffing agents on its own initiative. The text informs and instructs nothing,
+because every sentence telling an agent to act is a sentence that can produce
+another nudge.
+
+`node daemon/scripts/verify-status-change-nudges.mjs` proves all of it against
+the real router and the real registry; `--live` adds a section that starts two
+real agents, closes the child's pane, and reads the notice back out of the
+supervisor's real terminal.
+
+---
+
 ## ✅ What `success` means on the agent-lifecycle responses
 
 > **Pre-cutover.** Verified activation is CrabCast's after cutover (decision 1),

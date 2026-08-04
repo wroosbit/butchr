@@ -135,6 +135,12 @@ export async function reconcileAgents(opts: {
           key,
           url: record.url,
           defaultAgent: record.defaultAgent,
+          // Restoration is not a new activation, so it must not orphan an agent
+          // that had a parent before the power went out. The supervisor of
+          // record travels with the rest of the argument list: this call is the
+          // daemon standing in for whoever originally made it, and the registry
+          // is the only party that still remembers who that was.
+          activatedBy: record.activatedBy ?? null,
           resume: cause,
           // These agents were being carried when the power went out, so the
           // machine has already demonstrated it can hold them. Refusing them at

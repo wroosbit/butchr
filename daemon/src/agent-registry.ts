@@ -56,6 +56,42 @@ const COMPACT_AFTER_RECORDS = 500;
 export type AgentEvent = 'activated' | 'deactivated';
 
 /**
+ * The agent whose activation call started another agent — its parent.
+ *
+ * Addressed the way everything else in this daemon addresses an agent, by
+ * `(type, key)` rather than by agent name, so a reader can hand it straight to
+ * `getSessionByAddress`, `tailAgent` or `sendToAgent` without parsing a name
+ * back apart.
+ */
+export interface SupervisorOfRecord {
+  type: string;
+  key: string;
+}
+
+/**
+ * A supervisor of record read off untrusted input, or `null` when there isn't
+ * one. Both halves must be present and non-empty: half an address is not an
+ * address, and a `{ type: 'story', key: '' }` recorded as parentage would
+ * point every consumer at an agent that cannot exist.
+ */
+export function toSupervisorOfRecord(value: unknown): SupervisorOfRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { type?: unknown; key?: unknown };
+  const type = typeof candidate.type === 'string' ? candidate.type.trim() : '';
+  const key = typeof candidate.key === 'string' ? candidate.key.trim() : '';
+  return type && key ? { type, key } : null;
+}
+
+/** Whether two supervisors of record name the same agent. */
+export function sameSupervisorOfRecord(
+  a: SupervisorOfRecord | null | undefined,
+  b: SupervisorOfRecord | null | undefined
+): boolean {
+  if (!a || !b) return !a && !b;
+  return a.type === b.type && a.key === b.key;
+}
+
+/**
  * Everything needed to bring an agent back without asking anyone. This is the
  * argument list of an activation, frozen: type, key, where it works, which
  * binary it runs, and which MCP servers it was given.
@@ -70,6 +106,36 @@ export interface AgentRecord {
   /** Which launcher started it — `claude`, `shell`, … . */
   defaultAgent?: string;
   mcpServers?: string[];
+  /**
+   * Which agent's activation call started this one, or `null` when nobody's
+   * did — a human toggling an agent on from the sidepanel has no supervisor of
+   * record, and none is invented for them.
+   *
+   * WHY THE DAEMON HOLDS THIS AT ALL
+   *
+   * Supervision here was type-level only: `isSupervisorType` answers whether a
+   * *kind* of agent supervises, and nothing anywhere recorded which story
+   * staffed which task. That is enough to draw a legend and not enough to
+   * deliver a message: when a task agent dies, the one party who needs to hear
+   * about it is whoever staffed it, and the daemon could not name them. This
+   * field is that name, and it is written at the only moment it is knowable —
+   * the activation, whose caller identifies itself on every request it makes
+   * (see `workspaceType`/`workspaceKey` in mcp.ts).
+   *
+   * WHY EXPLICIT `null` RATHER THAN AN ABSENT KEY
+   *
+   * Over JSON an absent field reads as "the daemon didn't answer that", while
+   * `null` reads as "there is nothing to report" — the same distinction
+   * `HerdrAgentDescription` documents for its own nullable fields, and these
+   * are answered, with nothing. It is load-bearing rather than stylistic
+   * because `intents()` strips and re-spreads records: an omitted field and a
+   * null one behave differently through that round-trip, and the consumers
+   * (the Agents page's org chart, and the notifier in nudge.ts) are reading the
+   * far side of it. Records written by an older daemon have no key at all;
+   * {@link AgentRegistry.readLog} normalises those to `null` on the way in, so
+   * no reader downstream has to know that two shapes ever existed.
+   */
+  activatedBy: SupervisorOfRecord | null;
 }
 
 /**
@@ -160,6 +226,10 @@ export class AgentRegistry {
   public record(event: AgentEvent, record: AgentRecord, preemption?: PreemptionRecord): void {
     const entry: AgentLogEntry = {
       ...record,
+      // Normalised rather than trusted, so the promise the field makes —
+      // always present, `null` when there is nothing to report — holds for
+      // every line in the file regardless of what a caller passed.
+      activatedBy: toSupervisorOfRecord(record.activatedBy),
       event,
       at: new Date().toISOString(),
       ...(preemption ? { preemption } : {})
@@ -236,7 +306,13 @@ export class AgentRegistry {
         continue;
       }
 
-      if (isUsableEntry(parsed)) entries.push(parsed);
+      // Every record leaves this function with an `activatedBy` — `null` when
+      // it has none, and `null` when it comes from a daemon that predates the
+      // field. Normalising here rather than at each reader is what lets the
+      // consumers treat "no parent" as one answer instead of two.
+      if (isUsableEntry(parsed)) {
+        entries.push({ ...parsed, activatedBy: toSupervisorOfRecord(parsed.activatedBy) });
+      }
     }
 
     return entries;
