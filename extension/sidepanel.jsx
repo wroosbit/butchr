@@ -20,7 +20,7 @@ function SidePanel() {
   const daemonConnected = useDaemonConnection(currentTab);
   
   const {
-    pageStatus, statusError, supported, active, attached, detachReason, activateError,
+    pageStatus, statusError, unsupportedReason, supported, active, attached, detachReason, activateError,
     sessionData, handleToggle, handleReset, handleReconnect, handleOverrideActivate,
     handlePreemptActivate, dismissActivateError, retryStatus
   } = useWorkspaceSession(
@@ -82,9 +82,28 @@ function SidePanel() {
         </div>
       ) : !supported ? (
         <div id="view-terminal" className="view-panel">
-          <div className="warning-box">
-            Current page does not match a supported Workspace Type. Navigate to a valid workspace to open a terminal.
-          </div>
+          {unsupportedReason?.refusedBy === 'integration-disabled' ? (
+            // The daemon's sentence, rendered as it wrote it. This page *is* a
+            // workspace type's page — the integration that owns it is just
+            // switched off — and the generic line below would tell the reader
+            // to go find a valid workspace, which is advice that cannot work.
+            // KAN-85 composes the reason so that one place decides the wording;
+            // paraphrasing it here would be the second copy that goes stale.
+            <div className="warning-box">
+              <div className="status-title">⚠️ {unsupportedReason.integrationName || 'This integration'} is switched off</div>
+              <div className="status-detail">{unsupportedReason.reason}</div>
+              <button
+                className="btn btn-secondary btn-sm mt-10"
+                onClick={() => chrome.runtime.sendMessage({ type: 'OPEN_TAB', url: chrome.runtime.getURL('options.html') })}
+              >
+                Open Butchr settings
+              </button>
+            </div>
+          ) : (
+            <div className="warning-box">
+              Current page does not match a supported Workspace Type. Navigate to a valid workspace to open a terminal.
+            </div>
+          )}
         </div>
       ) : (
         <>
