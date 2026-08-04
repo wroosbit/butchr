@@ -290,7 +290,7 @@ const blocks = [
   ),
   sectionBlock(
     'the summary rows on their own',
-    "Jira's three types with the distinction that matters: <code>task</code> is recognised from the page URL, while <code>epic</code> and <code>story</code> cannot be — their URLs are byte-identical to a Task's — so they are resolved by asking Jira what the issue really is. That difference is what the credential buys, and it is read from the response rather than written down here.",
+    "Atlassian's types with the distinction that matters: <code>task</code> is recognised from the page URL, while <code>epic</code> and <code>story</code> cannot be — their URLs are byte-identical to a Task's — so they are resolved by asking Jira what the issue really is. <code>confluence</code> is URL-matched like <code>task</code>: a page URL carries the page id, so nothing has to be asked. That difference is what the credential buys, and it is read from the response rather than written down here.",
     R.summaries(rows, {})
   ),
   sectionBlock(

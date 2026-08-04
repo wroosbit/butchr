@@ -266,11 +266,15 @@ export interface AgentAddress {
  * enumerating herdr's agents and working out which workspace each one is.
  *
  * `butchr-<type>-<key>` is split at the *first* dash after the prefix, because
- * workspace types are single tokens (`task`, `epic`, `story`, `default`)
- * while keys routinely contain dashes (`kan-28`). That is a convention, not a
- * guarantee, so the parse is only trusted when it rebuilds the name it came
- * from — a name this daemon could never have produced yields null rather than
- * a guessed address that later calls would fail to resolve.
+ * workspace types are single tokens (`task`, `epic`, `story`, `confluence`,
+ * `default`) while keys routinely contain dashes (`kan-28`). That is a
+ * convention, not a guarantee, so the parse is only trusted when it rebuilds
+ * the name it came from — a name this daemon could never have produced yields
+ * null rather than a guessed address that later calls would fail to resolve.
+ *
+ * A key need not contain a dash, or letters: Confluence keys are bare page ids
+ * (`butchr-confluence-196787` → `{ type: 'confluence', key: '196787' }`). The
+ * split is on the first dash, so a dashless key round-trips like any other.
  */
 export function addressFromAgentName(agentName: string): AgentAddress | null {
   const prefix = 'butchr-';
