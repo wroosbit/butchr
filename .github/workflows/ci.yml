@@ -32,6 +32,38 @@ jobs:
         run: npx tsc --noEmit
         working-directory: daemon
 
+  # KAN-133: the sweep enforcing that every `verify-` script can report failure
+  # and states what failure it would catch. It ran only when a reviewer
+  # remembered to run it, so two consecutive PRs (#65, #67) were bounced for the
+  # identical reason, neither author able to find out before review.
+  #
+  # WHY THIS IS SAFE TO REQUIRE — it is pure static analysis. It reads the files
+  # under daemon/scripts and extension/scripts off the checkout and exits on a
+  # count. No build, no `npm install`, no daemon, no herdr, no PTY, no network,
+  # no wall clock, no shared-runner contention. There is nothing in it that can
+  # be flaky, which is exactly why it earns required status where the `verify-`
+  # scripts themselves — which need a built daemon, a real herdr and PTYs — do
+  # not (KAN-89 lesson B: never keep a flaky required check).
+  #
+  # Do not "soften" this job by adding `continue-on-error`, a path filter, or an
+  # `|| true`. Any of those turns the gate back into the reviewer's memory,
+  # which is the failure this job exists to remove. If it goes red, the fix is
+  # in the `verify-` script it names, not here.
+  verify-script-sweep:
+    name: verify-script-sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # No dependency install: the sweep imports only node builtins (fs, path,
+      # url). Keeping it dependency-free is what keeps it un-flaky.
+      - name: Sweep verify-* scripts for verdict-driven exits
+        run: node daemon/scripts/sweep-verify-exit-paths.mjs --verbose
+
   extension-build:
     name: extension-build
     runs-on: ubuntu-latest
