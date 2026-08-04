@@ -2,7 +2,11 @@
 
 > **Status:** Active Specification  
 > **Date:** July 29, 2026  
-> **Overview:** Butchr is a Chrome Extension that connects to a local service managing **herdr** (an agent terminal runtime). It maintains specialized AI agents in Herdr bound to specific web pages where Butchr is activated, starting with Jira tasks.
+> **Overview:** Butchr is a Chrome Extension that connects to a local service managing **herdr** (an agent terminal runtime). It maintains specialized AI agents in Herdr bound to specific web pages where Butchr is activated, starting with Jira tasks.  
+> **Layer boundary:** the orchestration half of that local service is moving to
+> **CrabCast**. Read *The layer boundary — Butchr and CrabCast* first; the rest
+> of this document describes the system as it ships **today**, before that
+> cutover, and passages the boundary contradicts are marked as such.
 
 ---
 
@@ -14,6 +18,183 @@
 - **Core Concept:** 
   - Butchr is **not** a generic page scraper or arbitrary content reader. Instead, it operates on a structured **Workspace Type** architecture.
   - When Butchr is activated on a supported page, it identifies the page's Workspace Type, extracts the entity key (e.g. Jira Work Item ID), provisions specialized MCP tools, loads an initial prompt from a Markdown file, and spawns/pairs a dedicated agent in **Herdr**.
+
+---
+
+## 🧱 The layer boundary — Butchr and CrabCast
+
+> **Decided by the human on 2026-08-03**, live with the epic agent, and recorded
+> here from [KAN-104](https://wroosbit.atlassian.net/browse/KAN-104) comments
+> **10363** (decisions 1–3) and **10371** (decisions 4–6). Those comments stay
+> authoritative if this summary and they ever disagree.
+> **None of it is built yet:** the sections below this one describe the daemon as
+> it ships today, driving herdr directly. The cutover is a later story.
+
+**CrabCast** (`wroosbit/crabcast`) is the sibling orchestration runtime Butchr is
+adopting. It spawns and attaches agents, gates them on capacity, orders them by
+priority, preempts with consent, keeps a durable registry across restarts and
+assembles each agent's MCP config — all of which Butchr owns today, so the two
+repositories own it twice over. The justification for adopting was to **stop
+owning that code**, and the question this boundary answers is which layer keeps
+which job.
+
+Each decision is recorded with the alternatives that were rejected and why. A
+boundary that records only what was chosen cannot be argued with later, and being
+able to argue with it later is the whole point of writing it down.
+
+The per-module keep/move/split assessment that these decisions were taken
+against is KAN-105's, and lives on KAN-104; it is not restated here.
+
+### Decision 1 — Butchr keeps its own daemon
+
+Two long-lived processes. **Butchr's daemon** owns URL→type resolution,
+integrations and credentials, the Jira poller and assignee routing, and
+staleness. It **calls CrabCast's socket** for spawn, attach, verified
+activation, capacity, priority, preemption, the durable registry and MCP
+assembly.
+
+* _Rejected — Butchr as a CrabCast plugin._ It would need a far richer
+  in-process contract than a plugin API wants to carry — modules with their own
+  state, outbound HTTP, timers — and it couples every Butchr release to their
+  plugin API.
+* _Rejected — the extension plus a thin client, with no Butchr server at all._
+  It collides with two things this repo already holds: the credential invariant
+  that a token never lives in the browser, and the assignee-routing poller,
+  which has to run when Chrome is closed — something an MV3 service worker
+  cannot promise.
+
+### Decision 2 — CrabCast never learns Butchr's workspace types
+
+Butchr resolves **URL → path itself** and hands CrabCast a **fully-specified
+spawn request**: path, priority number, gate flags, prompt file, MCP servers.
+CrabCast never sees `epic`, never calls Jira, and needs no refine hook, no
+fallback type and no credential adapter for us.
+
+This **retracts the advice Butchr gave CrabCast** on KAN-59, that behavioural
+extension points were their number-one adoption blocker. That is true only under
+the rejected option where CrabCast owns resolution; under this boundary their
+original config-shaped model plus an attribute-carrying spawn call is
+sufficient. The retraction was sent immediately rather than at the end of the
+exercise, because their KAN-103 was mid-design and would otherwise have built
+the wrong thing.
+
+* _Rejected — types as data-only registration._ It keeps CrabCast's own surfaces
+  meaningful, but it puts the type list in two places, where it can drift.
+
+**Accepted cost:** CrabCast's CLI and fleet output show **paths** rather than
+typed names for Butchr-spawned agents, since Butchr holds the vocabulary and
+re-labels everything CrabCast reports. Flagged to them as the consequence: row
+identity must be stable and path-keyed, and they may want an optional opaque
+label on spawn purely for their own reporting.
+
+### Decision 3 — agents get Butchr's MCP only; Butchr proxies CrabCast
+
+Agents keep speaking `butchr_activate_agent {type, key}` and the rest of the
+existing surface. **Every existing prompt stays valid**, and agents never see a
+path. Butchr's daemon proxies fleet operations to CrabCast and re-labels paths
+back into type/key on the way out.
+
+* _Rejected — both MCP servers, split by concern._ No proxy to maintain and
+  CrabCast's new features arrive free, but it puts two vocabularies in one
+  prompt and forces agents to know when a path applies and when a type/key does
+  — exactly the kind of seam agents get wrong.
+* _Rejected — CrabCast's MCP only._ The thinnest Butchr, but it rewrites every
+  prompt around paths and costs the supervision model the vocabulary it is
+  written in.
+
+**Accepted cost:** we own and version a proxy over CrabCast's API indefinitely,
+and each new CrabCast capability is invisible to agents until we wrap it.
+
+### Decision 4 — CrabCast is a hard dependency; Butchr's orchestration is deleted at cutover
+
+The cutover PR adds the CrabCast client and removes Butchr's herdr bridge,
+launchers, capacity and cost measurement, priority, durable registry, reconcile
+and socket transport. **Butchr will not start without CrabCast.**
+
+The reasoning, in the frame of the adoption decision itself: the justification
+for adopting was to stop owning this code, and a fallback never collects it.
+
+* _Rejected — a permanent fallback._ The most resilient option, but we would own
+  both paths, both sets of proofs and the switch, forever — the reason for
+  adopting never banked.
+* _Rejected — staged, with a named deletion condition._ Safe rollback and a
+  scheduled deletion; declined in favour of banking the win immediately.
+
+**Accepted cost, stated plainly: there is no rollback.** A bad CrabCast release
+or an unfixed bug is a Butchr outage, and we debug someone else's daemon.
+
+### Decision 5 — one gate condition: Butchr's own verify suite green against CrabCast
+
+Butchr's own proofs — activation honesty, capacity refusals, preemption consent,
+restart survival, the five generations of `success: true` — re-run with CrabCast
+as the orchestrator and pass. Behaviour parity **demonstrated by our scripts**,
+not asserted by their claims.
+
+Three heavier gates were considered and explicitly **not** required:
+
+* _Rejected — a published, pinnable CrabCast artifact._
+* _Rejected — a documented contract carrying a compatibility promise._
+* _Rejected — a full-fleet rehearsal before cutover._
+
+The reason all three were declined is the same: they are packaging discipline
+for third parties, and Butchr is CrabCast's only consumer with one owner across
+both repositories. The condition chosen is the one that proves behaviour rather
+than process. Its
+consequence is that all compatibility risk lands on that suite — which is what
+the first carried mitigation below answers.
+
+### Decision 6 — linked local checkout (`file:../crabcast`)
+
+Edit CrabCast, restart Butchr's daemon, the change is live. No release ceremony
+while both repositories move fast.
+
+* _Rejected — a pinned submodule._ Every build would name its CrabCast and
+  updates would be reviewed; declined as too slow a loop.
+* _Rejected — a private registry._ It reintroduces exactly the ceremony
+  decision 5 declined.
+
+### What the six settle by implication
+
+No separate decision was needed for any of these — each follows from the six.
+
+* **Prompts stay Butchr's.** Decision 2 passes `promptFile` in the spawn request,
+  so CrabCast reads a file we name and has no prompt model of its own.
+* **Butchr keeps per-agent state keyed by path**, because re-labelling anything
+  CrabCast reports requires a path → ticket map.
+* **The Agents page stays Butchr's.** It renders type/key, the org chart and the
+  integrations, none of which CrabCast will know about.
+* **The verify suite is kept and re-pointed**, not deleted, since decision 5
+  makes it the gate.
+
+### Carried mitigations — standing unless the human objects
+
+Both of these come from the epic rather than from the human, and both
+**stand unless the human objects** — they are not the human's decisions and are
+not numbered among the six.
+
+* **The verify suite must run in CI against CrabCast on every PR, not once at
+  cutover.** Decision 5 makes that suite the only compatibility signal, and
+  decision 4 makes undetected breakage a full outage rather than a degraded
+  mode. Worth pairing with the fact KAN-105 established: CI today runs only
+  `daemon-typecheck` and `extension-build`, and gates no verify script at all.
+* **The staleness checker must learn to report CrabCast's checkout** — its
+  commit, whether it is dirty or clean, and whether its built output is newer
+  than its sources. Decisions 4, 5 and 6 compose into a fleet that an
+  uncommitted edit in a sibling directory can break, with no version identifying
+  what is running and no fallback to retreat to. Extending the checker restores
+  the "which CrabCast am I running" answer that decision 6 gives up, with no
+  publish step and no version discipline, and it fails in the direction this
+  repo already trusts: it reports, and never acts (see *Is this the code that
+  was merged?* below).
+
+### Still open
+
+**Who owns "what would this agent lose if stopped now"** —
+[`daemon/src/work-state.ts`](../daemon/src/work-state.ts), KAN-105's Q4. The
+module is git-only and names no tracker, no URL and no issue key, which argues
+it belongs to whoever owns stopping agents; its only consumer is the Chrome
+Agents page, which is unambiguously Butchr's. CrabCast has no pre-stop check of
+any kind today. The six decisions do not settle it, and it is not settled here.
 
 ---
 
@@ -193,6 +374,12 @@ token string.
 
 ## 🧮 How many agents this machine will carry
 
+> **Pre-cutover.** This describes capacity and cost measurement as Butchr owns
+> them today. Decision 1 hands capacity to CrabCast's socket and decision 4
+> deletes Butchr's capacity and cost-measurement code at cutover; the behaviour
+> described here is what the verify suite then has to reproduce against
+> CrabCast (decision 5).
+
 The cap exists because seven agents on a 4-core laptop made the desktop
 unusable and nothing in Butchr knew. It is derived from the hardware rather
 than declared, so the answer travels: see
@@ -261,6 +448,12 @@ it starts nothing and costs nothing.
 
 ## 🥇 Who gets the machine when it is full
 
+> **Pre-cutover.** Priority, preemption and the durable registry described here
+> are Butchr's today; decision 1 moves them to CrabCast and decision 4 deletes
+> Butchr's copies at cutover. The priority *number* stays Butchr's to choose —
+> decision 2 puts it in the spawn request — while the ordering and the
+> preemption mechanics become CrabCast's.
+
 At capacity the cap used to refuse everything identically, which left whoever
 was asking to work out for themselves what to stand down. Agents now carry a
 priority, fixed by workspace type: **`epic` 3, `story` 2, `task` 1.** It is a
@@ -302,6 +495,13 @@ real router, registry and on-disk log.
 
 ## 🔌 Switching agents on and off from the Agents page
 
+> **Pre-cutover in part.** The page itself stays Butchr's — decision 3 keeps
+> type/key as the vocabulary it renders. What moves is underneath it: the
+> durable registry these candidate lists are drawn from becomes CrabCast's
+> (decision 1) and Butchr's copy is deleted (decision 4), so after cutover the
+> daemon reads the fleet over CrabCast's socket and re-labels paths back into
+> type/key before the page ever sees them.
+
 The Agents page shows the whole fleet and, until KAN-38, could act on none of
 it. Every running agent now carries an **Off** switch, and every agent that is
 *not* running can be switched back on from the same page.
@@ -335,6 +535,12 @@ router and against a real herdr respectively.
 ---
 
 ## ✅ What `success` means on the agent-lifecycle responses
+
+> **Pre-cutover.** Verified activation is CrabCast's after cutover (decision 1),
+> and the herdr bridge this verification polls is deleted from Butchr
+> (decision 4). The guarantee itself is not up for renegotiation: it is one of
+> the five generations of `success: true` that decision 5 makes the gate, so the
+> verify script named below is re-pointed at CrabCast rather than retired.
 
 `success: true` is a claim about the world, not a report that a command was
 issued, and every response on this surface is held to that.
@@ -401,6 +607,10 @@ stale so an agent must decide to ignore it. A fresh install shows nothing.
 Full reasoning — surface choice, why it warns rather than blocks, and how it
 avoids firing at agent worktrees and unrelated branches — is in
 [docs/staleness.md](staleness.md).
+
+Staleness stays Butchr's under decision 1, and the carried mitigation above asks
+it to grow a fifth check: CrabCast's own checkout, since decision 6 links it
+locally and nothing else can then say which CrabCast is running.
 
 ---
 
@@ -493,6 +703,14 @@ The canonical prompt lives in [`prompts/epic.md`](../prompts/epic.md) — see th
 
 ## 🏗️ High-Level System Architecture
 
+> **Pre-cutover.** The three layers below are today's: Butchr's daemon spawns
+> and bridges herdr itself. Under decisions 1–3 a fourth box sits between the
+> daemon and the terminal layer — **CrabCast's daemon**, reached over its socket
+> with a fully-specified spawn request (path, priority, gate flags, prompt file,
+> MCP servers) — and *Herdr Session Spawner & Bridge* is deleted from Butchr's
+> daemon rather than redrawn (decision 4). What does not change: the extension
+> still speaks type and key, and so do agents.
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                             BROWSER LAYER                              │
@@ -559,6 +777,12 @@ The canonical prompt lives in [`prompts/epic.md`](../prompts/epic.md) — see th
 
 ## 🛠️ Proposed Tech Stack
 
+> **Pre-cutover.** The daemon below still owns MCP orchestration and drives
+> herdr directly. Decision 1 hands MCP assembly and the terminal layer to
+> CrabCast, decision 4 deletes Butchr's launchers and socket transport at
+> cutover, and decision 6 adds CrabCast as a linked local checkout
+> (`file:../crabcast`) rather than a published dependency.
+
 ### Chrome Extension (Butchr)
 - **Framework:** Manifest V3 JavaScript/TypeScript
 - **UI:** Extension Popup / Sidepanel showing active Workspace Type (`task`), Key (`PROJ-1234`), and agent connection status.
@@ -576,6 +800,11 @@ The canonical prompt lives in [`prompts/epic.md`](../prompts/epic.md) — see th
 ---
 
 ## 🔄 Sequence Workflow: Activating Butchr on Jira
+
+> **Pre-cutover.** Steps 1–4 are unchanged by the boundary. Step 5 is the one
+> that moves: after cutover Butchr resolves the workspace **path** itself and
+> calls CrabCast's socket with the fully-specified spawn request, instead of
+> running `herdr spawn` (decisions 1, 2 and 4).
 
 1. **User Action:** User navigates to Jira issue `https://company.atlassian.net/browse/PROJ-1234` and clicks **Activate Butchr**.
 2. **Match & Extract:** Butchr Extension identifies domain as Jira, resolves Workspace Type to `task`, and extracts Key `PROJ-1234`.
