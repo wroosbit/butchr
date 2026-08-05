@@ -1116,32 +1116,90 @@ for (const r of results) {
       `${cell('in-flight').padEnd(16)} ${cell('idle')}`);
 }
 say('');
-say('  A, B, C ran in HEADLESS PRINT MODE (`claude -p`); D ran INTERACTIVE under a');
-say('  herdr pane, which is the only mode the fleet actually runs.');
-say('');
 
-const control = results.find((r) => r.isControl);
-const real = results.filter((r) => !r.skipped && !r.isControl);
+// ---------------------------------------------------------------------------
+// EVERY SENTENCE BELOW IS DERIVED FROM WHAT ACTUALLY RAN IN THIS INVOCATION.
+// ---------------------------------------------------------------------------
+// This summary used to print a fixed legend ("A, B, C ran in headless print
+// mode…") and an unqualified answer naming both run modes and crediting the
+// control — regardless of which configurations `--only` had actually selected.
+// A `--only=D` run therefore asserted three things about configurations that
+// did not run, including that "the control proves the detector works" when no
+// control had been executed: a probe vouching for its own validity out of
+// evidence it never collected.
+//
+// The guard existed in one direction only (interactiveRan withheld the answer
+// when D was absent) and had no mirror. It does now. This matters beyond
+// tidiness: this script's summary gets pasted into tickets, and a summary that
+// describes unexercised configurations is precisely how an over-claim travels
+// onto a board — the failure this whole PR is about.
+const ran = results.filter((r) => !r.skipped);
+const control = results.find((r) => r.isControl && !r.skipped);
+const controlRan = Boolean(control);
+const headlessRan = ran.some((r) => !r.interactive);
+const interactiveRan = ran.some((r) => r.interactive);
+const letter = (r) => r.label.trim()[0];
+
+const real = ran.filter((r) => !r.isControl);
 const anyDelivered = real.some((r) => r.interactive
   ? r.quoted
   : r.classified.some((c) => r.session.raw.includes(c.marker)));
 const anySent = real.some((r) => r.cp2.state === 'observed' || r.cp2.state === 'inherited');
-const interactiveRan = results.some((r) => r.interactive && !r.skipped);
 
-if (control && !control.controlInContext) {
+if (headlessRan) {
+  say('  HEADLESS PRINT MODE (`claude -p`), exercised here by: ' +
+      ran.filter((r) => !r.interactive).map(letter).join(', '));
+}
+if (interactiveRan) {
+  say('  INTERACTIVE under a herdr pane — the only mode the fleet runs — exercised here by: ' +
+      ran.filter((r) => r.interactive).map(letter).join(', '));
+}
+const missing = results.filter((r) => r.skipped).map(letter);
+const never = ['A', 'C', 'B', 'D'].filter((L) =>
+  !ran.some((r) => letter(r) === L) && !missing.includes(L));
+if (missing.length || never.length) {
+  say('  NOT exercised in this invocation: ' + [...never, ...missing].join(', ') +
+      ' — nothing below describes them.');
+}
+if (!controlRan) {
+  say('  NO POSITIVE CONTROL in this invocation (configuration C did not run).');
+}
+say('');
+
+// The modes this run may legitimately speak about, named from what ran.
+const modePhrase = [
+  headlessRan ? 'headless print mode' : null,
+  interactiveRan ? 'the interactive mode the fleet ships on' : null
+].filter(Boolean).join(' AND ');
+// Unqualified only when all three legs are present: both run modes, and a
+// control to establish that a NO is a fact about delivery rather than a fact
+// about a broken detector.
+const fullyWarranted = controlRan && headlessRan && interactiveRan;
+
+if (controlRan && !control.controlInContext) {
   say('ANSWER: VOID — the positive control did not arrive either, so this probe cannot');
   say('        distinguish a dropped notification from a broken detector.');
-} else if (anySent && !anyDelivered && interactiveRan) {
+} else if (anySent && !anyDelivered && fullyWarranted) {
   say('ANSWER: the notification left the server on every configuration that ran, in both');
   say('        target states, and NOTHING carrying the nonce reached the model\'s context —');
-  say('        in headless print mode AND in the interactive mode the fleet ships on.');
+  say(`        in ${modePhrase}.`);
   say('        The control proves the detector works. The blocker is the CLIENT — not the');
   say('        protocol, not our SDK, and not our server.');
 } else if (anySent && !anyDelivered) {
-  say('ANSWER, SCOPED: nothing reached the model in HEADLESS PRINT MODE. The interactive');
-  say('        path — the only one the fleet runs — was NOT exercised in this run, so this');
-  say('        says nothing about it. Run without --only, or with --only=D, before quoting');
-  say('        this as a fact about "the client".');
+  say(`ANSWER, SCOPED: nothing carrying the nonce reached the model in ${modePhrase}.`);
+  if (!interactiveRan) {
+    say('        The INTERACTIVE path — the only one the fleet runs — was not exercised');
+    say('        here, so this run says nothing about it (add --only=D, or drop --only).');
+  }
+  if (!headlessRan) {
+    say('        HEADLESS PRINT MODE was not exercised here, so this run says nothing');
+    say('        about it (drop --only to cover both modes).');
+  }
+  if (!controlRan) {
+    say('        NO CONTROL RAN, so this invocation cannot distinguish a dropped');
+    say('        notification from a broken detector, and does not claim to. It also');
+    say('        cannot name the blocker on its own evidence. Drop --only for that.');
+  }
 } else if (anyDelivered) {
   say('ANSWER: a server-initiated notification DID reach the model\'s context. See the');
   say('        per-state verdicts above for which states survived.');

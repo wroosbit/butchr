@@ -271,7 +271,7 @@ the probe exit non-zero — an untested cell presented as a result is exactly th
 
 ### The results
 
-One run, all four configurations, exit 0. Nonce root `91EBE4D97627`, model `sonnet`, Claude Code `2.1.222`.
+One run, all four configurations, exit 0. Nonce root `D0EF41ED3A0E`, model `sonnet`, Claude Code `2.1.222`.
 
 ```
 run mode             CP1        CP2        CP3a in-flight   CP3a idle
@@ -280,8 +280,14 @@ C — positive control   n/a        observed   dropped          dropped
 B — real path          observed   observed   dropped          dropped
 D — interactive        observed   inherited  n/a (idle only)  dropped
 
-  A, B, C ran in HEADLESS PRINT MODE (`claude -p`); D ran INTERACTIVE under a
-  herdr pane, which is the only mode the fleet actually runs.
+  HEADLESS PRINT MODE (`claude -p`), exercised here by: A, C, B
+  INTERACTIVE under a herdr pane — the only mode the fleet runs — exercised here by: D
+
+ANSWER: the notification left the server on every configuration that ran, in both
+        target states, and NOTHING carrying the nonce reached the model's context —
+        in headless print mode AND the interactive mode the fleet ships on.
+        The control proves the detector works. The blocker is the CLIENT — not the
+        protocol, not our SDK, and not our server.
 ```
 
 Configuration B, per state:
@@ -298,8 +304,8 @@ Real frames, produced by the real `daemon/dist/mcp.js` from real
 `agent_reset_event` broadcasts, observed leaving the server:
 
 ```json
-{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-91EBE4D97627B-INFLIGHT0"},"jsonrpc":"2.0"}
-{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-91EBE4D97627B-IDLE"},"jsonrpc":"2.0"}
+{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-D0EF41ED3A0EB-INFLIGHT0"},"jsonrpc":"2.0"}
+{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-D0EF41ED3A0EB-IDLE"},"jsonrpc":"2.0"}
 ```
 
 ### Configuration D — the shipped path, interactive under a herdr pane
@@ -310,15 +316,15 @@ daemon** (`activate_by_key`, `defaultAgent: 'claude'`), so it came up interactiv
 in a herdr pane with the real workspace `.mcp.json`. Verbatim:
 
 ```
-  activated: butchr-task-kan167-probe-91ebe4d97627d
+  activated: butchr-task-kan167-probe-d0ef41ed3a0ed
   forwarder process for this agent: FOUND
-    228449 …/node …/daemon/dist/mcp.js --workspace-type task --workspace-key KAN167-PROBE-91EBE4D97627D
+    259162 …/node …/daemon/dist/mcp.js --workspace-type task --workspace-key KAN167-PROBE-D0EF41ED3A0ED
   agent ready: YES
-  firing real daemon event: reset_by_key task/KAN-167-PROBE-91EBE4D97627D-IDLE
+  firing real daemon event: reset_by_key task/KAN-167-PROBE-D0EF41ED3A0ED-IDLE
   nonce rendered on the pane: NO  (rendering is NOT CP3)
 
 --- verdict: configuration D — interactive (the shipped path) ---
-nonce used : 91EBE4D97627D
+nonce used : D0EF41ED3A0ED
 CP1  daemon emitted the broadcast      : YES  2 broadcast(s) on the socket, independent observer
 CP2  notification left our MCP server  : inherited from configuration B (same daemon/dist/mcp.js; forwarder for this agent confirmed running)
 CP3a nonce rendered on the pane        : NO    (not CP3 — a pane is not context)
@@ -334,7 +340,7 @@ The agent's own answer, read back off the pane:
 **Why asking down the composer is not circular.** The composer is the *question*
 channel; the notification is the *thing under test*. The nonce is never typed by
 the probe into anything the agent can see — it exists only inside the daemon's
-broadcast payload, riding in a workspace key. A separate random tag (`Q24DAD2`)
+broadcast payload, riding in a workspace key. A separate random tag (`Q69AF7D`)
 marks the question so the answer can be located in the pane. If the agent could
 quote the nonce, it could only have come from the notification.
 
@@ -360,7 +366,7 @@ out **on the tool result**:
 
 ```
   CONTROL — the same nonce carried on the tool result instead:
-    control nonce present in context : YES  (91EBE4D97627-C-CONTROL)
+    control nonce present in context : YES  (D0EF41ED3A0E-C-CONTROL)
     control nonce quoted by the model: NO
 ```
 
@@ -613,9 +619,36 @@ task brief the daemon generates, because there is no Jira ticket for its scratch
 key and an uninstructed task agent would otherwise go looking for one. If you
 interrupt the run, check for a leftover `task/KAN167-PROBE-*` workspace.
 
-Run it **without `--only`** before quoting the conclusion. With `--only=A|B|C` the
-probe exercises print mode alone and says so in its own summary — it prints
-`ANSWER, SCOPED` and refuses to generalise to "the client".
+**Run it without `--only` before quoting the conclusion — and the summary polices
+that itself.** Every line of the summary is derived from what actually ran in
+that invocation. It names the run modes exercised, names the configurations that
+were not, and downgrades to `ANSWER, SCOPED` whenever any leg of the warrant is
+missing: the interactive path, the headless path, or the positive control.
+
+The unqualified answer — the one that names the blocker — requires all three
+legs. Anything less and the probe says what it cannot conclude:
+
+```
+  INTERACTIVE under a herdr pane — the only mode the fleet runs — exercised here by: D
+  NOT exercised in this invocation: A, C, B — nothing below describes them.
+  NO POSITIVE CONTROL in this invocation (configuration C did not run).
+
+ANSWER, SCOPED: nothing carrying the nonce reached the model in the interactive mode the fleet ships on.
+        HEADLESS PRINT MODE was not exercised here, so this run says nothing
+        about it (drop --only to cover both modes).
+        NO CONTROL RAN, so this invocation cannot distinguish a dropped
+        notification from a broken detector, and does not claim to. It also
+        cannot name the blocker on its own evidence. Drop --only for that.
+```
+
+That guard exists because it was needed. An earlier version printed a fixed
+legend and an unqualified answer regardless of `--only`, so a `--only=D` run
+asserted results for A, B and C, and credited a positive control that had not
+executed — **a probe vouching for its own validity out of evidence it never
+collected.** The guard had been written in one direction only (withholding the
+answer when the *interactive* config was absent) and had no mirror. It does now.
+This script's summary gets pasted into tickets, and a summary describing
+unexercised configurations is exactly how an over-claim travels onto a board.
 
 The probe is deliberately **outside** the `verify-` namespace. It drives a live
 `claude` CLI and a real model, so it is an experiment, not a deterministic proof
