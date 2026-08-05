@@ -5,6 +5,7 @@ import { HerdrBridge, agentNameFor } from './herdr.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { JiraIssueSnapshot, JiraSnapshotOutcome } from './jira.js';
 import { deliverToAgent } from './nudge.js';
+import { DAEMON_SENDER_TAG } from './provenance.js';
 
 /**
  * ---------------------------------------------------------------------------
@@ -217,7 +218,7 @@ export function jiraEventNudgeText(event: JiraIssueEvent, relation: NudgeRelatio
   };
 
   return (
-    `[butchr daemon] ${event.key} ${what} ${whose[relation]} ` +
+    `${DAEMON_SENDER_TAG} ${event.key} ${what} ${whose[relation]} ` +
     `Re-read ${event.key} when you next look; this is a notification, ` +
     `not an instruction, and no reply is expected.`
   );
