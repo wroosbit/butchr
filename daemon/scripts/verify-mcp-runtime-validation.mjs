@@ -279,8 +279,25 @@ const startsFor = (name) =>
 // The PATHs each section resolves against. The shim is always present and the
 // real system directories never are, so nothing here depends on what the
 // machine running this happens to have installed.
+// Deliberately thin: sections 1 and 2 need a machine on which *nothing*
+// qualifies, and adding `/usr/bin` would make the refusal depend on how new the
+// system Node happens to be — green here and vacuous on a CI runner with Node 22
+// in `/usr/bin`. Nothing in those sections spawns a subprocess that needs `sh`.
 const ONLY_OLD = [oldDir, shimDir].join(':');
-const OLD_THEN_GOOD = [oldDir, REAL_NODE_DIR, shimDir].join(':');
+
+// Section 3's PATH, and therefore the tail of the PATH the daemon writes. The
+// system directories are here because a written PATH is a real PATH that real
+// tools run under — npm needs `sh` — and because the daemon's own PATH always
+// has them (env.ts). They sit behind the good Node, so they decide nothing.
+const OLD_THEN_GOOD = [oldDir, REAL_NODE_DIR, shimDir, '/usr/local/bin', '/usr/bin', '/bin'].join(':');
+
+// The environment the server would be handed if nothing pinned it: the v12
+// fixture in front, and the ordinary system directories behind it. This is the
+// shape the real failure had — `/usr/bin` ahead of nvm on a daemon started from
+// a non-interactive context — and it keeps `sh`, `env` and the rest of the tools
+// npm needs available, so a failure here is about the interpreter and not about
+// a PATH too thin to run anything at all.
+const HOSTILE = [oldDir, '/usr/local/bin', '/usr/bin', '/bin'].join(':');
 
 const workspaceFor = (key) =>
   path.join(fakeHome, '.local', 'share', 'butchr', 'workspaces', TYPE, key.toLowerCase());
@@ -504,7 +521,7 @@ if (STAGE === 'path') {
   };
 
   // The hostile PATH the server would otherwise inherit: the v12 fixture first.
-  const hostile = { ...process.env, PATH: ONLY_OLD };
+  const hostile = { ...process.env, PATH: HOSTILE };
   const withWritten = { ...hostile, ...(atlassian?.env ?? {}) };
 
   const before = resolveNodeUnder(hostile);
@@ -531,30 +548,42 @@ if (STAGE === 'path') {
       '   transcript is pasted into the KAN-157 PR.'
     );
   } else {
+    console.log(
+      `\n   spawning: ${atlassian.command} ${atlassian.args.join(' ')}\n` +
+      `   with PATH: ${atlassian.env.PATH}\n` +
+      `   over a base PATH of: ${HOSTILE}\n\n` +
+      '   WHAT COUNTS AS PASSING, and why it is not "connected": this runs under a\n' +
+      '   throwaway $HOME with no stored Atlassian token, so mcp-remote correctly stops\n' +
+      '   at its OAuth prompt. Reaching that prompt means the module parsed, loaded its\n' +
+      '   dependencies and opened a connection to the remote endpoint — which is the whole\n' +
+      '   of what the interpreter decides. Under the old command shape the same PATH gets\n' +
+      "   a SyntaxError from Node v12 before any of that, which is why that is asserted\n" +
+      '   against separately.\n'
+    );
     const child = spawn(atlassian.command, atlassian.args, {
-      env: { ...hostile, ...atlassian.env },
+      // No DISPLAY: mcp-remote opens a browser for the OAuth step, and this
+      // proof has no business opening one on somebody's desktop.
+      env: { ...hostile, ...atlassian.env, DISPLAY: '', BROWSER: '/bin/true' },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let output = '';
-    child.stdout.on('data', (d) => { output += d; });
-    child.stderr.on('data', (d) => { output += d; });
-    const connected = await new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(false), 90000);
-      const check = () => {
-        if (/Proxy established|Connected to remote server|Local STDIO server running/.test(output)) {
-          clearTimeout(timer);
-          resolve(true);
-        }
+    const STARTED = /Proxy established|Connected to remote server|Local STDIO server running|Connecting to remote server|Discovering OAuth server configuration/;
+    const started = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), 120000);
+      const check = (d) => {
+        output += d;
+        if (STARTED.test(output)) { clearTimeout(timer); resolve(true); }
       };
       child.stdout.on('data', check);
       child.stderr.on('data', check);
-      child.on('exit', () => { clearTimeout(timer); resolve(false); });
+      child.on('exit', () => { clearTimeout(timer); resolve(STARTED.test(output)); });
     });
     try { child.kill(); } catch {}
     console.log(output.split('\n').slice(0, 20).map((l) => `     ${l}`).join('\n'));
     verdict(
-      connected && !/SyntaxError/.test(output),
-      'the command the daemon wrote really does start mcp-remote under a hostile PATH',
+      started && !/SyntaxError/.test(output),
+      'the command the daemon wrote really does bring mcp-remote up under a hostile PATH — ' +
+        'it parsed, loaded undici and reached Atlassian\'s endpoint',
       'the written command did not bring mcp-remote up'
     );
   }

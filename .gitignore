@@ -3,6 +3,9 @@ node_modules/
 
 # Build output
 dist/
+# The baseline build a `verify-` script compares against (see the usage block in
+# daemon/scripts/verify-mcp-runtime-validation.mjs).
+dist-unfixed/
 
 # Logs
 *.log
