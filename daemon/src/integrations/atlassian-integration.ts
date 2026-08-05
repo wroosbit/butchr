@@ -6,6 +6,7 @@ import {
   PRIORITY_TASK
 } from '../priority.js';
 import { which } from '../env.js';
+import { resolveNpxRuntime } from '../node-runtime.js';
 
 // Atlassian as Butchr's first integration: one credential, one mcp-remote
 // endpoint, and the workspace types it contributes — Jira's `task`, `story`
@@ -65,6 +66,9 @@ export function workspaceTypeForJiraIssueType(issueTypeName: string | null): str
   );
 }
 
+/** Where this integration's tools actually come from. */
+const ATLASSIAN_MCP_ENDPOINT = 'https://mcp.atlassian.com/v1/mcp';
+
 /**
  * The MCP server Atlassian's agents get.
  *
@@ -72,17 +76,53 @@ export function workspaceTypeForJiraIssueType(issueTypeName: string | null): str
  * stdio clients (OAuth browser flow on first use) — so this definition carries
  * no token, and none should be invented for it.
  *
- * Absolute commands: the agent spawns these with the *pane's* PATH, which can
- * be thinner than ours (a login-started herdr server has no nvm) and resolve
- * `node`/`npx` to an ancient system install. The daemon rewrites this file on
- * every activation, so the baked paths never go stale — which is why this is
- * resolved on every call rather than captured at registration.
+ * WHAT THIS USED TO BE, AND WHY IT WAS NOT ENOUGH (KAN-157). It was
+ * `which('npx') ?? 'npx'` — a lookup that *succeeded* and returned
+ * `/usr/bin/npx`, an absolute path to a real executable, on a machine where that
+ * npx runs on Node v12 and cannot parse mcp-remote. The server died at parse
+ * time, Claude Code reported nothing an agent could see, and the epic agent ran
+ * for two hours with no Jira tools at all. The old comment here even named the
+ * hazard — "the pane's PATH … can resolve `node`/`npx` to an ancient system
+ * install" — and then did nothing about it beyond taking an absolute path, which
+ * turns out not to address it: `npx` is a `#!/usr/bin/env node` script, so PATH
+ * picks the interpreter no matter how the command is spelled.
+ *
+ * So this now asks node-runtime.ts for a (node, npx) pair that has been
+ * *checked* against what mcp-remote's dependencies require, and pins that pair's
+ * directory ahead of PATH for the server's own process. `pathPrefix` is the part
+ * that actually decides the interpreter; `command` is only where the pair was
+ * found. The measurements behind that claim are in node-runtime.ts.
+ *
+ * WHEN NOTHING QUALIFIES the definition is still returned, carrying `unusable`.
+ * It is not omitted: a missing server is exactly the symptom this ticket exists
+ * to remove, and both the settings page and the activation refusal need the
+ * reason in hand. See `McpServerDefinition.unusable`.
+ *
+ * Still resolved on every call, and still cheap: node-runtime.ts caches per
+ * search path, so the daemon writes one interpreter into every workspace it
+ * provisions rather than re-deciding per activation.
  */
 export function atlassianMcpServers(): McpServerDefinitions {
+  const runtime = resolveNpxRuntime();
+  const args = ['-y', 'mcp-remote', ATLASSIAN_MCP_ENDPOINT];
+
+  if (!runtime.ok) {
+    return {
+      atlassian: {
+        // The command a working machine would get, so the settings page can
+        // still say what this server *is* while saying it cannot start.
+        command: which('npx') ?? 'npx',
+        args,
+        unusable: runtime.problem
+      }
+    };
+  }
+
   return {
     atlassian: {
-      command: which('npx') ?? 'npx',
-      args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/mcp']
+      command: runtime.npx!,
+      args,
+      pathPrefix: runtime.pathPrefix
     }
   };
 }

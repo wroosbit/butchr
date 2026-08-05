@@ -239,6 +239,29 @@ refuses with *"the Atlassian integration is switched off"* rather than
 "unsupported URL". Running agents are never stopped by a toggle; only new
 activations are refused.
 
+**A server's interpreter is validated, not merely located** (KAN-157,
+`daemon/src/node-runtime.ts`). The Atlassian server is `npx -y mcp-remote …`,
+and `npx` — like the bin of the package it fetches — is a `#!/usr/bin/env node`
+script, so **the PATH the server process is handed decides which Node runs it,
+whatever `command` says**. The daemon therefore resolves a `node`/`npx` pair
+from one directory, asks that node its version, checks it against what
+mcp-remote's dependency closure declares, and pins the directory ahead of the
+server's own PATH. The daemon's own Node is the first candidate — the same
+property that has always made the core `butchr` server immune, since it is
+`process.execPath` plus an absolute path to `mcp.js`. Resolution happens once
+per daemon lifetime, so a fleet cannot end up split across two interpreters, and
+every rejection and every non-obvious preference is logged.
+
+When no Node on the machine qualifies, the **activation is refused** rather than
+warned about, and the definition carries the reason to the settings page as
+well. The failure it replaces was not "fewer tools" but *silence*: a server that
+dies at parse time is reported nowhere the agent can see, so an epic agent
+coordinated a board it could not read for two hours. Refusing is safe because
+switching the integration off contributes no servers at all, and the refusal
+says so. `daemon/scripts/verify-mcp-runtime-validation.mjs` reproduces the
+silent bad interpreter against a build of `origin/main` before showing the
+refusal.
+
 Each Workspace Type configures:
 1. **URL Matching & Key Extraction:** Rule to identify if a page matches the type and extract its unique key.
 2. **MCP Tools:** Official or custom MCP toolsets attached to the agent environment.

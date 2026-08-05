@@ -413,6 +413,22 @@ export interface ProvidedMcpServer {
   /** Its arguments, verbatim. Absent when detail is withheld. */
   args?: string[];
   /**
+   * Directories the daemon puts ahead of PATH for this server's process, when
+   * it puts any there (KAN-157). Reported because it is a *material* part of
+   * what the server is — for an npx-based server it is what decides which Node
+   * runs it, which is the thing that was invisible while KAN-157 was live.
+   * Directories, composed by the daemon; see `McpServerDefinition.pathPrefix`.
+   */
+  pathPrefix?: string[];
+  /**
+   * Set when this server cannot start on this machine, in the daemon's own
+   * words (KAN-157). The settings page is the surface that advertises what
+   * enabling an integration hands every agent, so it is where "and this one
+   * would not start" has to be legible — a page that lists a server it knows is
+   * dead is the same silence the ticket was filed about.
+   */
+  unusable?: string;
+  /**
    * Set when only the name could be reported, so the UI says so rather than
    * silently drawing a server with no detail.
    */
@@ -470,10 +486,25 @@ export interface ProvidedMcpServer {
  */
 function describeMcpServers(defs: McpServerDefinitions): ProvidedMcpServer[] {
   return Object.entries(defs).map(([name, definition]) => {
+    // KAN-157 added `pathPrefix` and `unusable`, and neither loosens the rule
+    // above. `unusable` is the daemon's own sentence about a server that cannot
+    // start, so it is reported whether or not detail is withheld — a withheld
+    // definition that is also dead must still be able to say the second thing.
+    const unusable = definition.unusable ? { unusable: definition.unusable } : {};
+
     if (definition.env && Object.keys(definition.env).length > 0) {
-      return { name, detailWithheld: true as const };
+      return { name, detailWithheld: true as const, ...unusable };
     }
-    return { name, command: definition.command, args: [...definition.args] };
+    return {
+      name,
+      command: definition.command,
+      args: [...definition.args],
+      // Directories, composed by the daemon rather than supplied whole by the
+      // integration — the argument for why that is safe to render is on
+      // `McpServerDefinition.pathPrefix`, beside the field itself.
+      ...(definition.pathPrefix?.length ? { pathPrefix: [...definition.pathPrefix] } : {}),
+      ...unusable
+    };
   });
 }
 

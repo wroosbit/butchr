@@ -10,13 +10,24 @@
 // holding.
 //
 // SCOPE, NARROWED SINCE KAN-145: what is compared here is the *assembly* — which
-// servers a workspace gets and where each one comes from — and that is still
-// byte-identical to main's. It is no longer the whole of the file a real
-// activation writes: herdr.ts passes the assembly through `withWorkspaceIdentity`
-// on the way to disk, so the core server additionally carries
-// `--workspace-type <type> --workspace-key <key>` naming that workspace. That
-// stamp is proved by verify-activation-records-real-parentage.mjs, which is also
-// where the argument for putting it in `args` rather than `env` lives.
+// servers a workspace gets and where each one comes from. It is not the whole of
+// the file a real activation writes: herdr.ts passes the assembly through
+// `withWorkspaceIdentity` on the way to disk, so the core server additionally
+// carries `--workspace-type <type> --workspace-key <key>` naming that workspace.
+// That stamp is proved by verify-activation-records-real-parentage.mjs, which is
+// also where the argument for putting it in `args` rather than `env` lives.
+//
+// NARROWED AGAIN BY KAN-157, AND THIS TIME THE HEADLINE CLAIM CHANGED. "Byte-
+// identical to main" was true from KAN-85 until KAN-157, and KAN-157 is the
+// ticket that deliberately ended it: `which('npx')` was the bug, so the Atlassian
+// server's command is no longer what main wrote and now carries an `env.PATH`
+// pinning the interpreter. Rather than delete the comparison, section 2 keeps it
+// where it is still the right question — every server other than `atlassian`, and
+// the set, order and sourcing of all of them — and asserts the one deliberate
+// difference *as a difference*, against the validated runtime rather than against
+// a literal. If a future change moves anything else, this still goes red.
+// Whether the new command actually runs is not this script's question; it is
+// verify-mcp-runtime-validation.mjs's, and that script owns it end to end.
 //
 // Before: `mcpServerDefinitions()` in launchers.ts, a hardcoded if-chain
 // resolving the bare strings a workspace type listed — `atlassian` → npx
@@ -64,6 +75,7 @@ const { coreMcpServerDefinitions, writeWorkspaceMcpConfig } = await import(
 const { JiraIssueTypeService } = await import(path.join(distDir, 'jira.js'));
 const { CredentialStore } = await import(path.join(distDir, 'credentials.js'));
 const { which } = await import(path.join(distDir, 'env.js'));
+const { resolveNpxRuntime } = await import(path.join(distDir, 'node-runtime.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 const verdict = (ok, yes, no) => {
@@ -117,7 +129,7 @@ verdict(
 
 // ----------------------------------------------------- 2. what this writes --
 
-rule('AC2 — the restructured code writes the same bytes');
+rule('AC2 — the same assembly, and one deliberate difference in the Atlassian command');
 
 // The production wiring, exactly as daemon.ts assembles it — the real
 // credential store, so the configured-gate below is answered by this machine.
@@ -155,12 +167,55 @@ console.log('\n  what the same workspace gets now:\n');
 console.log(indent(mineBytes));
 console.log(`\n  atlassian sourced from: the Atlassian integration (atlassian-integration.ts)`);
 console.log(`  butchr sourced from:    core (launchers.ts, coreMcpServerDefinitions)`);
-console.log(`\n  byte comparison: ${mineBytes === mainBytes ? 'IDENTICAL' : 'DIFFERENT'}`);
+
+// Everything except the one entry KAN-157 deliberately changed. Compared as
+// bytes, in key order, so a server appearing, disappearing or moving still fails
+// this — the original claim, on the part of the file it still covers.
+const withoutAtlassian = (defs) => {
+  const { atlassian, ...rest } = defs;
+  return JSON.stringify({ mcpServers: rest }, null, 2);
+};
+const mainRest = withoutAtlassian(JSON.parse(mainBytes).mcpServers);
+const mineRest = withoutAtlassian(JSON.parse(mineBytes).mcpServers);
+
+console.log(`\n  keys, in order — main: ${Object.keys(JSON.parse(mainBytes).mcpServers).join(', ')}`);
+console.log(`                    now: ${Object.keys(JSON.parse(mineBytes).mcpServers).join(', ')}`);
+console.log(`  every server except \`atlassian\`, byte comparison: ${mineRest === mainRest ? 'IDENTICAL' : 'DIFFERENT'}`);
 
 verdict(
-  mineBytes === mainBytes,
-  'byte-for-byte the file main writes — same servers, same commands, same key order.',
-  'the assembled .mcp.json differs from what origin/main writes; see the two blocks above.'
+  mineRest === mainRest &&
+    JSON.stringify(Object.keys(JSON.parse(mainBytes).mcpServers)) ===
+      JSON.stringify(Object.keys(JSON.parse(mineBytes).mcpServers)),
+  'the same servers in the same order, and every one of them except `atlassian` is byte-for-byte what main writes.',
+  'the assembly changed beyond the one entry KAN-157 was allowed to change; see the two blocks above.'
+);
+
+// The one difference, asserted against the resolver rather than against a
+// literal: `command` is the npx of the validated pair and `env.PATH` leads with
+// that pair's directory. A `.mcp.json` that named a *different* npx than the one
+// the daemon validated would be KAN-157 all over again, in a file that reads as
+// correct.
+const runtime = resolveNpxRuntime();
+const mineAtlassian = JSON.parse(mineBytes).mcpServers.atlassian;
+console.log(`\n  the deliberate difference — main wrote:`);
+console.log(indent(JSON.stringify(JSON.parse(mainBytes).mcpServers.atlassian, null, 2)));
+console.log(`  and this writes:`);
+console.log(indent(JSON.stringify(mineAtlassian, null, 2)));
+console.log(
+  `\n  the resolver's answer: ${runtime.ok ? `${runtime.npx} on ${runtime.node} (${runtime.version})` : `unusable — ${runtime.problem}`}`
+);
+
+verdict(
+  runtime.ok
+    ? mineAtlassian.command === runtime.npx &&
+        JSON.stringify(mineAtlassian.args) ===
+          JSON.stringify(JSON.parse(mainBytes).mcpServers.atlassian.args) &&
+        mineAtlassian.env?.PATH?.split(':')[0] === runtime.pathPrefix?.[0]
+    : mineAtlassian === undefined || typeof mineAtlassian.unusable === 'string',
+  runtime.ok
+    ? 'the written command is the npx the resolver validated, with the same arguments main used, and the server\'s PATH leads with that npx\'s own directory.'
+    : 'no interpreter on this machine qualifies, and the definition says so rather than naming one anyway.',
+  'the written Atlassian command is not the one the resolver validated.'
 );
 
 // -------------------------------------------------- 3. the merge is intact --
