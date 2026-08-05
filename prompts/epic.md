@@ -167,7 +167,10 @@ is nobody left to nudge. Notify the rest of its link set normally.
 
 The send-race rules under *Steering running agents* apply in full: `success:
 true` is typed-and-submit-attempted, not delivered, so `butchr_tail_agent`
-before you assume a nudge landed.
+before you assume a nudge landed. **So does the cost** — every name on that list
+is an agent whose turn you are cancelling and whose running tool call you are
+killing. Announcing is worth it; announcing to an agent the news does not reach
+is not, which is what step 2 is for.
 
 #### Storm guards
 
@@ -182,7 +185,7 @@ not guidance:
 - **A nudge you receive must never itself generate nudges.** React by reading
   tickets and acting, not by re-broadcasting.
 - **Never send two nudges in a row to the same agent** — the second kills its
-  session.
+  session, and the first already cost it its in-flight work.
 
 ## Agent-user intake
 
@@ -477,8 +480,26 @@ where that decision is durable, and it costs one read to check.
 `butchr_send_to_agent` interrupts once, types, and submits. **Never send two
 interrupts** — the second kills the session.
 
-Steer the moment a requirement changes, to redirect effort that is now wasted. An
-agent finishing the wrong thing correctly helps no one.
+### What the one interrupt costs, since "interrupts once" sounds like nothing
+
+**It is not a composer being cleared. One Ctrl+C cancels the recipient's turn,
+and a tool call in flight dies with it** — not paused, not retried, abandoned
+where it stood, sometimes with half of a parallel block applied. You have been on
+the receiving end of this: the incidents under *Whose voice is this?* above are
+exactly this interrupt, seen from the other side, rendering as a rejection the
+human never made.
+
+So read the two rules together and do not let the second soften the first. *The
+second interrupt kills the session* is about the agent surviving. **The first one
+is not therefore free — it costs the agent the work it was doing, every time,
+whether or not the message turned out to be worth sending.**
+
+Which is an argument for steering, not against it: steer the moment a requirement
+changes, because effort aimed at the old requirement is wasted anyway, and an
+agent finishing the wrong thing correctly helps no one. It is an argument against
+the nudge you send to be thorough — the one to an agent that would have read the
+ticket at its next poll, that you sent because sending looked like a
+notification. It is not a notification. It stops somebody.
 
 ### A send that succeeded may not have been delivered
 

@@ -122,6 +122,15 @@ then the nudge tells someone to read it. And `success: true` from
 submit can lose the Enter and leave the text sitting in the recipient's
 composer, so `butchr_tail_agent` before you assume a nudge landed.
 
+**A nudge is not free to the agent that receives it.** The send begins with a
+Ctrl+C, and one Ctrl+C cancels the recipient's turn — **a tool call in flight is
+killed and does not resume.** The rule below about a *second* nudge is about the
+session surviving; it is not a promise that the first one is harmless. The first
+one costs the recipient whatever it was doing, and it costs it that way whether
+or not you needed to send. That is often worth paying — an agent working from a
+requirement that just changed is losing that work anyway — but decide it, and
+prefer `butchr_tail_agent` first if you want to know what you are interrupting.
+
 ### Storm guards
 
 Notification without these turns one transition into a cascade. They are rules,
@@ -134,4 +143,4 @@ not guidance:
 - **A nudge you receive must never itself generate nudges.** React by reading
   tickets and acting, not by re-broadcasting.
 - **Never send two nudges in a row to the same agent** — the second kills its
-  session.
+  session, and the first already cost it its in-flight work.

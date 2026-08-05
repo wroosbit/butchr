@@ -223,6 +223,15 @@ Requirement changes go into the affected **ticket** first, then a short
 a pointer; the ticket is the payload — and it interrupts once: never send two
 in a row, the second kills the session.
 
+**Interrupting once is not interrupting harmlessly.** That one Ctrl+C cancels
+the recipient's turn, and **a tool call in flight is killed and does not
+resume** — it surfaces on their side as a refusal they may report as the
+human's. Steering a working agent is worth that cost precisely here, because
+work aimed at a requirement that has changed is already wasted; what is not
+worth it is a nudge sent because sending felt free. It never was. So send when
+the ticket changed, and let the agents you did not need to interrupt read it in
+their own time.
+
 **A `success: true` from `send_to_agent` means typed-and-submit-attempted, not
 delivered.** The submit can lose the Enter, leaving the message unsent in the
 target's composer, so `butchr_tail_agent` before you assume a nudge landed.
@@ -318,7 +327,10 @@ precisely to the issues linked to you and to your parent.
 This is the same nudge-as-pointer discipline as *When the story changes* above,
 applied to your own status: the substance goes in the ticket first, and
 `success: true` is typed-and-submit-attempted, not delivered, so
-`butchr_tail_agent` before you assume one landed.
+`butchr_tail_agent` before you assume one landed. **And it carries the same
+cost** — each of those nudges cancels its recipient's turn and kills the tool
+call it was running. That is why step 2 exists and why step 3 says *live agents
+only*: every name you add to the list is an agent you are stopping.
 
 ### Storm guards
 
@@ -332,7 +344,7 @@ not guidance:
 - **A nudge you receive must never itself generate nudges.** React by reading
   tickets and acting, not by re-broadcasting.
 - **Never send two nudges in a row to the same agent** — the second kills its
-  session.
+  session, and the first already cost it its in-flight work.
 
 ## Your status is a claim about your tasks
 
