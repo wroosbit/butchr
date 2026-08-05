@@ -12,8 +12,9 @@ reset.
 The page is both the **brief** and the **artifact**, and it outlives you.
 Whatever the work turns out to be — developing a plan, carrying out a procedure,
 something neither of those describes — the page should end up more true than it
-started. That is the same contract an epic's description lives under here,
-applied to any page.
+started. That is the same contract a design doc lives under here — since
+KAN-160 a Butchr epic's design doc *is* a Confluence page — applied to any
+page.
 
 There are no modes to select and no flags to read. **Read the page, work out
 what it is, say so, and then act accordingly.**
@@ -62,10 +63,15 @@ nothing. A file you did not open is a file you cannot cite.
 
 The natural handoff is into Jira: propose the decomposition on the page, and
 **on the human's go-ahead** create the epic or story with the page's substance
-as its **description**. That seam is clean rather than convenient — an epic
-description is already required to be a maintained design doc, so a plan page
-becoming one is a change of venue, not a change of contract. Link the two so the
-page and the issue can find each other from either end.
+as its **description**. That seam is clean rather than convenient, and the
+traffic across it runs **both ways**: a plan page's substance becomes an epic's
+brief — the invariants into the description, the design and its reasoning into
+that epic's own design-doc page — and an epic's design doc moves the other way,
+out of Jira and onto a Confluence page, when it outgrows a field that is meant
+to be read every session (KAN-160, 2026-08-05). The maintenance contract is the
+same on both sides, so what crosses is a change of venue, not a change of
+contract. Link the two so the page and the issue can find each other from
+either end.
 
 ### A runbook — execute it, then fix where reality diverged
 
