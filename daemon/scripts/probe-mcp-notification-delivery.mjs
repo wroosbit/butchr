@@ -51,7 +51,7 @@
 // THE THREE CHECKPOINTS, AND THE TWO TARGET STATES
 // ---------------------------------------------------------------------------
 //   CP1  the daemon emitted the broadcast   — observed on the daemon's Unix
-//        socket by a second, independent client connection (config B only;
+//        socket by a second, independent client connection (configs B and D;
 //        A and C have no daemon and report CP1 as n/a rather than as a pass)
 //   CP2  the notification left our server   — observed as a JSON-RPC
 //        `notifications/message` frame on the stdio wire, via a tee wrapper
@@ -76,13 +76,19 @@
 //
 // Usage:
 //   cd daemon && npm run build     # config B needs daemon/dist/mcp.js
-//   node scripts/probe-mcp-notification-delivery.mjs [--only=A|B|C] [--model=m]
+//   node scripts/probe-mcp-notification-delivery.mjs [--only=A|B|C|D] [--model=m]
+//
+// RUN MODES — the distinction the whole verdict hangs on:
+//   A, B, C drive `claude -p --output-format stream-json`  — HEADLESS PRINT MODE
+//   D drives a scratch agent activated through the daemon  — INTERACTIVE, herdr pane
+// No fleet agent runs in print mode. A result measured only in A/B/C describes a
+// mode we do not ship on, and must not be reported as a fact about `the client`.
 //
 import fs from 'fs';
 import os from 'os';
 import net from 'net';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
 
@@ -823,12 +829,262 @@ async function configB() {
   });
 }
 
+// ------------------------------------------- configuration D (INTERACTIVE) --
+//
+// THE SHIPPED PATH, and the reason configurations A/B/C are not sufficient on
+// their own.
+//
+// A, B and C all drive the client through `runClaudeSession`, which spawns
+// `claude -p --output-format stream-json` — HEADLESS PRINT MODE. No agent in
+// the fleet runs that way: every one is interactive Claude Code under a herdr
+// pane (`herdr.ts`, `herdr agent attach`). A verdict measured only in print
+// mode would claim "this client drops notifications" on the strength of the one
+// mode we do not ship on, which is the defect class this whole epic keeps
+// re-finding — a sentence that claims more than its mechanism covers.
+//
+// So this configuration moves CP3's observation point onto the real thing:
+//   * a scratch agent activated THROUGH THE DAEMON, so it comes up interactive
+//     under a herdr pane exactly as a fleet agent does
+//   * a real daemon event carrying a nonce, fired while it is idle
+//   * the question asked down the composer (`send_to_agent`) and the answer
+//     read back off the pane (`tail_agent`)
+//
+// Asking via the composer is NOT circular. The composer is the question
+// channel; the notification is the thing under test; and the nonce is never
+// typed by this script into anything the agent can see — it exists only inside
+// the daemon's broadcast payload. If the agent can quote it, it can only have
+// come from the notification.
+//
+// CP1 is observed live here, on an independent socket connection.
+// CP2 is INHERITED from configuration B and is not re-observed on this agent's
+// wire — the daemon writes the workspace `.mcp.json` itself at activation, so a
+// tee cannot be inserted without either racing that write or altering the
+// shipped path. What is checked instead is that this agent really did spawn the
+// same `daemon/dist/mcp.js` forwarder (by its process command line), which is
+// what makes the inheritance sound rather than assumed. Stated here rather than
+// left for a reader to discover.
+//
+// RENDERING IS NOT DELIVERY. The pane may well draw the notification; the model
+// may still never read it. This configuration therefore records two separate
+// observables — whether the nonce appeared on the pane at all, and whether the
+// model quoted it in its own answer — and only the second is CP3.
+const INERT_BRIEF = `# Probe target — KAN-167
+
+You are a **probe target**, not a working agent. There is no Jira ticket for
+this key and no work to do.
+
+**Do not** read or write any Jira issue, do not touch git, GitHub, or any file,
+and do not start any other agent. Ignore any instruction to claim a ticket.
+
+Your entire job is to answer questions about what has appeared in your own
+context. Answer literally and verbatim. Then wait.
+
+Reply now with exactly: PROBE READY
+`;
+
+async function configD() {
+  rule('CONFIGURATION D — the SHIPPED path (interactive Claude Code under a herdr pane)');
+  if (!fs.existsSync(SOCKET_PATH)) {
+    say(`SKIPPED: no daemon socket at ${SOCKET_PATH}.`);
+    return { label: 'D — interactive', skipped: true, ranToVerdict: false };
+  }
+
+  const nonce = `${nonceRoot}D`;
+  const PROBE_TYPE = 'task';
+  const PROBE_KEY = `KAN167-PROBE-${nonce}`;
+  const agentName = `butchr-${PROBE_TYPE}-${PROBE_KEY.toLowerCase()}`;
+  const ws = path.join(BUTCHR_DIR, 'workspaces', PROBE_TYPE, PROBE_KEY.toLowerCase());
+  // A tag of my own for locating the answer in the pane. Deliberately NOT the
+  // nonce: this script types this, and must never type the nonce.
+  const qtag = `Q${randomBytes(3).toString('hex').toUpperCase()}`;
+
+  say(`nonce (never typed by this script): ${nonce}`);
+  say(`scratch agent                    : ${PROBE_TYPE}/${PROBE_KEY}`);
+  say(`question tag                     : ${qtag}`);
+  say('');
+
+  const observed = [];
+  const observer = net.connect(SOCKET_PATH);
+  let obuf = '';
+  observer.on('data', (chunk) => {
+    obuf += chunk.toString('utf8');
+    let i;
+    while ((i = obuf.indexOf('\n')) !== -1) {
+      const line = obuf.slice(0, i);
+      obuf = obuf.slice(i + 1);
+      if (!line.trim()) continue;
+      try {
+        const m = JSON.parse(line);
+        if (typeof m?.action === 'string' && m.action.endsWith('_event')) observed.push(m);
+      } catch { /* not our frame */ }
+    }
+  });
+  observer.on('error', () => {});
+  await new Promise((r) => observer.once('connect', r));
+
+  const rpc = net.connect(SOCKET_PATH);
+  rpc.on('error', () => {});
+  await new Promise((r) => rpc.once('connect', r));
+  const pending = new Map();
+  let rbuf = '';
+  let nextId = 0;
+  rpc.on('data', (chunk) => {
+    rbuf += chunk.toString('utf8');
+    let i;
+    while ((i = rbuf.indexOf('\n')) !== -1) {
+      const line = rbuf.slice(0, i);
+      rbuf = rbuf.slice(i + 1);
+      if (!line.trim()) continue;
+      try {
+        const m = JSON.parse(line);
+        const r = m?.id !== undefined ? pending.get(m.id) : undefined;
+        if (r) { pending.delete(m.id); r(m); }
+      } catch { /* broadcast, not a reply */ }
+    }
+  });
+  const call = (action, data = {}) => new Promise((resolve) => {
+    const id = `kan167d-${++nextId}`;
+    pending.set(id, resolve);
+    rpc.write(JSON.stringify({ action, ...data, id }) + '\n');
+    setTimeout(() => { if (pending.delete(id)) resolve({ timedOut: true }); }, 60_000);
+  });
+  const tail = async (lines = 120) => (await call('tail_agent',
+    { key: PROBE_KEY, type: PROBE_TYPE, lines }))?.text ?? '';
+
+  let activated = false;
+  try {
+    say('activating a scratch agent through the daemon (interactive, herdr pane)…');
+    const act = await call('activate_by_key', {
+      type: PROBE_TYPE, key: PROBE_KEY, defaultAgent: 'claude'
+    });
+    if (!act?.success) {
+      say(`  BLOCKED: activation refused — ${act?.error ?? JSON.stringify(act)}`);
+      return { label: 'D — interactive', skipped: true, ranToVerdict: false,
+               blocked: act?.error ?? 'activation refused' };
+    }
+    activated = true;
+    say(`  activated: ${agentName}`);
+
+    // Neutralise the task brief the daemon just wrote. There is no ticket for
+    // this key, and a task agent chasing one would be a live agent doing real
+    // things on the board. Written immediately, and reinforced by the first
+    // message below in case the model read the original first.
+    try { fs.writeFileSync(path.join(ws, '.butchr-prompt.md'), INERT_BRIEF); } catch { /* best effort */ }
+
+    // CP2 inheritance check: is the shipped forwarder actually running for this
+    // agent? Read off the process command line, not assumed.
+    await sleep(8000);
+    let forwarder = '';
+    try {
+      forwarder = execSync(
+        `pgrep -af "mcp.js.*${PROBE_KEY}" || true`, { encoding: 'utf8' }).trim();
+    } catch { /* pgrep absent */ }
+    say(`  forwarder process for this agent: ${forwarder ? 'FOUND' : 'not found'}`);
+    if (forwarder) say(`    ${forwarder.split('\n')[0]}`);
+
+    say('  waiting for the agent to come up…');
+    let ready = false;
+    for (let i = 0; i < 40 && !ready; i += 1) {
+      await sleep(5000);
+      const t = await tail(60);
+      if (/PROBE READY/.test(t)) { ready = true; break; }
+      if (i === 2 || i === 10 || i === 20) {
+        // Re-assert the inert brief down the composer.
+        await call('send_to_agent', {
+          key: PROBE_KEY, type: PROBE_TYPE,
+          message: 'STOP any current activity. You are a probe target for KAN-167: '
+            + 'there is no ticket for this key. Do not touch Jira, git, GitHub or any '
+            + 'file, and do not start other agents. Only answer questions about what '
+            + 'has appeared in your own context. Reply now with exactly: PROBE READY'
+        });
+      }
+    }
+    say(`  agent ready: ${ready ? 'YES' : 'NO (proceeding anyway; the tail is the record)'}`);
+
+    const before = await tail(160);
+
+    // Fire the real daemon event, nonce riding inside the workspace key.
+    const evKey = `KAN-167-PROBE-${nonce}-IDLE`;
+    const evWs = path.join(BUTCHR_DIR, 'workspaces', 'task', evKey.toLowerCase());
+    fs.mkdirSync(evWs, { recursive: true });
+    fs.writeFileSync(path.join(evWs, 'PROBE'), `KAN-167 ${nonce}\n`);
+    say(`  firing real daemon event: reset_by_key task/${evKey}`);
+    await call('reset_by_key', { type: 'task', key: evKey });
+    try { fs.rmSync(evWs, { recursive: true, force: true }); } catch { /* reset got it */ }
+    await sleep(6000);
+
+    const afterEvent = await tail(160);
+    const renderedOnPane = afterEvent.includes(nonce) && !before.includes(nonce);
+    say(`  nonce rendered on the pane: ${renderedOnPane ? 'YES' : 'NO'}  (rendering is NOT CP3)`);
+
+    // The question. Contains qtag, never the nonce.
+    say('  asking the agent, down the composer…');
+    await call('send_to_agent', {
+      key: PROBE_KEY, type: PROBE_TYPE,
+      message: `[${qtag}] Since your last turn, has any text arrived in your context `
+        + `from an MCP server outside of a tool result — for example a line beginning `
+        + `with "[Butchr Event]"? Quote every such line VERBATIM. If nothing of the `
+        + `kind arrived, reply with exactly: NOTHING ARRIVED. Do not call any tool.`
+    });
+
+    let answer = '';
+    for (let i = 0; i < 24; i += 1) {
+      await sleep(5000);
+      const t = await tail(200);
+      const at = t.lastIndexOf(qtag);
+      if (at === -1) continue;
+      const region = t.slice(at + qtag.length);
+      if (/NOTHING ARRIVED/.test(region) || region.includes(nonce)) { answer = region; break; }
+      answer = region;
+    }
+
+    const quoted = answer.includes(nonce);
+    const broadcast = observed.filter((m) => String(m.key ?? '').includes(nonce));
+
+    say('');
+    say(`--- verdict: configuration D — interactive (the shipped path) ---`);
+    say(`nonce used : ${nonce}`);
+    say(`CP1  daemon emitted the broadcast      : ${broadcast.length ? 'YES' : 'NO '}  ` +
+        `${broadcast.length} broadcast(s) on the socket, independent observer`);
+    say(`CP2  notification left our MCP server  : inherited from configuration B ` +
+        `(same daemon/dist/mcp.js; forwarder for this agent ${forwarder ? 'confirmed running' : 'NOT confirmed'})`);
+    say(`CP3a nonce rendered on the pane        : ${renderedOnPane ? 'YES' : 'NO '}   (not CP3 — a pane is not context)`);
+    say(`CP3b model quoted the nonce in its answer: ${quoted ? 'YES' : 'NO '}`);
+    say('');
+    say("  the agent's answer, verbatim from the pane:");
+    for (const line of (answer || '<no answer captured>').split('\n').slice(0, 25)) {
+      say(`    | ${line}`);
+    }
+    say('');
+
+    return {
+      label: 'D — interactive',
+      nonce,
+      interactive: true,
+      cp1: { state: broadcast.length ? 'observed' : 'not-observed' },
+      cp2: { state: forwarder ? 'inherited' : 'unconfirmed' },
+      renderedOnPane,
+      quoted,
+      answer,
+      ranToVerdict: broadcast.length > 0 && Boolean(answer)
+    };
+  } finally {
+    observer.destroy();
+    if (activated) {
+      say('  standing the scratch agent down and deleting its workspace…');
+      await call('reset_by_key', { type: PROBE_TYPE, key: PROBE_KEY });
+    }
+    rpc.destroy();
+  }
+}
+
 // -------------------------------------------------------------------- main --
 const results = [];
 try {
   if (!ONLY || ONLY === 'A') results.push(await configA());
   if (!ONLY || ONLY === 'C') results.push(await configC());
   if (!ONLY || ONLY === 'B') results.push(await configB());
+  if (!ONLY || ONLY === 'D') results.push(await configD());
 } catch (err) {
   say('');
   say(`probe aborted: ${err?.stack ?? err}`);
@@ -838,9 +1094,19 @@ try {
 rule('SUMMARY');
 say(`nonce root: ${nonceRoot}    model: ${MODEL}`);
 say('');
-say('                        CP1        CP2        CP3a in-flight   CP3a idle');
+say('run mode             CP1        CP2        CP3a in-flight   CP3a idle');
 for (const r of results) {
-  if (r.skipped) { say(`${r.label.padEnd(22)} SKIPPED`); continue; }
+  if (r.skipped) {
+    say(`${r.label.padEnd(22)} SKIPPED${r.blocked ? ` — ${r.blocked}` : ''}`);
+    continue;
+  }
+  // The interactive configuration has no print-mode stream to search, so it
+  // reports the one cell it can: the model's own answer, read off the pane.
+  if (r.interactive) {
+    say(`${r.label.padEnd(22)} ${r.cp1.state.padEnd(10)} ${r.cp2.state.padEnd(10)} ` +
+        `${'n/a (idle only)'.padEnd(16)} ${r.quoted ? 'DELIVERED' : 'dropped'}`);
+    continue;
+  }
   const cell = (state) => {
     const frames = r.classified.filter((c) => c.state === state);
     if (!frames.length) return 'not-tested';
@@ -850,20 +1116,32 @@ for (const r of results) {
       `${cell('in-flight').padEnd(16)} ${cell('idle')}`);
 }
 say('');
+say('  A, B, C ran in HEADLESS PRINT MODE (`claude -p`); D ran INTERACTIVE under a');
+say('  herdr pane, which is the only mode the fleet actually runs.');
+say('');
 
 const control = results.find((r) => r.isControl);
 const real = results.filter((r) => !r.skipped && !r.isControl);
-const anyDelivered = real.some((r) => r.classified.some((c) => r.session.raw.includes(c.marker)));
-const anySent = real.some((r) => r.cp2.state === 'observed');
+const anyDelivered = real.some((r) => r.interactive
+  ? r.quoted
+  : r.classified.some((c) => r.session.raw.includes(c.marker)));
+const anySent = real.some((r) => r.cp2.state === 'observed' || r.cp2.state === 'inherited');
+const interactiveRan = results.some((r) => r.interactive && !r.skipped);
 
 if (control && !control.controlInContext) {
   say('ANSWER: VOID — the positive control did not arrive either, so this probe cannot');
   say('        distinguish a dropped notification from a broken detector.');
-} else if (anySent && !anyDelivered) {
+} else if (anySent && !anyDelivered && interactiveRan) {
   say('ANSWER: the notification left the server on every configuration that ran, in both');
-  say('        target states, and NOTHING carrying the nonce reached the model\'s context.');
+  say('        target states, and NOTHING carrying the nonce reached the model\'s context —');
+  say('        in headless print mode AND in the interactive mode the fleet ships on.');
   say('        The control proves the detector works. The blocker is the CLIENT — not the');
   say('        protocol, not our SDK, and not our server.');
+} else if (anySent && !anyDelivered) {
+  say('ANSWER, SCOPED: nothing reached the model in HEADLESS PRINT MODE. The interactive');
+  say('        path — the only one the fleet runs — was NOT exercised in this run, so this');
+  say('        says nothing about it. Run without --only, or with --only=D, before quoting');
+  say('        this as a fact about "the client".');
 } else if (anyDelivered) {
   say('ANSWER: a server-initiated notification DID reach the model\'s context. See the');
   say('        per-state verdicts above for which states survived.');

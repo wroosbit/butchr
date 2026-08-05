@@ -10,14 +10,24 @@ Repository read at `4ed15d7`. Probe run 2026-08-04.
 **No — not yet, and not by the mechanism KAN-150 assumed.**
 
 Claude Code receives our `notifications/message` frames and does not put them in
-front of the model. This was tested three ways, in both target states, against a
-control that proves the detector works:
+front of the model. This was tested four ways, in both target states, **in both
+run modes**, against a control that proves the detector works:
 
-| Configuration | CP1 daemon broadcast | CP2 left our server | CP3 in-flight | CP3 idle |
-| --- | --- | --- | --- | --- |
-| **A** protocol floor (stub server) | n/a | observed | **dropped** | **dropped** |
-| **C** positive control | n/a | observed | **dropped** | **dropped** |
-| **B** real path (`daemon/dist/mcp.js` + real daemon events) | observed | observed | **dropped** | **dropped** |
+| Configuration | Run mode | CP1 daemon broadcast | CP2 left our server | CP3 in-flight | CP3 idle |
+| --- | --- | --- | --- | --- | --- |
+| **A** protocol floor (stub server) | headless print | n/a | observed | **dropped** | **dropped** |
+| **C** positive control | headless print | n/a | observed | **dropped** | **dropped** |
+| **B** real path (`daemon/dist/mcp.js` + real daemon events) | headless print | observed | observed | **dropped** | **dropped** |
+| **D** **the shipped path** — scratch agent activated through the daemon | **interactive, herdr pane** | observed | inherited from B | not tested | **dropped** |
+
+**Run mode is called out because it very nearly invalidated this finding.** A, B
+and C all drive `claude -p --output-format stream-json` — headless print mode.
+**No agent in the fleet runs that way**: every one is interactive Claude Code
+under a herdr pane (`herdr agent attach`). A verdict measured only in print mode
+would have claimed "this client drops notifications" on the strength of the one
+mode we do not ship on. Configuration D exists to close that gap, and it is the
+row that makes the conclusion a fact about our fleet rather than about a harness.
+The answer is the same in both modes.
 
 In configuration C the *same nonce* carried on a tool result **did** reach the
 model's context. So the probe can see a delivered nonce; it did not see these.
@@ -28,7 +38,7 @@ model's context. So the probe can see a delivered nonce; it did not see these.
 | --- | --- |
 | **The protocol**, at the negotiated revision `2025-11-25` | **Not the blocker.** Unsolicited server→client `notifications/message` is explicitly permitted. |
 | **Our SDK**, `@modelcontextprotocol/sdk` `1.30.0` | **Not the blocker.** It sent every frame correctly; we watched them leave on the wire. |
-| **This client**, Claude Code `2.1.221` / `2.1.222` | **The blocker.** It reads the frames and discards them without surfacing them to the model. |
+| **This client**, Claude Code `2.1.221` / `2.1.222`, **in both headless print mode and interactive mode** | **The blocker.** It reads the frames and discards them without surfacing them to the model. |
 
 There is a **second, future blocker** that matters more for design than the first:
 the current revision `2026-07-28` **deprecates Logging outright** and makes
@@ -225,8 +235,20 @@ extensions framework. ALL FOUR CONFIRMED**, from the `2026-07-28` changelog:
 
 ### How it was tested
 
-`daemon/scripts/probe-mcp-notification-delivery.mjs`, three configurations, three
-checkpoints, two target states.
+`daemon/scripts/probe-mcp-notification-delivery.mjs`, four configurations, three
+checkpoints, two target states, **two run modes**.
+
+**The two run modes, because the distinction is load-bearing:**
+
+| Mode | How the client is started | Who runs this way |
+| --- | --- | --- |
+| **Headless print** (configs A, B, C) | `claude -p --output-format stream-json`, driven over stdin | nobody in the fleet |
+| **Interactive** (config D) | activated through the daemon; Claude Code in a herdr pane (`herdr agent attach`) | **every fleet agent** |
+
+CP3's *observation point* differs between them, and nothing else does. In print
+mode the probe searches the conversation stream the client emits. That stream
+does not exist in interactive mode, so config D instead asks the agent down the
+composer and reads its answer off the pane with `tail_agent`.
 
 - **CP1 — the daemon emitted the broadcast.** A *second, independent* connection to
   the daemon's Unix socket observes the `*_event` frame. The connection that fires
@@ -235,9 +257,11 @@ checkpoints, two target states.
   logs every JSON-RPC frame in both directions.
 - **CP3 — the model received it**, in two strengths: **CP3a** the nonce appears
   anywhere in the conversation the client emitted (it was put into context at
-  all), and **CP3b** the model quoted it back. Terminal rendering was never
-  consulted; a line drawn on a pane the model does not read is the failure this
-  ticket exists to catch.
+  all), and **CP3b** the model quoted it back. **Terminal rendering is never
+  counted as CP3.** Configuration D records whether the nonce appeared on the
+  pane, but records it as a *separate* observable from the model's answer,
+  precisely because a line drawn on a pane the model does not read is the failure
+  this ticket exists to catch and would otherwise look like success.
 
 **Target state is measured, not assumed.** For each notification frame the probe
 computes from the recorded wire whether a client→server request was outstanding
@@ -247,13 +271,17 @@ the probe exit non-zero — an untested cell presented as a result is exactly th
 
 ### The results
 
-Nonce root `06F4932D42A7`, model `sonnet`, Claude Code `2.1.222`.
+One run, all four configurations, exit 0. Nonce root `91EBE4D97627`, model `sonnet`, Claude Code `2.1.222`.
 
 ```
-                        CP1        CP2        CP3a in-flight   CP3a idle
+run mode             CP1        CP2        CP3a in-flight   CP3a idle
 A — protocol floor     n/a        observed   dropped          dropped
 C — positive control   n/a        observed   dropped          dropped
 B — real path          observed   observed   dropped          dropped
+D — interactive        observed   inherited  n/a (idle only)  dropped
+
+  A, B, C ran in HEADLESS PRINT MODE (`claude -p`); D ran INTERACTIVE under a
+  herdr pane, which is the only mode the fleet actually runs.
 ```
 
 Configuration B, per state:
@@ -270,9 +298,59 @@ Real frames, produced by the real `daemon/dist/mcp.js` from real
 `agent_reset_event` broadcasts, observed leaving the server:
 
 ```json
-{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-06F4932D42A7B-INFLIGHT0"},"jsonrpc":"2.0"}
-{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-06F4932D42A7B-IDLE"},"jsonrpc":"2.0"}
+{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-91EBE4D97627B-INFLIGHT0"},"jsonrpc":"2.0"}
+{"method":"notifications/message","params":{"level":"info","data":"[Butchr Event] agent_reset_event - task/KAN-167-PROBE-91EBE4D97627B-IDLE"},"jsonrpc":"2.0"}
 ```
+
+### Configuration D — the shipped path, interactive under a herdr pane
+
+This is the cell that matters, because it is the only configuration that runs
+Claude Code the way the fleet does. A scratch agent was activated **through the
+daemon** (`activate_by_key`, `defaultAgent: 'claude'`), so it came up interactive
+in a herdr pane with the real workspace `.mcp.json`. Verbatim:
+
+```
+  activated: butchr-task-kan167-probe-91ebe4d97627d
+  forwarder process for this agent: FOUND
+    228449 …/node …/daemon/dist/mcp.js --workspace-type task --workspace-key KAN167-PROBE-91EBE4D97627D
+  agent ready: YES
+  firing real daemon event: reset_by_key task/KAN-167-PROBE-91EBE4D97627D-IDLE
+  nonce rendered on the pane: NO  (rendering is NOT CP3)
+
+--- verdict: configuration D — interactive (the shipped path) ---
+nonce used : 91EBE4D97627D
+CP1  daemon emitted the broadcast      : YES  2 broadcast(s) on the socket, independent observer
+CP2  notification left our MCP server  : inherited from configuration B (same daemon/dist/mcp.js; forwarder for this agent confirmed running)
+CP3a nonce rendered on the pane        : NO    (not CP3 — a pane is not context)
+CP3b model quoted the nonce in its answer: NO
+```
+
+The agent's own answer, read back off the pane:
+
+```
+● NOTHING ARRIVED
+```
+
+**Why asking down the composer is not circular.** The composer is the *question*
+channel; the notification is the *thing under test*. The nonce is never typed by
+the probe into anything the agent can see — it exists only inside the daemon's
+broadcast payload, riding in a workspace key. A separate random tag (`Q24DAD2`)
+marks the question so the answer can be located in the pane. If the agent could
+quote the nonce, it could only have come from the notification.
+
+**What D inherits rather than re-observes, and why.** CP2 is not re-measured on
+this agent's wire. The daemon writes the workspace `.mcp.json` itself at
+activation, so a tee could only be inserted by racing that write or by altering
+the shipped path — either would make the configuration less like production, not
+more. Instead the probe confirms **by process command line** that this agent
+spawned the same `daemon/dist/mcp.js` forwarder that configuration B watched emit
+frames. That is what makes the inheritance sound rather than assumed, and it is
+the one link in D that is argued rather than observed.
+
+**Note the pane result.** The nonce did not appear on the terminal either — so on
+this path the notification is not merely unread by the model, it is not rendered
+at all. Both observables are recorded separately because they fail differently: a
+line drawn on a pane the model never reads would have looked exactly like success.
 
 ### The control — why a "NO" here means anything
 
@@ -282,7 +360,7 @@ out **on the tool result**:
 
 ```
   CONTROL — the same nonce carried on the tool result instead:
-    control nonce present in context : YES  (06F4932D42A7-C-CONTROL)
+    control nonce present in context : YES  (91EBE4D97627-C-CONTROL)
     control nonce quoted by the model: NO
 ```
 
@@ -377,6 +455,18 @@ the input arrives:
   by 4s. Its bytes are unchanged, and every notification frame is the real
   server's own output forwarded the instant it is produced. Only the window is
   widened, and it is widened on the client's side of our server.
+- **Configuration D inherits CP2 rather than observing it**, for the reason given
+  in its section: a tee cannot be inserted into a daemon-written `.mcp.json`
+  without racing the write or altering the shipped path. The forwarder is
+  confirmed running for that agent by its process command line, which is what the
+  inheritance rests on. This is the one argued link in the finding.
+- **Configuration D tests the idle state only.** Firing an event into a genuine
+  in-flight window needed a 4s response delay injected by a tee (see above), and
+  there is no tee on the interactive path. So the interactive **in-flight** cell
+  is **untested, not passing.** It is the weakest remaining claim here. It matters
+  less than it would if the idle cell had passed: a channel that cannot reach an
+  idle agent is already unusable for KAN-150's purpose, and the print-mode
+  in-flight cell was measured and dropped.
 - **Not covered by anything, by anyone:** whether a notification arriving
   mid-tool-call *disturbs* that call — the fourth defect on KAN-150. This probe
   measures whether such a notification is **delivered**, not whether it is
@@ -434,6 +524,51 @@ turn each and every one of them said "no reply is expected".
 
 ---
 
+## Field observations — the mechanism failing while it was being measured
+
+Three of KAN-150's four defects reproduced against this task, unprompted, while
+it was investigating them. They are recorded here because they are evidence about
+the mechanism gathered under ordinary conditions, not staged.
+
+**Defect 3, the destructive interrupt — six times.** Poller nudges preempted this
+agent mid-turn six times, twice mid-tool-call. Every one of them said "this is a
+notification, not an instruction, and no reply is expected", and each cost a turn.
+One of them was a notification about **this agent's own comment**.
+
+**Defect 4, the false rejection — once, verbatim.** A `butchr_capacity` call
+returned *"The user doesn't want to proceed with this tool use. The tool use was
+rejected."* **Nobody rejected anything**; a nudge had landed mid-call. Following
+KAN-150's own interim practice — *do not trust a rejection report; verify the
+state* — the call was simply re-issued and answered normally. Had it been trusted,
+this finding would have recorded "capacity refused" and the interactive cell would
+never have been attempted.
+
+**Defect 1, the send-race — once, and it cost 40 minutes.** A cold power loss
+killed the host. The fleet auto-resurrected, and the resurrection nudge sent to
+this agent **was typed into its composer and never submitted**. The agent was not
+stopped, not errored, and not obviously idle: it sat with an unsent message in its
+composer, looking exactly like an agent that was working. It was recovered only
+because a human-side supervisor noticed and re-sent.
+
+That last one is the defect this story opens with, observed from **inside** the
+victim for once. The instructive part is not that the message was lost — it is
+what the loss looked like from every angle available:
+
+* to the sender, `success: true`
+* to the board, an agent In Progress on a ticket
+* to `butchr_list_agents`, a live, healthy session
+* to the agent, nothing at all — no event to react to, because the defining
+  property of this failure is that **nothing arrives**
+
+**Every observable said "fine".** A delivery mechanism whose failure mode is
+indistinguishable from success cannot be monitored into reliability; it can only
+be replaced. That is the argument KAN-150 makes on principle, and this is what it
+looks like in practice.
+
+It also sharpens what a protocol channel would have to be worth. The finding below
+is that no such channel is available today — so this failure mode stays, and the
+mitigation stays human attention.
+
 ## What would have to change
 
 In increasing order of how much of it is ours:
@@ -466,9 +601,21 @@ asks — so it is a different trade, not the same win. That is the epic agent's 
 
 ```bash
 cd daemon && npm run build
-node scripts/probe-mcp-notification-delivery.mjs             # all three configs
-node scripts/probe-mcp-notification-delivery.mjs --only=B    # the real path only
+node scripts/probe-mcp-notification-delivery.mjs             # all four configs
+node scripts/probe-mcp-notification-delivery.mjs --only=B    # real path, print mode
+node scripts/probe-mcp-notification-delivery.mjs --only=D    # the shipped interactive path
 ```
+
+**Configuration D activates a real agent on this machine** — it takes a capacity
+slot for a few minutes, comes up interactive in a herdr pane, and is stood down
+and its workspace deleted in a `finally` block. It writes an inert brief over the
+task brief the daemon generates, because there is no Jira ticket for its scratch
+key and an uninstructed task agent would otherwise go looking for one. If you
+interrupt the run, check for a leftover `task/KAN167-PROBE-*` workspace.
+
+Run it **without `--only`** before quoting the conclusion. With `--only=A|B|C` the
+probe exercises print mode alone and says so in its own summary — it prints
+`ANSWER, SCOPED` and refuses to generalise to "the client".
 
 The probe is deliberately **outside** the `verify-` namespace. It drives a live
 `claude` CLI and a real model, so it is an experiment, not a deterministic proof
