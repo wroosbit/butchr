@@ -28,6 +28,7 @@ import {
 } from './agent-registry.js';
 import { ResumeCause } from './resume.js';
 import { nudgeResumedAgent } from './nudge.js';
+import { senderTagFor, withSenderTag } from './provenance.js';
 import {
   PreemptionCandidate,
   addressOf,
@@ -1577,6 +1578,27 @@ export class MessageRouter {
    * asynchronous (there is a settle delay between the interrupt and the
    * text), so every outcome — including a rejection we never expect — has to
    * be turned back into a response; the caller is blocked on one.
+   *
+   * WHOSE VOICE THE RECIPIENT HEARS (KAN-149)
+   *
+   * The message is delivered by *typing it*, so without a tag it arrives
+   * indistinguishable from the human at the keyboard — which is how an epic
+   * agent came to tell the human they had rejected a tool call they had never
+   * seen. So the sender is stamped on, here, at the last point the daemon still
+   * knows who asked.
+   *
+   * **The tag comes from `workspaceType`/`workspaceKey`, which the butchr MCP
+   * attaches to every request it makes off its own argv (mcp.ts) — never from
+   * anything in `message`.** That is the property worth protecting: a body
+   * claiming `[from epic/KAN-39]` changes the delivered text and cannot change
+   * the leading tag, because the leading tag is a statement about the request
+   * rather than about the text. It is the same identity `supervisorOfRecord`
+   * already trusts to record parentage, read the same way.
+   *
+   * A caller the daemon cannot identify is tagged as unidentified rather than
+   * left bare — see `senderTagFor`. Nothing this handler delivers is ever
+   * untagged, which is what lets an agent read an untagged message as the
+   * human's own typing.
    */
   private handleSendToAgent(data: any, respond: Respond) {
     const { key, type, message } = data;
@@ -1593,8 +1615,22 @@ export class MessageRouter {
       return;
     }
 
-    this.herdrBridge.sendToAgent(key, message, type).then(
-      (result) => respond({ action: 'send_to_agent_response', key, ...result }),
+    const tag = senderTagFor({ type: data?.workspaceType, key: data?.workspaceKey });
+    const tagged = withSenderTag(tag, message);
+
+    this.herdrBridge.sendToAgent(key, tagged, type).then(
+      // `sender` and `delivered` go back to the caller so it can see what its
+      // recipient will actually read. A sender that cannot see its own tag has
+      // no way to notice that the daemon thinks it is somebody else — and the
+      // agent-facing tool description promises the tag, so the response is
+      // where that promise is either kept or visibly broken.
+      (result) => respond({
+        action: 'send_to_agent_response',
+        key,
+        ...result,
+        sender: tag,
+        delivered: tagged
+      }),
       (err) => fail(err?.message ?? String(err))
     );
   }

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { DAEMON_SENDER_TAG } from './provenance.js';
 
 /**
  * Bringing an agent back after the machine died under it.
@@ -148,10 +149,18 @@ function causeSentence(cause: ResumeCause): string {
  * agent's last remembered turn may have completed after its final transcript
  * write; the repository and the workspace are the ground truth, not its memory
  * of them.
+ *
+ * It opens with {@link DAEMON_SENDER_TAG} for the reason every injected message
+ * does (KAN-149): it arrives by being *typed*, so an untagged one is
+ * indistinguishable from the human. This message used to spell the tag
+ * `[butchr]` while its two sibling builders spelled it `[butchr daemon]` — a
+ * third of the daemon's own notices wearing a token the prompts do not teach.
+ * The spelling now comes from the shared constant, so a fourth builder cannot
+ * invent a fourth.
  */
 export function resumeNudge(type: string, key: string, cause: ResumeCause = 'reboot'): string {
   return [
-    `[butchr] You were interrupted mid-work. ${causeSentence(cause)}`,
+    `${DAEMON_SENDER_TAG} You were interrupted mid-work. ${causeSentence(cause)}`,
     `You have been restored automatically and this conversation is your own history — but your last remembered action may not have finished, and nothing has been done on your behalf since.`,
     `Do not start over. First establish what already exists: check this workspace and, if you have a git worktree here, its status, diff, branch, commits and whether a PR is already open. Re-read ${key} for anything recorded there while you were gone.`,
     `Then continue the task from wherever that evidence says you actually got to, and say in one line what state you found before you resume work.`

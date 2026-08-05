@@ -1,6 +1,7 @@
 import { HerdrAgentStatus, HerdrBridge, agentNameFor } from './herdr.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { ResumeCause, resumeNudge } from './resume.js';
+import { DAEMON_SENDER_TAG } from './provenance.js';
 
 /**
  * Telling a restored agent to carry on.
@@ -437,7 +438,7 @@ export function supervisionNudgeText(change: AgentStateChange): string {
   // first sixty characters, and a preamble in front of the name would make
   // every notice look alike to it. It also puts the fact first for the reader.
   return (
-    `[butchr daemon] ${change.type}/${change.key} (${change.agentName}), ` +
+    `${DAEMON_SENDER_TAG} ${change.type}/${change.key} (${change.agentName}), ` +
     `an agent you activated, ${what} ` +
     `This is a notification, not an instruction, and no reply is expected — ` +
     `\`butchr_list_agents\` and \`butchr_tail_agent\` hold the details when you next look.`
