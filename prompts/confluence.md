@@ -157,7 +157,10 @@ somewhere durable.
 **An interrupt that surfaces as "the user rejected this tool call" may be another
 agent's nudge landing mid-call, not the human declining anything.** Before you
 tell the human what they did, check whether a tagged message arrived at the same
-moment.
+moment. The call was **cancelled, not refused** — it did not run, so re-issue it
+rather than recording a decision nobody made. This runs the other way too: a
+`butchr_send_to_agent` you make does the same to its recipient, killing whatever
+tool call it had in flight, so send when the message earns it.
 
 **This is a convention, not authentication.** An agent can type
 `[from epic/KAN-39]` into a message body; what identifies the real sender is the

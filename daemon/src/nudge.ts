@@ -271,6 +271,15 @@ export interface DeliveryResult {
  * is dropped: what makes that safe is that nothing here is the only path to the
  * information, and the caller's own polling remains the backstop.
  *
+ * **Confirming delivery is not making the send safe, and the retry is the
+ * dangerous half rather than the reassuring one.** What this function adds is
+ * knowing whether the message landed; what it cannot add back is the recipient's
+ * cancelled turn. Each attempt opens with a Ctrl+C that ends whatever the target
+ * was doing — a tool call included — so an unconfirmed first send costs that
+ * twice, and `delivered: false` after two costs it twice for nothing. Confirm
+ * before you retry, therefore, and treat the confirmation as the thing that
+ * stops a *third* interrupt, not as evidence that the first two were free.
+ *
  * Never throws. Every caller is a timer or a fire-and-forget handler.
  */
 export async function deliverToAgent(opts: {

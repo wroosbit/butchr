@@ -640,6 +640,13 @@ same agent, because the second kills its session. The first three bound the
 fan-out of a single event; the last is the pre-existing interrupt rule, kept
 adjacent because this convention is what makes an agent likely to break it.
 
+**And the prompts now price the first nudge, not only the second** (KAN-156).
+"Interrupts once" was read as "interrupts harmlessly": one Ctrl+C cancels the
+recipient's turn and kills the tool call it was running, which is why the storm
+guards are worth obeying and why step 2 — nudge live agents only — is a rule
+rather than an optimisation. The `butchr_send_to_agent` tool description says the
+same thing at the point of call, since that is where the decision is made.
+
 This is the prompts half of status propagation. Its complement is daemon-side and
 lands separately: the next section covers what an agent *cannot* announce —
 dying, or going `blocked` — where the daemon nudges the supervisor of record on

@@ -1328,9 +1328,17 @@ export class HerdrBridge {
   }
 
   /**
-   * Deliver a message to an agent's terminal the way a human would: clear
-   * whatever is half-typed, type the message, submit it. Never throws — the
-   * caller is a request handler that owes its client a response either way.
+   * Deliver a message to an agent's terminal the way a human would: interrupt,
+   * type the message, submit it. Never throws — the caller is a request handler
+   * that owes its client a response either way.
+   *
+   * **The interrupt is destructive, and "clears a half-typed line" is the
+   * smallest thing it does.** Ctrl+C at a Claude Code pane cancels the turn in
+   * progress — a running tool call included, which is abandoned rather than
+   * resumed, and which renders on the recipient's screen as a refusal it may
+   * attribute to the human. Callers are choosing to take that from the
+   * recipient; the tool description in `mcp.ts` says so to the agents that call
+   * it, and this comment says so to whoever reaches for this method next.
    */
   public async sendToAgent(key: string, message: string, type?: string): Promise<{ success: boolean; error?: string }> {
     try {
@@ -1340,9 +1348,10 @@ export class HerdrBridge {
         throw new Error(`Agent '${agentName}' has no pane to send to`);
       }
 
-      // Exactly one Ctrl+C. It clears a partially typed line, but a second
-      // one is how Claude Code quits — which would kill the very agent we are
-      // trying to talk to.
+      // Exactly one Ctrl+C. One cancels the recipient's turn — its in-flight
+      // tool call with it — which is the cost of this call. A second one is how
+      // Claude Code quits, and would kill the very agent we are trying to talk
+      // to, which is the cost of getting this wrong.
       this.runHerdr(['pane', 'send-keys', paneId, 'C-c']);
       await delay(INTERRUPT_SETTLE_MS);
       this.runHerdr(['pane', 'send-text', paneId, message]);
