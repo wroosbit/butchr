@@ -112,6 +112,60 @@ export function withWorkspaceIdentity(
   };
 }
 
+/**
+ * Turn Butchr's own fields on a definition into what an MCP client actually
+ * reads — the one place that happens, applied by every writer below.
+ *
+ * TWO FIELDS, BOTH ADDED BY KAN-157:
+ *
+ *   `pathPrefix` becomes `env.PATH`, its directories placed ahead of the
+ *   daemon's own PATH. This is the field that decides which Node runs an
+ *   npx-based server: `npx` and the bin of whatever it fetches are both
+ *   `#!/usr/bin/env node`, so the interpreter comes from PATH regardless of how
+ *   `command` is spelled — see node-runtime.ts for the measurements. The daemon
+ *   composes the value: an integration supplies directories and never a whole
+ *   PATH, which is what keeps this from becoming a way to hand a server an
+ *   arbitrary environment.
+ *
+ *   `unusable` is dropped. It is Butchr's note about a server that cannot start
+ *   here — read by the activation refusal in herdr.ts and by the settings page —
+ *   and no MCP client has a key by that name. Writing it would put a sentence of
+ *   English into a config file where a reader could take it for a setting.
+ *
+ * A definition with neither field is returned unchanged, so the file written for
+ * today's `butchr` server is byte-identical to what it was before this existed.
+ */
+export function materializeMcpServers(defs: McpServerDefinitions): McpServerDefinitions {
+  const out: McpServerDefinitions = {};
+  for (const [name, definition] of Object.entries(defs)) {
+    const { pathPrefix, unusable, ...rest } = definition;
+    if (!pathPrefix || pathPrefix.length === 0) {
+      out[name] = rest;
+      continue;
+    }
+    const entries: string[] = [];
+    for (const part of [...pathPrefix, ...(process.env.PATH || '').split(':')]) {
+      if (part && !entries.includes(part)) entries.push(part);
+    }
+    out[name] = { ...rest, env: { ...rest.env, PATH: entries.join(':') } };
+  }
+  return out;
+}
+
+/**
+ * The servers that cannot start on this machine, as `name: why` pairs.
+ *
+ * Separated from the writers because the answer is needed *before* anything is
+ * written: an activation that would provision a workspace whose Atlassian server
+ * is dead on arrival is refused rather than completed (KAN-157, in KAN-84's
+ * voice). Empty is the normal answer.
+ */
+export function unusableMcpServers(defs: McpServerDefinitions): Array<[string, string]> {
+  return Object.entries(defs)
+    .filter(([, definition]) => typeof definition.unusable === 'string' && definition.unusable !== '')
+    .map(([name, definition]) => [name, definition.unusable as string]);
+}
+
 // Claude Code reads .mcp.json from the project root, and each session's
 // workDir is its project — so MCP config is scoped to the workspace instead
 // of being injected into the user's global ~/.claude.json.
@@ -140,7 +194,7 @@ export function writeWorkspaceMcpConfig(workDir: string, defs: McpServerDefiniti
       config = {};
     }
   }
-  config.mcpServers = { ...config.mcpServers, ...defs };
+  config.mcpServers = { ...config.mcpServers, ...materializeMcpServers(defs) };
 
   try {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -168,7 +222,7 @@ export function configureAgyMcp(defs: McpServerDefinitions, configPath?: string)
     }
   }
 
-  config.mcpServers = { ...config.mcpServers, ...defs };
+  config.mcpServers = { ...config.mcpServers, ...materializeMcpServers(defs) };
 
   try {
     fs.mkdirSync(agyConfigDir, { recursive: true });

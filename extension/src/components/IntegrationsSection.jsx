@@ -165,6 +165,18 @@ const serverRows = (servers) =>
 
 /** One server's command line, as the daemon reported it — or why it did not. */
 function ServerDetail({ server }) {
+  // KAN-157: a server the daemon knows cannot start on this machine. Said first
+  // and said loudly, because the bug this renders was a server that silently did
+  // not exist — an agent came up with fewer tools than its workspace declared
+  // and no way to find out why. A page that lists the server without this line
+  // is the same silence in a different font. The command line still follows, so
+  // the reader can see *what* would not start as well as why.
+  const unusable = server.unusable ? (
+    <span style={{ color: '#f87171', fontSize: '12px', lineHeight: 1.45 }}>
+      cannot start on this machine — {server.unusable}
+    </span>
+  ) : null;
+
   if (server.detailWithheld) {
     // The daemon withholds the command line of a definition built from a stored
     // credential (router.ts, describeMcpServers). Saying so is the honest
@@ -172,26 +184,53 @@ function ServerDetail({ server }) {
     // the reason — this one is configured from your credential — is itself
     // worth knowing.
     return (
-      <span style={{ color: '#94a3b8', fontSize: '12px' }}>
-        configured from the stored credential, so only its name is shown
+      <span style={{ display: 'block' }}>
+        {unusable}
+        {unusable && <br />}
+        <span style={{ color: '#94a3b8', fontSize: '12px' }}>
+          configured from the stored credential, so only its name is shown
+        </span>
       </span>
     );
   }
 
   // An older daemon sends the name alone and says nothing about why. Nothing is
   // the right thing to say about a reason it did not give.
-  if (!server.command) return null;
+  if (!server.command) return unusable;
 
   return (
-    <span
-      style={{
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: '#94a3b8',
-        wordBreak: 'break-all'
-      }}
-    >
-      {[server.command, ...(server.args || [])].join(' ')}
+    <span style={{ display: 'block' }}>
+      {unusable}
+      {unusable && <br />}
+      <span
+        style={{
+          fontFamily: 'monospace',
+          fontSize: '12px',
+          color: '#94a3b8',
+          wordBreak: 'break-all'
+        }}
+      >
+        {[server.command, ...(server.args || [])].join(' ')}
+      </span>
+      {/*
+        KAN-157: for an npx-based server this line is not decoration — it is the
+        thing that decides which Node runs it. Rendered under the command rather
+        than folded into it, because it is not part of the command line.
+      */}
+      {server.pathPrefix?.length ? (
+        <span
+          style={{
+            display: 'block',
+            fontFamily: 'monospace',
+            fontSize: '11px',
+            color: '#64748b',
+            wordBreak: 'break-all',
+            marginTop: '2px'
+          }}
+        >
+          PATH prefixed with {server.pathPrefix.join(':')}
+        </span>
+      ) : null}
     </span>
   );
 }

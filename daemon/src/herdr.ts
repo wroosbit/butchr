@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { resolveLauncher, sleepSync, withWorkspaceIdentity, writeWorkspaceMcpConfig } from './launchers.js';
+import { resolveLauncher, sleepSync, unusableMcpServers, withWorkspaceIdentity, writeWorkspaceMcpConfig } from './launchers.js';
 import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
@@ -596,6 +596,40 @@ export class HerdrBridge {
     // and herdr's agent is a child of the herdr daemon rather than of anything
     // this method spawns. `launcher.setup` below gets the unstamped
     // definitions on purpose — agy's config is global, see withWorkspaceIdentity.
+    // A server that cannot start on this machine refuses the activation, before
+    // anything is written or spawned (KAN-157, in KAN-84's voice).
+    //
+    // REFUSE RATHER THAN WARN, DELIBERATELY. The failure this replaces is not
+    // "the agent has fewer tools" — it is that *nobody finds out*. Claude Code
+    // reports a server that dies at parse time nowhere the agent can see, so an
+    // epic agent with no Jira coordinated a board it could not read for two
+    // hours and blamed everything else first. A warning goes to the daemon log,
+    // which is the one place the affected agent cannot look; the agent would
+    // still boot believing it had the tools its brief tells it to use, and would
+    // still spend its budget discovering otherwise. The activation is where a
+    // human is present and where a message is unmissable, so that is where this
+    // is said.
+    //
+    // WHAT MAKES REFUSING SAFE, which is the other half of the decision: an
+    // operator is never stuck. A disabled integration contributes no servers at
+    // all (registry.ts), so switching Atlassian off returns the fleet to service
+    // immediately, and the refusal says so. And the resolver prefers the
+    // daemon's own Node — the interpreter already running this code — so on any
+    // machine where the daemon itself runs, this branch is unreachable by
+    // construction. It is a backstop that fires when the machine genuinely
+    // cannot host the server, not a hurdle on the normal path.
+    const unusable = unusableMcpServers(mcpServers ?? {});
+    if (unusable.length > 0) {
+      session.spawnError =
+        `MCP server${unusable.length > 1 ? 's' : ''} that cannot start on this machine: ` +
+        unusable.map(([name, why]) => `${name} — ${why}`).join(' ') +
+        ` Nothing was started — an agent spawned without the tools its brief tells it to use ` +
+        `has no way to find out they are missing.`;
+      session.status = 'terminated';
+      console.error(`[HerdrBridge] Refusing to start ${agentName}: ${session.spawnError}`);
+      return;
+    }
+
     if (mcpServers && Object.keys(mcpServers).length > 0) {
       writeWorkspaceMcpConfig(
         session.workDir,

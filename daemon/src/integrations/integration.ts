@@ -55,6 +55,49 @@ export interface McpServerDefinition {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /**
+   * Directories to place ahead of `PATH` **in this server's own process**,
+   * materialized into the written `env.PATH` by the config writers in
+   * launchers.ts. Added by KAN-157.
+   *
+   * WHY THIS EXISTS AT ALL. `npx` is a `#!/usr/bin/env node` script and so is
+   * the bin of the package it fetches, so naming an absolute `npx` in `command`
+   * decides nothing about which Node actually runs the server — the PATH the
+   * process is handed does. That was measured, not assumed; the transcript is in
+   * node-runtime.ts. Without this field the Atlassian server's interpreter is
+   * whatever the daemon's PATH happens to front, which is precisely KAN-157.
+   *
+   * WHY IT IS NOT `env`, WHICH IS WHERE A PATH WOULD OBVIOUSLY GO. `env` is the
+   * credential channel, and `describeMcpServers` in router.ts closes any
+   * `env`-carrying definition down to its bare name for that reason. Putting a
+   * search path there would have hidden Atlassian's command line from the
+   * settings page and told its reader "configured from your stored credential",
+   * which is false — mcp-remote does its own OAuth and this definition carries
+   * no token. The alternative was an exemption to a security rule bought by a
+   * plumbing change, which KAN-145 already declined to do for the same reason.
+   *
+   * A list of directories is safe to report because the daemon composes it: an
+   * integration supplies directories, the writer joins them onto the daemon's
+   * own PATH. That is the same standing this field has as `args` — see the
+   * limit stated on `describeMcpServers`, which applies here unchanged.
+   */
+  pathPrefix?: string[];
+  /**
+   * Set when this server **cannot start on this machine**, in one sentence
+   * naming what is wrong and what to do about it. Added by KAN-157.
+   *
+   * A definition is still returned when it is unusable, rather than being
+   * omitted or thrown over, because two different readers need it: the settings
+   * page has to be able to say *why* a server it advertises will not run, and
+   * the activation path has to be able to refuse with that reason in its error.
+   * An omitted server would leave both saying nothing, which is the original bug
+   * in a new costume — a workspace whose Atlassian server silently does not
+   * exist.
+   *
+   * The writers strip this field before it reaches disk: it is Butchr's note to
+   * its own reader, not a key any MCP client reads.
+   */
+  unusable?: string;
 }
 
 /** Server name → definition, exactly as the `mcpServers` object is keyed. */
