@@ -25,7 +25,7 @@ import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
-import { AgentCost, MEASURED_AGENT_COST, setMeasuredAgentCost } from './capacity.js';
+import { AgentCost, MEASURED_AGENT_COST, sampleCpuBusy, setMeasuredAgentCost } from './capacity.js';
 import { execFileSync } from 'child_process';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
@@ -415,6 +415,14 @@ function sweepForMissingAgents() {
  */
 const COST_SAMPLE_INTERVAL_MS = 60_000;
 
+/**
+ * How often the daemon closes a /proc/stat window for the CPU headroom term
+ * (KAN-201). Five seconds: short enough that "cores in use" describes now
+ * rather than the last minute — the complaint that retired the load average —
+ * and long enough to be well above the sampler's own two-second floor.
+ */
+const CPU_SAMPLE_INTERVAL_MS = 5_000;
+
 /** The open "before" side of the current window; null until the first tick
  * and after any sampling failure. */
 let costWindow: MeasurementStart | null = null;
@@ -547,6 +555,16 @@ function onListen() {
   sampleFleetCost();
   const costSampler = setInterval(sampleFleetCost, COST_SAMPLE_INTERVAL_MS);
   costSampler.unref();
+
+  // KAN-201's CPU headroom term divides by cores actually in use, which needs
+  // two /proc/stat readings a window apart. readMachineFacts() advances the
+  // same sampler on every capacity question, so this timer is not what makes
+  // the measurement work — it is what makes the *first* question after a quiet
+  // spell answerable from a window that closed seconds ago instead of from the
+  // labelled load-average fallback. One 200-byte read every five seconds.
+  sampleCpuBusy();
+  const cpuSampler = setInterval(sampleCpuBusy, CPU_SAMPLE_INTERVAL_MS);
+  cpuSampler.unref();
 
   // Unlike the two above, this one schedules its own next tick rather than
   // running on a fixed interval — it has to be able to slow down when Jira

@@ -171,7 +171,15 @@ function capacityDto(c: Capacity) {
     // out of a paragraph of derivation.
     reason: capacityReason(c),
     cores: c.machine.cores,
+    // Reported, not gated on (KAN-201). Kept on the wire because it is the
+    // number a human feels, and because a reader comparing it against
+    // cpuBusyCores can see for themselves how far the two diverge — which is
+    // the evidence that retired it.
     load1: Math.round(c.machine.load1 * 100) / 100,
+    cpuBusyCores: Math.round(c.cpuBusyCores * 100) / 100,
+    cpuBusySource: c.cpuBusySource,
+    cpuBusyWindowSeconds:
+      c.cpuBusyWindowSeconds === null ? null : Math.round(c.cpuBusyWindowSeconds),
     totalMb: Math.round(c.machine.totalBytes / (1024 * 1024)),
     availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
     agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
@@ -188,7 +196,7 @@ function capacityDto(c: Capacity) {
     capByCpu: c.capByCpu,
     capByMemory: c.capByMemory,
     headroomByCap: c.headroomByCap,
-    headroomByLoad: c.headroomByLoad,
+    headroomByCpu: c.headroomByCpu,
     headroomByMemory: c.headroomByMemory,
     summary: summarizeCapacity(c)
   };
@@ -862,8 +870,8 @@ export class MessageRouter {
     // `running` nor charged a slot (see capacity.ts's header for the KAN-41
     // argument), so a load- or headroom-bound refusal here was refusing an
     // agent whose cost the model had already declined to charge. It was also
-    // a lockout in practice — desktop baseline load alone can pin
-    // headroomByLoad at 0 indefinitely, which meant epic and story agents
+    // a lockout in practice — desktop baseline load alone could pin the live
+    // term at 0 indefinitely, which meant epic and story agents
     // could never start or auto-restore without a manual override. They are
     // higher priority by construction (priority.ts) and always-on by intent,
     // so the gate has nothing to ration for them: no refusal, and therefore

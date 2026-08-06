@@ -1,11 +1,11 @@
 // Proof for KAN-34: the concurrent-agent cap is derived from the hardware,
-// travels between machines, refuses legibly, moves with load, and can be
-// overridden on purpose.
+// travels between machines, refuses legibly, moves with what the machine is
+// actually spending, and can be overridden on purpose.
 //
 // WHAT FAILURE THIS WOULD CATCH: a capacity model that stops rationing — a cap
 // that is not the minimum of what CPU and memory allow, a gate that admits an
 // agent past a full board, a supervisor charged a slot it was never meant to
-// cost (or refused on a load average it does not contribute to), a measured
+// cost (or refused on CPU it does not consume), a measured
 // per-agent cost adopted undamped or from a window that measured nothing, or a
 // refusal whose headline blames a constraint that did not bind. Each of those
 // has happened at least once on this board; each has a section below.
@@ -25,13 +25,23 @@
 //
 // Extended for KAN-57: the gate itself now honours what the model decided.
 // Supervisor activations — epic and story agents — are never refused on
-// load or headroom grounds; their cost was never charged, so there was
+// capacity or headroom grounds; their cost was never charged, so there was
 // nothing for the gate to ration. Section 14 proves it at zero headroom.
 //
 // Extended for KAN-60: what a refusal *says* now names the constraint that
 // bound. A load-bound refusal had been headlined "at capacity" with the cap
 // count leading — false by its own figures. Section 15 proves the headline
-// renders from headroomBoundBy on both the load-bound and count-bound paths.
+// renders from headroomBoundBy on both the CPU-bound and count-bound paths.
+//
+// Reworked for KAN-201: the live term that used to divide a 1-minute load
+// average now divides cores actually in use, read from /proc/stat — the same
+// units, and the same shape, as the memory term. Sections 8, 14 and 15 assert
+// against the new term because they asserted against the old one; what they
+// claim is unchanged. That the loosened gate still closes is a separate
+// script's subject, verify-cpu-headroom-gate.mjs, which also owns the proof
+// that a real measurement reaches the arithmetic — nothing here measures this
+// machine's CPU, and a section below that forces zero headroom does it through
+// an env override rather than by spending anything.
 //
 // Fifteen sections:
 //
@@ -42,7 +52,7 @@
 //   5. census        — epic + story + task through the real butchr_capacity
 //   6. refusal       — a real activate call at capacity, and what it answers
 //   7. re-attach     — the same call for an agent that is already running
-//   8. load          — the same fleet idle and busy, answering differently
+//   8. cpu           — the same fleet idle and busy, answering differently
 //   9. override      — the refusal bypassed deliberately, and recorded
 //  10. provenance    — measured cost vs seed: the divisor moves, and says so
 //  11. damping       — step response both directions: up fast, down slow
@@ -143,7 +153,12 @@ const FACTS = {
   cores: 4,
   totalBytes: Math.round(15.4 * GIB),
   availableBytes: Math.round(12 * GIB),
-  load1: 0.2
+  load1: 0.2,
+  // Stated rather than left to the load-average fallback: since KAN-201 the
+  // live term divides cores in use, and a fixture that omitted them would be
+  // exercising the degraded path while claiming to exercise the model.
+  busyCores: 0.2,
+  busyWindowSeconds: 5
 };
 
 // The old model, reconstructed from the constants as they stood at ce0038e:
@@ -250,9 +265,11 @@ for (const m of machines) {
     {
       cores: m.cores,
       totalBytes,
-      // A machine at rest: most RAM available, load near zero.
+      // A machine at rest: most RAM available, load and CPU near zero.
       availableBytes: Math.floor(totalBytes * 0.9),
-      load1: idle(m.cores)
+      load1: idle(m.cores),
+      busyCores: idle(m.cores),
+      busyWindowSeconds: 5
     },
     0
   );
@@ -480,36 +497,45 @@ verdict(
     'would be stranded away from work already in flight after every daemon restart.'
 );
 
-// ------------------------------------------------------------- 8. load --
-rule('8. LOAD SENSITIVITY — same machine, same agent count, different load');
+// -------------------------------------------------------------- 8. cpu --
+rule('8. CPU SENSITIVITY — same machine, same agent count, different CPU in use');
 
+// KAN-201 replaced the load average here with cores actually in use. What this
+// section claims did not change: the live term is what tells an idle fleet from
+// a compiling one, and a count-only cap cannot. The busy row is now a machine
+// whose cores are spent rather than one whose run queue is long — and on the
+// evidence in capacity.ts's header those were never the same thing.
 const facts = readMachineFacts();
-const byLoad = {};
-for (const [label, load1] of [['idle fleet', 0.15], ['busy fleet (compiling)', facts.cores * 2]]) {
-  const c = computeCapacity({ ...facts, load1 }, 1);
-  byLoad[label] = c;
+const byCpu = {};
+for (const [label, busyCores] of [
+  ['idle fleet', 0.15],
+  ['busy fleet (compiling)', facts.cores]
+]) {
+  const c = computeCapacity({ ...facts, busyCores, busyWindowSeconds: 5 }, 1);
+  byCpu[label] = c;
   console.log(
-    `${label.padEnd(24)} load ${String(load1.toFixed(2)).padStart(5)}  →  headroom ${c.headroom} ` +
-    `(count says ${c.headroomByCap}, load says ${c.headroomByLoad}, memory says ${c.headroomByMemory}; ` +
+    `${label.padEnd(24)} ${String(busyCores.toFixed(2)).padStart(5)} of ${facts.cores} cores in use ` +
+    `→  headroom ${c.headroom} ` +
+    `(count says ${c.headroomByCap}, cpu says ${c.headroomByCpu}, memory says ${c.headroomByMemory}; ` +
     `bound by ${c.headroomBoundBy})`
   );
 }
 
-const idleFleet = byLoad['idle fleet'];
-const busyFleet = byLoad['busy fleet (compiling)'];
+const idleFleet = byCpu['idle fleet'];
+const busyFleet = byCpu['busy fleet (compiling)'];
 verdict(
   // Same machine, same one agent running, same count headroom — and a different
-  // answer. If these two rows ever agree, the load term has stopped working and
+  // answer. If these two rows ever agree, the live term has stopped working and
   // the model has silently become the count-only cap KAN-34 replaced.
   busyFleet.headroom < idleFleet.headroom &&
-    busyFleet.headroomByLoad === 0 &&
-    busyFleet.headroomBoundBy === 'load' &&
+    busyFleet.headroomByCpu === 0 &&
+    busyFleet.headroomBoundBy === 'cpu' &&
     idleFleet.headroomByCap === busyFleet.headroomByCap,
   `one agent is running in both rows and the count says ${idleFleet.headroomByCap} in both, yet ` +
-    `headroom falls\n    ${idleFleet.headroom} → ${busyFleet.headroom} and the busy row is bound by load. A count-only cap cannot\n` +
-    '    tell these apart; the load average is what the human actually felt.',
-  `load made no difference: headroom ${idleFleet.headroom} idle vs ${busyFleet.headroom} busy ` +
-    `(busy headroomByLoad ${busyFleet.headroomByLoad}, bound by ${busyFleet.headroomBoundBy}).`
+    `headroom falls\n    ${idleFleet.headroom} → ${busyFleet.headroom} and the busy row is bound by cpu. A count-only cap cannot\n` +
+    '    tell these apart; a spent machine is what the human actually felt.',
+  `CPU in use made no difference: headroom ${idleFleet.headroom} idle vs ${busyFleet.headroom} busy ` +
+    `(busy headroomByCpu ${busyFleet.headroomByCpu}, bound by ${busyFleet.headroomBoundBy}).`
 );
 
 // --------------------------------------------------------- 9. override --
@@ -735,11 +761,11 @@ rule('14. SUPERVISOR GATE — epic and story activate at zero headroom, no overr
 
 // KAN-57. The model has never charged supervisors (sections 3 and 5), but the
 // gate still refused them whenever headroom hit 0 — and desktop baseline load
-// alone can pin headroomByLoad at 0 indefinitely, so always-on infrastructure
+// alone could pin the live term at 0 indefinitely, so always-on infrastructure
 // could not start or auto-restore without a human pressing "Start anyway".
 //
 // Zero headroom is forced the same way an operator could force it: a per-agent
-// core cost so large that the load term answers 0 on any machine this script
+// core cost so large that the CPU term answers 0 on any machine this script
 // runs on. That drives the refusal through the real readCapacity/env path
 // rather than through figures this script invented.
 const savedCores = process.env.BUTCHR_AGENT_CORES;
@@ -747,7 +773,7 @@ process.env.BUTCHR_AGENT_CORES = '1000';
 
 const gateCheck = readCapacity(0, 0);
 console.log(
-  `with BUTCHR_AGENT_CORES=1000: headroomByLoad ${gateCheck.headroomByLoad}, ` +
+  `with BUTCHR_AGENT_CORES=1000: headroomByCpu ${gateCheck.headroomByCpu}, ` +
   `headroom ${gateCheck.headroom}, atCapacity ${gateCheck.atCapacity} ` +
   `(bound by ${gateCheck.headroomBoundBy})\n`
 );
@@ -776,7 +802,7 @@ const supervisorsPassed =
 const taskStillRefused =
   taskAtZero.response?.success === false &&
   taskAtZero.response?.refusedBy === 'capacity' &&
-  String(taskAtZero.response?.reason ?? '').includes('load average');
+  String(taskAtZero.response?.reason ?? '').includes('cores are already in use');
 
 verdict(
   supervisorsPassed,
@@ -792,10 +818,10 @@ verdict(
   // The other half, and the one that keeps the exemption honest: if the task
   // agent also sailed through, the gate would have stopped rationing anything.
   taskStillRefused,
-  'the task agent is still refused, load-bound, with the same legible\n' +
+  'the task agent is still refused, cpu-bound, with the same legible\n' +
     '    reason as before: the exemption is exactly as wide as the supervisor\n' +
     '    set and no wider.',
-  `the task agent was not refused load-bound at zero headroom: success=` +
+  `the task agent was not refused cpu-bound at zero headroom: success=` +
     `${taskAtZero.response?.success}, refusedBy=${taskAtZero.response?.refusedBy}, ` +
     `reason=${taskAtZero.response?.reason ?? '(none)'}.`
 );
@@ -810,11 +836,12 @@ rule('15. REFUSAL HEADLINE — the headline names the constraint that bound');
 // read as "2 of 10, at capacity" — false by its own numbers (2 running
 // against a cap of 10), and leading with the count when what bound was the
 // load. The refusal string, the one-line summary and the sidepanel headline
-// all render from headroomBoundBy now, so "at capacity" appears only when
+// all render from headroomBoundBy now (KAN-201 renamed its 'load' value to
+// 'cpu' along with the term), so "at capacity" appears only when
 // the count is what bound.
 
-// Load-bound, count headroom positive: the same env trick as section 14 —
-// a per-agent core cost so large the load term answers 0 on any machine this
+// CPU-bound, count headroom positive: the same env trick as section 14 —
+// a per-agent core cost so large the CPU term answers 0 on any machine this
 // script runs on, while the count term still has room (nothing is running).
 {
   const saved = process.env.BUTCHR_AGENT_CORES;
@@ -825,20 +852,20 @@ rule('15. REFUSAL HEADLINE — the headline names the constraint that bound');
   const headline = error.split('\n')[0];
   const summary = String(loadBound.response?.capacity?.summary ?? '');
 
-  console.log('load-bound (headroomByLoad 0, headroomByCap positive), the refusal headline:\n');
+  console.log('cpu-bound (headroomByCpu 0, headroomByCap positive), the refusal headline:\n');
   console.log(`  ${headline}\n`);
   console.log(`and the one-line summary:\n\n  ${summary}\n`);
 
   const headlineOk =
-    /load too high/.test(headline) &&
-    /load average is \d/.test(headline) &&
+    /not enough cpu/.test(headline) &&
+    /[\d.]+ of this machine's \d+ cores are already in use/.test(headline) &&
     !/at capacity/i.test(headline) &&
-    !/\d+ of \d+|\d+\/\d+/.test(headline);
+    !/\d+ of \d+ task|\d+\/\d+/.test(headline);
   verdict(
-    headlineOk && summary.startsWith('load too high'),
-    'the headline names load, quotes the live load figure and the cores, and\n' +
-      '    says neither "at capacity" nor "N of cap". The summary leads the same way.',
-    'a load-bound refusal was headlined with the count — the KAN-60 defect exactly: ' +
+    headlineOk && summary.startsWith('not enough cpu'),
+    'the headline names cpu, quotes the cores in use against the cores there are,\n' +
+      '    and says neither "at capacity" nor "N of cap". The summary leads the same way.',
+    'a cpu-bound refusal was headlined with the count — the KAN-60 defect exactly: ' +
       `"${headline}" / summary "${summary}".`
   );
 
@@ -854,7 +881,9 @@ rule('15. REFUSAL HEADLINE — the headline names the constraint that bound');
     cores: 8,
     totalBytes: 16 * GIB,
     availableBytes: 12 * GIB,
-    load1: 0.5
+    load1: 0.5,
+    busyCores: 0.5,
+    busyWindowSeconds: 5
   };
   const c = computeCapacity(idle, computeCapacity(idle, 0).cap);
   const headline = capacityRefusal(c, 'task/KAN-99').split('\n')[0];

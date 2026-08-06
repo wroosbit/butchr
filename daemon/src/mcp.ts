@@ -141,7 +141,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_capacity",
         description:
-          "Reports how many concurrent agents this machine can carry and how many more can be started right now. The cap is derived from the machine's own cores and memory, so it differs between machines; headroom additionally accounts for the current load average, so a fleet that is compiling reports less room than the same fleet idle. Ask this before activating, not after the machine is on its knees. ALSO REPORTS priorities: what each running agent is worth (epic 3, story 2, task 1), which is what an activation at capacity would have to strictly outrank before it could stand any of them down.",
+          "Reports how many concurrent agents this machine can carry and how many more can be started right now. The cap is derived from the machine's own cores and memory, so it differs between machines; headroom additionally accounts for the CPU and memory actually in use right now, so a fleet that is compiling reports less room than the same fleet idle. The load average is reported (`load1`) but no longer gates anything — `cpuBusyCores`, measured from /proc/stat, is what the CPU term divides. Ask this before activating, not after the machine is on its knees. ALSO REPORTS priorities: what each running agent is worth (epic 3, story 2, task 1), which is what an activation at capacity would have to strictly outrank before it could stand any of them down.",
         inputSchema: {
           type: "object",
           properties: {},
