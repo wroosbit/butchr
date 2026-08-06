@@ -295,6 +295,17 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   // it. Re-attaching on sight is what keeps that invisible: the agent is
   // already running, so activate reuses the herdr pane rather than starting
   // anything, and the user never sees a fresh-start flicker.
+  //
+  // `reattachOnly` is that last sentence, said to the daemon instead of only to
+  // the reader of this comment. It was not true (KAN-196): this sends a plain
+  // `activate`, and a plain `activate` starts an agent when there is none to
+  // re-attach to. On 2026-08-05 the page open was KAN-39's, Jira could not be
+  // asked what kind of issue that is, the URL resolved to the fallback type
+  // `task` — and this effect started `butchr-task-kan-39`, an artifact stood
+  // down at the cutover, alongside the live `butchr-epic-kan-39`. Nobody asked
+  // for it; the daemon recorded it as activated anyway, which revoked the
+  // stand-down, and every reboot for the next two days restored it. With the
+  // flag the daemon refuses that start rather than performing it.
   useEffect(() => {
     if (pageStatus !== 'supported' || !active || attached) {
       if (attached) reattachSentRef.current = false;
@@ -309,7 +320,12 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     if (detachReason) return;
 
     reattachSentRef.current = true;
-    chrome.runtime.sendMessage({ type: 'ACTIVATE_BUTCHR', url: currentTab.url, tabId: currentTab.id });
+    chrome.runtime.sendMessage({
+      type: 'ACTIVATE_BUTCHR',
+      url: currentTab.url,
+      tabId: currentTab.id,
+      reattachOnly: true
+    });
   }, [pageStatus, active, attached, detachReason, currentTab?.id, currentTab?.url]);
 
   // Deliberate re-attach after a death we reported. Clearing the reason first
