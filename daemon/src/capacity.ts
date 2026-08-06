@@ -73,6 +73,58 @@ import * as os from 'os';
  * or decided, and a fleet that argues with its operator gets turned off. The
  * measurement beats the seed. The seed is what remains. BUTCHR_MAX_AGENTS
  * still pins the cap and skips the derivation entirely.
+ *
+ * KAN-201 replaced the live term that actually did the refusing. Until then,
+ * headroom asked the 1-minute load average how much of the machine was left:
+ *
+ *     headroomByLoad = (cores − reservedForHuman − load1) ÷ costPerAgentCores
+ *
+ * The human's verdict on it was "the formula that limits the number of agents
+ * is trash", and the numbers agreed. Four things were wrong with it, and only
+ * the last one is about strictness:
+ *
+ *   1. It measured the whole machine and charged it to the fleet. `load1`
+ *      counts the browser, a `npm run build`, and the human's own work
+ *      indiscriminately, then subtracts all of it from a budget that is
+ *      denominated in *per-agent* cost. One build pinned headroom at 0 for a
+ *      minute afterwards with no agent having done anything, which is also why
+ *      KAN-57 had to exempt supervisors from a gate that could never open.
+ *   2. It contradicted this file's own other answer by two orders of
+ *      magnitude. On 2026-08-06, with the same measured 0.064 core/agent
+ *      divisor, `capByCpu` said 39 and `headroomByLoad` said 0. Two routes
+ *      through one model cannot both describe one machine.
+ *   3. It is a lagging average used as an admission test. Admission is a
+ *      question about the next agent's marginal cost; `load1` is a smoothed
+ *      report of the last minute, so the gate refused on work that may already
+ *      have finished, and stayed wrong for up to a minute after it did.
+ *   4. It subtracted a queue length from a core count. Load average is the
+ *      run-queue — runnable *plus* uninterruptible-sleep tasks — not a
+ *      utilisation fraction. A load of 4.45 on this 4-core machine was
+ *      measured against 1.19 cores of actual CPU. The arithmetic was
+ *      dimensionally confused, and that confusion is the root of (2).
+ *
+ * What replaced it is the memory term's shape, because the memory term is the
+ * one nobody has ever complained about: take what the machine says is
+ * *available* right now, hold back the human's reserve, divide by the measured
+ * per-agent cost.
+ *
+ *     headroomByMemory = (availableBytes − reservedBytes) ÷ costPerAgentBytes
+ *     headroomByCpu    = (cores − busyCores − reservedCores) ÷ costPerAgentCores
+ *
+ * `busyCores` is CPU actually consumed, read from /proc/stat over a recent
+ * window (see {@link sampleCpuBusy}) — the same quantity, in the same units,
+ * that agent-cost.ts already measures per agent tree. `load1` is still read and
+ * still reported, because it is the number a human feels when the machine goes
+ * treacly; it no longer decides anything.
+ *
+ * This is a loosening and it is meant to be one — it was authorised as "about
+ * 2x" and it delivers more than that on this hardware. What it is not is a
+ * removal: a machine whose cores are genuinely spent still refuses, by the
+ * same arithmetic, with the same legible reason. The two terms that ration
+ * hardest are untouched: memory (which kills rather than slows, and which
+ * binds first on this laptop once CPU stops lying) and the static cap.
+ * daemon/scripts/verify-cpu-headroom-gate.mjs is the proof that the gate still
+ * closes, and it is written so that it goes red if it stops.
  */
 
 export const GIB = 1024 ** 3;
@@ -169,8 +221,26 @@ export interface MachineFacts {
   totalBytes: number;
   /** Memory that could be handed out now: MemAvailable, not MemFree. */
   availableBytes: number;
-  /** 1-minute load average. */
+  /**
+   * 1-minute load average. Reported, never gated on since KAN-201 — it is the
+   * number a human feels, and it is not a count of cores in use.
+   */
   load1: number;
+  /**
+   * Cores actually being consumed right now, measured from /proc/stat over a
+   * recent window. This is the CPU analogue of `availableBytes`: what the
+   * machine says it is spending, not what it says is queued.
+   *
+   * Null (or absent) when nothing could be measured — no /proc, no window
+   * closed yet, a window too old to describe "now". The arithmetic then falls
+   * back to `min(load1, cores)`, which over-states CPU use on a contended
+   * machine and therefore refuses sooner: the conservative direction, and
+   * labelled `load-average` in every report so nobody mistakes it for a
+   * measurement.
+   */
+  busyCores?: number | null;
+  /** Length of the window `busyCores` was averaged over, in seconds. */
+  busyWindowSeconds?: number | null;
 }
 
 /**
@@ -198,8 +268,18 @@ export function humanReserveBytes(totalBytes: number): number {
 /** Which measurement set the static cap. */
 export type CapBound = 'cpu' | 'memory' | 'floor' | 'configured';
 
-/** Which measurement set the live headroom. */
-export type HeadroomBound = 'cap' | 'load' | 'memory';
+/**
+ * Which measurement set the live headroom.
+ *
+ * `'load'` was retired by KAN-201 along with the term that produced it. It is
+ * deliberately not kept as an alias: a reader who sees `cpu` must be able to
+ * conclude that CPU actually in use is what bound, and a payload that could
+ * still say `load` would leave that in doubt.
+ */
+export type HeadroomBound = 'cap' | 'cpu' | 'memory';
+
+/** Where the `busyCores` figure the CPU term divided came from. */
+export type CpuBusySource = 'measured' | 'load-average';
 
 export interface Capacity {
   machine: MachineFacts;
@@ -233,9 +313,20 @@ export interface Capacity {
   /** How many more can be started right now. Never negative. */
   headroom: number;
   headroomByCap: number;
-  headroomByLoad: number;
+  /**
+   * What CPU allows right now: (cores − in use − reserved) ÷ per-agent cores.
+   * Replaced `headroomByLoad` in KAN-201 — see the header for why the load
+   * average was the wrong instrument rather than a strict one.
+   */
+  headroomByCpu: number;
   headroomByMemory: number;
   headroomBoundBy: HeadroomBound;
+
+  /** The cores-in-use figure the CPU term used, and where it came from. */
+  cpuBusyCores: number;
+  cpuBusySource: CpuBusySource;
+  /** Window `cpuBusyCores` was averaged over; null on the fallback path. */
+  cpuBusyWindowSeconds: number | null;
 
   /** True when starting another agent would exceed what the machine can carry. */
   atCapacity: boolean;
@@ -323,34 +414,54 @@ export function computeCapacity(
   // about either.
   const headroomByCap = Math.max(0, cap - running);
 
-  // The load average already includes every agent, any supervisors, herdr,
-  // and whatever the human is running, so this is the one term that
-  // distinguishes three idle agents from three that are compiling. It is also
-  // where running epic and story agents are felt at all: never charged in the
-  // model, their real (usually small) usage is in the measured load, and in
+  // CPU actually in use, the same way memory asks what is actually available.
+  // Every agent, every supervisor, herdr and the human are all in this figure —
+  // so it is still the one term that distinguishes three idle agents from three
+  // that are compiling, which was the load term's one real virtue and is kept.
+  // It is also where running epic and story agents are felt at all: never
+  // charged in the model, their real (usually small) usage shows up here and in
   // availableBytes below — a running supervisor's memory is memory the kernel
   // has already stopped offering.
   //
-  // It is a 1-minute average, so it lags: two agents started seconds apart are
-  // both invisible to it. That is exactly the gap the count term covers, which
-  // is why both are computed and the smaller wins rather than one replacing
-  // the other.
-  const loadBudget = machine.cores - reservedCores - machine.load1;
-  const headroomByLoad = Math.max(0, Math.floor(loadBudget / cost.cores));
+  // What changed in KAN-201 is only which instrument answers "how much of this
+  // machine is spent": cores consumed over a recent window, instead of a
+  // 1-minute run-queue average that counted I/O waits as CPU demand and
+  // disagreed with capByCpu by two orders of magnitude. See the header.
+  //
+  // The fallback keeps the gate honest when the instrument is missing: no
+  // sample means `min(load1, cores)`, which over-states use on a contended
+  // machine and so refuses sooner rather than later. On a platform with no load
+  // average either (Windows reports 0) this term goes inert, exactly as the
+  // load term did, and the count and memory terms still bind.
+  const cpuBusySource: CpuBusySource =
+    typeof machine.busyCores === 'number' ? 'measured' : 'load-average';
+  const cpuBusyCores =
+    cpuBusySource === 'measured'
+      ? Math.max(0, Math.min(machine.cores, machine.busyCores as number))
+      : Math.max(0, Math.min(machine.cores, machine.load1));
+  const cpuBusyWindowSeconds =
+    cpuBusySource === 'measured' ? machine.busyWindowSeconds ?? null : null;
+  // The human's reserve is subtracted here even though what they are already
+  // using is inside `cpuBusyCores`, and that is not double-charging: the same
+  // is true of the memory term, where the browser's resident pages are already
+  // out of `availableBytes`. The reserve is room for what the human might start
+  // doing next, which is the complaint the gate exists to answer.
+  const liveCpuBudget = machine.cores - cpuBusyCores - reservedCores;
+  const headroomByCpu = Math.max(0, Math.floor(liveCpuBudget / cost.cores));
 
   const headroomByMemory = Math.max(
     0,
     Math.floor(Math.max(0, machine.availableBytes - reservedBytes) / cost.residentBytes)
   );
 
-  const headroom = Math.min(headroomByCap, headroomByLoad, headroomByMemory);
+  const headroom = Math.min(headroomByCap, headroomByCpu, headroomByMemory);
   // Ties resolve to the term the reader can most directly act on: closing an
-  // agent is a decision, waiting for the load average to fall is not.
+  // agent is a decision, waiting for the machine to go quiet is not.
   const headroomBoundBy: HeadroomBound =
-    headroomByCap <= headroomByLoad && headroomByCap <= headroomByMemory
+    headroomByCap <= headroomByCpu && headroomByCap <= headroomByMemory
       ? 'cap'
-      : headroomByLoad <= headroomByMemory
-        ? 'load'
+      : headroomByCpu <= headroomByMemory
+        ? 'cpu'
         : 'memory';
 
   return {
@@ -368,9 +479,12 @@ export function computeCapacity(
     supervisors: options.supervisorsRunning ?? 0,
     headroom,
     headroomByCap,
-    headroomByLoad,
+    headroomByCpu,
     headroomByMemory,
     headroomBoundBy,
+    cpuBusyCores,
+    cpuBusySource,
+    cpuBusyWindowSeconds,
     atCapacity: headroom <= 0
   };
 }
@@ -396,19 +510,137 @@ export function readAvailableBytes(): number {
   return os.freemem();
 }
 
+/**
+ * CPU actually consumed, which is not the load average.
+ *
+ * /proc/stat's first line is cumulative jiffies per CPU state since boot, so
+ * one reading says nothing; two readings a window apart say what fraction of
+ * the machine was spent in between. That fraction times the core count is the
+ * quantity the CPU headroom term divides — the same units agent-cost.ts
+ * measures per agent tree, and the reason the two now agree.
+ *
+ * `idle` and `iowait` both count as *not busy*. A core in iowait had nothing
+ * runnable to put on it; it is available to a new agent. Counting it as spent
+ * is precisely the run-queue confusion KAN-201 removed, since iowait tasks are
+ * a large part of what inflates the load average above real CPU use.
+ */
+interface CpuTicks {
+  busy: number;
+  idle: number;
+  /** Date.now() when the reading was taken. */
+  at: number;
+}
+
+/** A closed window: what fraction of the machine was spent over it. */
+interface CpuBusyWindow {
+  busyFraction: number;
+  windowSeconds: number;
+  /** Date.now() when the window closed. */
+  closedAt: number;
+}
+
+/**
+ * Windows shorter than this are not closed; the baseline is kept so the next
+ * read closes a usable one. Two capacity calls a few milliseconds apart would
+ * otherwise divide two nearly-equal jiffy counters and report noise.
+ */
+const CPU_WINDOW_MIN_SECONDS = 2;
+/**
+ * A window longer than this is thrown away rather than closed: it would be an
+ * average over five minutes of history, which is the very property (a lagging
+ * average standing in for "now") that this term exists to stop relying on.
+ */
+const CPU_WINDOW_MAX_SECONDS = 300;
+/**
+ * How long a closed window still counts as describing "now". Past this the
+ * measurement is discarded and the arithmetic degrades to the labelled
+ * load-average fallback rather than dividing by a figure from another era.
+ */
+const CPU_SAMPLE_MAX_AGE_SECONDS = 120;
+
+function readCpuTicks(): CpuTicks | null {
+  try {
+    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n')[0];
+    if (!line.startsWith('cpu ')) return null;
+    // user nice system idle iowait irq softirq steal guest guest_nice
+    const v = line.trim().split(/\s+/).slice(1).map(Number);
+    if (v.length < 5 || v.some((n) => !Number.isFinite(n))) return null;
+    const idle = v[3] + v[4];
+    const total = v.reduce((s, n) => s + n, 0);
+    return { busy: total - idle, idle, at: Date.now() };
+  } catch {
+    // not Linux, or /proc is not mounted
+    return null;
+  }
+}
+
+let cpuBaseline: CpuTicks | null = null;
+let cpuWindow: CpuBusyWindow | null = null;
+
+/**
+ * Advance the /proc/stat sampler and return the most recent completed window,
+ * or null if there is none fresh enough to use.
+ *
+ * Self-maintaining on purpose: every `readMachineFacts()` calls it, so a daemon
+ * that answers capacity questions keeps its own measurement warm without any
+ * caller having to know that it exists. The daemon also ticks it on a short
+ * timer (daemon.ts) so the first question after a quiet spell is answered from
+ * a window that closed seconds ago rather than from the fallback — but nothing
+ * here *depends* on that timer running, which is what keeps the degraded path
+ * a degradation rather than a silent difference between the daemon and every
+ * script that imports this module.
+ */
+export function sampleCpuBusy(): CpuBusyWindow | null {
+  const ticks = readCpuTicks();
+  if (!ticks) {
+    // No instrument at all: forget everything rather than let an old window
+    // outlive the thing that produced it.
+    cpuBaseline = null;
+    cpuWindow = null;
+    return null;
+  }
+  if (cpuBaseline) {
+    const seconds = (ticks.at - cpuBaseline.at) / 1000;
+    const busy = ticks.busy - cpuBaseline.busy;
+    const idle = ticks.idle - cpuBaseline.idle;
+    const total = busy + idle;
+    if (seconds >= CPU_WINDOW_MIN_SECONDS && seconds <= CPU_WINDOW_MAX_SECONDS) {
+      // total <= 0 means the counters did not move (or went backwards, which
+      // happens across a suspend): no window, and the baseline restarts.
+      if (total > 0 && busy >= 0) {
+        cpuWindow = { busyFraction: busy / total, windowSeconds: seconds, closedAt: ticks.at };
+      }
+      cpuBaseline = ticks;
+    } else if (seconds > CPU_WINDOW_MAX_SECONDS) {
+      cpuBaseline = ticks;
+    }
+    // Shorter than the minimum: keep the baseline, so the next read closes.
+  } else {
+    cpuBaseline = ticks;
+  }
+  if (cpuWindow && (Date.now() - cpuWindow.closedAt) / 1000 > CPU_SAMPLE_MAX_AGE_SECONDS) {
+    cpuWindow = null;
+  }
+  return cpuWindow;
+}
+
 /** What this machine actually is. Never throws. */
 export function readMachineFacts(): MachineFacts {
   // os.cpus() returns [] in some containers; a machine with no CPUs is not a
   // thing, so a wrong-but-usable 1 beats a division by zero.
   const cores = os.cpus().length || 1;
+  const cpu = sampleCpuBusy();
   return {
     cores,
     totalBytes: os.totalmem(),
     availableBytes: readAvailableBytes(),
-    // os.loadavg() is [0,0,0] on Windows. That reads as a perfectly idle
-    // machine, which makes the load term inert rather than wrong — the count
-    // and memory terms still bind.
-    load1: os.loadavg()[0]
+    // os.loadavg() is [0,0,0] on Windows. Nothing gates on it since KAN-201,
+    // but it is still what a report quotes as the number the human feels.
+    load1: os.loadavg()[0],
+    // Null until the first window closes — one capacity call cannot measure a
+    // rate. The fallback is labelled, and it is the conservative direction.
+    busyCores: cpu ? cpu.busyFraction * cores : null,
+    busyWindowSeconds: cpu ? cpu.windowSeconds : null
   };
 }
 
@@ -497,6 +729,21 @@ export function describeCapacity(c: Capacity): string {
     `machine: ${m.cores} cores, ${gib(m.totalBytes)} RAM ` +
     `(${gib(m.availableBytes)} available), load average ${m.load1.toFixed(2)}`
   );
+  // The CPU figure gets its own line with its provenance, for the same reason
+  // the cost figures do: since KAN-201 this is what the live gate divides, and
+  // a reader must be able to tell a /proc/stat measurement from the
+  // load-average fallback that stands in when there is none. The load average
+  // stays on the line above, reported and no longer consulted — printing only
+  // the figure that gates would hide the very disagreement between the two
+  // that motivated the change.
+  lines.push(
+    c.cpuBusySource === 'measured'
+      ? `cpu in use: ${c.cpuBusyCores.toFixed(2)} of ${m.cores} cores (measured over ` +
+        `${Math.round(c.cpuBusyWindowSeconds ?? 0)}s); the load average is reported above and ` +
+        'is not what gates'
+      : `cpu in use: ${c.cpuBusyCores.toFixed(2)} of ${m.cores} cores (load-average fallback — ` +
+        'no /proc/stat window; this over-states use and so refuses sooner)'
+  );
   // Every cost figure carries its provenance, because the divisor can now be
   // a measurement: a reader must be able to tell a number this fleet produced
   // from the 2026-07-31 seed and from a number the operator typed in.
@@ -553,8 +800,8 @@ export function describeCapacity(c: Capacity): string {
   lines.push(
     `headroom: ${c.headroom} more — ` +
     `count allows ${c.headroomByCap} (${c.cap} cap − ${c.running} running), ` +
-    `load allows ${c.headroomByLoad} ((${m.cores} cores − ${c.reservedForHuman.cores} reserved ` +
-    `− ${m.load1.toFixed(2)} load) ÷ ${c.cost.cores}), ` +
+    `cpu allows ${c.headroomByCpu} ((${m.cores} cores − ${c.cpuBusyCores.toFixed(2)} in use ` +
+    `− ${c.reservedForHuman.cores} reserved) ÷ ${c.cost.cores}), ` +
     `memory allows ${c.headroomByMemory} ((${gib(m.availableBytes)} available ` +
     `− ${gib(c.reservedForHuman.bytes)} reserved) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB); ` +
     `bound by ${c.headroomBoundBy}`
@@ -571,9 +818,13 @@ export function describeCapacity(c: Capacity): string {
  * read as "at capacity" by count, which the line's own figures contradicted.
  */
 export function summarizeCapacity(c: Capacity): string {
+  // Cores in use, not the load average: a one-line refusal that quotes a
+  // figure nothing gated on sends the reader after the wrong lever, which is
+  // the KAN-60 defect in a new costume. The load average is one line down in
+  // the derivation for anyone who wants to compare the two.
   const figures =
     `${c.running}/${c.cap} task agents, room for ${c.headroom} more ` +
-    `(${c.machine.cores} cores, load ${c.machine.load1.toFixed(2)}, ` +
+    `(${c.machine.cores} cores, ${c.cpuBusyCores.toFixed(2)} in use, ` +
     `${gib(c.machine.availableBytes)} available; bound by ${c.headroomBoundBy})`;
   if (!c.atCapacity) return figures;
   // Count-bound, the figures already open with N-of-cap; repeating the whole
@@ -593,11 +844,17 @@ export function summarizeCapacity(c: Capacity): string {
  * built from the same numbers, so they cannot drift into disagreeing.
  */
 export function capacityReason(c: Capacity): string {
-  if (c.headroomBoundBy === 'load') {
+  if (c.headroomBoundBy === 'cpu') {
+    // Every figure the CPU term divided, in the order it divides them, so the
+    // sentence is checkable without opening the derivation: in use, total,
+    // held back. KAN-201 changed the arithmetic, so it changed this sentence
+    // with it — a refusal explaining an arithmetic that is no longer the
+    // arithmetic is worse than no explanation at all.
     return (
-      `the load average is ${c.machine.load1.toFixed(2)}, against the ` +
-      `${(c.machine.cores - c.reservedForHuman.cores).toFixed(1)} cores this machine ` +
-      `leaves to agents`
+      `${c.cpuBusyCores.toFixed(2)} of this machine's ${c.machine.cores} cores are already ` +
+      `in use${c.cpuBusySource === 'measured' ? '' : ' (estimated from the load average)'}, and ` +
+      `${c.reservedForHuman.cores} core${c.reservedForHuman.cores === 1 ? ' is' : 's are'} ` +
+      `held back for you`
     );
   }
   if (c.headroomBoundBy === 'memory') {
@@ -625,8 +882,8 @@ export function capacityReason(c: Capacity): string {
  */
 export function capacityHeadline(c: Capacity): string {
   const constraint =
-    c.headroomBoundBy === 'load'
-      ? 'load too high'
+    c.headroomBoundBy === 'cpu'
+      ? 'not enough cpu'
       : c.headroomBoundBy === 'memory'
         ? 'not enough memory'
         : 'at capacity';
