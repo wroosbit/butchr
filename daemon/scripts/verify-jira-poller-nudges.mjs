@@ -32,8 +32,10 @@
 //   5. rate limits      — the arithmetic, a 429 slowing the interval with a log
 //                         line and never to silence, a 404 not slowing it, and
 //                         recovery announced
-//   6. self-echo        — the stated limit: an agent that comments on its own
-//                         ticket gets exactly one pointer to its own comment
+//   6. repeats          — a comment attributable to nobody produces exactly one
+//                         pointer and never a second. (Suppressing an agent's
+//                         own comment is KAN-187's, and is proved in
+//                         verify-jira-self-echo-suppression.mjs.)
 //   7. --live           — real herdr panes, the real Jira API, a real status
 //                         transition and a real comment
 //
@@ -596,20 +598,26 @@ console.log(`
 
 // ----------------------------------------------------- 6. the self-echo limit --
 
-rule('AC6 — the stated limit: one redundant pointer when an agent comments on its own ticket');
+rule('AC6 — the event memory bounds a repeat to zero, whoever wrote the comment');
 
 console.log(`
   Every agent reaches Jira through the same shared Atlassian account, so a
   comment's author reads "somebody in this fleet" and never which agent. There
-  is no authorship signal to suppress an agent's own actions with, and inventing
-  one would be inventing a distinction the data cannot support. Suppression is
-  event-based instead: an event is remembered the first time it is seen.
+  is no authorship signal *in Jira* to suppress an agent's own actions with.
+  Suppression here is event-based instead: an event is remembered the first time
+  it is seen and never nudges twice.
 
-  The cost, stated rather than hidden: an agent that comments on its own ticket
-  is told once about its own comment. Bounded to exactly one, a pointer rather
-  than an echo of the text, and cheaper than the alternative — not nudging an
-  issue's own agent at all, which would drop the steer this story exists to
-  deliver.`);
+  KAN-75 accepted the limit that leaves — an agent that comments on its own
+  ticket is told once about its own comment — and this section is where that
+  bound of exactly one is asserted. KAN-187 has since closed the limit itself:
+  the poller now takes authorship from the authoring agent's own transcript and
+  declines to interrupt an author about its own text at all.
+
+  This section deliberately runs WITHOUT that authorship source, which is what
+  makes it still the right test of *this* module: the poller's own memory has to
+  bound the repeat on its own, for the comments it cannot attribute to anybody —
+  a human's, or one written before the daemon was watching. The suppression
+  itself is proved in verify-jira-self-echo-suppression.mjs, both legs.`);
 
 {
   const { agents, herdr, jira, parents } = cast();
@@ -624,8 +632,8 @@ console.log(`
   const afterFour = herdr.submitted('butchr-task-kan-79').length;
 
   console.log('');
-  row('the agent comments on its own ticket', `${echo.events.length} event(s)`);
-  row('pointers it received about its own comment', String(afterOne));
+  row('a comment appears, attributable to nobody', `${echo.events.length} event(s)`);
+  row('pointers the issue\'s own agent received', String(afterOne));
   row('after three more polls', String(afterFour));
   row('  events on those three polls', laterTicks.map((t) => t.events.length).join(', '));
 
@@ -640,7 +648,7 @@ console.log(`
     afterOne === 1 && afterFour === 1 && laterTicks.every((t) => t.events.length === 0) &&
       !message.includes('\n') && message.includes('KAN-79') && message.includes('not an instruction'),
     'exactly one pointer, never a second, and the pointer carries no ticket content.',
-    'the self-echo was unbounded, or the nudge carried content instead of a pointer.'
+    'the repeat was unbounded, or the nudge carried content instead of a pointer.'
   );
 }
 

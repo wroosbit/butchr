@@ -6,6 +6,7 @@ import { SupervisorOfRecord } from './agent-registry.js';
 import { JiraIssueSnapshot, JiraSnapshotOutcome } from './jira.js';
 import { deliverToAgent } from './nudge.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
+import { CommentAuthorship } from './comment-authorship.js';
 
 /**
  * ---------------------------------------------------------------------------
@@ -156,6 +157,15 @@ export interface JiraIssueEvent {
   to?: string | null;
   /** Comment events only: how many ids arrived past the last-seen maximum. */
   newComments?: number;
+  /**
+   * Comment events only: *which* ids those were.
+   *
+   * Carried because the count alone cannot answer the question each recipient
+   * has to be asked separately — "is any of this news to *you*?". Suppression
+   * is per-recipient (see {@link JiraPoller.notify}), so the event that reaches
+   * the fan-out has to hold the ids, not a total.
+   */
+  newCommentIds?: string[];
 }
 
 /** Why a given agent is being told about a given issue. */
@@ -178,8 +188,19 @@ export interface PollTick {
   polled: string[];
   events: JiraIssueEvent[];
   nudges: PollNudge[];
-  /** Recognised but not sent, with the reason each was dropped. */
-  skipped: Array<{ event: JiraIssueEvent; relation: NudgeRelation; reason: string }>;
+  /**
+   * Recognised but not sent, with the reason each was dropped.
+   *
+   * `agentName` is present when the drop was about a specific recipient rather
+   * than about the event — self-authored suppression is per-recipient, and
+   * "somebody was skipped" is not a fact anyone can check without knowing who.
+   */
+  skipped: Array<{
+    event: JiraIssueEvent;
+    relation: NudgeRelation;
+    reason: string;
+    agentName?: string;
+  }>;
   /** True when Jira asked to be left alone and the interval was lengthened. */
   degraded: boolean;
 }
@@ -227,21 +248,29 @@ export function jiraEventNudgeText(event: JiraIssueEvent, relation: NudgeRelatio
 /**
  * The poller's memory of what it has already accounted for.
  *
- * THE SUPPRESSION PROBLEM, AND ITS HONEST LIMIT (KAN-75)
+ * THE SUPPRESSION PROBLEM (KAN-75), AND WHAT CLOSED IT (KAN-187)
  *
  * Every agent reaches Jira through the same shared Atlassian account, so a
  * comment's author says "somebody in this fleet" and never *which* agent. There
- * is therefore no authorship signal to suppress an agent's own actions with,
- * and pretending otherwise would be inventing a distinction the data cannot
- * support. Suppression is event-based instead: an event is remembered the first
- * time it is seen and never produces a second nudge.
+ * is therefore no authorship signal *in Jira* to suppress an agent's own
+ * actions with. This memory answers a different question — "have I already
+ * announced this?" — and an event is remembered the first time it is seen and
+ * never produces a second nudge.
  *
- * The limit that leaves, stated rather than hidden: **an agent that comments on
- * its own ticket receives one redundant pointer to its own comment.** It is
- * bounded to exactly one by this memory, it is a pointer rather than an echo of
- * the text, and it is the accepted cost of having no authorship signal. The
- * alternative — not nudging an issue's own agent on a comment — would drop the
- * steer this whole story exists to deliver.
+ * KAN-75 accepted the limit that leaves: **an agent that comments on its own
+ * ticket receives one redundant pointer to its own comment**, bounded to
+ * exactly one. What made that cost worth re-opening is what the pointer costs
+ * to deliver. A nudge begins with a Ctrl+C at the recipient's terminal, which
+ * cancels the tool call it is in the middle of, and that call does not resume.
+ * Four agents recorded the same thing on KAN-187: work destroyed to deliver
+ * news the recipient wrote itself.
+ *
+ * So authorship is no longer taken from Jira. {@link CommentAuthorship} reads
+ * it out of the authoring agent's own transcript, where the tool result carries
+ * the created comment's id — see that module for why that is exact rather than
+ * a guess, and for the list of cases it does not cover. It is optional here:
+ * without one, this poller behaves exactly as KAN-75 left it, which is what
+ * makes the pre-fix behaviour reproducible in a proof.
  */
 export class JiraPollState {
   private issues = new Map<string, IssueMemory>();
@@ -395,6 +424,16 @@ export interface JiraPollerOptions {
   liveAgents: () => LiveAgent[];
   /** Parentage, read off the durable registry — the supervisor of record. */
   supervisorFor: (agentName: string) => SupervisorOfRecord | null;
+  /**
+   * Who wrote which comment, so an agent is not interrupted to be told about
+   * its own (KAN-187).
+   *
+   * Optional, and its absence is the pre-fix behaviour rather than a crash:
+   * a poller without one attributes nothing, suppresses nothing, and sends the
+   * redundant pointer KAN-75 accepted. That is what lets a proof reproduce the
+   * defect and its absence with the same code path.
+   */
+  authorship?: Pick<CommentAuthorship, 'scan' | 'isOwnComment'>;
   log: (...args: any[]) => void;
   state?: JiraPollState;
   intervalMs?: number;
@@ -589,6 +628,20 @@ export class JiraPoller {
     this.updatePace(sawBackOff, sawSuccess);
     tick.degraded = this.degraded;
 
+    // Deliberately after the reads and before the first nudge. A comment is
+    // written by an agent, then observed by a read, and the transcript line
+    // recording it is flushed in between — so scanning last is what makes the
+    // ids this tick is about the ids the scan has already seen. Scanning first
+    // would race the very writes this tick is reporting.
+    if (pending.some(({ event }) => event.kind === 'comment')) {
+      try {
+        this.opts.authorship?.scan(agents);
+      } catch (e: any) {
+        // Learning nothing means suppressing nothing, which is the safe side.
+        this.opts.log(`[jira-poll] authorship scan failed: ${e?.message ?? String(e)}`);
+      }
+    }
+
     for (const { event, snapshot } of pending) {
       await this.notify(event, snapshot, byKey, running, tick);
     }
@@ -644,7 +697,7 @@ export class JiraPoller {
       // One nudge for the tick, not one per comment. Three comments written in
       // a minute are one thing to go and read, and three interruptions of the
       // same agent would be the storm this module is most able to cause.
-      events.push({ key, kind: 'comment', newComments: fresh.length });
+      events.push({ key, kind: 'comment', newComments: fresh.length, newCommentIds: fresh });
     }
 
     this.state.set(key, {
@@ -675,6 +728,42 @@ export class JiraPoller {
         `[jira-poll] Jira is answering again; back to ${this.intervalMs / 1000}s between polls.`
       );
     }
+  }
+
+  /**
+   * This event as one recipient should hear it, or null if it is all its own.
+   *
+   * THE ASYMMETRY THIS ENCODES
+   *
+   * An id the daemon cannot attribute belongs to nobody, and news that belongs
+   * to nobody is delivered. So an unreadable transcript, an agent that is not
+   * Claude Code, a human commenting in the web UI, a comment written before the
+   * daemon started watching — every one of them lands on "notify", which is the
+   * behaviour that existed before any of this. **Suppression requires positive
+   * evidence that this recipient wrote the comment; nothing else suppresses.**
+   *
+   * Status events are returned untouched. There is no authorship in a
+   * transition, and the poller already declines to tell an issue's own agent
+   * about its own status (see the class docblock).
+   */
+  private newsFor(event: JiraIssueEvent, agent: LiveAgent): JiraIssueEvent | null {
+    const authorship = this.opts.authorship;
+    if (!authorship || event.kind !== 'comment') return event;
+
+    const ids = event.newCommentIds;
+    // An event with no ids on it predates this field or was built by hand;
+    // there is nothing to check it against, so it is news.
+    if (!ids?.length) return event;
+
+    const theirs = ids.filter((id) => !authorship.isOwnComment(id, agent.agentName));
+    if (!theirs.length) return null;
+    if (theirs.length === ids.length) return event;
+
+    // Some of it was this agent's own. It is told about the rest, and the count
+    // it is given is the count that is actually news to it — a nudge saying
+    // "3 new comments" to an agent that wrote two of them is a pointer with a
+    // wrong number on it.
+    return { ...event, newComments: theirs.length, newCommentIds: theirs };
   }
 
   /** Work out who this event concerns, and tell each of them once. */
@@ -741,6 +830,26 @@ export class JiraPoller {
     }
 
     for (const { agent, relation } of targets.values()) {
+      // The one question that has to be asked of each recipient separately:
+      // news is news *to somebody*, and the same three comments can be an echo
+      // for one agent and a steer for the next. Answered per target rather than
+      // per event for exactly that reason — an agent that wrote one of three
+      // comments is still told about the other two.
+      const forThisAgent = this.newsFor(event, agent);
+      if (!forThisAgent) {
+        log(
+          `[jira-poll] ${event.key} (${event.kind}): not telling ${agent.type}/${agent.key} ` +
+          `(${relation}) — it wrote every new comment itself.`
+        );
+        tick.skipped.push({
+          event,
+          relation,
+          reason: 'every new comment on this issue was written by the recipient',
+          agentName: agent.agentName
+        });
+        continue;
+      }
+
       log(
         `[jira-poll] ${event.key} (${event.kind}): telling ${agent.type}/${agent.key} (${relation}).`
       );
@@ -748,7 +857,7 @@ export class JiraPoller {
         herdrBridge,
         type: agent.type,
         key: agent.key,
-        message: jiraEventNudgeText(event, relation),
+        message: jiraEventNudgeText(forThisAgent, relation),
         log,
         ...(this.opts.confirmTimeoutMs !== undefined
           ? { confirmTimeoutMs: this.opts.confirmTimeoutMs }
@@ -756,7 +865,9 @@ export class JiraPoller {
         ...(this.opts.confirmPollMs !== undefined ? { pollMs: this.opts.confirmPollMs } : {})
       });
       tick.nudges.push({
-        event,
+        // The event as this recipient was told it, which after suppression is
+        // not always the event the issue had. A record of what was sent.
+        event: forThisAgent,
         relation,
         type: agent.type,
         key: agent.key,

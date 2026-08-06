@@ -23,6 +23,7 @@ import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
+import { CommentAuthorship } from './comment-authorship.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
 import { AgentCost, MEASURED_AGENT_COST, sampleCpuBusy, setMeasuredAgentCost } from './capacity.js';
@@ -339,10 +340,20 @@ const supervision = new SupervisionNotifier({
  * flight. Same fleet census, same durable parentage, same delivery primitive;
  * a different thing being read. See jira-poll.ts for the interval arithmetic,
  * the back-off, and the limits of self-echo suppression.
+ *
+ * `authorship` is what stops the poller interrupting an agent to tell it about
+ * a comment it wrote itself (KAN-187). It is the one part of this wiring that
+ * reads something other than herdr, Jira or the registry — Claude Code's own
+ * transcripts — because that is the only place in the system where an agent's
+ * write to Jira is observable at all. See comment-authorship.ts for why the
+ * author field cannot answer this and what the transcript answers instead.
  */
+const commentAuthorship = new CommentAuthorship({ log });
+
 const jiraPoller = new JiraPoller({
   jira,
   herdrBridge,
+  authorship: commentAuthorship,
   liveAgents: () =>
     daemonRouter
       .surveyFleet()
