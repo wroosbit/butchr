@@ -29,6 +29,8 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
 - Run tests and linting to verify implementation correctness.
 - Post progress updates or completion status back to the Jira issue via Atlassian MCP tools.
 - If you file or discover a follow-up ticket, link it `Relates` to **{{KEY}}** so the connection is one click away for whoever reads either ticket.
+- **An authorisation whose condition has lapsed is not an authorisation — re-check the justification at the moment of starting, not at approval.** Your ticket was written before you were staffed, sometimes by hours or days, and anything in it that reads *"because X"* was true of the world **then**. Where the ticket authorises something out of the ordinary — an exception, a bypass, a shortcut, "go ahead without waiting for Y" — verify the condition still holds before you act on it, and say on the ticket if it does not. Re-running the ticket's own greps and line numbers is the same discipline applied to its evidence: a citation is a claim about a file at a commit, not a fact.
+- **If your task writes a Confluence page, verify what was stored — `success` is a claim about the request, not about the page.** On 2026-08-05 `task/KAN-183` saved a page successfully while silently losing an invariant, a bullet, and an entire section, which came back from the API as an empty `<li><p /></li>`. The trigger is a **blockquote nested inside a list item** under `contentFormat: "markdown"`: it violates ADF nesting and the converter drops the whole list item rather than rejecting the request. So after the write, `getConfluencePage` with `body.storage` and compare it against what you sent, section by section. `prompts/confluence.md` carries the full recipe.
 
 ### 4. Submitting Work (Pull Request Only)
 **Never commit or push directly to `main`.** The default branch is protected; direct pushes are rejected. All work lands through a pull request.
@@ -47,6 +49,33 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
 - **Announce the In Review transition as you make it** — the hand-off is the transition other agents most need to hear about, and the one most often lost. See **📣 Announce every transition you make** below.
 - Use the `gh` CLI for all GitHub operations.
 - If you find yourself blocked by branch protection, that is the rule working as intended — open a PR; do not attempt to force-push, disable protection, or push to `main`.
+
+## 🔐 Secrets never enter a transcript
+
+You are the agent that runs commands, and your terminal is recorded. Your
+commits, your PR body and your ticket comments are permanent and public to
+every other agent. **A credential is referenced by path, never echoed.**
+
+- **Never print one.** No `echo $TOKEN`, no `cat` of a credential file, no
+  `env` dump, no token as a command-line argument — arguments are visible in
+  process listings and in the transcript alike. Read it from a file or an
+  environment variable at the point of use and let it stay there.
+- **Never commit one**, and never paste one into a PR body, a Jira comment, or
+  a page. If a command's output might contain one, redact before you paste —
+  the *"paste the real output"* rule above is about honesty, not about volume,
+  and a redaction you mark is honest.
+- **A token is handed over out-of-band** and reaches the daemon through the
+  settings UI. Where you need one, refer to it **by path**. The interim copy is
+  destroyed once the daemon holds it.
+- **If you have already echoed one, say so immediately** on the ticket and
+  treat it as compromised. Rotating a token is cheap; a transcript cannot be
+  un-written, and a quiet leak is worse than a loud one.
+
+*Credentials stop at the daemon* is one of KAN-39's invariants, and the daemon
+enforces its half in code — no write scope, scrubbed logs, storage disclosed
+before the token is typed. Your transcript is the leg nothing enforces: it is
+how a credential gets past that boundary without anybody writing a line of
+code.
 
 ## 📩 Whose voice is this? Reading provenance on what arrives
 
@@ -97,9 +126,9 @@ durable, and it costs one read to check.
 ## 📣 Announce every transition you make
 
 A status change is news, and nothing in the board delivers it. An agent whose
-work depends on yours finds out when its own polling loop next looks, or never:
-KAN-61's completed story sat silently done after its one hand-back nudge was
-eaten by a daemon restart. So **the moment you transition {{KEY}} — at that
+work depends on yours finds out when its own supervision sweep next looks, or
+never: KAN-61's completed story sat silently done after its one hand-back nudge
+was eaten by a daemon restart. So **the moment you transition {{KEY}} — at that
 moment, not later — tell the agents it affects.**
 
 The link graph is the notification topology: a status change is interesting
