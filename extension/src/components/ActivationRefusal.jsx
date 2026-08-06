@@ -38,9 +38,14 @@ export function ActivationRefusal({ refusal, onOverride, onPreempt, onDismiss })
   // and pointing the reader at the wrong lever. `headroomBoundBy` is on
   // every capacity payload; render from it, the same rule the daemon's own
   // refusal string follows.
+  //
+  // KAN-201 renamed the live CPU term: it divides cores actually in use, read
+  // from /proc/stat, instead of a 1-minute load average that counted I/O waits
+  // as CPU demand. The headline follows the arithmetic, because a refusal that
+  // blames a term the daemon no longer computes is worse than none.
   const headline =
-    isCapacity && capacity.headroomBoundBy === 'load'
-      ? 'Load is too high'
+    isCapacity && capacity.headroomBoundBy === 'cpu'
+      ? 'Not enough CPU'
       : isCapacity && capacity.headroomBoundBy === 'memory'
         ? 'Not enough memory'
         : 'This machine is at capacity';
@@ -57,7 +62,13 @@ export function ActivationRefusal({ refusal, onOverride, onPreempt, onDismiss })
           <div className="capacity-figures">
             <span><b>{capacity.running}</b> of <b>{capacity.cap}</b> task agents</span>
             <span>room for <b>{capacity.headroom}</b></span>
-            <span>load <b>{capacity.load1}</b> / {capacity.cores} cores</span>
+            {/*
+              Cores in use rather than the load average: this is the figure the
+              gate divided, and showing a number nobody gated on next to a
+              refusal is how a reader ends up looking for the wrong lever. The
+              load average is still in the derivation below, alongside it.
+            */}
+            <span>cpu <b>{capacity.cpuBusyCores}</b> / {capacity.cores} cores in use</span>
             <span><b>{gib(capacity.availableMb)}</b> free</span>
           </div>
 

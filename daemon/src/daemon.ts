@@ -23,9 +23,10 @@ import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
+import { CommentAuthorship } from './comment-authorship.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
-import { AgentCost, MEASURED_AGENT_COST, setMeasuredAgentCost } from './capacity.js';
+import { AgentCost, MEASURED_AGENT_COST, sampleCpuBusy, setMeasuredAgentCost } from './capacity.js';
 import { execFileSync } from 'child_process';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
@@ -339,10 +340,20 @@ const supervision = new SupervisionNotifier({
  * flight. Same fleet census, same durable parentage, same delivery primitive;
  * a different thing being read. See jira-poll.ts for the interval arithmetic,
  * the back-off, and the limits of self-echo suppression.
+ *
+ * `authorship` is what stops the poller interrupting an agent to tell it about
+ * a comment it wrote itself (KAN-187). It is the one part of this wiring that
+ * reads something other than herdr, Jira or the registry — Claude Code's own
+ * transcripts — because that is the only place in the system where an agent's
+ * write to Jira is observable at all. See comment-authorship.ts for why the
+ * author field cannot answer this and what the transcript answers instead.
  */
+const commentAuthorship = new CommentAuthorship({ log });
+
 const jiraPoller = new JiraPoller({
   jira,
   herdrBridge,
+  authorship: commentAuthorship,
   liveAgents: () =>
     daemonRouter
       .surveyFleet()
@@ -414,6 +425,14 @@ function sweepForMissingAgents() {
  * turns busy is mostly believed within three windows, i.e. minutes.
  */
 const COST_SAMPLE_INTERVAL_MS = 60_000;
+
+/**
+ * How often the daemon closes a /proc/stat window for the CPU headroom term
+ * (KAN-201). Five seconds: short enough that "cores in use" describes now
+ * rather than the last minute — the complaint that retired the load average —
+ * and long enough to be well above the sampler's own two-second floor.
+ */
+const CPU_SAMPLE_INTERVAL_MS = 5_000;
 
 /** The open "before" side of the current window; null until the first tick
  * and after any sampling failure. */
@@ -547,6 +566,16 @@ function onListen() {
   sampleFleetCost();
   const costSampler = setInterval(sampleFleetCost, COST_SAMPLE_INTERVAL_MS);
   costSampler.unref();
+
+  // KAN-201's CPU headroom term divides by cores actually in use, which needs
+  // two /proc/stat readings a window apart. readMachineFacts() advances the
+  // same sampler on every capacity question, so this timer is not what makes
+  // the measurement work — it is what makes the *first* question after a quiet
+  // spell answerable from a window that closed seconds ago instead of from the
+  // labelled load-average fallback. One 200-byte read every five seconds.
+  sampleCpuBusy();
+  const cpuSampler = setInterval(sampleCpuBusy, CPU_SAMPLE_INTERVAL_MS);
+  cpuSampler.unref();
 
   // Unlike the two above, this one schedules its own next tick rather than
   // running on a fixed interval — it has to be able to slow down when Jira
