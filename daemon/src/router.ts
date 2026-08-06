@@ -1086,6 +1086,120 @@ export class MessageRouter {
   }
 
   /**
+   * Whether herdr has a live runtime behind this exact agent name.
+   *
+   * The same predicate reconciliation uses (`filter(a => a.agentRuntime)`) and
+   * for the same reason: herdr keeps a name registration for any pane it ever
+   * started an agent into, so the name answering is not evidence of an agent.
+   * See the `staleRecord` branch of `HerdrBridge.spawnSession`.
+   */
+  private hasLiveHerdrAgent(agentName: string): boolean {
+    return this.herdrBridge
+      .listHerdrAgents()
+      .some((agent) => agent.name === agentName && agent.agentRuntime !== null);
+  }
+
+  /**
+   * A live agent sharing this key under a *different* type, or undefined.
+   *
+   * Keys are shared across types by design, so this is a question with a real
+   * answer rather than an anomaly detector — `epic/KAN-39` and `task/KAN-39`
+   * are both nameable addresses. What makes the pair interesting is that both
+   * being live at once is the (key, type) collision KAN-83 exists to prevent.
+   */
+  private liveAgentAtKeyOfOtherType(type: string, key: string): string | undefined {
+    for (const agent of this.herdrBridge.listHerdrAgents()) {
+      if (agent.agentRuntime === null) continue;
+      const address = addressFromAgentName(agent.name);
+      if (!address) continue;
+      if (address.key.toLowerCase() !== key.toLowerCase()) continue;
+      if (address.type === type) continue;
+      return agent.name;
+    }
+    return undefined;
+  }
+
+  /**
+   * Whether starting a *new* agent here would be a start nobody asked for.
+   *
+   * KAN-196. Both arms below are about the same event, which happened on
+   * 2026-08-05T00:57 and then recurred on every reboot for two days:
+   * `butchr-task-kan-39` — an artifact stood down at the 2026-08-03 cutover,
+   * which KAN-39's description says must never run again — was started by a URL
+   * activation, which wrote `activated` into the durable registry and thereby
+   * *revoked its stand-down*. From then on boot-time reconciliation restored it
+   * every time, correctly: `AgentRegistry.expected()` reads the last event per
+   * agent, and the last event said `activated`.
+   *
+   * So the restore path is not the defect. It consulted the stand-down and
+   * honoured it — 274 of the 274 agents whose last event is `deactivated` stay
+   * down across a reboot. The defect is that a stand-down can be revoked by an
+   * activation nobody intended, silently, and that nothing downstream can tell
+   * the difference between that and a person switching an agent back on.
+   *
+   * Two things had to be true at once for it to happen, and this guard denies
+   * each of them separately:
+   *
+   *   1. **The type was a guess.** `WorkspaceRegistry.resolve` refines a Jira
+   *      issue URL by asking Jira what kind of issue it is, and lands on `task`
+   *      when that question cannot be answered — which the journal records it
+   *      doing for KAN-39, seven seconds before the spawn:
+   *      `jira: issue-type lookup for KAN-39 failed (… timed out); falling back
+   *      to the default workspace type`. So the daemon started `task/KAN-39`
+   *      while `epic/KAN-39` was live, which is invariant 5's collision, whose
+   *      failure mode is killing the epic agent's PTY.
+   *   2. **Nobody asked.** The activation came from the sidepanel's automatic
+   *      re-attach, whose own comment says it "reuses the herdr pane rather
+   *      than starting anything". It sends a plain `activate`, which starts
+   *      things — the sentence claimed more than the mechanism covered. The
+   *      panel now says `reattachOnly` when it means it, and this is where that
+   *      word is honoured.
+   *
+   * Deliberate starts are untouched: the On switch, Reconnect, [Start anyway],
+   * [Stand down … and start], and every `activate_by_key` caller (the Agents
+   * page and the MCP tool, which name the type instead of guessing it) all
+   * reach this with `reattachOnly` unset, and arm 2 only fires when the address
+   * is both recorded stood-down *and* about to collide with a live sibling.
+   * Turning an ordinary stood-down agent back on from its own page is the case
+   * this must not break, and it does not: with no live agent at its key, arm 2
+   * has nothing to refuse.
+   */
+  private unintendedStart(
+    type: string,
+    key: string,
+    agentName: string,
+    reattachOnly: boolean
+  ): { refusedBy: string; error: string } | undefined {
+    if (reattachOnly && !this.hasLiveHerdrAgent(agentName)) {
+      return {
+        refusedBy: 'reattach-only',
+        error:
+          `Nothing to re-attach to: herdr has no live agent named ${agentName}. ` +
+          `This request was the panel re-attaching to an agent it believed was already ` +
+          `running, and re-attaching is the whole of what it is allowed to do — starting ` +
+          `one here would be a start nobody asked for. Use the On switch to start it.`
+      };
+    }
+
+    const intent = this.agentRegistry?.intents().get(agentName);
+    if (intent?.event !== 'deactivated') return undefined;
+
+    const sibling = this.liveAgentAtKeyOfOtherType(type, key);
+    if (!sibling) return undefined;
+
+    return {
+      refusedBy: 'stood-down-collision',
+      error:
+        `Refusing to start ${type}/${key}: it was deliberately stood down at ${intent.at}, ` +
+        `and ${sibling} is live under the same key right now — so starting it would both ` +
+        `revoke that stand-down and put two agents on one key, which is the collision ` +
+        `(key, type) addressing exists to prevent. This activation resolved its type from ` +
+        `a URL, and a URL cannot tell a Jira Task from an Epic; if the type is right, say ` +
+        `so explicitly from the Agents page, which activates by (type, key).`
+    };
+  }
+
+  /**
    * The step that makes an activate response a statement about the world
    * rather than about our own intentions.
    *
@@ -1167,6 +1281,30 @@ export class MessageRouter {
     let session = this.herdrBridge.getSessionByAddress(key, config.type);
     let gate: CapacityGateResult | null = null;
     if (!session) {
+      // Before the capacity gate, because this is not a question about whether
+      // the machine can hold another agent — it is whether anybody asked for
+      // one. See unintendedStart. Only the URL path checks this: the by-key
+      // callers state the type rather than deriving it from a page.
+      const unintended = this.unintendedStart(
+        config.type,
+        key,
+        agentName,
+        data.reattachOnly === true
+      );
+      if (unintended) {
+        console.warn(`[Router] ${unintended.error}`);
+        respond({
+          action: 'activate_response',
+          success: false,
+          type: config.type,
+          key,
+          url: data.url,
+          error: unintended.error,
+          refusedBy: unintended.refusedBy
+        });
+        return;
+      }
+
       gate = this.capacityGate({
         what: `${config.type}/${key}`,
         type: config.type,
@@ -1597,8 +1735,26 @@ export class MessageRouter {
       ...(closedType ? { type: closedType } : {}),
       success: result.success || goneAlready,
       ...(preemption ? { preempted: true } : {}),
+      // "…so it will not be restored" is what this said until KAN-196, and it
+      // promised more than the record provides. What a `deactivated` record
+      // actually buys is that `AgentRegistry.expected()` omits this agent, so
+      // boot-time reconciliation leaves it down — measured, and it holds: 274
+      // of the 274 agents whose last event is `deactivated` stayed down across
+      // both of the reboots this ticket was filed about. What it does not buy
+      // is permanence. Any later `activated` record overwrites it, because the
+      // registry is intent and the last word wins; `task/KAN-39` came back for
+      // two days on exactly that route. So the sentence now names the guarantee
+      // it has rather than the one a reader would like it to have, and points
+      // at the thing that can undo it.
       ...(goneAlready
-        ? { alreadyGone: true, note: 'No agent was running. Its stand-down is recorded, so it will not be restored.' }
+        ? {
+            alreadyGone: true,
+            note:
+              'No agent was running. Its stand-down is recorded, so restoring the fleet ' +
+              'will not bring it back. Only an explicit activation will — and that ' +
+              'overwrites this record, so a stand-down meant to be permanent needs ' +
+              'nothing to activate this agent again.'
+          }
         : {}),
       ...(result.error && !goneAlready ? { error: result.error } : {})
     });
