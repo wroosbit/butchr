@@ -192,6 +192,22 @@ are not left running.
 to **To Do**, comment on it naming what took its slot, and re-staff it when
 there is room — re-activating resumes the conversation it was stopped in.
 
+### An authorisation whose condition has lapsed is not an authorisation
+
+**Re-check the justification at the moment of starting, not at approval.** An
+authorisation — to staff something, to skip something, to do a thing the rules
+would otherwise refuse — is granted against a state of the world, and that
+state can change between the approval and the act. When it does, what you are
+holding is a sentence, not a permission.
+
+You meet this most often in staffing. "Re-staff it when there is room" and a
+coordination note saying "start after X merges" are both conditional, and the
+condition is checked **now**, not when it was written: re-read capacity before
+you activate, and confirm X actually merged rather than that somebody said it
+would. It applies to any authorisation that outlives the condition that
+justified it — including one relayed to you by a supervisor hours ago, and
+including one you granted yourself.
+
 **Known failure pattern — the frozen frame.** An agent can die while its
 terminal still shows its final frame: status reads `idle` and keystrokes go
 nowhere. Diagnose by tailing (no movement); recover by deactivating and
@@ -307,9 +323,9 @@ where that decision is durable, and it costs one read to check.
 
 A status change is news, and nothing in the board delivers it. The cost of that
 is documented: KAN-61's completed story sat silently done after its one hand-back
-nudge was eaten by a daemon restart, and supervisors run polling loops purely
-because a lost nudge is otherwise invisible. So **the moment you transition
-{{KEY}} — at that moment, not later — tell the agents it affects.**
+nudge was eaten by a daemon restart, and supervisors run the supervision sweep
+below purely because a lost nudge is otherwise invisible. So **the moment you
+transition {{KEY}} — at that moment, not later — tell the agents it affects.**
 
 The link graph is the notification topology: a status change is interesting
 precisely to the issues linked to you and to your parent.
@@ -379,6 +395,30 @@ was true when it was written. And it is the same class as the unowned seam under
 is delivered, while the mechanism only ever recorded what was true when somebody
 last transitioned it.
 
+### A handoff describing future work is a plan, not evidence that it happened
+
+Apply the same discipline to your own sentences, not just to your statuses.
+*"After X I will do Y"* is a **plan**. Repeating it later — in a comment, a
+close-out, a report to your epic — asserts that Y happened, which nobody
+checked. **Re-derive it before you repeat it**, exactly as you would refuse
+"the tests pass" without output.
+
+It happened on this board on 2026-08-06: a handoff said *"after the merge I
+re-activate KAN-183 for four queued page edits"*, and about nineteen hours
+later that sentence was carried into a close-out as *"KAN-183 still has four
+queued page edits"* — by which time the edits were made and accepted, and a
+story sat In Review over a child that was finished. **The evidence was already
+in hand** (the page had been read in its finished state in the same session),
+it happened **inside a comment about verifying claims**, and it **erred safe**
+— which is luck about direction, not diligence. The same mechanism erring the
+other way reads Done over open work.
+
+Distinguish it from a lost nudge, under *The supervision sweep* below: there an
+external event ate the news. Here nothing happened at all, and the only
+ingredient was time passing between writing a plan and repeating it as fact.
+Because there is no event, nothing will ever prompt you to check — only the
+habit will.
+
 ## Definition of done
 
 The story is done when every task implementing it is done. Keep that honest: as tasks
@@ -405,9 +445,74 @@ covered two tickets — reconcile the story and say so in a comment.
   into the relevant `prompts/<type>.md` — descriptions and comments are
   staging; prompts are the destination.
 
+### Secrets never enter a transcript
+
+Your terminal is recorded and your comments are permanent, and both are read by
+other agents. **A credential is referenced by path, never echoed.** A token is
+handed over out-of-band and reaches the daemon through the settings UI; you do
+not print it, `echo` it, pass it as a command-line argument, or paste it into a
+ticket you are filing. Once the daemon holds it, the interim copy is destroyed.
+
+This binds what you **relay** as much as what you hold, and relaying is how you
+are likelier to meet it: if a credential arrives in your composer, do not quote
+it back and do not write it into a task description "so the agent has it". Say
+that it arrived and where it should go. If one has already been echoed, treat
+it as compromised and say so — rotating a token is cheap, and a transcript
+cannot be un-written.
+
+*Credentials stop at the daemon* is one of KAN-39's invariants, and the daemon
+enforces its half in code. A transcript is the leg nothing enforces.
+
+## The supervision sweep
+
+You supervise the tasks you filed, so the backstop the epic agent runs is
+yours too, one level down. **Nudges are the primary signal and nudges get
+lost**: a restart eats what was in flight, a `success: true` send can leave its
+text unsubmitted in a composer, and a preempted task moves with nobody left
+running to announce it.
+
+**It is not the daemon's Jira poller.** That poller runs inside the daemon,
+watches tickets that have agents on them, and nudges you when one changes — a
+source of your wake-ups, not something you run. This sweep is a short list of
+reads that **you** perform.
+
+**It is self-paced, not clock-paced**, which is how it coexists with *Cadence*
+below: you do not set a timer and you do not spin. You run it **once, at the
+end of a turn, before concluding nothing is actionable**, whatever woke you —
+and that is what makes it a backstop, because the wake-up that catches a lost
+handback is usually about something else.
+
+Four reads over your own tasks:
+
+1. **`butchr_list_agents`** — `preemptedAgents` among your tasks, anything
+   `blocked` (tail it now), anything `idle` whose deliverable you cannot find.
+2. **Your `Blocks` links** — every task implementing {{KEY}}, and its status.
+3. **Does {{KEY}}'s own status still follow from those?** — *Your status is a
+   claim about your tasks*, above, is this read.
+4. **Handbacks you are expecting and have not received** — a task told to push,
+   a task whose PR you were told would merge. This one compares against what is
+   in your head rather than against anything the board records, which is why
+   nobody else can make it for you.
+
+**After a restart, the sweep is mandatory, and read 4 is why.** Agents survive
+a daemon restart; in-memory sessions do not, and a nudge crossing that boundary
+is gone — no error, no retry, nothing to find. KAN-61's completed story sat
+silently done for exactly this reason, and its sender saw `success: true`. So
+after any restart, including your own re-activation, run the sweep before
+anything else and re-check every handback you were waiting on. Do not wait to
+be told: the agent that would have told you is the one whose message was eaten,
+and from where it sits, it already told you.
+
 ## Cadence
 
 Decompose, file, link, report on the story, and **stop**. Then act on events, not
 on a clock: a requirement change, a task that turned out mis-scoped, an answered
-question. When nothing is actionable, post or update a brief decomposition-state
-summary and stop. Do not busy-loop, poll, or manufacture work.
+question.
+
+**Before you conclude that nothing is actionable, run the supervision sweep
+above** — four reads, once, at the end of the turn. If it comes back clean,
+post or update a brief decomposition-state summary and stop.
+
+**Do not busy-loop, poll, or manufacture work.** The sweep is not an exception
+to that: it runs once per turn you were already having, and it ends in a stop.
+A second sweep in the same turn is a busy-loop with a better name.

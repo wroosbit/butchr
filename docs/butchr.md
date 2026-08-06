@@ -609,10 +609,13 @@ Status changes used to travel by hand and by luck. `prompts/task.md`,
 `prompts/story.md` and `prompts/epic.md` each told an agent to transition its
 ticket — To Do → In Progress → In Review → Done — and none of them told the
 transitioning agent to *tell anyone*. So an agent whose work depended on that
-status found out when its own polling loop next looked, or not at all: KAN-61's
-completed story sat silently done after its one hand-back nudge was eaten by a
-daemon restart, and the epic agent's polling loop exists largely because a lost
-nudge is otherwise invisible.
+status found out when its own supervision sweep next looked, or not at all:
+KAN-61's completed story sat silently done after its one hand-back nudge was
+eaten by a daemon restart, and the epic agent's supervision sweep exists
+largely because a lost nudge is otherwise invisible. That sweep is prompt
+behaviour, not daemon code, and it is defined in `prompts/epic.md` under *The
+supervision sweep* — do not confuse it with the daemon's Jira poller below,
+which is a different mechanism that happens to serve the same failure.
 
 **The convention: the agent that transitions announces it, at the moment it
 transitions.** This is prompt text, not daemon code — there is nothing to build,
@@ -670,7 +673,7 @@ because it is not running or not proceeding. The 30-second missing-agent sweep
 already *detected* that and broadcast `agent_lost_event` to whatever clients
 were connected — which is the right answer for a board somebody is watching and
 no answer at all for the story agent whose task agent just died. It found out
-whenever its polling loop next looked.
+whenever its own supervision sweep next looked.
 
 **The supervisor of record.** Supervision used to be type-level only —
 `isSupervisorType` answers whether a *kind* of agent supervises, and nothing
