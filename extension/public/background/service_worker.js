@@ -64,7 +64,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // turn. It is set only by the "Stand down <agent> and start" button,
           // which exists only on a refusal that has already named the agent —
           // so a preempt reaching the daemon means a person read the name.
-          ...(message.preempt ? { preempt: true } : {})
+          ...(message.preempt ? { preempt: true } : {}),
+          // Same rule again, inverted in whose favour it works: this one is set
+          // only by the panel's automatic re-attach, and it *removes* a power
+          // rather than granting one. Forwarded rather than defaulted so that
+          // an activate arriving without it is one a person asked for — which
+          // is the distinction the daemon refuses on. See KAN-196 and the
+          // comment on the re-attach effect in useWorkspaceSession.js.
+          ...(message.reattachOnly ? { reattachOnly: true } : {})
         });
         sendResponse({ status: 'sent' });
       });
