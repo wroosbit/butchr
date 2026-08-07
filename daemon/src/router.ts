@@ -184,12 +184,26 @@ function capacityDto(c: Capacity) {
     availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
     agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
     agentCores: c.cost.cores,
-    // Where the two cost figures came from (KAN-56): 'override', 'measured'
-    // or 'seed', plus the sample's metadata when a measurement was consulted.
-    // A caller deciding whether to trust the cap can see whether anyone
-    // measured it.
+    // Where the two cost figures came from (KAN-56): 'override', 'measured',
+    // 'restored' or 'seed', plus the sample's metadata when a measurement was
+    // consulted. A caller deciding whether to trust the cap can see whether
+    // anyone measured it.
     agentMemorySource: c.costSource.residentBytes,
     agentCoresSource: c.costSource.cores,
+    // Null in the ordinary case. Set when the per-agent estimate implied more
+    // CPU than the machine reported in use, so `headroomByCpu` below divided by
+    // `used` rather than by `agentCores` (KAN-204). Both numbers travel, so a
+    // reader can check the contradiction and re-derive the headroom figure.
+    // `cap` and `capByCpu` are never affected — see capacity.ts's header.
+    liveCoresBound: c.liveCoresBound
+      ? {
+          published: c.liveCoresBound.published,
+          used: Math.round(c.liveCoresBound.used * 1000) / 1000,
+          agentTrees: c.liveCoresBound.agentTrees,
+          impliedFleetCores: Math.round(c.liveCoresBound.impliedFleetCores * 100) / 100,
+          busyCores: Math.round(c.liveCoresBound.busyCores * 100) / 100
+        }
+      : null,
     measuredAt: c.measured ? new Date(c.measured.sampledAt).toISOString() : null,
     measuredWindowSeconds: c.measured ? Math.round(c.measured.windowSeconds) : null,
     measuredAgentTrees: c.measured ? c.measured.agentTrees : null,

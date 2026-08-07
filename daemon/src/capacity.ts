@@ -125,6 +125,87 @@ import * as os from 'os';
  * binds first on this laptop once CPU stops lying) and the static cap.
  * daemon/scripts/verify-cpu-headroom-gate.mjs is the proof that the gate still
  * closes, and it is written so that it goes red if it stops.
+ *
+ * KAN-204 is the second half of that work, and it is about the *divisor*
+ * rather than the numerator. Within an hour of KAN-201 deploying, capacity on
+ * this machine went from `cap 19 (bound by memory)` to `cap 3 (bound by cpu)`
+ * — worse, not 2.7x better. The arithmetic was right and every figure it
+ * printed was right; what was wrong was one input:
+ *
+ *     agent cost: 684 MB resident (measured), 0.631 core while active (measured)
+ *       measured (damped): 5 tree(s) over a 60s window ending 21:19:07Z
+ *
+ * Five trees at 0.631 core each is 3.15 cores of agent CPU, on a machine
+ * reporting 1.94 cores busy *in total* on the same call. The estimate asserted
+ * more CPU than the machine said was in use anywhere, and it was labelled
+ * `measured` while it did so. It was not a measurement: it was the 0.75 seed,
+ * two damping windows into a walk back down toward the ~0.05 this fleet
+ * actually costs — a walk that takes the better part of half an hour at
+ * ALPHA_DOWN.
+ *
+ * The damping is not the defect and is not changed. Its asymmetry is still
+ * right for the reason KAN-55/56 gives, and the half of that reasoning being
+ * preserved here is the half about *direction*: believe an expensive fleet
+ * quickly, because under-charging is what made the desktop unusable. The half
+ * that KAN-201 falsified is the consolation — that over-charging "merely
+ * refuses an activation, which the operator can read, override, or wait out".
+ * Once the cap divides by the estimate, over-charging is a fleet-wide throttle
+ * for twenty-five minutes after every restart, and this epic restarts the
+ * daemon on every deploy. So the fix is not to make the filter symmetric. It
+ * is to stop the filter starting from a fiction after every restart, and to
+ * bound what it publishes by an instrument that cannot be argued with:
+ *
+ *   1. The estimate survives a restart. It is the filter's state, and it was
+ *      the one piece of capacity state nothing wrote down — see
+ *      agent-cost-store.ts. Damping resumes from what this fleet last cost
+ *      instead of from a July constant, and a restored figure says `restored`
+ *      rather than `measured`, because a number sampled before this daemon
+ *      existed must not claim to be a measurement of what it is dividing.
+ *      **This is the fix for the cap.** The cap collapsed because its divisor
+ *      was wrong; the divisor is right again, and `cap` goes back to 19 on the
+ *      machine that reported 3.
+ *   2. The fleet cannot spend more CPU than the machine is spending. See
+ *      {@link boundCoresByObservedCpu}. `cpuBusyCores` and the per-agent core
+ *      estimate come from the same /proc data in the same units, so
+ *      `cores × agentTrees > cpuBusyCores` is not a heuristic — it is the
+ *      estimate contradicting the machine, and the machine wins. Nothing
+ *      checked it, and it costs one multiplication.
+ *
+ * WHERE THE BOUND IS ALLOWED TO ACT, AND WHY ONLY THERE
+ *
+ * It bounds the **live headroom term only**. It does not touch `capByCpu`, and
+ * the first draft of this change did, which was wrong twice over.
+ *
+ * Wrong on the model: `cap` is "what the hardware supports with nothing else
+ * assumed" — a static property of the machine, deliberately independent of what
+ * is running on it this second. A cap that moved with `cpuBusyCores` would be a
+ * cap nobody can follow, which is the objection this file opens with.
+ * verify-agent-capacity.mjs section 8 encodes exactly that — same machine, same
+ * agent count, different CPU in use, and `headroomByCap` must not move — and it
+ * caught the draft.
+ *
+ * Wrong on safety, which matters more: `busyCores ÷ agentTrees` is one
+ * instant's reading of a fleet that is mostly *waiting on an API*. Eight agents
+ * spending 0.5 cores between them says nothing about what they cost when they
+ * all wake, and believing it would open the static cap with no feedback loop to
+ * close it again. That is KAN-34 verbatim — "believe too quickly that agents
+ * are cheap and the cap opens to a fleet the machine cannot carry the moment
+ * they all wake" — and the asymmetric damping exists to prevent precisely it.
+ *
+ * In the live term neither objection holds. Live dependence is the whole point
+ * of headroom, and the loop closes on itself: a bounded divisor lets another
+ * agent start, that agent spends CPU, `cpuBusyCores` rises within one five-
+ * second window, the numerator shrinks, and the gate closes again. The static
+ * cap sits above it all as the ceiling that does not move. So the two
+ * mechanisms cover each other — the estimate is prevented from throttling the
+ * live gate on a figure the machine contradicts, and the cap is prevented from
+ * opening on a figure that is one idle instant.
+ *
+ * The bound is skipped entirely for an operator override (someone who typed a
+ * number has decided) and on the load-average fallback path (a figure that is
+ * not a measurement cannot falsify one).
+ * daemon/scripts/verify-cost-estimate-plausibility.mjs is the proof, and it
+ * reproduces the post-restart collapse before showing its absence.
  */
 
 export const GIB = 1024 ** 3;
@@ -134,7 +215,11 @@ const MIB = 1024 ** 2;
 export interface AgentCost {
   /** Resident memory the agent holds, working or idle. */
   residentBytes: number;
-  /** Load-average units the agent contributes while active. */
+  /**
+   * Cores the agent tree spends while active — utime+stime over wall clock,
+   * the quantity agent-cost.ts measures. Not load-average units: those are a
+   * run-queue length, and KAN-201 is the story of the difference.
+   */
   cores: number;
 }
 
@@ -184,9 +269,18 @@ export const MEASURED_AGENT_COST: AgentCost = {
   cores: 0.75
 };
 
-/** Where a cost figure came from. Tracked per dimension, because the operator
- * may override cores while memory stays measured. */
-export type CostSource = 'override' | 'measured' | 'seed';
+/**
+ * Where a cost figure came from. Tracked per dimension, because the operator
+ * may override cores while memory stays measured.
+ *
+ * `restored` is a measurement of this fleet that was taken before this daemon
+ * started, carried across a restart by agent-cost-store.ts. It is a separate
+ * word from `measured` on purpose: it is the best figure available and it is
+ * still not a measurement of the process that is dividing by it, and KAN-44
+ * exists because a figure nobody measured on this fleet was labelled as though
+ * somebody had.
+ */
+export type CostSource = 'override' | 'measured' | 'restored' | 'seed';
 
 /**
  * A damped live measurement of what one agent tree costs, with the metadata a
@@ -202,6 +296,79 @@ export interface MeasuredAgentCost extends AgentCost {
   windowSeconds: number;
   /** Agent trees the per-tree figures were averaged over. */
   agentTrees: number;
+  /**
+   * Set to `'restored'` by agent-cost-store.ts when this figure was read back
+   * from disk after a daemon restart rather than sampled by the process that
+   * is publishing it. Absent means the running daemon measured it. It travels
+   * on the measurement rather than in a separate option so it cannot be lost
+   * on the way to the report that has to say it (KAN-204).
+   */
+  provenance?: 'measured' | 'restored';
+}
+
+/**
+ * The record of the per-agent core figure having been overruled, for the live
+ * headroom term, by the machine's own account of what it is spending.
+ *
+ * Present on a {@link Capacity} only when the bound actually fired, so
+ * `liveCoresBound === null` is the ordinary case and reads as "the estimate was
+ * believed". When it is set, `published` is what the estimate said and `used`
+ * is what `headroomByCpu` divided by — both are reported, because a term that
+ * quietly divides by something other than the figure the report prints is the
+ * hand-reproducibility promise broken.
+ *
+ * `capByCpu` is never affected; see the header for why the static cap must not
+ * move with an instantaneous reading.
+ */
+export interface CoresBound {
+  /** The per-agent core figure before bounding — what the estimate claimed. */
+  published: number;
+  /** What `headroomByCpu` divided by instead: `busyCores ÷ agentTrees`. */
+  used: number;
+  /** Agent trees on the machine when the bound was applied. */
+  agentTrees: number;
+  /** `published × agentTrees` — the CPU the estimate claims the fleet spends. */
+  impliedFleetCores: number;
+  /** What the machine says is in use, by everything, right now. */
+  busyCores: number;
+}
+
+/**
+ * The free invariant nothing was checking: the fleet cannot be spending more
+ * CPU than the machine is spending.
+ *
+ * Returns the bound to apply, or null to leave the estimate alone. Null is the
+ * answer for every case where the comparison is not meaningful, and each of
+ * those is a case where the *conservative* thing is to keep the larger
+ * divisor:
+ *
+ *   - a non-positive or non-finite estimate, tree count, or busy figure. A
+ *     machine reporting exactly zero busy cores would bound the divisor to
+ *     zero and divide by it; there is no such machine while agents run on it,
+ *     and refusing to answer beats a division by zero.
+ *   - an estimate that is already plausible (`implied <= busy`), which is what
+ *     a warm, honest sampler produces and is the overwhelmingly common case.
+ *   - a bound that would not actually lower the divisor.
+ *
+ * The caller is responsible for the two exemptions that are policy rather than
+ * arithmetic — an operator override is not second-guessed, and a `busyCores`
+ * that is itself the load-average fallback is not a measurement and cannot
+ * bound one. Keeping those out of here leaves this function a statement about
+ * two numbers, which is what makes it drivable from a script without a machine.
+ */
+export function boundCoresByObservedCpu(
+  cores: number,
+  agentTrees: number,
+  busyCores: number
+): CoresBound | null {
+  if (!Number.isFinite(cores) || cores <= 0) return null;
+  if (!Number.isFinite(agentTrees) || agentTrees <= 0) return null;
+  if (!Number.isFinite(busyCores) || busyCores <= 0) return null;
+  const impliedFleetCores = cores * agentTrees;
+  if (impliedFleetCores <= busyCores) return null;
+  const used = busyCores / agentTrees;
+  if (!Number.isFinite(used) || used <= 0 || used >= cores) return null;
+  return { published: cores, used, agentTrees, impliedFleetCores, busyCores };
 }
 
 /**
@@ -283,9 +450,27 @@ export type CpuBusySource = 'measured' | 'load-average';
 
 export interface Capacity {
   machine: MachineFacts;
+  /**
+   * What one agent is believed to cost: the override, the measurement, or the
+   * seed. Every static term divides by exactly this. The live CPU term may
+   * divide by less — see {@link liveCoresBound} — and says so when it does.
+   */
   cost: AgentCost;
-  /** Where each dimension of `cost` came from: override, measured, or seed. */
+  /**
+   * Where each dimension of `cost` came from: override, measured, restored, or
+   * seed. This is the *origin* of the estimate; whether the live term then
+   * declined to believe it is {@link liveCoresBound}, because "who produced
+   * this number" and "was it believed" are different questions and collapsing
+   * them would make one of them unanswerable.
+   */
   costSource: { residentBytes: CostSource; cores: CostSource };
+  /**
+   * Set when the per-agent core estimate implied more CPU than the machine
+   * reported in use, and `headroomByCpu` therefore divided by less than
+   * `cost.cores` (KAN-204). Null in the ordinary case. `cap` and `capByCpu`
+   * are never affected.
+   */
+  liveCoresBound: CoresBound | null;
   /**
    * The damped measurement that was consulted, if the sampler had one. Kept
    * even when an override beat it, so a report can say what was ignored.
@@ -368,7 +553,13 @@ export function computeCapacity(
   const pick = (dim: keyof AgentCost): { value: number; source: CostSource } => {
     const override = overrides[dim];
     if (override !== undefined) return { value: override, source: 'override' };
-    if (measured) return { value: measured[dim], source: 'measured' };
+    // A restored figure is a real measurement of this fleet and beats the seed
+    // for the same reason a fresh one does — it is the only number anybody has
+    // actually taken here. It is labelled differently because it was taken by
+    // a process that is no longer running.
+    if (measured) {
+      return { value: measured[dim], source: measured.provenance === 'restored' ? 'restored' : 'measured' };
+    }
     return { value: MEASURED_AGENT_COST[dim], source: 'seed' };
   };
   const resident = pick('residentBytes');
@@ -433,6 +624,12 @@ export function computeCapacity(
   // machine and so refuses sooner rather than later. On a platform with no load
   // average either (Windows reports 0) this term goes inert, exactly as the
   // load term did, and the count and memory terms still bind.
+  //
+  // The human's reserve is subtracted here even though what they are already
+  // using is inside `cpuBusyCores`, and that is not double-charging: the same
+  // is true of the memory term, where the browser's resident pages are already
+  // out of `availableBytes`. The reserve is room for what the human might start
+  // doing next, which is the complaint the gate exists to answer.
   const cpuBusySource: CpuBusySource =
     typeof machine.busyCores === 'number' ? 'measured' : 'load-average';
   const cpuBusyCores =
@@ -441,13 +638,29 @@ export function computeCapacity(
       : Math.max(0, Math.min(machine.cores, machine.load1));
   const cpuBusyWindowSeconds =
     cpuBusySource === 'measured' ? machine.busyWindowSeconds ?? null : null;
-  // The human's reserve is subtracted here even though what they are already
-  // using is inside `cpuBusyCores`, and that is not double-charging: the same
-  // is true of the memory term, where the browser's resident pages are already
-  // out of `availableBytes`. The reserve is room for what the human might start
-  // doing next, which is the complaint the gate exists to answer.
+
+  // The estimate against the machine's own account of itself (KAN-204), for
+  // this term and this term only — see the header for why the static cap above
+  // is deliberately left dividing by the unbounded figure.
+  //
+  // Every claude tree on the box counts toward what the fleet is claiming to
+  // spend. Supervisors are never *charged* for capacity, but they are running
+  // processes and their CPU is inside `cpuBusyCores`, so leaving them out of
+  // the multiplication would compare an estimate for six trees against the
+  // observed cost of three and fail to catch a contradiction that is there.
+  //
+  // Two exemptions, both stated in boundCoresByObservedCpu's contract: an
+  // operator override is not overruled by anything, and the load-average
+  // fallback is not a measurement and so cannot falsify one.
+  const agentTrees = running + (options.supervisorsRunning ?? 0);
+  const liveCoresBound =
+    coreCost.source === 'override' || cpuBusySource !== 'measured'
+      ? null
+      : boundCoresByObservedCpu(cost.cores, agentTrees, cpuBusyCores);
+  const liveCoreCost = liveCoresBound ? liveCoresBound.used : cost.cores;
+
   const liveCpuBudget = machine.cores - cpuBusyCores - reservedCores;
-  const headroomByCpu = Math.max(0, Math.floor(liveCpuBudget / cost.cores));
+  const headroomByCpu = Math.max(0, Math.floor(liveCpuBudget / liveCoreCost));
 
   const headroomByMemory = Math.max(
     0,
@@ -468,6 +681,7 @@ export function computeCapacity(
     machine,
     cost,
     costSource,
+    liveCoresBound,
     measured,
     reservedForHuman: { cores: reservedCores, bytes: reservedBytes },
     cap,
@@ -663,7 +877,7 @@ function envNumber(name: string, allowZero = false): number | undefined {
  *
  *   BUTCHR_MAX_AGENTS        — set the cap outright, skipping the derivation
  *   BUTCHR_AGENT_MEMORY_MB   — resident cost of one agent
- *   BUTCHR_AGENT_CORES       — load-average cost of one active agent
+ *   BUTCHR_AGENT_CORES       — cores one active agent tree spends
  */
 export function optionsFromEnv(): CapacityOptions {
   const memoryMb = envNumber('BUTCHR_AGENT_MEMORY_MB');
@@ -751,6 +965,23 @@ export function describeCapacity(c: Capacity): string {
     `agent cost: ${Math.round(c.cost.residentBytes / MIB)} MB resident (${c.costSource.residentBytes}), ` +
     `${c.cost.cores} core while active (${c.costSource.cores})`
   );
+  // The contradiction gets its own line with the whole comparison on it,
+  // because it is the one place where a term divides by something other than
+  // the cost figure printed above. A reader who cannot see both numbers cannot
+  // tell a bounded headroom from headroom off a suspiciously low measurement,
+  // and the arithmetic on the headroom line below would not reproduce (KAN-204).
+  if (c.liveCoresBound) {
+    const b = c.liveCoresBound;
+    lines.push(
+      `  contradicted: ${b.published} core × ${b.agentTrees} agent tree(s) = ` +
+      `${b.impliedFleetCores.toFixed(2)} cores, more than the ${b.busyCores.toFixed(2)} cores this ` +
+      `machine reports in use in total — so the estimate is not describing this fleet. The cpu ` +
+      `headroom term below divides ${b.busyCores.toFixed(2)} ÷ ${b.agentTrees} = ${b.used.toFixed(3)} ` +
+      'instead, which still charges the fleet for every busy core on the machine, yours and ' +
+      "herdr's included. The cap above is unaffected and still divides by " +
+      `${b.published}`
+    );
+  }
   if (c.measured) {
     const beaten: string[] = [];
     if (c.costSource.residentBytes === 'override') {
@@ -759,11 +990,17 @@ export function describeCapacity(c: Capacity): string {
     if (c.costSource.cores === 'override') {
       beaten.push(`BUTCHR_AGENT_CORES overrides its ${c.measured.cores} core`);
     }
+    const restored = c.measured.provenance === 'restored';
     lines.push(
-      `  measured (damped): ${Math.round(c.measured.residentBytes / MIB)} MB, ` +
+      `  ${restored ? 'restored (damped)' : 'measured (damped)'}: ` +
+      `${Math.round(c.measured.residentBytes / MIB)} MB, ` +
       `${c.measured.cores} core per agent tree — ${c.measured.agentTrees} tree(s) ` +
       `over a ${Math.round(c.measured.windowSeconds)}s window ` +
       `ending ${new Date(c.measured.sampledAt).toISOString()}` +
+      (restored
+        ? ', carried across a daemon restart — sampled by the previous daemon, not this one; ' +
+          'the next window replaces it with a measurement of this fleet'
+        : '') +
       (beaten.length ? `; ignored: ${beaten.join(', ')}` : '')
     );
   } else if (c.costSource.residentBytes === 'seed' || c.costSource.cores === 'seed') {
@@ -801,7 +1038,10 @@ export function describeCapacity(c: Capacity): string {
     `headroom: ${c.headroom} more — ` +
     `count allows ${c.headroomByCap} (${c.cap} cap − ${c.running} running), ` +
     `cpu allows ${c.headroomByCpu} ((${m.cores} cores − ${c.cpuBusyCores.toFixed(2)} in use ` +
-    `− ${c.reservedForHuman.cores} reserved) ÷ ${c.cost.cores}), ` +
+    `− ${c.reservedForHuman.cores} reserved) ÷ ` +
+    (c.liveCoresBound
+      ? `${c.liveCoresBound.used.toFixed(3)}, the bounded figure from the contradiction above`
+      : `${c.cost.cores}`) + '), ' +
     `memory allows ${c.headroomByMemory} ((${gib(m.availableBytes)} available ` +
     `− ${gib(c.reservedForHuman.bytes)} reserved) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB); ` +
     `bound by ${c.headroomBoundBy}`

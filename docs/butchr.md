@@ -482,21 +482,49 @@ cap by a **damped** per-tree figure. The damping
 ([`daemon/src/agent-cost-damping.ts`](../daemon/src/agent-cost-damping.ts)) is
 asymmetric on purpose — quick to believe an agent is expensive, slow to
 believe it is cheap — because the errors are not symmetric: under-estimating
-cost makes the desktop unusable, over-estimating merely refuses an activation.
+cost makes the desktop unusable, while over-estimating costs capacity the
+machine actually had.
+
+That second half used to read "over-estimating merely refuses an activation",
+and KAN-201 falsified it: once the cap divides by the estimate, an
+over-estimate throttles the whole fleet rather than declining one request.
+KAN-204 kept the asymmetry — the direction is still right, and the desktop is
+still the thing worth protecting — and removed the two ways the estimate could
+be wrong-high for a long time:
+
+- **The estimate survives a daemon restart**
+  ([`daemon/src/agent-cost-store.ts`](../daemon/src/agent-cost-store.ts)).
+  It is the damping filter's state, and it was the one piece of capacity state
+  nothing wrote down, so every restart re-ran a ~25-minute walk down from the
+  seed with the cap divided by the wrong number the whole way. A restored
+  figure expires after 15 minutes and is reported as `restored`, never as
+  `measured`.
+- **The estimate cannot assert more CPU than the machine reports in use.**
+  `cores × agent trees > cpuBusyCores` is the estimate contradicting `/proc`,
+  and the machine wins: the live CPU headroom term declines to divide by it and
+  says so in the derivation. The *cap* is deliberately left alone — a cap that
+  moved with an instantaneous busy reading would stop being a property of the
+  hardware, and believing one idle instant is the KAN-34 mistake the damping
+  exists to prevent.
+
+`node daemon/scripts/verify-cost-estimate-plausibility.mjs` is the battery, and
+`node daemon/scripts/verify-capacity-survives-daemon-restart.mjs` restarts a
+real daemon in a scratch `HOME` and reads the cap on both sides of it.
 
 The `MEASURED_AGENT_COST` constants (measured 2026-07-31) remain as the
 **seed**: what capacity answers from until the first damped figure lands, and
 what it degrades to whenever there is nothing to measure — no agent trees,
 `/proc` unreadable, a sample that fails validation. Every capacity report
 labels each figure `seed`, `measured` (with the sample's window, tree count
-and timestamp) or `override`, so the derivation stays checkable by hand even
-though the divisor moves. Three environment variables override the derivation:
+and timestamp), `restored` or `override`, so the derivation stays checkable by
+hand even though the divisor moves. Three environment variables override the
+derivation:
 
 | variable | effect |
 | --- | --- |
 | `BUTCHR_MAX_AGENTS` | sets the cap outright, skipping the derivation |
 | `BUTCHR_AGENT_MEMORY_MB` | resident cost of one agent tree |
-| `BUTCHR_AGENT_CORES` | load-average cost of one active agent |
+| `BUTCHR_AGENT_CORES` | cores one active agent tree spends |
 
 Precedence is strict: an override beats the live measurement outright, the
 measurement beats the seed, and `BUTCHR_MAX_AGENTS` pins the cap before any of
@@ -504,7 +532,10 @@ it. Overrides are per-dimension — setting `BUTCHR_AGENT_CORES` alone leaves
 the memory figure measured.
 
 **Headroom is a different question from the cap** and is answered three ways —
-count, 1-minute load average, available memory — with the smallest winning.
+count, CPU actually in use, available memory — with the smallest winning. (The
+CPU term asked the 1-minute load average until KAN-201 replaced it with cores
+consumed, read from `/proc/stat`; the load average is still reported, because
+it is the number a human feels, and no longer gates anything.)
 
 **A refusal always says why.** `butchr_capacity` and the MCP activate path
 return the reason, the figures and the full derivation; the sidepanel renders

@@ -26,6 +26,12 @@ import { JiraPoller } from './jira-poll.js';
 import { CommentAuthorship } from './comment-authorship.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
+import {
+  COST_ESTIMATE_PATH,
+  clearCostEstimate,
+  loadCostEstimate,
+  saveCostEstimate
+} from './agent-cost-store.js';
 import { AgentCost, MEASURED_AGENT_COST, sampleCpuBusy, setMeasuredAgentCost } from './capacity.js';
 import { execFileSync } from 'child_process';
 
@@ -441,8 +447,10 @@ let costWindow: MeasurementStart | null = null;
  * the seed. */
 let costEstimate: AgentCost | null = null;
 /** Transition memory so the log records changes of state, not every quiet
- * minute of a healthy sampler. */
-let costSamplerState: 'no-measurement' | 'live' = 'no-measurement';
+ * minute of a healthy sampler. `restored` is its own state so the first real
+ * window still announces itself, and so a degrade that discards a restored
+ * estimate is not silent. */
+let costSamplerState: 'no-measurement' | 'restored' | 'live' = 'no-measurement';
 
 /**
  * Degrade, never guess: any failure — /proc unreadable, an empty fleet, a
@@ -450,14 +458,54 @@ let costSamplerState: 'no-measurement' | 'live' = 'no-measurement';
  * falls back to MEASURED_AGENT_COST with the report labelling the figures as
  * seed. A stale estimate left posing as live would be the exact mislabelling
  * KAN-44 exists to correct.
+ *
+ * KAN-204: the persisted copy goes with it. The whole point of writing the
+ * estimate down is that a restart is not new information; a sampler that has
+ * just decided its estimate is untrustworthy *is* new information, and leaving
+ * a copy on disk would let the next start resurrect exactly what this call
+ * threw away.
  */
 function degradeCostMeasurement(reason: string) {
   costEstimate = null;
   setMeasuredAgentCost(null);
+  clearCostEstimate();
   if (costSamplerState !== 'no-measurement') {
     costSamplerState = 'no-measurement';
     log(`Agent-cost sampler: ${reason}; capacity answers from the seed constants until sampling recovers`);
   }
+}
+
+/**
+ * Pick the damping filter's starting state back up from where the previous
+ * daemon left it (KAN-204).
+ *
+ * Two things happen here and they are worth separating. The estimate becomes
+ * the damping seed, so the first fresh window moves from what this fleet last
+ * cost rather than from a July constant — that is the fix for the 25-minute
+ * walk. It is *also* published immediately, so the sixty seconds before that
+ * first window are answered from a real measurement of this fleet instead of
+ * from the seed; without that the cap still collapses, just briefly.
+ *
+ * Publishing it is the part that needs the argument, since it is a figure
+ * nobody re-checked. Three things bound it: it is labelled `restored` in every
+ * report rather than `measured`, so nothing claims this daemon took it; it
+ * expires (agent-cost-store.ts), so it can only ever be minutes old; and it is
+ * still subject to the observed-CPU bound in capacity.ts, which does not care
+ * where a figure came from. Sixty seconds later a real window replaces it.
+ */
+function restoreCostEstimate() {
+  const restored = loadCostEstimate();
+  if (!restored) return;
+  costEstimate = { residentBytes: restored.residentBytes, cores: restored.cores };
+  setMeasuredAgentCost(restored);
+  costSamplerState = 'restored';
+  log(
+    `Agent-cost sampler: resumed from the estimate the previous daemon left in ` +
+    `${COST_ESTIMATE_PATH} — ${Math.round(restored.residentBytes / (1024 * 1024))} MB / ` +
+    `${restored.cores} core per tree, sampled ` +
+    `${Math.round((Date.now() - restored.sampledAt) / 1000)}s ago. Reported as 'restored' until ` +
+    `this daemon closes its own window`
+  );
 }
 
 function sampleFleetCost() {
@@ -497,6 +545,9 @@ function sampleFleetCost() {
     agentTrees: measurement.totals.agents
   };
   setMeasuredAgentCost(published);
+  // Written down as soon as it is published, so the copy on disk is never more
+  // than one window behind the copy in memory (KAN-204).
+  saveCostEstimate(published);
   if (costSamplerState !== 'live') {
     costSamplerState = 'live';
     log(
@@ -559,6 +610,13 @@ function onListen() {
 
   const sweep = setInterval(sweepForMissingAgents, MISSING_SWEEP_INTERVAL_MS);
   sweep.unref();
+
+  // Pick the damping filter back up before the first window opens, so the
+  // minute between now and the first fresh sample is answered from what this
+  // fleet last cost rather than from the 2026-07-31 seed (KAN-204). No file, or
+  // one too old to describe this machine, and this does nothing at all —
+  // leaving exactly the behaviour of the line below.
+  restoreCostEstimate();
 
   // Open the first cost window now rather than a minute from now; the first
   // damped figure lands one interval later. Until then — and whenever the
