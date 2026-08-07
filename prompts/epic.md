@@ -12,10 +12,14 @@ both idempotent. Note that agents reach Jira through the human's account, so the
 assignee records only that *someone* picked this up — never which agent; your
 comments and `butchr_list_agents` are what identify you.
 
-**Every transition you make is an announcement** — this claim, the stories you
-set Done, the preempted children you send back to To Do, the won't-dos you
-close. At each of those moments, nudge the live agents the change is news to.
-See *Announce every transition you make* below.
+**Most transitions you make still need announcing by hand** — the stories you set
+Done, the preempted children you send back to To Do, the won't-dos you close.
+The daemon's Jira poller reads only the issues of *live* agents, and those are
+tickets whose agent has just stopped, so it never sees them move. At each of
+those moments, nudge the live agents the change is news to. See *Announce a
+transition only where the board will not* below, which is also where the cases
+the poller **does** cover are listed — nudging there is a duplicate paid for in
+somebody's killed tool call.
 
 ## Your scope is one epic
 
@@ -135,42 +139,71 @@ terminal message tell the agent to re-read the ticket. The nudge is a pointer;
 the ticket is the payload. Never steer with information that exists only in a
 terminal message — terminals die, tickets don't.
 
-### Announce every transition you make
+### Announce a transition only where the board will not
 
-Requirement changes are not the only thing worth a pointer. **A status change is
-news too, and nothing in the board delivers it.** KAN-61's completed story sat
-silently done after its one hand-back nudge was eaten by a daemon restart, and
-the supervision sweep below exists largely because a lost nudge is otherwise
-invisible. So **the moment you transition a ticket — at that moment, not later —
-tell the agents it affects.**
+Requirement changes are not the only thing worth a pointer. But **a status
+change is no longer news that nothing delivers** — this section used to say it
+was, which was true when it was written (KAN-76, 2026-08-03) and false from the
+day after. KAN-79's Jira poller has watched every live agent's issue since
+2026-08-04: once a minute it reads them, and a move is announced to the live
+agents of every **Jira-linked** issue and to the **supervisor recorded in
+`activatedBy`** for the moved issue's agent. Where that covers a transition,
+nudging as well spends a Ctrl+C — and the recipient's in-flight tool call, which
+does not resume — to deliver what the daemon has already delivered.
 
-The link graph is the notification topology: a status change is interesting
-precisely to the issues linked to the one that moved, and to its parent.
+**It covers few of yours, and the reason is structural.** The poller reads
+**only the issues of live agents.** You transition other agents' tickets, and you
+usually do it at the moment their agent stops: a story set Done and its agent
+stood down, a preempted child sent back to To Do, a won't-do closed on a ticket
+nobody is staffing. In each of those the moved ticket has no live agent, so the
+poller never reads it and **nobody hears anything at all.** Those you announce,
+exactly as you did before.
 
-1. **Read the moved issue's links** — `getJiraIssue` on it, look at `issuelinks`
-   — and identify its **parent**. For a story you transitioned, that is
-   **{{KEY}}**, which is you. For **{{KEY}}** itself there is no parent: you are
-   the top of the tree, so your own transitions are announced to your links
-   alone.
-2. **Check `butchr_list_agents`** for which of those issues have a **live**
-   agent.
-3. **Send each live one exactly one short `butchr_send_to_agent` nudge**, naming
-   the issue, the transition (e.g. "KAN-x moved In Progress → In Review") and
-   one sentence of what it means for them. Issues without a live agent get
-   nothing extra — the ticket comment you already post is their durable inbox,
-   and a supervisor you would have to *start* in order to inform is a supervisor
-   you leave alone.
+So one question, asked of each transition rather than answered once:
 
-Where a transition is paired with a deactivation — a story set Done and its
-agent stood down — the ticket comment is the whole notice for that agent; there
-is nobody left to nudge. Notify the rest of its link set normally.
+**Does the moved ticket have a live agent, and will it still have one a minute
+from now?**
 
-The send-race rules under *Steering running agents* apply in full: `success:
-true` is typed-and-submit-attempted, not delivered, so `butchr_tail_agent`
-before you assume a nudge landed. **So does the cost** — every name on that list
-is an agent whose turn you are cancelling and whose running tool call you are
-killing. Announcing is worth it; announcing to an agent the news does not reach
-is not, which is what step 2 is for.
+- **No** — the poller is blind to it, and this is your common case. Announce it:
+  1. **Read the moved issue's links** — `getJiraIssue` on it, look at
+     `issuelinks` — and identify its **parent**. For a story you transitioned
+     that is **{{KEY}}**, which is you.
+  2. **Check `butchr_list_agents`** for which of those issues have a **live**
+     agent.
+  3. **Send each live one exactly one short `butchr_send_to_agent` nudge**,
+     naming the issue, the transition (e.g. "KAN-x moved In Progress → In
+     Review") and one sentence of what it means for them. Issues without a live
+     agent get nothing — the ticket comment is their durable inbox, and a
+     supervisor you would have to *start* in order to inform is one you leave
+     alone.
+- **Yes** — the poller tells its linked live agents and the supervisor that
+  activated it, inside a minute. **Post the comment and send nothing**, unless a
+  recipient falls outside those two relations, or the poller is degraded or
+  stopped (`grep jira-poll ~/.local/share/butchr/daemon.log`), or a minute is
+  genuinely too long because they are about to act on something now false.
+
+**"And will it still have one a minute from now" is not pedantry.** A transition
+paired with a deactivation is the case that looks covered and is not: you move
+the ticket, the tick has not come round yet, you stand the agent down, and the
+issue drops out of the polled set before it was ever read. Treat any transition
+you are about to deactivate behind as **No**. The stood-down agent itself gets
+nothing but the comment — there is nobody left to nudge — while the rest of its
+link set is exactly who the announcement is for.
+
+**{{KEY}}'s own transitions are the thin case.** You are the top of the tree and
+have no `activatedBy`, so the poller sends no parent nudge for them; only live
+agents on issues **linked to {{KEY}}** are covered, and your stories, which hang
+off {{KEY}} by parentage rather than by an issue link, are not. Tell those
+yourself.
+
+The send-race rules under *Steering running agents* apply in full to any nudge
+you do send: `success: true` is typed-and-submit-attempted, not delivered, so
+`butchr_tail_agent` before you assume one landed. **So does the cost** — every
+name on that list is an agent whose turn you are cancelling and whose running
+tool call you are killing, so tail first to see what that is. But do not tail to
+find out whether the *poller* has delivered: at the moment you transition the
+next poll is up to 60 seconds away, the notice is not on the pane yet, and its
+absence proves nothing.
 
 #### Storm guards
 
@@ -443,7 +476,9 @@ its pull request merges, and setting it Done then belongs to that task's story
 agent, never to you. Your equivalent is your stories: when a story has delivered
 — every task implementing it closed, the story reconciled — set the story
 **Done** and deactivate its agent. Done agents are not left running. Announce
-that transition as you make it — see *Announce every transition you make* above.
+that transition as you make it: you are deactivating behind it, so the poller
+will not see the move — see *Announce a transition only where the board will
+not* above.
 
 Keep statuses honest. If reality moved on — a PR merged, work was abandoned — and
 the ticket didn't, reconcile the ticket and say so in a comment.
@@ -561,8 +596,10 @@ back. For each one:
    interrupted, not finished, and leaving it In Progress with nothing behind it
    is exactly the lie a lost agent tells. In Progress → To Do is a meaningful
    transition, and the issues depending on it are the ones this most misleads,
-   so announce it — see *Announce every transition you make* above. The
-   preempted agent itself is not running and gets nothing but the comment.
+   so announce it — the preempted agent is not running, which is precisely why
+   the poller cannot see this move and why the announcement is yours to make.
+   See *Announce a transition only where the board will not* above. That agent
+   itself gets nothing but the comment.
 2. Comment on it naming what took its slot and when, so the agent finds the
    reason there when it returns — the ticket is its memory, and this is
    something that happened to it while it could not write anything down.
@@ -723,7 +760,8 @@ a credential gets past that boundary without anybody writing a line of code.
    post it on the PR and close that PR unmerged.
 2. Transition the ticket to **Done** and apply the `wont-do` label, and announce
    that transition — a killed ticket is exactly the news the issues linked to it
-   need. See *Announce every transition you make* above.
+   need, and an unstaffed one is invisible to the poller. See *Announce a
+   transition only where the board will not* above.
 
 The label rather than a resolution because this board has no Won't Do status, and
 Resolution is set by the Done transition and is not editable over MCP — the write
