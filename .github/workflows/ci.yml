@@ -64,6 +64,19 @@ jobs:
       - name: Sweep verify-* scripts for verdict-driven exits
         run: node daemon/scripts/sweep-verify-exit-paths.mjs --verbose
 
+      # KAN-206: the sweep above has only ever been observed passing, and a gate
+      # nobody has watched fail has not been shown to be a gate. This step
+      # constructs the two defect shapes in a throwaway tree, runs the real
+      # sweep against them, and fails if it does not go red and name them. It
+      # also blinds the sweep's own detector and asserts it refuses to report a
+      # clean sweep — the way this check would otherwise die silently.
+      #
+      # It is as dependency-free as the sweep: node builtins, a temp dir, and a
+      # subprocess. Do not drop this step to "save time"; without it the job
+      # proves only that today's tree is clean, never that the gate can bite.
+      - name: Show the sweep going red on an unreachable verdict
+        run: node daemon/scripts/repro-unreachable-verdict.mjs --verbose
+
   extension-build:
     name: extension-build
     runs-on: ubuntu-latest
