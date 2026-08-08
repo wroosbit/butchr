@@ -535,10 +535,41 @@ feature was not confirmed in `2.1.226`'s behaviour, only inferred from these
 three samples.
 
 It cannot account for any arm-X result — those rest on the on-disk record and the
-fire timestamp, both of which precede it — but it is **a live hazard for anything
-that reads a pane to decide what an agent is doing**, which `nudge.ts`'s
-`messageLanded` does. A suggestion sitting where a stranded message would sit is
-exactly the confusion that check exists to avoid.
+fire timestamp, both of which precede it.
+
+### And the product is already defended against it, which this document first got wrong
+
+**An earlier draft of this section said the suggestion was "a live hazard for
+anything that reads a pane, which `nudge.ts`'s `messageLanded` does". That
+overstated it, and the overstatement is corrected here rather than left to
+propagate.** Read at `51e8fc2`:
+
+```ts
+// daemon/src/nudge.ts:237 — landedCount, which messageLanded (:222) returns on
+const composerAt = COMPOSER_MARKERS.reduce(
+  (furthest, marker) => Math.max(furthest, tail.lastIndexOf(marker)), -1);
+const submitted = composerAt === -1 ? tail : tail.slice(0, composerAt);
+return flatten(submitted).split(needle).length - 1;
+```
+
+**It cuts at the last composer marker and counts only above it** — which is
+precisely the defence this probe lacked and had to add. A suggested prompt is
+rendered *in* the composer, so it falls in the discarded slice. `landedCount`
+was written that way for a different reason (KAN-79's stranded-message case,
+where the unsent text *is* in the buffer and a naive `includes` passes on the
+very frame that proves the failure), and that reason happens to cover this one
+exactly.
+
+So the accurate statement is narrower and worth having: **any pane reader that
+does not cut at the composer marker is fooled by the client's suggestions. This
+probe was one. `nudge.ts` is not.**
+
+What remains genuinely open, and is *not* observed: if the client ever renders a
+suggestion **above** the composer, or a suggestion happens to reproduce a sent
+message's first 60 characters into the transcript region, `landedCount` would
+count it. Neither was seen in four runs. **That is a hypothesis, and it is not
+filed as a defect**, because filing one would be this epic's named failure —
+claiming more than the mechanism shows — committed in the act of warning about it.
 
 ---
 
