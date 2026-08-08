@@ -2675,17 +2675,26 @@ export class MessageRouter {
     // the On buttons making a promise the loop can break, which is the same
     // defect this field exists to remove, moved one list down.
     //
-    // Running agents go through `recordedKeyFor` first, for the reason that
-    // method exists: their `key` came out of a pane name and is therefore
-    // lower-cased, and the board's answer is a sentence telling somebody which
-    // ticket to move. The other three lists are read from the registry and
-    // already carry its spelling. jira-poll.ts and board-reconcile.ts make the
-    // same correction at the same boundary.
+    // Every list goes in exactly as it is read, and the spelling is not this
+    // method's business (KAN-225).
+    //
+    // It used to be. Running agents were mapped through `recordedKeyFor` here
+    // first, because a running agent's `key` came out of a pane name and is
+    // therefore lower-cased, and the board's answer is a sentence telling
+    // somebody which ticket to move. **The `?? agent.key` that mapping needed
+    // was the defect.** `recordedKeyFor` returns nothing for an agent the
+    // durable registry never recorded — a `sessionless` herdr agent that
+    // outlived this daemon, or one it never started — and that is exactly the
+    // agent whose key is the pane spelling, so the fallback handed `kan-500`
+    // downstream to be printed at a human as the ticket to go and move.
+    //
+    // The correction now lives at the boundary that renders the key, in
+    // `board-control.ts`, where it needs no lookup and therefore has nothing to
+    // miss: everything that passes the jurisdiction filter is, upper-cased,
+    // exactly how Jira spells a key. Re-adding a hop here would put a second
+    // spelling rule in front of that one.
     const boardControl = this.boardControl?.([
-      ...agents.map((agent) => ({
-        ...agent,
-        key: this.recordedKeyFor(agent.agentName) ?? agent.key
-      })),
+      ...agents,
       ...missingAgents,
       ...standby,
       ...preempted

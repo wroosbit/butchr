@@ -24,7 +24,9 @@
 //   6. the claim is true      — the reconciler really does restart an agent
 //                               that was switched off while its ticket is In
 //                               Progress, which is what section 4 promises
-//   7. over the socket        — a real `node dist/daemon.js` carries the field
+//   7. over the socket        — a real `node dist/daemon.js` carries the field,
+//                               and the keys in it are spelled the way Jira
+//                               spells them (KAN-225)
 //
 // WHERE THIS PROOF STOPS, AND WHO COVERS IT
 //
@@ -36,6 +38,15 @@
 // the sentences come from the shipped `describeBoardControl` — none of the
 // three is reimplemented here, and the payload is taken from a real
 // `MessageRouter.handle({action:'list_agents'})` rather than hand-written.
+//
+// **Sections 1-6 also register every agent they run**, which is a second and
+// narrower limit, found the hard way (KAN-225): with a registry record for
+// everything, the spelling correction those sections exercise is one that could
+// never have been missing. The agent that broke this was the one with *no*
+// record. Section 7 is where that agent exists, so the spelling is asserted
+// there — on a machine with a live fleet. See the note it prints when it has
+// nothing to bite on, and verify-board-key-spelling.mjs for the same rule
+// against a fleet that can be guaranteed.
 //
 // **Section 7 is what closes the KAN-145 hole**, and it is the reason this
 // script boots a daemon at all. Sections 1-6 construct their own router, so all
@@ -73,8 +84,15 @@ const repoRoot = path.resolve(scriptDir, '..', '..');
 const argv = process.argv.slice(2);
 const dumpIdx = argv.indexOf('--dump');
 const dumpDir = dumpIdx === -1 ? null : argv[dumpIdx + 1];
+// `dumpIdx === -1` has to be handled explicitly, and the bug it caused is worth
+// a line (KAN-225). With no `--dump`, `dumpIdx + 1` is 0, so the old filter
+// excluded index 0 — **the distDir argument** — and silently fell back to the
+// default `dist`. Aiming this script at a deliberately broken build to watch a
+// check go red therefore ran it against the *working* build and printed PASS: a
+// proof that quietly substitutes its own input for the one it was given. Found
+// by trying to make §7's new spelling check fail and being unable to.
 const positional = argv.filter(
-  (a, i) => i !== dumpIdx && i !== dumpIdx + 1 && !a.startsWith('--')
+  (a, i) => i !== dumpIdx && (dumpIdx === -1 || i !== dumpIdx + 1) && !a.startsWith('--')
 );
 const distDir = positional[0] ?? path.join(daemonDir, 'dist');
 
@@ -544,6 +562,57 @@ try {
         payload.boardControl.jurisdictionTypes.length > 0,
       'and a non-empty jurisdiction, derived from the issue-type table'
     );
+
+    // --- the spelling, off the real wire (KAN-225) ---------------------------
+    //
+    // This daemon runs under a temp `$HOME`, so its agent registry is empty,
+    // while herdr's census is machine-wide — **every agent it can see is one it
+    // has no record of.** That is acceptance criterion 1's condition occurring
+    // naturally rather than being built: exactly the case the deleted
+    // `recordedKeyFor(...) ?? agent.key` fallback fired on.
+    //
+    // It is asserted *here*, on the real payload, because that is the seam the
+    // defect survived in. Sections 1-6 construct their fleet and register every
+    // agent in it, so the fallback could never fire for them; this section
+    // reaches a real one and could not check the spelling. Each half was honest
+    // and the gap was between them — the KAN-145 shape, and the reason §7 prints
+    // `{"butchr-epic-kan-39":"kan-39", …}` and passed for two PRs.
+    const controlledEntries = Object.entries(payload.boardControl?.controlled ?? {});
+    const sessionless = (payload.agents ?? []).filter((a) => a.sessionless === true);
+
+    if (controlledEntries.length === 0) {
+      // Said out loud rather than passed silently. On a machine with no Butchr
+      // panes in jurisdiction — CI, or a developer box with the fleet down —
+      // there is nothing for the two checks below to bite on, and a green run
+      // that did not look at anything must not read as a green run that did.
+      console.log(
+        '  NOTE  no agent on this machine is in the board\'s jurisdiction, so the two\n' +
+        '        spelling checks below are VACUOUS on this run. They are only evidence\n' +
+        '        on a machine with a live fleet; verify-board-key-spelling.mjs is what\n' +
+        '        asserts the same rule against a fleet it can guarantee.'
+      );
+    } else {
+      check(
+        sessionless.length === controlledEntries.length,
+        'every agent off this wire is sessionless — criterion 1\'s condition really holds here',
+        `${sessionless.length} sessionless of ${controlledEntries.length} controlled; ` +
+        'this daemon\'s $HOME is a temp dir, so its registry has no record of any of them'
+      );
+    }
+
+    const wrongCase = controlledEntries.filter(([, key]) => key !== key.toUpperCase());
+    check(
+      wrongCase.length === 0,
+      'every key off the real wire is spelled as Jira spells it',
+      `lower-cased: ${JSON.stringify(wrongCase)}`
+    );
+    const notKeyShaped = controlledEntries.filter(([, key]) => !/^[A-Z][A-Z0-9]*-\d+$/.test(key));
+    check(
+      notKeyShaped.length === 0,
+      'and is Jira-shaped — the sentences name it as a ticket to go and move',
+      `not key-shaped: ${JSON.stringify(notKeyShaped)}`
+    );
+
     console.log(
       `\n  the block, off the wire: ${JSON.stringify(payload.boardControl)}`
     );

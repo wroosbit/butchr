@@ -3,7 +3,8 @@ import {
   BOARD_CYCLE_MS,
   RunningAgent,
   boardWorkspaceTypes,
-  inJurisdiction
+  inJurisdiction,
+  renderedKey
 } from './board-reconcile.js';
 
 /**
@@ -94,10 +95,23 @@ export interface BoardControlReport {
    * and cannot spell it.** An agent *name* is built from a lower-cased key, so
    * a running agent read back out of a pane census is `kan-222` — and a
    * confirmation that says "move kan-222 out of those statuses" is naming
-   * something that does not exist on the board. jira-poll.ts and the board
-   * reconciler both reach for `recordedKeyFor` for exactly this reason; a
-   * sentence a human is being asked to act on deserves it more than a log line
-   * does. The rendered proof caught this saying `kan-222` before it was fixed.
+   * something that does not exist on the board. The rendered proof caught this
+   * saying `kan-222` before it was fixed.
+   *
+   * **The spelling comes from the jurisdiction test, not from a lookup
+   * (KAN-225).** The first version of this asked the router for the durable
+   * registry's spelling and fell back to the agent's own key when there was no
+   * record — and that fallback was the defect, because the agent that has no
+   * record is precisely the one whose key is a pane spelling: a `sessionless`
+   * herdr agent that outlived this daemon, or one it never started. It reached a
+   * human as `kan-500` and named no ticket on any board.
+   *
+   * There is nothing to look up. `inJurisdiction` decides membership on
+   * `key.trim().toUpperCase()` against a Jira-key regex, so **everything that
+   * survives the filter below is, upper-cased, exactly how Jira spells a key.**
+   * Reporting the string the test accepted is not a tidy-up; it removes a
+   * disagreement between what was judged and what was printed, and the fallback
+   * disappears rather than being corrected.
    */
   controlled: Record<string, string>;
 }
@@ -128,10 +142,16 @@ export function boardControlReport(
     mode,
     cycleSeconds: Math.round(BOARD_CYCLE_MS / 1000),
     jurisdictionTypes: [...types],
+    // `renderedKey` rather than `agent.key`, and it is the same helper
+    // board-reconcile.ts's `address()` renders its log lines through — one rule,
+    // two callers, so the daemon log and this page cannot name one agent two
+    // ways (KAN-225). On this path the helper's Jira-shape guard is redundant,
+    // because `inJurisdiction` has already applied it; on `address()`'s path it
+    // is load-bearing. See the helper for why it is written for that caller.
     controlled: Object.fromEntries(
       agents
         .filter((agent) => inJurisdiction(agent as RunningAgent, types))
-        .map((agent) => [agent.agentName, agent.key])
+        .map((agent) => [agent.agentName, renderedKey(agent.key)])
     )
   };
 }
