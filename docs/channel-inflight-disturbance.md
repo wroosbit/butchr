@@ -564,12 +564,32 @@ So the accurate statement is narrower and worth having: **any pane reader that
 does not cut at the composer marker is fooled by the client's suggestions. This
 probe was one. `nudge.ts` is not.**
 
-What remains genuinely open, and is *not* observed: if the client ever renders a
-suggestion **above** the composer, or a suggestion happens to reproduce a sent
-message's first 60 characters into the transcript region, `landedCount` would
-count it. Neither was seen in four runs. **That is a hypothesis, and it is not
-filed as a defect**, because filing one would be this epic's named failure —
-claiming more than the mechanism shows — committed in the act of warning about it.
+**There is exactly one branch where the cut does not happen, and it is not a
+hazard** — `task/KAN-234` found it re-running this same citation after retracting
+its own copy of the overstatement. It is the better version of the finding, so it
+is recorded here rather than left on a ticket:
+
+```ts
+const submitted = composerAt === -1 ? tail : tail.slice(0, composerAt);
+```
+
+With **no composer marker on screen**, `composerAt` is `-1` and the whole tail
+counts. `nudge.ts:217` documents that as deliberate:
+
+> *"When no composer marker is on screen the pane is not a Claude Code prompt — a
+> bare shell, or output mid-scroll — and presence anywhere is the only evidence
+> available. A deliberate degradation: the alternative is calling every
+> non-Claude pane undeliverable."*
+
+**And that is the same condition under which the client renders no suggestions**,
+because there is no Claude Code prompt to suggest into. The degraded branch and
+the hazard are mutually exclusive by construction.
+
+So the residual is a hypothesis, not a defect: a suggestion would have to be
+drawn **above** the composer, or reproduce a sent message's first 60 characters
+into the transcript region. Neither was seen in four runs. **Nothing is filed** —
+by this ticket or by KAN-234 — because filing on an unobserved hypothesis would be
+this epic's named failure, committed in the act of warning about it.
 
 ---
 
