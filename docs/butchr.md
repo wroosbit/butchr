@@ -525,6 +525,7 @@ derivation:
 | `BUTCHR_MAX_AGENTS` | sets the cap outright, skipping the derivation |
 | `BUTCHR_AGENT_MEMORY_MB` | resident cost of one agent tree |
 | `BUTCHR_AGENT_CORES` | cores one active agent tree spends |
+| `BUTCHR_STALL_PERCENT` | the stall threshold (default 20); above 100 disables the term |
 
 Precedence is strict: an override beats the live measurement outright, the
 measurement beats the seed, and `BUTCHR_MAX_AGENTS` pins the cap before any of
@@ -536,6 +537,52 @@ count, CPU actually in use, available memory — with the smallest winning. (The
 CPU term asked the 1-minute load average until KAN-201 replaced it with cores
 consumed, read from `/proc/stat`; the load average is still reported, because
 it is the number a human feels, and no longer gates anything.)
+
+**A fourth thing can refuse, and it is a veto rather than a count.** A machine
+that is *stalled* — thrashing on swap, or blocked on a failing disk — has no
+room for another agent however many cores and gigabytes are free, so KAN-218
+zeroes the headroom the three terms computed. This puts back a protection
+KAN-201 removed without naming: `load1` counted uninterruptible-sleep tasks, so
+a thrashing machine used to be refused for the wrong reason but with the right
+outcome, and `busyCores` correctly counts iowait as *idle*.
+
+The instrument is **`/proc/pressure`**, the `full avg10` field of both `io` and
+`memory` — the share of the last ten seconds in which every non-idle task was
+stalled. Not `/proc/stat`'s `iowait`, which is a per-CPU bucket that only
+accrues on an **idle** CPU: it is divided by the core count, and it collapses to
+zero exactly when the CPUs are busy, which is when a fleet is running. Measured
+on 2026-08-08 under a deliberate 8-way synchronous-write load, PSI reported
+25.73% of wall time stalled on I/O at the same moment `iowait` reported 0.00%.
+Both pressure files are read because the kernel accounts a task waiting on
+**swap-in as a memory stall, not an I/O one** — an io-only term would miss the
+swap-thrash case entirely — and the refusal names which of the two bound.
+
+It is a veto and not a `headroomBy…` count because there is no measured
+per-agent I/O cost to divide by, and inventing one to make the arithmetic look
+symmetrical would be the dimensional confusion KAN-201 removed. For the same
+reason **no preemption is offered on a stall**: a stand-down frees a slot, and a
+stalled machine is not short of slots, so preempting would destroy an agent's
+work without moving the figure that refused.
+
+Two honest limits, both stated in `capacity.ts`:
+
+- **The 20% threshold is a decision, not a measurement.** No outage calibrated
+  it, because this gap has no observed instance — it was found by `epic/KAN-59`
+  in their own port of KAN-201 and reported as a regression in their own change.
+  It is calibrated only from below: this machine averages 1.05% and peaked at
+  7.24% across five minutes spanning a full fleet, several builds and two
+  induced I/O loads.
+- **Where there is no PSI there is no gate.** Pre-4.20 kernels, kernels without
+  `CONFIG_PSI`, and anything that is not Linux have no `/proc/pressure`; the term
+  goes inert and every derivation says so in words. `procs_blocked` was
+  considered as a fallback and declined — an instantaneous D-state count reads 1
+  for one honest `dd`, and a fabricated instrument that refuses on a healthy
+  machine is worse than a named hole.
+
+`node daemon/scripts/verify-io-stall-gate.mjs` is the proof: it induces a real
+stall on the machine it runs on to compare the two instruments, drives the
+parser from fixture files, and removes the veto to show the same machine
+admitted.
 
 **A refusal always says why.** `butchr_capacity` and the MCP activate path
 return the reason, the figures and the full derivation; the sidepanel renders
