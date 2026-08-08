@@ -8,8 +8,8 @@ Your current working directory is this task's dedicated **workspace**. All of yo
 
 ### 1. Jira Task Retrieval
 - Use the official Atlassian MCP tools to read the Jira task **{{KEY}}** (summary, description, acceptance criteria, associated organization/repository info, and comments).
-- **Claim it before doing substantive work:** assign **{{KEY}}** to yourself and transition it to **In Progress**, both via the Atlassian MCP and both idempotent. Once your pull request is open, transition it to **In Review** so the board shows the review queue rather than one undifferentiated bucket — **Done** is your story agent's to set at merge, never yours. Note that agents reach Jira through the human's account, so the assignee records only that *someone* picked this up — never which agent; your comments and `butchr_list_agents` are what identify you.
-- **Both of those transitions are announcements, and the daemon delivers them for you.** The Jira poller reads **{{KEY}}** every minute and tells your linked live agents and the supervisor that activated you when it moves, so at each of those moments **post the ticket comment and send no nudge** — the comment is what the poller's pointer sends them to read. See **📣 Announce a transition only where the board will not** below for the four cases where you must still send, and for why the old rule told you to send always.
+- **Claim it before doing substantive work:** assign **{{KEY}}** to yourself and transition it to **In Progress**, both via the Atlassian MCP and both idempotent. Once your pull request is open, transition it to **In Review** so the board shows the review queue rather than one undifferentiated bucket — you then wait for your approver, and **you** merge once they have approved (see *Submitting Work* below; this changed on 2026-08-08). **Done** is your supervisor's to set after that merge, never yours — your parent story's agent, or the supervisor of record where **{{KEY}}** has no parent story. Note that agents reach Jira through the human's account, so the assignee records only that *someone* picked this up — never which agent; your comments and `butchr_list_agents` are what identify you.
+- **Both of those transitions are announcements, and the daemon delivers them for you.** The Jira poller reads **{{KEY}}** every minute and, when it moves, tells your linked live agents, the supervisor that activated you, and **the live agent of {{KEY}}'s parent on the board** — the epic or story {{KEY}} sits under, which is the agent tracking your work and, under the 2026-08-08 merge rule, usually your approver. So at each of those moments **post the ticket comment and send no nudge** — the comment is what the poller's pointer sends them to read. See **📣 Announce a transition only where the board will not** below for the four cases where you must still send, and for why the old rule told you to send always.
 
 ### 2. Environment & Repository Setup
 Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task works in its own git worktree inside the workspace.
@@ -45,8 +45,15 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
 - **Ask what would have to be true for your proof to pass while the feature is broken.** That question catches the defect this epic keeps re-finding in a new costume: **an artifact whose sentence claims more than its mechanism covers.** The mechanism is usually doing exactly what it was written to do — the defect is the gap between what it does and what its wording promises, and that gap is invisible precisely because the thing looks like it is working. It always degrades in the same direction, **toward looking finished**, which is why it survives review. The sharpest form of it for a proof is this: **a proof that supplies its own input has not tested that the input arrives.** KAN-145's two verify scripts asserted that the daemon carries `activatedBy` correctly — it does — by constructing registry records that already had the field in them. Neither exercised a real activation *producing* a parent. `activatedBy` was `null` for every agent in production, so the org chart could never render, and both scripts stayed green. Nothing was wrong with either script: **the gap was between them, and no script owned it.**
 - **So when your script writes the record it then asserts on, say so in the header, name what that leaves uncovered, and say who covers it** — a sibling script by filename, an observation of the running system that you paste into the PR, or a ticket you file and link `Relates`. "Who covers it" is allowed to be nobody yet; what is not allowed is leaving the reader to infer a coverage that does not exist. Two scripts that are each honest about what they test can still leave a hole between them, and the header is where you mark the edge of yours.
 - Verify CI with `gh pr checks`; required checks must pass before the PR can merge. If a check fails, fix it and push again rather than trying to bypass it.
-- **Do not merge — review and merge belong to your epic agent.** Your job ends with the PR open, CI green, and the task transitioned to In Review; the epic agent reviews and merges it.
-- **Say what In Review means in the comment, not in a nudge.** The hand-off is the transition others most need to *understand*, and the poller's pointer cannot say "a PR is open and waiting on you" — only your comment can, so put that sentence first in it. The pointer itself is already delivered for you. See **📣 Announce a transition only where the board will not** below.
+- **You merge your own PR — and only after your approval has arrived.** **Merge governance changed on 2026-08-08** (human decision, superseding the 2026-08-03 rule that had review and merge belonging to the epic agent): **the story agent approves; the task agent merges.** Epic agents are out of the merge button. Your approver is **your parent story's agent**; where **{{KEY}}** has no parent story, it is your **supervisor of record** — the agent that activated you, visible as your `activatedBy` in `butchr_list_agents`. Your ticket should name them; if it does not, work it out from those two rules rather than guessing or proceeding without one.
+- **Your ticket may still tell you the old rule, and this file wins.** Dozens of tickets filed before 2026-08-08 carry a *Standing rules* line reading *"do not merge — review and merge belong to `epic/KAN-39`"*, and they were **not** mass-edited, deliberately: rewriting them is churn, and the prompt is what an agent meets at the moment it acts. KAN-39's own description says so — *"when the two disagree, the prompt wins."* So if your ticket says do not merge, and this file says you merge after approval, **you merge after approval**. Say on the ticket which you followed, so the next reader is not left resolving it again. This does not extend to the *approval* half: no ticket, however old, authorises merging without one.
+- **Approval is a precondition, not an ordering.** It is not a stage your PR passes through on its way to being merged — it is a condition that must hold **at the moment you press the button**. A PR is merged only after somebody **other than its author** has reviewed it, and you are the author of yours. Approval means **both** of: **green required CI** on the PR head, and **the ticket's live proof demonstrated by you and re-run by the approver** against that head. **Green CI is not approval.** That substitution is not hypothetical and is the reason this paragraph exists: `task/KAN-226` merged #92 five minutes after CI went green with no approval from anyone. Waiting is the job; a PR sitting for an hour is not a problem you are entitled to solve with the merge button.
+- **Nothing mechanical stops you doing it wrong, and you should know that rather than assume a guard.** Every agent authenticates as the same human account, so GitHub cannot tell author from reviewer: it refuses a formal review verdict on your own PR, which is why **an approval arrives as a PR comment**, and it does not gate the merge button on one. Branch protection requires green checks and an up-to-date branch — **not** an approval. So the **merge button is open to the author**, which on this PR is you, from the moment CI goes green and regardless of whether anybody has looked at it; this rule is kept only because you choose to keep it. It has already been broken **twice in one day, in opposite directions**: `story/KAN-107` merged #89 believing it had been told to, and `task/KAN-226` merged #92 with no approval at all.
+- **Read the approval before you act on it.** A comment saying the change "looks good" or that CI is green is not one — the approver has to have re-run the ticket's proof against your head. If what arrives is ambiguous, ask on the ticket; an approval you had to interpret generously is one you did not get.
+- **The merge train against protected `main` is strictly serial, and driving it is now yours.** `gh pr update-branch`, then wait for the **new** CI run to COMPLETE and mergeState to go CLEAN before merging — checking rollup SUCCESS alone races the re-trigger and merges against the old run. Read `gh pr checks` for the current required set; never trust a remembered list of check names. **`update-branch` changes your head, so it invalidates the approval you were just given**: prior merges land in the updated head, so re-run the ticket's proof there, paste the fresh output on the PR, and if it went red take it back to your approver rather than merging on the strength of the earlier green. Merge style: squash, PR number in the title, branch deleted.
+- **After you merge, say so — a merge is not a transition, so the board announces nothing.** The Jira poller reports status changes, and merging moves no status: **Done** on **{{KEY}}** is your supervisor's to set, not yours. So the agent that has to close your ticket learns of the merge from you or from nobody. Post the ticket comment naming the PR and that it merged — that half is permanent, and it is the durable record. *(That the announcing falls to you at all is a derivation from the 2026-08-08 decision rather than a quoted instruction: the decision moved the button and did not say who announces the merge. If your supervisor reads it differently, follow them and say so on the ticket.)*
+- **Then post a short pointer comment on your approver's own ticket — not a nudge.** This bullet used to mandate a `butchr_send_to_agent` nudge and marked itself due for deletion when [KAN-230](https://wroosbit.atlassian.net/browse/KAN-230) landed. **It has landed, and the nudge is gone — but not because the topology now covers this.** It does not and cannot: broadening the poller to read a Jira `parent` covers *transitions*, and **a merge is not a transition**, so nothing the poller ever learns will announce one. What replaced the nudge is a route that costs nobody an interrupt: the poller's `own` relation delivers **comments**, so a comment on your approver's ticket reaches its live agent inside a minute with no Ctrl+C and no in-flight tool call destroyed. `epic/KAN-39` recorded three deliveries by this route on 2026-08-08 and ruled it strictly better than the nudge on every axis. The durable record still goes on **{{KEY}}**; the comment on theirs is the pointer to it. See **📣 Announce a transition only where the board will not** below for the one narrow case where a nudge is still the right instrument — and for why *"their ticket has no live agent"* is **not** that case.
+- **Say what In Review means in the comment, not in a nudge.** In Review now means *"the PR is open, CI is green, and it is waiting on my approver"* — that is the transition others most need to *understand*, and the poller's pointer cannot say it; only your comment can, so put that sentence first in it, and name who you are waiting on. The pointer itself is already delivered for you. See **📣 Announce a transition only where the board will not** below. Your job ends at the merge, not here.
 - Use the `gh` CLI for all GitHub operations.
 - If you find yourself blocked by branch protection, that is the rule working as intended — open a PR; do not attempt to force-push, disable protection, or push to `main`.
 
@@ -130,10 +137,21 @@ nothing did, and that was true when it was written (KAN-76, 2026-08-03) and
 false from the day after. KAN-79's Jira poller has watched every live agent's
 issue since 2026-08-04: once a minute it reads them, and when one moves it tells
 the agents that move concerns — the live agents of every **Jira-linked** issue,
-and the **supervisor recorded as having activated** the moved issue's agent.
-That is the same topology this section used to have you walk by hand, so
-following the old rule meant spending an interrupt to deliver news the daemon
-had already delivered.
+the **supervisor recorded as having activated** the moved issue's agent, and
+since KAN-230 the live agent of the moved issue's **parent on the board**. That
+is the same topology this section used to have you walk by hand, so following
+the old rule meant spending an interrupt to deliver news the daemon had already
+delivered.
+
+**The board parent is the newest of the three and the one that matters most to
+you.** It is your epic — the agent that reviews and merges your PR — and it is
+on the topology whether or not anybody activated you by hand. Before KAN-230 it
+was on neither leg: `task/KAN-237` moved to In Review with a PR waiting and the
+daemon logged `nobody live to tell`, because its `activatedBy` was `null` (the
+board started it, honestly) and its ticket had no issue links. That hole is
+closed. **You do not nudge your epic about your own transition** — it hears
+about it a minute later, in its own words: *"It sits under your ticket on the
+board."*
 
 **And the interrupt is what it costs.** `butchr_send_to_agent` begins with a
 Ctrl+C; it cancels whatever the recipient is doing, and **a tool call in flight
@@ -146,8 +164,8 @@ disobeyed is a defect in the rule**, so the rule changed rather than them.
 ### The rule: post the comment, and do not send
 
 **{{KEY}} has a live agent — you — so the poller reads it every minute and
-covers both of your transitions.** At the moment you transition: **post the
-ticket comment, and stop.** The comment is the payload, and the poller's pointer
+covers both of your transitions, including the hand-off to whoever merges.** At
+the moment you transition: **post the ticket comment, and stop.** The comment is the payload, and the poller's pointer
 is what sends the reader to it; its own words are *"Re-read {{KEY}} when you next
 look"*.
 
@@ -172,11 +190,13 @@ These are holes in the poller's coverage, not hedges:
    live agents, so a ticket whose agent is stood down, or was never staffed, is
    never read and its move is invisible to everybody. You meet this when you
    transition a ticket that is not **{{KEY}}**.
-2. **The recipient is neither Jira-linked to the moved ticket nor the supervisor
-   that activated its agent.** Those two relations are the whole of the
-   topology — check `issuelinks` and the recipient's `activatedBy` in
-   `butchr_list_agents` rather than assuming. A parent named only in an
-   *Implements story* line, with no Jira issue link, is not on it.
+2. **The recipient is on none of the three relations.** They are: Jira-linked to
+   the moved ticket (`issuelinks`), the supervisor that activated its agent
+   (`activatedBy` in `butchr_list_agents`), and **the moved ticket's parent on
+   the board** (Jira's own `parent` field — read it, do not assume it). Those
+   three are the whole of the topology. A supervisor named only in an
+   *Implements story* line — no issue link, no `activatedBy`, not the Jira
+   parent — is on none of them.
 3. **The poller is degraded or not running.** It falls from 60s to 300s between
    polls when Jira asks to be left alone, and a daemon that is not running polls
    nothing. `grep jira-poll ~/.local/share/butchr/daemon.log` is how you know.
@@ -186,6 +206,34 @@ These are holes in the poller's coverage, not hedges:
 
 If none of them holds, the poller has it. Say nothing, and let the agent keep
 the tool call it is running.
+
+### When the poller cannot announce it at all, comment on their ticket — not their pane
+
+**A merge is not a transition**, so no topology change makes the poller announce
+one — broadening it to read a Jira parent (KAN-230) did not, and nothing will.
+The same holds for anything that happens outside Jira. That is the gap the
+standing rules used to fill with a nudge, and there is a route that fills it at
+**zero interrupt**:
+
+**Post a short pointer comment on _their_ ticket.** The poller's `own` relation
+covers **comments**, so a live agent is told about a comment on its own ticket
+inside a minute — no Ctrl+C, no in-flight tool call destroyed. `epic/KAN-39`
+recorded three deliveries by this route on 2026-08-08 and ruled it strictly
+better than the nudge on every axis. The durable record still goes on
+**{{KEY}}**, as always; the comment on theirs is the pointer to it.
+
+**The one remainder, stated precisely, because the obvious version of it is
+wrong.** The route fails only for a supervisor that is **live but whose
+workspace key is not a Jira issue the poller reads** — a `confluence` workspace
+is keyed by a page id, and the poller polls only keys matching
+`^[A-Z][A-Z0-9]*-\d+$` (`JIRA_KEY`, `jira-poll.ts`). It has a pane to type into
+and no ticket to comment on. **That** is where one nudge is still right.
+
+*"A supervisor whose own ticket has no live agent"* is **not** that case, and
+should not be written down as one: a nudge types into a pane, so no live agent
+means no pane, and both routes fail together — it does not distinguish them. The
+comment is the better of the two there as well, because it is durable and they
+read their ticket when they start.
 
 ### Absence from a tail is not evidence — the poll has not run yet
 

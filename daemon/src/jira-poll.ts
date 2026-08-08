@@ -168,8 +168,37 @@ export interface JiraIssueEvent {
   newCommentIds?: string[];
 }
 
-/** Why a given agent is being told about a given issue. */
-export type NudgeRelation = 'own' | 'parent' | 'linked';
+/**
+ * Why a given agent is being told about a given issue.
+ *
+ * WHY `parent` MEANS THE BOARD'S PARENT AND NOT THE SUPERVISOR (KAN-230)
+ *
+ * It used to mean the supervisor of record — `activatedBy`, the agent that
+ * staffed this one — and that reading of the word was unique to this file.
+ * Everywhere else in the system a parent is what Jira calls a parent: the epic
+ * a task sits under, the epic a story sits under. The collision was not
+ * cosmetic. It hid a missing relation for months, because for a task an epic
+ * activated directly the two readings name the same agent and nothing looks
+ * wrong; they come apart on a task → story → epic chain, and since the board
+ * reconciler began starting most agents with no `activatedBy` at all
+ * (KAN-221/222, `daemon.ts`, deliberately) they come apart in the ordinary
+ * case. `task/KAN-237` moved to In Review with a PR waiting on `epic/KAN-39`
+ * and the log said `nobody live to tell.`
+ *
+ * So the two are now separate relations with separate names and separate
+ * sentences, and both are consulted:
+ *
+ *   - `supervisor` — the agent that activated this one. Accountable for the
+ *     run. May be absent, and honestly so.
+ *   - `parent` — the issue this one sits under on the board. Accountable for
+ *     the ticket, which is who reviews and merges. Independent of who staffed
+ *     anything, and present whether or not an agent was ever activated by hand.
+ *
+ * They can disagree without either being wrong — KAN-226 is `story/KAN-107`'s
+ * to supervise and KAN-39's on the board — which is why neither replaced the
+ * other.
+ */
+export type NudgeRelation = 'own' | 'supervisor' | 'parent' | 'linked';
 
 /** One nudge the poller decided to send. */
 export interface PollNudge {
@@ -232,9 +261,16 @@ export function jiraEventNudgeText(event: JiraIssueEvent, relation: NudgeRelatio
         ? `has ${event.newComments} new comments.`
         : 'has a new comment.';
 
+  // One sentence each, because the four relations are four different reasons to
+  // be interrupted and a recipient that cannot tell which one it is cannot
+  // judge whether the news is its business. `supervisor` and `parent` are the
+  // pair this matters most for: "you staffed this agent" and "this ticket is
+  // yours on the board" are answered by different agents and call for different
+  // things (KAN-230).
   const whose: Record<NudgeRelation, string> = {
     own: 'It is your own ticket.',
-    parent: 'You activated its agent.',
+    supervisor: 'You activated its agent.',
+    parent: 'It sits under your ticket on the board.',
     linked: 'It is linked to a ticket of yours.'
   };
 
@@ -454,17 +490,24 @@ export interface JiraPollerOptions {
  *   - **linked issues' agents** — an issue link is a statement that these two
  *     tickets are each other's business, and a live agent on the other end is
  *     the party that cannot see the change.
- *   - **the parent agent** — the supervisor of record from `activatedBy`, the
- *     agent that staffed this one and is accountable for it.
+ *   - **the supervisor agent** — the supervisor of record from `activatedBy`,
+ *     the agent that staffed this one and is accountable for it.
+ *   - **the Jira parent's agent** — the epic or story this ticket sits under on
+ *     the board (KAN-230). This is the relation that owns review and merge, so
+ *     it is the one a hand-off most needs to reach, and until now it was the
+ *     one nothing carried. It gets **both** kinds of event: unlike `own` below,
+ *     a board parent caused neither the transition nor the comment, and the
+ *     transition it most needs is In Review with a PR open, which is a status
+ *     event and nothing else.
  *   - **the issue's own agent, for a new comment only.** Comments are the
  *     steering API and an agent that misses a steer mid-turn is the stated gap.
  *     A *status* change does not go to its own agent: its own transitions are
  *     announced to it by the prompts layer (KAN-76), and telling an agent that
  *     the ticket it just moved has moved is noise it caused itself.
  *
- * A supervisor or a linked agent that is not running is not woken. Its ticket
- * is its durable inbox, and starting an agent to receive a notification would
- * be the daemon staffing the fleet on its own initiative.
+ * A supervisor, a board parent or a linked agent that is not running is not
+ * woken. Its ticket is its durable inbox, and starting an agent to receive a
+ * notification would be the daemon staffing the fleet on its own initiative.
  */
 export class JiraPoller {
   private readonly state: JiraPollState;
@@ -793,7 +836,7 @@ export class JiraPoller {
       for (const agent of own) consider(agent, 'own');
     }
 
-    // The parent of *this issue's* agent — the supervisor that staffed it.
+    // The supervisor of *this issue's* agent — the agent that staffed it.
     for (const agent of own) {
       const supervisor = supervisorFor(agent.agentName);
       if (!supervisor) continue;
@@ -807,15 +850,46 @@ export class JiraPoller {
         );
         tick.skipped.push({
           event,
-          relation: 'parent',
+          relation: 'supervisor',
           reason: 'supervisor of record is not running'
         });
         continue;
       }
       consider(
         { agentName: supervisorName, type: supervisor.type, key: supervisor.key },
-        'parent'
+        'supervisor'
       );
+    }
+
+    // The issue's parent on the board (KAN-230). Read off the polled issue
+    // itself rather than off the registry, which is what makes it independent
+    // of whether anybody ever activated this agent by hand: `activatedBy` is
+    // null for every agent the board reconciler starts, and that null is
+    // honest — the board is not an agent with a pane to be accountable at. The
+    // hierarchy still says who owns the ticket, and this is where that is read.
+    //
+    // Deliberately after the supervisor leg, so the "most specific relation
+    // wins" tie-break keeps the existing sentence for an agent that is both.
+    // Nothing that is told something today is told anything different.
+    const parentKey = snapshot.parentKey?.toUpperCase();
+    if (parentKey && parentKey !== event.key.toUpperCase()) {
+      const parents = byKey.get(parentKey) ?? [];
+      if (!parents.length) {
+        // Said out loud rather than folded into "nobody live to tell", which is
+        // the log line that made KAN-237's stall hard to diagnose: it cannot
+        // distinguish "this ticket concerns nobody" from "the agent it most
+        // concerns is switched off".
+        log(
+          `[jira-poll] ${event.key} (${event.kind}): board parent ${parentKey} ` +
+          `has no live agent; logging and stopping. Its ticket remains its inbox.`
+        );
+        tick.skipped.push({
+          event,
+          relation: 'parent',
+          reason: 'the issue\'s board parent has no live agent'
+        });
+      }
+      for (const agent of parents) consider(agent, 'parent');
     }
 
     for (const linkedKey of snapshot.linkedKeys) {

@@ -852,14 +852,30 @@ requests to notify nobody. The fleet comes from the same census the
 missing-agent sweep uses, and two agents on one ticket are one read.
 
 **Who gets told.** On a status change or a new comment on a watched issue:
-the live agents of its **linked issues** (from the same GET's `issuelinks`), and
-its **parent agent** (the `activatedBy` supervisor of record). Plus, for a **new
-comment only**, the issue's **own** agent — that is the mid-turn steer, and it
-is the point. A **status change** deliberately does *not* go to the issue's own
-agent: its own transitions are announced to it by the prompts layer, and telling
-an agent that the ticket it just moved has moved is noise it caused itself. A
-target that is not running is logged and left alone, for the same reason as
-above.
+the live agents of its **linked issues** (from the same GET's `issuelinks`), its
+**supervisor agent** (the `activatedBy` supervisor of record), and the live
+agent of its **parent issue on the board** (the same GET's `parent` — the epic a
+task sits under, the epic a story sits under). Plus, for a **new comment only**,
+the issue's **own** agent — that is the mid-turn steer, and it is the point. A
+**status change** deliberately does *not* go to the issue's own agent: its own
+transitions are announced to it by the prompts layer, and telling an agent that
+the ticket it just moved has moved is noise it caused itself. A target that is
+not running is logged and left alone, for the same reason as above.
+
+**Why `supervisor` and `parent` are two relations and not one** (KAN-230). They
+answer different questions — "who staffed this agent" and "whose ticket is this
+on the board" — and they disagree in the ordinary case. A task under a story
+under an epic has a story for a supervisor and an epic for a parent; and since
+the board reconciler began starting most agents, `activatedBy` is `null` for
+most of the fleet, honestly, because nothing staffed them. Until the `parent`
+leg existed, such an agent's hand-off reached nobody at all: `task/KAN-237` moved
+to In Review with a PR waiting on `epic/KAN-39`, and the log read `nobody live
+to tell.` The two carry different sentences for the same reason they are
+different relations — *"You activated its agent"* and *"It sits under your
+ticket on the board"* call for different things. Where one agent is both, the
+supervisor relation wins the tie and its wording is unchanged. The `parent`
+relation carries **both** status changes and comments: unlike `own`, a board
+parent caused neither, and the event it most needs is a transition.
 
 **The Jira `status` field is not herdr's agent status.** They share a word and
 nothing else. herdr's `done` is the agent's own per-turn hook boundary, fires at
@@ -1078,7 +1094,7 @@ activation, so it is the human's to iterate on.
 
 ### The `epic` Prompt: [`prompts/epic.md`](../prompts/epic.md)
 
-The canonical prompt lives in [`prompts/epic.md`](../prompts/epic.md) — see that file rather than an embedded copy here, so the two cannot drift. In outline: the agent decomposes its epic into Stories, staffs and steers the story agents that carry them, and **reviews and merges its own epic's pull requests** (decided 2026-08-03) — merging only with green required CI and the ticket's live-proof acceptance criteria re-run against the PR head; story and task agents never merge. It also owns the epic's durable written record, which since **2026-08-05** (story KAN-160) lives in **two** places rather than one. The epic's Jira **description** holds the **north stars** — the invariants a proposal is measured against — plus pointers to everything else, kept short enough to read every session. The **design doc** is a **Confluence page**: the architecture, the decisions and the reasoning behind them, what was rejected and why, and the agent's **operating memory** — what must persist across a deactivation or reset so a restarted agent picks up where the last one left off. For this repository's own epic, KAN-39, that page is **Butchr — design doc**, space `SD`, page id `1605634`: <https://wroosbit.atlassian.net/wiki/spaces/SD/pages/1605634/Butchr+design+doc>. Point-in-time state ("what is staffed, what is blocked") goes in comments, not into either of them; `prompts/epic.md` is the canonical statement of the rule and the test that applies it.
+The canonical prompt lives in [`prompts/epic.md`](../prompts/epic.md) — see that file rather than an embedded copy here, so the two cannot drift. In outline: the agent decomposes its epic into Stories, staffs and steers the story agents that carry them, and **reviews and approves the pull requests of the tasks it supervises directly** — approving only with green required CI **and** the ticket's live-proof acceptance criteria re-run against the PR head. **It does not merge.** Merge governance changed on **2026-08-08** (human decision, superseding 2026-08-03): **the story agent approves; the task agent merges**, and where a task has no parent story its supervisor of record approves. Approval is a **precondition, not an ordering** — a PR is merged only after somebody other than its author has reviewed it, and green CI is not approval. Nothing mechanical enforces it: every agent authenticates as the same account, so GitHub refuses a formal review verdict on our own PRs (the verdict is a PR **comment**) and leaves the merge button open to the author. See KAN-237. It also owns the epic's durable written record, which since **2026-08-05** (story KAN-160) lives in **two** places rather than one. The epic's Jira **description** holds the **north stars** — the invariants a proposal is measured against — plus pointers to everything else, kept short enough to read every session. The **design doc** is a **Confluence page**: the architecture, the decisions and the reasoning behind them, what was rejected and why, and the agent's **operating memory** — what must persist across a deactivation or reset so a restarted agent picks up where the last one left off. For this repository's own epic, KAN-39, that page is **Butchr — design doc**, space `SD`, page id `1605634`: <https://wroosbit.atlassian.net/wiki/spaces/SD/pages/1605634/Butchr+design+doc>. Point-in-time state ("what is staffed, what is blocked") goes in comments, not into either of them; `prompts/epic.md` is the canonical statement of the rule and the test that applies it.
 
 **Which home holds what — the boundary test.** Four homes; the questions are asked in order and you stop at the first that fires. (1) *Would a proposal contradicting this sentence be refused on sight?* → the epic's **description** (north stars). (2) *Could it become false because the code changed?* → **this file**, updated by the same pull request that changes the code, which is the only maintenance mechanism that actually works. (3) *Must an agent have read it before it acts, or it acts wrongly?* → **`prompts/<type>.md`**; the mark is timing and audience, not subject matter. (4) *Otherwise* → the **design-doc page**: why it is this way, what was rejected, what an incident cost. A paragraph that fires on more than one is **split, not copied** — the mechanism stays here, the reason goes to the page, and the page links back rather than restating it, because the repo is the authority on what the code does and anything written in two places drifts. The same test is stated agent-facing in [`prompts/epic.md`](../prompts/epic.md); the two are meant to agree, and if they ever disagree this file is wrong about behaviour and `prompts/epic.md` is wrong about mechanism.
 
