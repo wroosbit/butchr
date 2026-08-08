@@ -261,9 +261,7 @@ function newRouter(bridge, seed = []) {
     bridge,
     () => {},
     (msg) => events.push(msg),
-    undefined,
-    undefined,
-    agentRegistry
+    { agentRegistry }
   );
   return { router, events, agentRegistry };
 }
@@ -309,9 +307,7 @@ function routerWithCapture(bridge, seed = []) {
     bridge,
     (msg) => { last = msg; },
     (msg) => built.events.push(msg),
-    undefined,
-    undefined,
-    built.agentRegistry
+    { agentRegistry: built.agentRegistry }
   );
   return { ...built, router, sent: () => last };
 }

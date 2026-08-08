@@ -180,9 +180,7 @@ const router = new MessageRouter(
   bridge,
   (msg) => { sent = msg; },
   () => {},
-  undefined,
-  undefined,
-  agentRegistry
+  { agentRegistry }
 );
 
 // The capacity gate reads the real machine, and whether this box is busy

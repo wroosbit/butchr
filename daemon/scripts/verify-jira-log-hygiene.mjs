@@ -117,7 +117,7 @@ const jira = new JiraIssueTypeService(
   () => Date.now(),
   (cred) => new TokenJiraTransport(cred, gatewayOrigin)
 );
-const router = new MessageRouter(null, null, null, (msg) => outbound.push(msg), undefined, jira);
+const router = new MessageRouter(null, null, null, (msg) => outbound.push(msg), undefined, { jira });
 
 /** Drive one request through `handle` and wait for its correlated reply. */
 function drive(data) {

@@ -230,7 +230,7 @@ const agentRegistry = new AgentRegistry(path.join(scratch, 'agents.jsonl'));
 
 /** A router wired exactly as daemon.ts wires one, per connection. */
 const newRouter = (send) =>
-  new MessageRouter(registry, prompts, bridge, send, () => {}, undefined, undefined, agentRegistry);
+  new MessageRouter(registry, prompts, bridge, send, () => {}, { agentRegistry });
 
 const children = [];
 function cleanup() {

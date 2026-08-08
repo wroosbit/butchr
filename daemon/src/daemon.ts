@@ -219,15 +219,17 @@ const server = net.createServer((socket) => {
     herdrBridge,
     (msg) => writeJsonLine(socket, msg),
     broadcast,
-    jira,
-    { repoRoot, daemonStartedAt },
-    agentRegistry,
-    launchdarkly,
-    // Slot 10 is `capacitySource` (KAN-221) and production wants its default:
-    // the real machine. Named here rather than left to be counted, because the
-    // one thing this tail cannot survive is a caller guessing at a position.
-    undefined,
-    reportBoardControl
+    {
+      jira,
+      install: { repoRoot, daemonStartedAt },
+      agentRegistry,
+      launchdarkly,
+      // `capacitySource` is deliberately absent (KAN-221): production wants its
+      // default, the real machine. Under KAN-226 that is an omitted field
+      // rather than an `undefined` placeholder holding a slot open, so nothing
+      // here has to be counted and a new option cannot displace an existing one.
+      boardControl: reportBoardControl
+    }
   );
 
   onJsonLines(
@@ -297,12 +299,13 @@ const daemonRouter = new MessageRouter(
   herdrBridge,
   () => {},
   broadcast,
-  jira,
-  { repoRoot, daemonStartedAt },
-  agentRegistry,
-  launchdarkly,
-  undefined,
-  reportBoardControl
+  {
+    jira,
+    install: { repoRoot, daemonStartedAt },
+    agentRegistry,
+    launchdarkly,
+    boardControl: reportBoardControl
+  }
 );
 
 /**

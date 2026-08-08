@@ -144,7 +144,7 @@ function routerWith(apiOrigin) {
   // the adapter this router is actually driving.
   registry.registerIntegration(createLaunchDarklyIntegration(ld));
   registry.setEnabled('launchdarkly', true);
-  return new MessageRouter(registry, null, null, send, undefined, jira, undefined, undefined, ld);
+  return new MessageRouter(registry, null, null, send, undefined, { jira, launchdarkly: ld });
 }
 
 /** Drive one request through `handle` and wait for its correlated reply. */
