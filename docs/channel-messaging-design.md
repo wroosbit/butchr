@@ -286,21 +286,38 @@ plainly drawn, flapping YES/NO across runs while the model received it every
 time. A pane-scraping health check on this path would report failures that did
 not happen.
 
-**And C3 is weaker than this table implies, on evidence that arrived after the
-section was first written.** KAN-219's fifth detector defect: **Claude Code
-renders a *suggested* next prompt into the composer**, `capture-pane` cannot
-tell it from typed text, and in their run it *swallowed the model's real
-account entirely*. `messageLanded` (`daemon/src/nudge.ts:222-247`) decides
-delivery by exactly that reading — where text sits relative to the composer
-marker — so the client's own chrome is in principle indistinguishable from a
-message. KAN-219 flagged this as an observation and **deliberately did not file
-it**, saying it is `epic/KAN-39`'s call whether it deserves a ticket.
+**A note on C3's robustness, corrected — and the correction is the more useful
+fact.** KAN-219 observed that **Claude Code renders a *suggested* next prompt
+into the composer** and that `capture-pane` cannot tell it from typed text; in
+their run it swallowed the model's real account. An earlier revision of this
+section inferred from that a live hazard to `messageLanded`. **That inference
+was wrong, and I re-ran the citation rather than carry it.**
 
-**It is not in my seven** (§7), and I am naming it rather than quietly folding
-it in, because it is a defect in the path this design **keeps** — so it
-outlives the migration and wants an owner either way. It also sharpens §5.1:
-the composer is retained for cases a channel cannot serve, not because the
-composer is sound.
+`landedCount` (`daemon/src/nudge.ts:237-247`, read at `51e8fc2`) cuts at the
+**last** composer marker and counts only what is above it:
+
+```ts
+const submitted = composerAt === -1 ? tail : tail.slice(0, composerAt);
+return flatten(submitted).split(needle).length - 1;
+```
+
+A suggestion is rendered *in* the composer, so it lands in the slice that is
+discarded. **C3 is therefore sounder than the table's one-line summary
+suggests**, and for a reason worth noting: that cut was written for KAN-79's
+stranded-message case — where the unsent text *is* in the buffer and a naive
+`includes` passes on the very frame that proves the failure — and it happens to
+defend against the client's own chrome for the same structural reason. The
+accurate general statement is **KAN-219's corrected one**: *any pane reader
+that does not cut at the composer marker is fooled by the client's suggestions;
+`nudge.ts` is not.*
+
+**One residual case, stated as a limit rather than a defect.** When no composer
+marker is on screen, `composerAt === -1` and `submitted` is the whole tail — no
+cut happens. `nudge.ts` documents this as a deliberate degradation for panes
+that are not a Claude Code prompt, which is also where the client renders no
+suggestions, so it is not a live hazard today. **Nothing here is filed, by
+KAN-219 or by me**, and neither of us should: a defect filed on an unobserved
+hypothesis would repeat the error this paragraph is correcting.
 
 **Composer-path confirmation is not ours to reimplement.** Per KAN-234 comment
 11041, relaying the human's decision: Butchr consumes CrabCast's interface and
