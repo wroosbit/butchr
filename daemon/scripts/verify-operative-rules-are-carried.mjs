@@ -71,6 +71,22 @@
 //     restate a rule and go stale independently; both did for KAN-237, and both
 //     were fixed by hand in the same PR rather than by this sweep.
 //
+// AND (KAN-212) A RULE THAT NEVER REACHED A PROMPT AT ALL. The convention
+// *every Story and Task carries a parent epic* was a human decision of
+// 2026-08-07 that existed only as a backfill of the board — 74 tickets
+// re-parented, and no sentence anywhere an agent reads. Four more unparented
+// tickets were filed within the day by four different agents, one of them while
+// the backfill was still running; the heaviest filer on the board later
+// disclosed three of its own, two already closed under its own merges with
+// nothing having gone red. Run with `--ref origin/main` from KAN-212's merge
+// base `1fc6407` to watch H-12 go red in all three prompts at once — that red
+// is honest here in a way the R-1 merge-base red was not, because the rule is
+// genuinely absent from those files rather than merely discussed elsewhere.
+// The narrower test, and the one to repeat after any edit to H-12's phrases:
+//   perl -0pi -e 's/Epics have no parent, and that is correct//' prompts/story.md
+//   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, story.md only
+//   git checkout -- prompts/story.md
+//
 // Usage:
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs [--verbose]
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs --ref origin/main
@@ -172,6 +188,49 @@ const RULES = [
           /Approval is a precondition, not an ordering/i,
           /Green CI is not approval/i,
           /merge button (is )?open to the author/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-212. WHY THIS ONE IS IN THE SWEEP — the ticket asked for the decision
+    // to be made deliberately rather than by default, so here it is, with the
+    // counter-argument kept rather than dropped.
+    //
+    // FOR: it is an operative rule by this script's own test — an agent
+    // satisfies it at the moment it calls `createJiraIssue`, and its failure
+    // mode is a wrong action in the next thirty seconds. It is also no longer
+    // hygiene: KAN-239 makes a task's approver its parent story's agent, else
+    // its parent epic's agent, with **no third branch**, so a ticket filed with
+    // no parent names nobody and cannot legitimately merge. A merge rule now
+    // stands on this, and since KAN-240 this sweep is a required check — so a
+    // rewrite that drops the rule goes red before review instead of in it,
+    // which is precisely how the rule went missing the first time (it existed
+    // only as a backfill of the board, and a backfill reaches nobody).
+    //
+    // AGAINST, AND IT IS NOT WEAK: this sweep proves **presence in a file**,
+    // and the whole of KAN-212 is that the convention existed and no agent
+    // *met* it. Presence is the weaker of the two claims, and pasting these
+    // sentences into a section no filer reads would keep this entry green while
+    // reproducing the original defect exactly. So placement is the load-bearing
+    // half and it is a review question: the PR's `grep -n` output, which shows
+    // the enclosing section of each hit, is what answers it. Recorded here so
+    // nobody reads a green H-12 as "agents now parent their tickets".
+    //
+    // Four phrases, because the rule has four parts and the one most likely to
+    // be dropped in a rewrite is *epics are parentless* — it reads like an
+    // aside and is the reason a diligent agent does not retry a refused write.
+    id: 'H-12',
+    title: 'every Story and Task filed carries a parent epic — the epic, never the story',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /carries a parent epic/i,
+          /set (it )?at creation/i,
+          /never the story/i,
+          /[Ee]pics have no parent, and that is correct/,
+          /invisible in its epic's org chart/i,
         ],
       ])
     ),

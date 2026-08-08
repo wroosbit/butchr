@@ -91,6 +91,40 @@ relationship, and you record it two ways, both of them:
    {{KEY}} — <one sentence on how this slice fits>."* Links are easy to miss; the
    description is what the executing agent actually reads.
 
+### The task's parent is your epic — and this is where agents give up
+
+Everything above is about recording that a task **implements** your story. It is
+not the same field as `parent`, and the paragraph you just read is exactly where
+the mistake happens: told that a Task cannot be a child of a Story, an agent
+concludes there is no parent to set and files the task with none.
+
+**Every Task you file carries a parent epic, set at creation** —
+`createJiraIssue` takes a `parent` field, and it is **{{KEY}}'s own parent, the
+epic this story hangs off**. Not {{KEY}}. Read it with `getJiraIssue` on
+**{{KEY}}** and copy it; do not retype a key from memory. Fixing it afterwards
+works, but nothing goes looking: a backfill re-parented 74 tickets on
+2026-08-07 and four more were filed unparented within the day, by four different
+agents, because a backfill does not reach the next agent that files something.
+
+**The parent is the epic, never the story.** Jira refuses `parent: {{KEY}}` on a
+Task — both sit at `hierarchyLevel 0` — and an agent that tries it and stops
+there has produced an orphan. Seven were produced that way on 2026-08-07, three
+of them one story's own delivered work.
+
+**Epics have no parent, and that is correct.** An Epic is `hierarchyLevel 1`,
+the top of this project, so the write is rejected by design. That refusal is not
+a problem to record or retry.
+
+**Why it matters, and it is not tidiness.** An unparented ticket is **invisible
+in its epic's org chart**, so the supervisor that should be reviewing it never
+sees it — KAN-183/184/185 were a story's delivered work, unreachable from the
+epic that owned them. It is also what an approver is read off:
+[KAN-239](https://wroosbit.atlassian.net/browse/KAN-239) (PR #100, in flight as
+this was written) makes a task's approver its parent story's agent, else its
+**parent epic's** agent, with no third branch — so a ticket filed without a
+parent names **nobody**, and two such tickets were merged past before anyone
+noticed, with nothing going red.
+
 ### Link liberally — all four standard types
 
 Links are cheap and they are what makes the board navigable, so use every
@@ -164,6 +198,9 @@ is why it survives review: it presents as success, so nobody digs.
 A ticket an agent can execute unattended contains:
 
 - **Repository** — `org/repo`, cloned via `gh`.
+- **A parent epic, set on the `createJiraIssue` call** — {{KEY}}'s own parent,
+  never {{KEY}} itself. See *the task's parent is your epic* above; a ticket
+  filed without one is invisible to the epic that owns it.
 - **Implements story {{KEY}}** — and what slice of it this is.
 - **Problem** — stated with the evidence you actually observed in the code.
 - **Tasks** — concrete, naming the files involved. This is what reading the repo
