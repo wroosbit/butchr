@@ -571,7 +571,40 @@ export class MessageRouter {
      * simply answers "no LaunchDarkly credential support" on the credential
      * actions, and `list_integrations` reports the integration unavailable.
      */
-    private launchdarkly?: LaunchDarklyIntegration
+    private launchdarkly?: LaunchDarklyIntegration,
+    /**
+     * Where capacity comes from, so a proof can hold it still.
+     *
+     * WHY THIS SEAM EXISTS, AND IT IS NOT A CONFIGURATION KNOB (KAN-221)
+     *
+     * `readCapacity` measures the machine this daemon is running on, which is
+     * exactly right in production and is the one thing a proof cannot control.
+     * `verify-board-reconciler-guard.mjs` isolates herdr with a fake binary and
+     * `$HOME` with a temp directory, and its verdict was *still* a function of
+     * what else the box happened to be doing: reviewed on a machine at 2.88 of
+     * 4 cores, its first section was refused by the real gate and the script
+     * exited 1 with the product working perfectly.
+     *
+     * That is worse than an ordinary flaky test, and the reason is specific to
+     * that script. Its first section exists to prove the loop *can* stand an
+     * agent down — without it, "the loop stood nothing down on a failed read"
+     * is a claim a loop that never acts would also satisfy. So a first section
+     * that fails environmentally invites the next reader to weaken or delete
+     * the one section that gives the rest of the file its meaning.
+     *
+     * Injecting capacity is the same move as the fake `herdr`: hold the
+     * environment still so the thing under test is the only variable. The
+     * alternative offered — `override: true` on the activations — was refused
+     * on review and rightly: it would have made the capacity section the only
+     * one exercising a path every other section bypassed.
+     *
+     * **Optional, last, and unreachable from a client.** Nothing in a request
+     * can set it; the daemon constructs its routers without one, so production
+     * behaviour is `readCapacity` exactly as before. A construction that passes
+     * one is a proof, and the refusals it produces are still the real gate's,
+     * computed by the real `computeCapacity` from the facts it was handed.
+     */
+    private capacitySource: (running: number, supervisors: number) => Capacity = readCapacity
   ) {}
 
   /**
@@ -2795,7 +2828,7 @@ export class MessageRouter {
       else fleet++;
     }
 
-    return readCapacity(fleet, supervisors);
+    return this.capacitySource(fleet, supervisors);
   }
 
   /**
