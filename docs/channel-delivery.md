@@ -34,7 +34,7 @@ answer about the second.
 **One large caveat, and it is not a small one.** Delivery is not the same as
 compliance. A channel event is **untrusted content** to the model, and an
 unprimed session **correctly refused to act on one** during this probe — naming
-it as a probable prompt injection. See [The refusal](#the-refusal-delivery-is-not-compliance).
+it as a probable prompt injection. See [The refusal](#the-refusal--delivery-is-not-compliance).
 Any migration has to design for that, and it is the finding here most likely to
 be skipped over because the headline is a yes.
 
@@ -66,7 +66,7 @@ Optional additions:
 | Field | Purpose |
 | --- | --- |
 | `capabilities.tools = {}` | Two-way. Lets Claude discover a reply tool. Omit for one-way. |
-| `instructions` | Goes into Claude's system prompt. **Load-bearing — see [the refusal](#the-refusal-delivery-is-not-compliance).** |
+| `instructions` | Goes into Claude's system prompt. **Load-bearing — see [the refusal](#the-refusal--delivery-is-not-compliance).** |
 | `capabilities.experimental['claude/channel/permission'] = {}` | Opts in to permission-prompt relay. Out of scope here. |
 
 ### Is Bun required?
@@ -99,7 +99,7 @@ claude --dangerously-load-development-channels server:<name>   # a bare .mcp.jso
 During the research preview `--channels` accepts **only** Anthropic-allowlisted
 plugins, so **anything Butchr writes needs the development flag**. That is why
 the flag appears in this probe, and it is not incidental — see
-[what would have to change](#what-would-have-to-change).
+[what would have to change](#what-would-have-to-change-to-switch-this-on-for-the-fleet).
 
 ### The two-way reply path
 
@@ -316,6 +316,134 @@ workspace key.
 | **F** | interactive, **not** a Butchr agent | present | **Question 2** — the failure path. |
 | **D** | **a real Butchr agent, herdr pane** | present | **The shipped path. The only row that licenses a claim about the fleet.** |
 
+### The results
+
+One run, all five configurations, **exit 0**. Nonce root `C57B02232180`, model
+`sonnet`, Claude Code `2.1.224`.
+
+```
+config                       CP1      CP2      CP3 pane   CP4a channel  CP4b composer
+A — print mode               YES      YES      n/a        NO            NO
+C — positive control         control token reached the model: YES
+N — negative control         YES      YES      NO         NO            n/a
+F — failure path             sender-observable difference between arrived and not: YES
+D — Butchr agent             YES      YES      YES        YES           NO
+
+  HEADLESS PRINT MODE exercised here by      : A, C
+  INTERACTIVE, NOT a Butchr agent            : N, F
+  A REAL BUTCHR AGENT under a herdr pane     : D
+
+QUESTION 1 — does a channel event reach a running Butchr agent?
+  YES — measured on a real Butchr agent under a herdr pane.
+
+QUESTION 2 — when the recipient is not reachable, does the sender find out?
+  YES — reachable send looked like "resolved-without-error";
+        send at a dead session looked like "transport unreachable (ECONNREFUSED)".
+
+ANSWER: a Claude Code channel DOES push a message into a running Butchr
+        agent, and the MODEL receives it — it echoed the nonce back out over
+        the channel without the composer being used in either direction.
+        The negative control HELD: with the same server in .mcp.json but
+        NOT named to the channels flag, the event left our server and reached
+        neither the pane nor the model. The flag is load-bearing, so enabling
+        this for the fleet is a LAUNCHER change, not only a server change.
+```
+
+Configuration D in full, the row that carries the finding:
+
+```
+  .mcp.json written by the daemon: atlassian, butchr
+  core butchr server identity flags: --workspace-type task --workspace-key KAN217-PROBE-C57B02232180D
+
+  the product's own claude command line, verbatim:
+    claude --permission-mode bypassPermissions --continue || claude --permission-mode bypassPermissions 'Please read and follow the instructions in .butchr-prompt.md to begin.'
+  as launched here (the whole delta from production is the one flag, twice):
+    claude --dangerously-load-development-channels server:butchrprobe --permission-mode bypassPermissions --continue || claude --dangerously-load-development-channels server:butchrprobe --permission-mode bypassPermissions 'Please read and follow the instructions in .butchr-prompt.md to begin.'
+
+  development-channels warning dialog #1 — dismissing with Enter
+  development-channels warning dialog #2 — dismissing with Enter
+  blocking dialogs raised and dismissed: 2
+  startup notice "Channels (experimental) … inject directly in this session": YES
+  agent reached its prompt: YES
+  our channel server connected to the daemon socket (trigger live): YES
+  firing a real daemon event: reset_by_key task/KAN-217-PROBE-C57B02232180D-IDLE
+
+  CP3 nonce rendered on the pane: YES  (recorded, NOT counted as delivery)
+      inbound line drawn at all : YES — "← butchrprobe: [Butchr] agent_reset_event for task/KAN-217-PROBE-C57B02232…"
+
+CP1  the daemon emitted the broadcast        : YES  2 on the socket, independent observer
+CP2  the event left our channel server       : YES  1 notifications/claude/channel frame(s) on the tee'd wire
+CP4a the model echoed it back OVER THE CHANNEL: YES   <<< THE ANSWER (composer never used)
+
+  what the model sent back through the channel's reply tool, verbatim:
+    | C57B02232180D
+```
+
+**That last line is the finding.** `C57B02232180D` existed only inside a daemon
+broadcast payload. It was never typed by the probe into anything the agent could
+see. The agent produced it, unprompted, through the channel's own reply tool.
+
+### Four details in that output worth not skimming
+
+**CP3 is unstable across runs, and that is the point.** In this run it is `YES`.
+In two earlier runs, with everything the probe controls held identical, it was
+`NO` — while CP4a was `YES` every time. The cause is visible in the line itself:
+
+```
+← butchrprobe: [Butchr] agent_reset_event for task/KAN-217-PROBE-C57B02232…
+```
+
+The inbound render is **truncated to the pane width** and the nonce sits at the
+end, so it is clipped off a line that was plainly drawn. Whether the nonce shows
+up on the pane at all then depends on something incidental — whether the model
+happens to echo it in its own visible output. That is why `nonce rendered` and
+`inbound line drawn at all` are recorded as two separate observables: collapsing
+them would have reported the terminal as silent when it was not.
+
+**So the pane is not a witness in either direction.** KAN-167 warned that a line
+can be drawn while the model has nothing. This is the mirror: the model had it
+every time, and the line was sometimes incomplete. A migration that health-checks
+delivery by scraping the pane would flap between YES and NO while nothing
+whatsoever changed about whether the message arrived.
+
+**CP4b answers NO, and that is the correct answer to the question asked.**
+Once the pane detector was fixed (defect 4 below), the agent's composer answer
+came back clean and unambiguous:
+
+```
+● NOTHING ARRIVED
+```
+
+**That is right, and it is not a delivery failure.** The question is KAN-167's,
+verbatim in shape: *"**Since your last turn**, has any text arrived…"*. By the
+time it is asked, the agent has already **consumed the channel event in a turn**
+and called the reply tool with the nonce — so its last turn is the one that
+handled the event, and since that turn nothing has arrived. The model is
+reporting its context accurately.
+
+This is the same trap KAN-167 documented for its own control C, where a `NO`
+was *"correct behaviour, not a failure"* because the question and the carrier
+disagreed. Here it means something sharper: **CP4b is the wrong instrument once
+CP4a has fired.** KAN-167 could rely on it only because nothing was ever
+delivered, so there was no prior turn to consume anything. A future probe that
+wants a composer reading of a channel event must ask before the agent has had a
+turn to act on it — or accept that CP4a is the better evidence, which it is.
+
+**Print mode (A) does not deliver, and this probe does not know why.** The MCP
+server reported `connected`, the frame left on the wire, and the model got
+nothing — while the positive control (C) proved the detector could see a
+delivered token in that same mode. A plausible explanation is that the
+development-channels confirmation is a full-screen dialog that `-p` cannot show,
+so registration never completes. **That is a hypothesis this probe did not
+test**, and it is stated as one. It does not affect the finding: no fleet agent
+runs in print mode.
+
+**Two of the silent-drop cases are the same shape.** In both configuration A
+(print mode) and configuration N (flag absent), the sender saw
+`resolved-without-error` and nothing arrived. That is the invisible drop
+described in [question 2](#question-2--does-the-sender-find-out), reproduced
+twice by different causes.
+
 **Why a *negative* control, when KAN-167 needed a positive one.** KAN-167 got a
 NO, and a NO is indistinguishable from a broken detector — so it needed proof
 the detector could see a delivered nonce. This probe gets a **YES**, and a YES
@@ -345,14 +473,16 @@ the input arrives:
   delivery is established. **No script owns it today** — filed as follow-up
   rather than left unowned.
 - **D's agent is briefed by `.butchr-prompt.md` that the channel is expected.**
-  Given [the refusal](#the-refusal-delivery-is-not-compliance) that is not a
+  Given [the refusal](#the-refusal--delivery-is-not-compliance) that is not a
   thumb on the scale but a necessary condition, and it is how a real agent would
   be configured. It does **not** contain the nonce.
 
-### The probe caught itself over-claiming, twice
+### The probe caught itself over-claiming, four times
 
-Recorded because a proof that has only ever passed is evidence of nothing, and
-both of these were caught by watching it go red rather than by reading it.
+Recorded in full because a proof that has only ever passed is evidence of
+nothing. Every one of these was caught by watching the detector go wrong, not by
+reading it — and three of the four produced a **clean, plausible, wrong**
+result first.
 
 1. **A bug in the tee wrapper meant the channel server never started.** The run
    still printed every downstream line and reported a tidy *"the sender cannot
@@ -362,13 +492,66 @@ both of these were caught by watching it go red rather than by reading it.
 2. **The startup notice is not evidence of a working channel.** The banner
    `Channels (experimental) messages from server:butchrprobe inject directly in
    this session` was printed over that same crashed server. It reflects the
-   **flag**, not a live listener.
+   **flag**, not a live listener. If a later ticket uses that banner as a health
+   check, this is the counter-example.
+3. **The listener lags the pane.** The client spawns the channel server only
+   *after* the development-channels dialog clears, so the pane can look ready
+   seconds before the listener exists. An event pushed 2.3s into that window
+   left our server correctly and was never acted on. The probe now waits for the
+   server's own readiness and then settles.
+4. **CP4b's detector was matching the probe's own question.** The question is
+   echoed on the pane and it contains the sentinel verbatim — *"reply with
+   exactly: NOTHING ARRIVED"* — so the search matched the **question** on the
+   first poll, exited immediately, and scored CP4b before the model had
+   answered. The captured "answer" was the agent still visibly thinking. It
+   reported `CP4b: NO`, which read as *the model did not have the nonce* and
+   actually meant *we matched our own prompt*. The pane also **wraps**, so both
+   the sentinel and the nonce can be split across lines and missed by a naive
+   comparison. Now the echoed question is cut off by its final sentence, the
+   comparison collapses whitespace, and the nonce is matched with whitespace
+   removed.
 
-A third was caught before it could mislead: the client spawns the channel server
-only **after** the development-channels dialog clears, so the pane can look ready
-seconds before the listener exists. An event pushed into that window left our
-server correctly and was never acted on. The probe now waits for the server's own
-readiness and then settles.
+**Number 4 is the one worth carrying forward**, because CP4a had already
+answered the ticket and the false NO changed no conclusion — which is exactly
+what would have let it ship. A detector that fails toward *"looks measured"*
+survives review; this one only surfaced because the recorded transcript showed
+an agent mid-thought where an answer should have been.
+
+### The guard then went red on its own, which is the only reason to believe it
+
+The guard added for defect 1 — *a configuration whose trigger was never live
+cannot reach a verdict* — **fired unprompted on a later run, for a cause nobody
+had anticipated**, and took the run's exit code with it:
+
+```
+  our channel server is listening (trigger live): NO
+    server stderr: Error: listen EADDRINUSE: address already in use 127.0.0.1:8830
+  MCP server status reported by the client : failed
+  CP1 event emitted                        : NO
+  CP2 frame left our server (tee on wire)  : NO   0 frame(s)
+
+NOT TRUSTWORTHY: 1 configuration(s) did not reach a verdict: A — print mode
+EXIT=1
+```
+
+The cause was a **leaked channel server from an earlier run**: `claude -p` does
+not reliably take its MCP subprocesses down with it, an orphaned configuration-C
+server was still holding the fixed port, and the next run's configuration A
+could not start its own. Two fixes, both structural rather than a retry: the
+servers now take an **OS-assigned ephemeral port** and report which one back, so
+the collision is impossible rather than unlikely; and each print-mode
+configuration reaps its own servers when it finishes.
+
+That reaper had a trap of its own worth one sentence, because it is easy to
+repeat: written the obvious way as `pkill -f "<dir>"`, **the shell running
+`pkill` carries the pattern in its own argv, so `pkill` matches and kills that
+shell** — taking the exit code with it (144) while the cleanup silently does
+nothing. The pattern now travels in the environment instead.
+
+**This is the evidence that the exit code means something.** A guard that has
+only ever passed is indistinguishable from no guard, and this one has now been
+watched failing a run that would otherwise have printed a confident,
+fully-formed, wrong matrix.
 
 ---
 

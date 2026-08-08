@@ -243,13 +243,20 @@ await mcp.connect(new StdioServerTransport());
 log({ ev: 'connected', mode: MODE });
 
 if (MODE === 'http') {
-  http.createServer(async (req, res) => {
+  // Port 0 = let the OS pick a free one, then report which. A FIXED port was a
+  // real defect: an orphaned server from an earlier run held 8830 and the next
+  // run's config A died with EADDRINUSE, which the guard correctly reported as
+  // "did not reach a verdict". Ephemeral ports make that collision impossible
+  // rather than merely unlikely.
+  const srv = http.createServer(async (req, res) => {
     let body = '';
     for await (const c of req) body += c;
     const outcome = await emit(body, { probe: 'kan217' });
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify(outcome));
-  }).listen(Number(process.env.PROBE_PORT), '127.0.0.1', () => log({ ev: 'listening' }));
+  });
+  srv.on('error', (e) => log({ ev: 'listen-failed', error: String(e && e.message) }));
+  srv.listen(0, '127.0.0.1', () => log({ ev: 'listening', port: srv.address().port }));
 } else {
   // Config D. An ordinary daemon client, watching the broadcast stream.
   const sock = net.connect(process.env.PROBE_SOCKET);
@@ -322,9 +329,6 @@ child.on('exit', (code) => process.exit(code ?? 0));
 
 // ------------------------------------------------------------- scaffolding --
 
-let portCursor = 8830;
-function nextPort() { return portCursor++; }
-
 /**
  * Lay down a workspace a `claude` can be started in: the channel server, the
  * tee, an `.mcp.json` pointing at them, and the two Claude Code settings the
@@ -332,7 +336,7 @@ function nextPort() { return portCursor++; }
  * so no server-consent dialog, `bypassPermissions` so the reply tool is not
  * gated behind an approval nobody is present to give).
  */
-function makeChannelWorkspace(dir, { mode, nonce, controlNonce, port }) {
+function makeChannelWorkspace(dir, { mode, nonce, controlNonce }) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'chan.mjs'), CHANNEL_SERVER);
   fs.writeFileSync(path.join(dir, 'tee.mjs'), TEE);
@@ -348,8 +352,7 @@ function makeChannelWorkspace(dir, { mode, nonce, controlNonce, port }) {
     PROBE_REPLY_LOG: path.join(dir, 'replies.log'),
     PROBE_WIRE_LOG: path.join(dir, 'wire.log'),
     PROBE_SOCKET: SOCKET_PATH,
-    PROBE_STDERR: path.join(dir, 'stderr.log'),
-    ...(port ? { PROBE_PORT: String(port) } : {})
+    PROBE_STDERR: path.join(dir, 'stderr.log')
   };
   for (const f of ['server.log', 'replies.log', 'wire.log', 'stderr.log']) fs.writeFileSync(path.join(dir, f), '');
   return {
@@ -422,9 +425,13 @@ async function awaitServerUp(dir, { needsPort }) {
     await sleep(1000);
     let log = '';
     try { log = fs.readFileSync(logPath, 'utf8'); } catch {}
-    if (needsPort ? log.includes('"listening"') : log.includes('"socket-connected"')) return true;
+    if (!needsPort) { if (log.includes('"socket-connected"')) return { up: true }; continue; }
+    // The port is whatever the OS handed the server, so it is read back here
+    // rather than assumed by the caller.
+    const m = /"ev":"listening","port":(\d+)/.exec(log);
+    if (m) return { up: true, port: Number(m[1]) };
   }
-  return false;
+  return { up: false };
 }
 
 /**
@@ -450,6 +457,26 @@ function primeSession(tmuxName) {
     execSync(`tmux send-keys -t ${tmuxName} Enter`);
     return true;
   } catch { return false; }
+}
+
+/**
+ * Reap channel servers spawned for a configuration.
+ *
+ * `claude -p` does not always take its MCP subprocesses down with it: an
+ * orphaned config-C server from one run was still holding its port when the
+ * next run started, and killed that run's configuration A with EADDRINUSE.
+ * Ephemeral ports make the collision impossible; this stops the leak as well,
+ * so a long session does not accumulate stray node processes.
+ */
+function killServersFor(dir) {
+  // The pattern travels in the ENVIRONMENT, not on the command line. Written
+  // the obvious way -- `pkill -f "<dir>"` -- the shell running pkill has the
+  // pattern in its own argv, so pkill matches and kills that shell. Measured:
+  // it takes the exit code with it (144) and the cleanup silently does nothing.
+  try {
+    execSync('pkill -f "$BUTCHR_PROBE_KILL_PATTERN" || true',
+      { stdio: 'ignore', env: { ...process.env, BUTCHR_PROBE_KILL_PATTERN: dir } });
+  } catch { /* nothing matched, which is the normal case */ }
 }
 
 function serverStderr(dir) {
@@ -545,8 +572,7 @@ async function configA() {
   say('');
   const nonce = `${nonceRoot}A`;
   const dir = path.join(scratch, 'A');
-  const port = nextPort();
-  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce, port });
+  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce });
   writeMcpJson(dir, { [name]: definition });
   writeClaudeSettings(dir);
   trustDir(dir);
@@ -556,10 +582,10 @@ async function configA() {
   const session = await runPrintSession(dir, {
     channelFlag: true,
     beforeSecondTurn: async () => {
-      const serverUp = await awaitServerUp(dir, { needsPort: true });
-      say(`  our channel server is listening (trigger live): ${yn(serverUp)}`);
-      if (!serverUp) say(`    server stderr: ${serverStderr(dir) || '(empty)'}`);
-      push = await postTo(port, `BUTCHR CHANNEL PROBE ${nonce} :: echo this token back by calling the butchrprobe reply tool now.`);
+      const up = await awaitServerUp(dir, { needsPort: true });
+      say(`  our channel server is listening (trigger live): ${yn(up.up)}${up.port ? ` on port ${up.port}` : ''}`);
+      if (!up.up) say(`    server stderr: ${serverStderr(dir) || '(empty)'}`);
+      push = await postTo(up.port, `BUTCHR CHANNEL PROBE ${nonce} :: echo this token back by calling the butchrprobe reply tool now.`);
       say(`  pushed the channel event; the SENDER observed: ${push.senderObserved}`);
     },
     question: 'Since your last turn, has any text arrived in your context from a channel '
@@ -571,6 +597,7 @@ async function configA() {
   const replies = repliesCarrying(dir, nonce);
   const inContext = session.transcript.includes(nonce);
   const registered = session.mcpStatus.find((s) => s.name === 'butchrprobe')?.status;
+  killServersFor(dir);
 
   say('');
   say('--- verdict: configuration A — print mode ---');
@@ -602,8 +629,7 @@ async function configC() {
   const nonce = `${nonceRoot}C`;
   const control = `${nonceRoot}-C-CONTROL`;
   const dir = path.join(scratch, 'C');
-  const port = nextPort();
-  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce, controlNonce: control, port });
+  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce, controlNonce: control });
   writeMcpJson(dir, { [name]: definition });
   writeClaudeSettings(dir);
   trustDir(dir);
@@ -614,6 +640,7 @@ async function configC() {
     question: 'Call the butchrprobe status tool once, then quote its ENTIRE result VERBATIM.'
   });
   const inContext = session.transcript.includes(control);
+  killServersFor(dir);
   say('');
   say('--- verdict: configuration C — positive control ---');
   say(`  control token present in the client stream : ${yn(inContext)}`);
@@ -646,8 +673,7 @@ async function configN() {
   rule('CONFIGURATION N — NEGATIVE CONTROL, interactive, flag ABSENT');
   const nonce = `${nonceRoot}N`;
   const dir = path.join(scratch, 'N');
-  const port = nextPort();
-  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce, port });
+  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce });
   writeMcpJson(dir, { [name]: definition });
   writeClaudeSettings(dir);
   trustDir(dir);
@@ -667,13 +693,15 @@ async function configN() {
   const sawChannelNotice = /Channels \(experimental\)/.test(banner);
   say(`  startup channels notice present: ${yn(sawChannelNotice)}  (must be NO here)`);
 
-  const serverUp = await awaitServerUp(dir, { needsPort: true });
-  say(`  our channel server is listening (trigger live): ${yn(serverUp)}`);
-  if (!serverUp) {
+  const up2 = await awaitServerUp(dir, { needsPort: true });
+  say(`  our channel server is listening (trigger live): ${yn(up2.up)}${up2.port ? ` on port ${up2.port}` : ''}`);
+  if (!up2.up) {
     say(`  ABORTING — the trigger never came up. stderr: ${serverStderr(dir) || '(empty)'}`);
     try { execSync(`tmux kill-session -t ${TMUX_SESSION} 2>/dev/null`); } catch {}
-    return { label: 'N — negative control', control: true, ranToVerdict: false,
-             blocked: 'channel server never listened' };
+    // `skipped` matters: without it the summary would go on to describe a
+    // control that never ran, which is the exact over-claim this file guards.
+    return { label: 'N — negative control', control: true, skipped: true, malfunction: true,
+             ranToVerdict: false, blocked: 'channel server never listened' };
   }
   await sleep(SETTLE_MS);
   say('  priming the session with the probe-target role (no nonce in it)…');
@@ -681,7 +709,7 @@ async function configN() {
   for (let i = 0; i < 20; i += 1) { await sleep(3000); if (/PROBE READY/.test(pane())) break; }
   say(`  primed: ${yn(/PROBE READY/.test(pane()))}  (identical to configuration F — only the flag differs)`);
 
-  const push = await postTo(port, `BUTCHR CHANNEL PROBE ${nonce} :: echo this token back by calling the butchrprobe reply tool now.`);
+  const push = await postTo(up2.port, `BUTCHR CHANNEL PROBE ${nonce} :: echo this token back by calling the butchrprobe reply tool now.`);
   say(`  pushed the channel event; the SENDER observed: ${push.senderObserved}`);
   await sleep(30000);
 
@@ -745,8 +773,7 @@ async function configF() {
   rule('CONFIGURATION F — THE FAILURE PATH (what does the SENDER observe?)');
   const nonce = `${nonceRoot}F`;
   const dir = path.join(scratch, 'F');
-  const port = nextPort();
-  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce, port });
+  const { name, definition } = makeChannelWorkspace(dir, { mode: 'http', nonce });
   writeMcpJson(dir, { [name]: definition });
   writeClaudeSettings(dir);
   trustDir(dir);
@@ -777,14 +804,15 @@ async function configF() {
     if (up && notice) break;
   }
   say(`  session up: ${yn(up)}   channels notice: ${yn(notice)}`);
-  const serverUp = await awaitServerUp(dir, { needsPort: true });
-  say(`  our channel server is listening (trigger live): ${yn(serverUp)}`);
-  if (!serverUp) {
+  const upF = await awaitServerUp(dir, { needsPort: true });
+  const port = upF.port;
+  say(`  our channel server is listening (trigger live): ${yn(upF.up)}${port ? ` on port ${port}` : ''}`);
+  if (!upF.up) {
     say(`  ABORTING this configuration — the trigger never came up, so nothing below`);
     say(`  would be a measurement. server stderr: ${serverStderr(dir) || '(empty)'}`);
     try { execSync(`tmux kill-session -t ${TMUX_SESSION_F} 2>/dev/null`); } catch {}
-    return { label: 'F — failure path', control: true, failurePath: true, ranToVerdict: false,
-             blocked: 'channel server never listened' };
+    return { label: 'F — failure path', control: true, failurePath: true, skipped: true,
+             malfunction: true, ranToVerdict: false, blocked: 'channel server never listened' };
   }
   say('');
   say('  NOTE: the "Channels (experimental)" notice above reflects the FLAG, not a');
@@ -983,9 +1011,8 @@ async function configD() {
     fs.writeFileSync(path.join(ws, '.butchr-prompt.md'), INERT_BRIEF);
 
     // Merge the probe channel in beside the daemon's own servers.
-    const port = nextPort();
     const chanDir = path.join(scratch, 'D');
-    const { name, definition } = makeChannelWorkspace(chanDir, { mode: 'daemon', nonce, port: null });
+    const { name, definition } = makeChannelWorkspace(chanDir, { mode: 'daemon', nonce });
     writeMcpJson(ws, { [name]: definition });
 
     // The two setup steps the `shell` launcher skips, run from THE PRODUCT'S
@@ -1065,8 +1092,8 @@ async function configD() {
     // The channel server is spawned only after the dialog clears, so the pane
     // can look ready before the listener exists. Measured on configuration F.
     const chanUp = await awaitServerUp(chanDir, { needsPort: false });
-    say(`  our channel server connected to the daemon socket (trigger live): ${yn(chanUp)}`);
-    if (!chanUp) say(`    server stderr: ${serverStderr(chanDir) || '(empty)'}`);
+    say(`  our channel server connected to the daemon socket (trigger live): ${yn(chanUp.up)}`);
+    if (!chanUp.up) say(`    server stderr: ${serverStderr(chanDir) || '(empty)'}`);
     await sleep(SETTLE_MS);
 
     const before = await tail(200);
@@ -1119,18 +1146,38 @@ async function configD() {
     // that was really a timeout. CP4a had already answered the ticket by then,
     // so the mis-scoring changed no conclusion — but a NO that means "we
     // stopped watching" is exactly the over-claim this file is about.
+    // READING THE PANE IS HARDER THAN IT LOOKS, and this probe got it wrong
+    // first. Two defects, both found by watching the detector rather than
+    // trusting it:
+    //
+    //   1. THE QUESTION IS ECHOED ON THE PANE, and it contains the sentinel —
+    //      it literally says `reply with exactly: NOTHING ARRIVED`. Searching
+    //      the whole region matched the QUESTION, so the loop exited on the
+    //      first poll and scored CP4b before the model had answered. The
+    //      recorded "answer" was the agent still thinking. A NO that means "we
+    //      matched our own prompt" is worse than no reading at all.
+    //   2. THE PANE WRAPS. Both the sentinel and the nonce can be split across
+    //      lines, so a naive `includes` misses text that is plainly there.
+    //
+    // So: cut the echoed question off by its final sentence, compare with
+    // whitespace collapsed, and match the nonce with whitespace removed.
+    const QEND = 'Do not call any tool.';
     let answer = '';
     let answered = false;
+    let quoted = false;
     for (let i = 0; i < 40; i += 1) {
       await sleep(5000);
       const t = await tail(200);
       const at = t.lastIndexOf(qtag);
       if (at === -1) continue;
       const region = t.slice(at + qtag.length);
-      answer = region;
-      if (/NOTHING ARRIVED/.test(region) || region.includes(nonce)) { answered = true; break; }
+      const flat = region.replace(/\s+/g, ' ');
+      const qe = flat.lastIndexOf(QEND);
+      const afterQuestion = qe === -1 ? flat : flat.slice(qe + QEND.length);
+      answer = afterQuestion.trim();
+      quoted = afterQuestion.replace(/\s/g, '').includes(nonce);
+      if (quoted || /NOTHING ARRIVED/.test(afterQuestion)) { answered = true; break; }
     }
-    const quoted = answer.includes(nonce);
     if (!answered) say('  CP4b: the agent had not finished answering before the window closed —');
     if (!answered) say('        scored as "no answer captured", NOT as "the model did not have it".');
 
@@ -1268,7 +1315,11 @@ if (ran('D') && D.cp4a) {
 say('');
 say(`scratch kept at: ${scratch}`);
 
-const failures = results.filter((r) => !r.skipped && !r.ranToVerdict);
+// A configuration whose PRECONDITIONS were absent (no daemon socket, no build)
+// is a legitimate skip and does not fail the run. A configuration that started
+// and then malfunctioned — the trigger never came up — is not a skip: it is this
+// script failing to measure, and it must not exit 0 wearing a skip's clothes.
+const failures = results.filter((r) => (!r.skipped || r.malfunction) && !r.ranToVerdict);
 if (failures.length) {
   say('');
   say(`NOT TRUSTWORTHY: ${failures.length} configuration(s) did not reach a verdict: ` +
