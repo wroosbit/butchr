@@ -1,4 +1,5 @@
-// KAN-186: every operative rule must live where an agent will meet it.
+// KAN-186 / KAN-237: every operative rule must live where an agent will meet
+// it, and no *retired* rule may still be taught there.
 //
 // WHAT FAILURE THIS WOULD CATCH: an operative rule — one an agent must satisfy
 // *at the moment it acts* — existing only in a Jira description or a Confluence
@@ -7,10 +8,25 @@
 // nothing in any of the four prompts, so an agent handed a token met no
 // instruction not to echo it; and `prompts/epic.md` referred twice to a
 // "polling loop below" that no section below defined, while its Cadence section
-// read as a prohibition against polling. Run with `--ref 39cd158` — this
-// change's merge base, pinned so the recipe keeps working after it lands — to
-// watch this script go red on exactly that: 23 failures, including all four
-// prompts missing every word of H-3 and H-4.
+// read as a prohibition against polling. Run with `--ref 39cd158` — KAN-186's
+// merge base, pinned so the recipe keeps working after it lands — to watch this
+// script go red on exactly that: 23 failures, including all four prompts
+// missing every word of H-3 and H-4.
+//
+// AND (KAN-237) THE SAME DEFECT WITH THE SIGN FLIPPED: a rule that has been
+// *superseded* still sitting in the prompts, which is worse than a missing one,
+// because the agent meets it and obeys it. On `main` @ `51e8fc2` the human had
+// changed merge governance to **the story agent approves, the task agent
+// merges** (2026-08-08), KAN-39's description had been updated, and all three
+// `prompts/*.md` still taught the 2026-08-03 rule — `prompts/task.md` said "Do
+// not merge — review and merge belong to your epic agent", `prompts/epic.md`
+// had a whole section titled "You review and merge this epic's PRs". By KAN-39's
+// own "when the two disagree, the prompt wins" test the operative text was the
+// stale one, and the rule was diverged from twice in one day in opposite
+// directions. Run with `--ref 51e8fc2` — KAN-237's merge base, pinned for the
+// same reason — to watch both halves go red: H-8 unmet in all three prompts,
+// and R-1 matching the retired rule taught straight, with no retirement marker
+// anywhere near it.
 //
 // WHAT THIS SCRIPT DOES NOT COVER, STATED BECAUSE THE HEADER IS WHERE THE EDGE
 // GOES:
@@ -22,12 +38,25 @@
 //     agent will not meet. Placement is a review question and this script does
 //     not answer it — the PR's grep output, which shows the enclosing section
 //     of each hit, is what a reviewer reads for that.
+//   - **For H-8 that gap is the whole of the enforcement, and it is load-bearing
+//     rather than incidental.** Merge governance is kept by agents choosing to
+//     keep it: GitHub cannot tell author from reviewer (one shared account), so
+//     it refuses a formal review verdict on our own PRs and leaves the merge
+//     button open to the author. Nothing mechanical gates a merge on an
+//     approval. So this script can prove the three prompts *say* the rule and
+//     can never prove an agent *kept* it. **Nothing else covers that either**,
+//     and no script can — the observation that would is a human or a supervisor
+//     reading a merged PR and asking whether an approval comment preceded the
+//     merge. It is named here so nobody infers a coverage that does not exist.
 //   - It reads the real `prompts/*.md` off the checkout. It does **not** write
 //     the files it then asserts on, which is the KAN-145 failure mode; but the
 //     input it verifies is a file, not a running system, so it proves nothing
 //     about the daemon delivering these prompts to an agent.
 //     `daemon/scripts/verify-prompt-write-refusal.mjs` is the script that
 //     exercises the loader against a real activation.
+//   - Its subject is `prompts/` only. `docs/butchr.md` and code comments can
+//     restate a rule and go stale independently; both did for KAN-237, and both
+//     were fixed by hand in the same PR rather than by this sweep.
 //
 // Usage:
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs [--verbose]
@@ -114,7 +143,91 @@ const RULES = [
       'prompts/story.md': [/handoff describing future work is a plan, not evidence that it happened/i, /Re-derive it before you repeat it/i],
     },
   },
+  {
+    // KAN-237. Three phrases, because the rule has three halves and shipping
+    // one without the others is the failure this entry exists to catch:
+    // *who does what*, *approval is a precondition and green CI is not it*,
+    // and *nothing mechanical enforces it*. A prompt stating only the first
+    // teaches a rule that sounds guarded and is not.
+    id: 'H-8',
+    title: 'merge governance (2026-08-08): the story agent approves, the task agent merges',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /story agent approves; the task agent merges/i,
+          /Approval is a precondition, not an ordering/i,
+          /Green CI is not approval/i,
+          /merge button (is )?open to the author/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // The half of KAN-237 that is specific to the agent who now presses the
+    // button: dozens of tickets predate the change and were deliberately not
+    // mass-edited, so a task agent will meet the old rule on its own ticket and
+    // has to be told which wins.
+    id: 'H-9',
+    title: "an older ticket's standing rules are stale; the prompt wins",
+    carriedBy: {
+      'prompts/task.md': [/when the two disagree, the prompt wins/i, /you merge after approval/i],
+    },
+  },
 ];
+
+/**
+ * Rules that have been **retired**, and must no longer be taught.
+ *
+ * A missing rule is a hole; a retired rule still sitting in a prompt is worse,
+ * because the agent meets it and obeys it. That is not hypothetical — it is
+ * exactly what KAN-237 was filed for.
+ *
+ * The subtlety that makes this more than a `grep -v`: **retiring a rule well
+ * means naming it.** `prompts/task.md` has to quote *"do not merge — review and
+ * merge belong to your epic agent"* in order to tell an agent reading an older
+ * ticket which text wins, and `prompts/epic.md` has to say the epic *does not
+ * merge*. A flat ban on the words would forbid the very sentences that do the
+ * retiring, and the natural way to satisfy it — delete the mention — deletes
+ * the warning and leaves the agent to resolve the contradiction alone.
+ *
+ * So a match is a violation **unless a retirement marker sits near it** in the
+ * same passage. Naming the old rule as old is allowed; teaching it is not.
+ */
+const RETIRED = [
+  {
+    id: 'R-1',
+    title: 'the 2026-08-03 rule: the epic agent reviews and merges; story and task agents never merge',
+    since: '2026-08-08',
+    patterns: [
+      /review[- ]and[- ]merge/i,
+      /reviews? and merges? (its|their|your) own/i,
+      /(story and task agents|task agents?|story agents?)[^.]{0,20}never merge/i,
+      /do not merge/i,
+      /merge belongs? to/i,
+      /belongs? to your epic agent/i,
+      /the epic agent (reviews and )?merges it/i,
+    ],
+  },
+];
+
+/**
+ * Words that mark a passage as *retiring* a rule rather than teaching it. The
+ * window is deliberately generous: these prompts are hard-wrapped prose and the
+ * marker is usually in the neighbouring sentence, not the matched one.
+ */
+const RETIREMENT_MARKERS = [
+  /supersed/i,
+  /retired/i,
+  /the old rule/i,
+  /2026-08-08/,
+  /no longer/i,
+  /used to (state|say|read|be)/i,
+  /changed on/i,
+  /this file wins/i,
+  /the prompt wins/i,
+];
+const MARKER_WINDOW = 500;
 
 // ---------------------------------------------------------------- file reads
 
@@ -269,13 +382,71 @@ for (const file of ['prompts/epic.md', 'prompts/story.md']) {
 }
 console.log('');
 
+// --------------------------------- 4. no retired rule is still being taught
+
+console.log(`Retired rules are named, never taught\n${'-'.repeat(60)}`);
+
+/**
+ * Every occurrence of `re` in the unwrapped text, each with the line it came
+ * from and the surrounding passage used for the marker test.
+ */
+function occurrences(source, re) {
+  const { text, lineAt } = unwrap(source);
+  const global = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  const found = [];
+  let m;
+  while ((m = global.exec(text)) !== null) {
+    found.push({
+      line: lineAt[m.index] ?? 1,
+      matched: m[0],
+      passage: text.slice(Math.max(0, m.index - MARKER_WINDOW), m.index + m[0].length + MARKER_WINDOW),
+    });
+    if (m.index === global.lastIndex) global.lastIndex += 1; // zero-width guard
+  }
+  return found;
+}
+
+for (const retired of RETIRED) {
+  console.log(`${retired.id} — ${retired.title}\n     retired ${retired.since}`);
+  let taught = 0;
+  let marked = 0;
+
+  for (const file of PROMPTS) {
+    const source = sources.get(file) ?? '';
+    for (const re of retired.patterns) {
+      for (const { line, matched, passage } of occurrences(source, re)) {
+        if (RETIREMENT_MARKERS.some((marker) => marker.test(passage))) {
+          marked += 1;
+          if (verbose) console.log(`  · ${file}:${line} — named as retired: "${matched}"`);
+          continue;
+        }
+        taught += 1;
+        failures += 1;
+        console.log(
+          `  ✗ ${file}:${line} — teaches the retired rule with nothing marking it retired: "${matched}"\n` +
+            `      Either state the current rule, or keep the mention and say in the same\n` +
+            `      passage that it was superseded — naming an old rule as old is allowed.`
+        );
+      }
+    }
+  }
+
+  if (!taught) {
+    console.log(`  ✓ no prompt teaches it; ${marked} mention(s), each marked as retired`);
+    if (!verbose && marked) console.log('      (run with --verbose to list them)');
+  }
+  console.log('');
+}
+
 // ----------------------------------------------------------------- verdict
 
 if (failures) {
-  console.log(`✗ ${failures} check(s) failed — an operative rule has nowhere an agent will meet it.`);
+  console.log(`✗ ${failures} check(s) failed — an operative rule has nowhere an agent will meet it,`);
+  console.log('  or a retired one is still being taught where an agent will meet it.');
 } else {
-  console.log('✓ every rule KAN-186 inventoried is carried by a prompt, no reference dangles,');
-  console.log('  and no Cadence section contradicts the sweep it now defines.');
+  console.log('✓ every rule KAN-186 and KAN-237 inventoried is carried by a prompt, no reference');
+  console.log('  dangles, no Cadence section contradicts the sweep it now defines, and no retired');
+  console.log('  rule is taught anywhere in prompts/ — only named as retired.');
 }
 
 process.exit(failures ? 1 : 0);
