@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { WorkspaceRegistry } from './registry.js';
+import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { HerdrBridge } from './herdr.js';
 import { MessageRouter } from './router.js';
@@ -23,6 +23,7 @@ import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
+import { BoardMode, BoardReconciler } from './board-reconcile.js';
 import { CommentAuthorship } from './comment-authorship.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
@@ -375,6 +376,102 @@ const jiraPoller = new JiraPoller({
   log
 });
 
+/**
+ * The board, driving the fleet (KAN-221).
+ *
+ * The poller above watches the tickets of agents that already exist. This
+ * decides which agents should exist at all: one bounded JQL a minute, and the
+ * fleet converged toward the answer. See board-reconcile.ts for the algorithm,
+ * the failed-read guard, and the decision that supervisors are not exempt.
+ *
+ * WHY THE DEFAULT IS `report` AND NOT `converge`
+ *
+ * Because the loop's first live cycle is the one that can do the most damage,
+ * and because it already found the board wrong once: the spec's exact query,
+ * run against the real board on 2026-08-08, was missing a ticket whose agent
+ * was running — In Progress with no assignee — and step 4 would have stood that
+ * agent down. Report-only makes the diff visible before it is expensive. A
+ * machine whose board has been checked opts in with
+ * `BUTCHR_BOARD_RECONCILE=converge`; `off` stops it reading Jira at all.
+ *
+ * Read on every cycle rather than captured once, so the mode is a property of
+ * the environment the daemon is running in rather than of the moment it
+ * started.
+ */
+function boardReconcileMode(): BoardMode {
+  const raw = (process.env.BUTCHR_BOARD_RECONCILE ?? '').trim().toLowerCase();
+  if (raw === 'converge' || raw === 'report' || raw === 'off') return raw;
+  if (raw) {
+    log(
+      `[board] BUTCHR_BOARD_RECONCILE is set to "${raw}", which is not one of ` +
+      `off | report | converge. Falling back to report — an unreadable setting ` +
+      `is never a licence to start or stop agents.`
+    );
+  }
+  return 'report';
+}
+
+const boardReconciler = new BoardReconciler({
+  jira,
+  // The same census the poller and the missing sweep read, and deliberately
+  // `.agents` rather than the pane list: `unbackedPanes` are reported
+  // separately and are not agents, so a loop that read panes would try to
+  // stand down things nothing started.
+  runningAgents: () =>
+    daemonRouter.surveyFleet().agents.map((agent) => ({
+      agentName: agent.agentName,
+      type: agent.type,
+      // The registry's spelling, for the reason the poller gives: an agent
+      // *name* is built from a lower-cased key, and KAN-79 is not `kan-79`.
+      key: daemonRouter.recordedKeyFor(agent.agentName) ?? agent.key
+    })),
+  activate: async (agent) => {
+    let response: any = null;
+    await daemonRouter.handleActivateByKey(
+      {
+        type: agent.type,
+        key: agent.key,
+        // No url. The registry maps URLs to keys, not the other way round, and
+        // handleActivateByKey is explicit that a fabricated link is worse than
+        // no link. The agent is told its key and finds its own ticket.
+        //
+        // No `activatedBy` either, and that is honest rather than an omission:
+        // nothing staffed this agent. The board did, and the board is not an
+        // agent with a pane to be accountable at. A supervisor of record
+        // invented here would put a false parent in the org chart (KAN-145).
+        //
+        // No `override` and no `preempt`, ever. Capacity refusals are reported
+        // and retried; see board-reconcile.ts.
+        defaultAgent: 'claude'
+      },
+      (msg: any) => {
+        response = msg;
+      }
+    );
+    return {
+      success: response?.success === true,
+      ...(response?.error ? { error: response.error } : {}),
+      ...(response?.refusedBy ? { refusedBy: response.refusedBy } : {})
+    };
+  },
+  deactivate: async (agent) => {
+    let response: any = null;
+    daemonRouter.handleDeactivateByKey(
+      { type: agent.type ?? undefined, key: agent.key },
+      (msg: any) => {
+        response = msg;
+      }
+    );
+    return {
+      success: response?.success === true,
+      ...(response?.error ? { error: response.error } : {})
+    };
+  },
+  mode: boardReconcileMode,
+  isSupervisorType,
+  log
+});
+
 function sweepForMissingAgents() {
   let fleet;
   try {
@@ -639,6 +736,12 @@ function onListen() {
   // running on a fixed interval — it has to be able to slow down when Jira
   // says so. Its first tick is one interval away by design; see start().
   jiraPoller.start();
+
+  // Schedules its own next cycle for the same reason the poller does, and its
+  // first cycle is one interval away for a sharper one: the restoration above
+  // is still running, and a reconciler that read the fleet mid-restore would
+  // compute a diff against a fleet that is deliberately incomplete.
+  boardReconciler.start();
 }
 
 const shutdown = () => {

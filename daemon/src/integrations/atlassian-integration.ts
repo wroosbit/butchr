@@ -47,7 +47,14 @@ export type IssueTypeLookup = (key: string) => Promise<string | null>;
  */
 const WORKSPACE_TYPE_BY_JIRA_ISSUE_TYPE: Record<string, string> = {
   epic: 'epic',
-  story: 'story'
+  story: 'story',
+  // `task` and `bug` land on `task` through the fallback below as well, and
+  // naming them changes nothing for {@link workspaceTypeForJiraIssueType}. They
+  // are written out because {@link workspaceTypeForJiraIssueTypeStrict} has no
+  // fallback to land on, and a table that omitted them would make it answer
+  // null for the commonest issue type on the board.
+  task: 'task',
+  bug: 'task'
 };
 
 /**
@@ -64,6 +71,53 @@ export function workspaceTypeForJiraIssueType(issueTypeName: string | null): str
     WORKSPACE_TYPE_BY_JIRA_ISSUE_TYPE[issueTypeName.trim().toLowerCase()] ??
     DEFAULT_JIRA_WORKSPACE_TYPE
   );
+}
+
+/**
+ * The same table, with the fallback withheld: null means "no answer".
+ *
+ * WHY TWO FUNCTIONS AND NOT A FLAG
+ *
+ * Because the two callers want opposite things when the answer is unknown, and
+ * both are right.
+ *
+ * **URL resolution** (the lenient one) is answering "the user just opened a Jira
+ * tab; what kind of agent should the button offer?". There is a user waiting, a
+ * `task` workspace is the overwhelmingly common answer, and Jira being slow or
+ * unreachable must not stop a person starting an agent. Landing on `task` is
+ * the degradation guarantee, and DEFAULT_JIRA_WORKSPACE_TYPE is where it is
+ * written down.
+ *
+ * **The board reconciler** (this one) is answering "the board says KAN-N should
+ * be running; what should I start, unattended, on a timer, with nobody
+ * watching?". Guessing `task` there is not a degradation, it is KAN-196: a
+ * URL-guessed type fell back to `task` and started `task/KAN-39` beside a live
+ * `epic/KAN-39`, and the collision's failure mode was killing the epic agent's
+ * PTY. On a sixty-second loop that is not an incident, it is a recurrence.
+ *
+ * A boolean parameter on one function would have made the dangerous reading the
+ * one you get by forgetting an argument. Two names make the caller say which
+ * question it is asking, and the strict one returns a type the compiler will
+ * not let you ignore.
+ */
+export function workspaceTypeForJiraIssueTypeStrict(
+  issueTypeName: string | null
+): string | null {
+  if (!issueTypeName) return null;
+  return WORKSPACE_TYPE_BY_JIRA_ISSUE_TYPE[issueTypeName.trim().toLowerCase()] ?? null;
+}
+
+/**
+ * Every workspace type a Jira issue can resolve to, de-duplicated.
+ *
+ * Exists so that board-reconcile.ts can decide which running agents a Jira
+ * query is even capable of describing without keeping a second copy of the
+ * list. A second copy is how adding a Bug workspace type here would silently
+ * leave that loop unable to see it — the kind of drift that shows up as an
+ * agent nobody manages rather than as an error.
+ */
+export function jiraIssueWorkspaceTypes(): string[] {
+  return [...new Set(Object.values(WORKSPACE_TYPE_BY_JIRA_ISSUE_TYPE))];
 }
 
 /** Where this integration's tools actually come from. */

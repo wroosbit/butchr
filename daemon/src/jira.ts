@@ -10,21 +10,41 @@ import {
 //
 // WHAT THIS IS ALLOWED TO READ, AND WHY THAT CHANGED
 //
-// This header used to assert one domain operation. That was true and is no
-// longer: on 2026-08-03 the human deciding KAN-75 widened the credential
-// surface to **status and comment reads**, and chose polling over webhooks
-// explicitly, so that a ticket moved on the board or commented on while its
-// agent was mid-turn reaches the agents it concerns instead of waiting for
-// somebody to remember to nudge. Two domain operations now:
+// This header used to assert one domain operation, then two. Each widening is
+// recorded rather than quietly absorbed, because the number is the argument
+// against the next one. **Three** domain operations now:
 //
 //   1. "what type is this issue?" — a Jira issue URL does not say whether the
 //      issue is a Task or a Story, and those map to different workspace types.
 //   2. "what does this issue look like right now?" — status, `updated`,
 //      comment ids, and issue links, for the poller in jira-poll.ts.
+//   3. "which issues does the board say should be running?" — one bounded JQL
+//      search returning `key`, `status` and `issuetype`, for the reconciler in
+//      board-reconcile.ts.
 //
-// Plus the credential-validation read the settings UI needs. Both operations
-// fit inside the same `read:jira-work` scope the settings page has always asked
-// for, so the widening costs the user nothing to grant.
+// (1) and (2) arrived on 2026-08-03 with KAN-75, when the human widened the
+// credential surface to **status and comment reads** and chose polling over
+// webhooks explicitly, so that a ticket moved on the board or commented on
+// while its agent was mid-turn reaches the agents it concerns instead of
+// waiting for somebody to remember to nudge.
+//
+// (3) arrived on 2026-08-08 with KAN-221, when the human made Jira the store of
+// desired state for the whole fleet: *"it should be jira controlled"*. It is a
+// search rather than N per-key GETs, and {@link JiraClient.getIssueSnapshot}'s
+// own doc-comment argues against exactly that — so the disagreement is worth
+// stating rather than leaving for a reader to trip over. **That argument is
+// about the poller's needs and does not apply here.** It reasons that a search
+// "cannot carry `issuelinks` or comment ids per issue", which would make it a
+// search *plus* a GET per issue and no saving at all. The reconciler needs
+// neither links nor comments — `key`, `status`, `issuetype`, nothing else — for
+// which one search is one request covering the whole fleet, and the per-key
+// failure isolation the poller values is a liability here rather than a feature:
+// a reconciler wants one verdict about the whole board, not a board it saw
+// three-quarters of.
+//
+// Plus the credential-validation read the settings UI needs. All three
+// operations fit inside the same `read:jira-work` scope the settings page has
+// always asked for, so no widening has ever cost the user anything to grant.
 //
 // THE RULE THAT DID NOT CHANGE
 //
@@ -50,6 +70,23 @@ export const LOOKUP_TIMEOUT_MS = 2000;
  * ticks on top of each other.
  */
 export const POLL_TIMEOUT_MS = 5000;
+
+/**
+ * How long the *board search* may take.
+ *
+ * Its own budget again, and more generous than a poll's for the reason that
+ * makes this read different from the other two: it is one request that Jira has
+ * to answer by running a JQL query across a whole account's issues, where the
+ * others are indexed lookups of one key. Ten seconds is still an order of
+ * magnitude inside the reconciler's cycle, so a slow search cannot stack ticks.
+ *
+ * Giving up early would be the expensive mistake here, not the cheap one. A
+ * timeout is a failed read, a failed read converges nothing (KAN-221), and a
+ * budget tight enough to trip on a merely slow Jira would turn a bad afternoon
+ * into a fleet that nothing manages — which is the same silent stall the guard
+ * exists to make loud.
+ */
+export const BOARD_TIMEOUT_MS = 10_000;
 
 /**
  * How long *validation* may take. Deliberately far more generous than
@@ -671,7 +708,74 @@ export interface JiraIssueSnapshot {
 const WATCH_FIELDS = 'status,updated,comment,issuelinks';
 
 /**
- * The read-only Jira client. Two domain operations, plus validation.
+ * One issue as the board reconciler needs to see it (KAN-221).
+ *
+ * Three fields, and the third is the one with a history. `issueTypeName` is
+ * carried because it comes back in the same payload for free and because the
+ * alternative — deriving a workspace type from the issue's URL — is a defect
+ * this codebase has already paid for. KAN-196: a URL-guessed type fell back to
+ * `task` and started `task/KAN-39` alongside a live `epic/KAN-39`, and the
+ * collision's failure mode was killing the epic agent's PTY. A loop that
+ * guesses types recreates that on a timer.
+ *
+ * It is `string | null` rather than `string` for the same reason
+ * {@link JiraIssueSnapshot.statusName} is: a response that carried no type is
+ * an unanswered question, and the caller's job is to decline to act on it. It
+ * must **not** be defaulted here — see
+ * `workspaceTypeForJiraIssueTypeStrict` in integrations/atlassian-integration.ts
+ * for why this read gets the strict mapping and URL resolution keeps the
+ * lenient one.
+ */
+export interface JiraBoardIssue {
+  key: string;
+  /** `In Progress`, `In Review`, … or null when the row carried no status. */
+  statusName: string | null;
+  /** `Task`, `Story`, `Epic`, … as Jira spells it, or null when absent. */
+  issueTypeName: string | null;
+}
+
+/**
+ * A page of board results, and whether it was the whole answer.
+ *
+ * `complete` is not a nicety. "The board wants these five issues" and "the
+ * board wants these five issues *and some number of others I did not see*" are
+ * different facts, and a reconciler that acts on the second stands down every
+ * agent whose ticket fell off the page. A partial page is therefore treated as
+ * a failed read rather than as a result — see {@link JiraBoardOutcome}.
+ */
+export interface JiraBoardPage {
+  issues: JiraBoardIssue[];
+  complete: boolean;
+}
+
+/** The `fields` the board search asks for. Nothing else is read. */
+const BOARD_FIELDS = 'status,issuetype';
+
+/**
+ * How many issues one board search may return.
+ *
+ * "Bounded" in *one bounded JQL per cycle* is this number. A hundred is far
+ * above any fleet this machine can carry — the capacity model derives 18 to 21
+ * task agents from this hardware — so exceeding it means the query is not the
+ * one anybody intended, and the completeness check turns that into a refusal to
+ * converge rather than into a mass stand-down.
+ */
+export const BOARD_MAX_RESULTS = 100;
+
+/**
+ * The search endpoint, established by running it rather than by remembering it.
+ *
+ * `/rest/api/3/search` — the one most references still name — answers **HTTP
+ * 410 Gone** on this site, with a body reading *"The requested API has been
+ * removed. Please migrate to the /rest/api/3/search/jql API."* Probed against
+ * the live instance on 2026-08-08 before this client was written. Recorded here
+ * because a 410 is the failure this whole design is built to survive quietly:
+ * the guard would have converged nothing, forever, correctly and invisibly.
+ */
+const SEARCH_PATH = '/rest/api/3/search/jql';
+
+/**
+ * The read-only Jira client. Three domain operations, plus validation.
  */
 export class JiraClient {
   constructor(private transport: JiraTransport) {}
@@ -695,6 +799,29 @@ export class JiraClient {
       throw new JiraRequestError(`issue snapshot returned HTTP ${status}`, status);
     }
     return snapshotFrom(key, body);
+  }
+
+  /**
+   * Every issue a JQL query matches, in one request.
+   *
+   * The whole fleet's desired state for the price of one round trip, which is
+   * what makes a per-cycle read affordable at all. See the module header for
+   * why this coexists with {@link getIssueSnapshot}'s argument against it.
+   */
+  public async searchBoard(
+    jql: string,
+    maxResults: number,
+    signal: AbortSignal
+  ): Promise<JiraBoardPage> {
+    const { status, body } = await this.transport.get(
+      `${SEARCH_PATH}?jql=${encodeURIComponent(jql)}` +
+        `&fields=${BOARD_FIELDS}&maxResults=${maxResults}`,
+      signal
+    );
+    if (status !== 200) {
+      throw new JiraRequestError(`board search returned HTTP ${status}`, status);
+    }
+    return boardPageFrom(body, maxResults);
   }
 
   /**
@@ -832,6 +959,86 @@ export type JiraSnapshotOutcome =
   | { ok: false; backOff: boolean; status?: number; error: string };
 
 /**
+ * Read a page of board results out of whatever the search returned.
+ *
+ * WHERE THIS DELIBERATELY DIFFERS FROM {@link snapshotFrom}
+ *
+ * `snapshotFrom` softens every missing field, and is right to: a response with
+ * no `comment` array is an issue with no comments, and a background poller that
+ * threw on it would go blind over a nicety. Here the softening would be a
+ * *decision* rather than a default. An issue row with no `issuetype` is not "an
+ * issue of the usual type"; it is an issue whose type nobody knows, and the one
+ * thing this codebase has already learned about guessing that is KAN-196. So
+ * the field comes through as null and the reconciler declines to act on the
+ * row — the guess never happens here because it never happens anywhere.
+ *
+ * A row with no `key` is dropped outright rather than nulled: unlike a
+ * snapshot, there is no requested key to stand in for it, and an issue that
+ * cannot name itself cannot be matched against a running agent.
+ *
+ * COMPLETENESS, AND WHY THE DEFAULT IS "NO"
+ *
+ * Jira Cloud's `search/jql` reports exhaustion with `isLast`, and the endpoint
+ * it replaced used `startAt`/`total`. Rather than pick one, this asks whether
+ * anything *positively says* the page was the whole answer: an explicit
+ * `isLast: true`, or an old-shaped response with no continuation token and
+ * fewer rows than were asked for. Every other shape — including one this code
+ * has never seen — reads as incomplete, which costs a cycle of convergence and
+ * cannot cost an agent.
+ */
+export function boardPageFrom(body: any, maxResults: number): JiraBoardPage {
+  const rows: any[] = Array.isArray(body?.issues) ? body.issues : [];
+
+  const issues: JiraBoardIssue[] = [];
+  for (const row of rows) {
+    const key = typeof row?.key === 'string' ? row.key.trim() : '';
+    if (!key) continue;
+    const statusName = row?.fields?.status?.name;
+    const issueTypeName = row?.fields?.issuetype?.name;
+    issues.push({
+      key,
+      statusName: typeof statusName === 'string' && statusName ? statusName : null,
+      issueTypeName: typeof issueTypeName === 'string' && issueTypeName ? issueTypeName : null
+    });
+  }
+
+  const complete =
+    body?.isLast === true ||
+    (body?.isLast === undefined &&
+      body?.nextPageToken === undefined &&
+      Array.isArray(body?.issues) &&
+      rows.length < maxResults);
+
+  return { issues, complete };
+}
+
+/**
+ * The outcome of a board search — and the distinction the whole reconciler
+ * turns on.
+ *
+ * Same discriminated shape as {@link JiraSnapshotOutcome}, on purpose. The
+ * failure this exists to prevent is that "the query failed" and "the board is
+ * empty" both produce an empty array, and the reconciler's steps 3 and 4 turn
+ * an empty array into *stand the entire fleet down*. Atlassian was unreachable
+ * for about two hours on 2026-08-04 (KAN-157); under a loop that could not tell
+ * those apart, that outage destroys every running agent's context.
+ *
+ * A boolean return with an out-of-band error, or a throw the caller might
+ * forget to catch, would both leave the distinction to somebody remembering it.
+ * A union leaves it to the type checker: there is no `issues` to read on the
+ * failure branch, so a caller that skips the check does not compile.
+ *
+ * This is the same bug class `waitForHerdr` (reconcile.ts) exists for —
+ * `listHerdrAgents` returns empty both when herdr has no agents and when herdr
+ * could not be reached, and its comment says the distinction "matters
+ * enormously here, because 'herdr is not up yet' would otherwise read as 'every
+ * agent is missing'". This is that guard, pointed at Jira.
+ */
+export type JiraBoardOutcome =
+  | { ok: true; issues: JiraBoardIssue[] }
+  | { ok: false; backOff: boolean; status?: number; error: string };
+
+/**
  * A rejection from the transport, rendered as a verdict.
  *
  * The legs ride on the error precisely so this is possible: a thrown request
@@ -890,7 +1097,9 @@ export class JiraIssueTypeService {
     /** Separate from `timeoutMs`: see VALIDATE_TIMEOUT_MS. */
     private validateTimeoutMs: number = VALIDATE_TIMEOUT_MS,
     /** Separate again, and for the opposite reason: see POLL_TIMEOUT_MS. */
-    private pollTimeoutMs: number = POLL_TIMEOUT_MS
+    private pollTimeoutMs: number = POLL_TIMEOUT_MS,
+    /** Separate for a third reason again: see BOARD_TIMEOUT_MS. */
+    private boardTimeoutMs: number = BOARD_TIMEOUT_MS
   ) {}
 
   public status(): CredentialStatus {
@@ -1070,6 +1279,76 @@ export class JiraIssueTypeService {
       // hammering a host that is not answering is the same mistake with a
       // different cause. Everything else — 401, 403, 404 — is about this one
       // request and pacing the fleet on it would be wrong.
+      const backOff = status === 429 || (status !== undefined && status >= 500) || status === undefined;
+      return {
+        ok: false,
+        backOff,
+        ...(status !== undefined ? { status } : {}),
+        // Message only, never the error object: on a fetch failure its
+        // properties can include the request that produced it.
+        error: err?.message ?? 'unknown error'
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Every issue the board says should be running — or why that is not known.
+   *
+   * Lives here for the reason `pollIssue` does: this class is the daemon's only
+   * holder of a Jira transport, and a second holder would be a second
+   * credential load, a second cloud-ID lookup, and a second place to teach
+   * about OAuth on the day the auth seam is used.
+   *
+   * It touches the failure cooldown for neither reading nor writing, on the
+   * same argument `pollIssue` makes at length: a background timer's bad minute
+   * must not silently downgrade a user's Story workspace to a `task` one, and
+   * an unrelated tab-change failure must not blind the reconciler. The three
+   * reads degrade separately, on their own evidence.
+   *
+   * A PARTIAL PAGE IS A FAILURE, NOT A RESULT
+   *
+   * `complete: false` comes back as `ok: false`, with `backOff: false` — Jira
+   * answered, and answered promptly; it is not asking to be left alone, it just
+   * did not answer the question that was asked. Reporting it as a success with
+   * a truncated list would hand the reconciler the exact input that makes step
+   * 4 destructive. See {@link boardPageFrom}.
+   *
+   * Never throws, like everything else this service exposes.
+   */
+  public async searchBoard(
+    jql: string,
+    maxResults: number = BOARD_MAX_RESULTS
+  ): Promise<JiraBoardOutcome> {
+    const transport = await this.getTransport();
+    if (!transport) {
+      // The ordinary state for a machine with no credential, and — like
+      // pollIssue's — not a reason to back off from a request nobody made.
+      // It is still `ok: false`: a fleet must not be stood down because
+      // nobody has opened the settings page.
+      return { ok: false, backOff: false, error: 'no Jira credential configured' };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.boardTimeoutMs);
+    try {
+      const page = await new JiraClient(transport).searchBoard(jql, maxResults, controller.signal);
+      if (!page.complete) {
+        return {
+          ok: false,
+          backOff: false,
+          error:
+            `the board search returned a partial page (${page.issues.length} issue(s), ` +
+            `asked for up to ${maxResults}, and Jira did not say that was all of them)`
+        };
+      }
+      return { ok: true, issues: page.issues };
+    } catch (err: any) {
+      const status: number | undefined = typeof err?.status === 'number' ? err.status : undefined;
+      // Same reading of the status as pollIssue: 429 and 5xx are Jira asking
+      // for room, and a transport failure joins them because hammering a host
+      // that is not answering is the same mistake with a different cause.
       const backOff = status === 429 || (status !== undefined && status >= 500) || status === undefined;
       return {
         ok: false,
