@@ -46,7 +46,14 @@ function since(iso) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h ago`;
 }
 
-export function StandbyAgents({ standbyAgents, standbyTotal, pending, onTurnOn, renderRefusal }) {
+export function StandbyAgents({
+  standbyAgents,
+  standbyTotal,
+  pending,
+  onTurnOn,
+  renderRefusal,
+  describeBoard
+}) {
   if (!Array.isArray(standbyAgents) || standbyAgents.length === 0) return null;
 
   // The daemon caps what it sends so a 2s poll does not carry an unbounded
@@ -138,7 +145,12 @@ export function StandbyAgents({ standbyAgents, standbyTotal, pending, onTurnOn, 
                     {agent.workDir}
                   </div>
                 </div>
-                <TurnOnButton candidate={agent} pending={pending?.[agent.agentName]} onTurnOn={onTurnOn} />
+                <TurnOnButton
+                  candidate={agent}
+                  pending={pending?.[agent.agentName]}
+                  onTurnOn={onTurnOn}
+                  board={describeBoard?.(agent)}
+                />
               </div>
               {renderRefusal ? renderRefusal(agent.agentName) : null}
             </div>

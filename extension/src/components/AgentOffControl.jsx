@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { BoardControlNote } from './BoardControlNote.jsx';
+
 /**
  * The Off switch on an agent row, and the confirmation that guards it.
  *
@@ -35,6 +37,26 @@ import React from 'react';
  * different colour, over a button that names it. It is reversible from this
  * same page: a stood-down supervisor appears in the Stood down list below and
  * can be switched straight back on.
+ *
+ * WHY THE CONFIRMATION NOW ANSWERS A SECOND QUESTION (KAN-222)
+ *
+ * The one above is "what does stopping this cost?". The new one is "does
+ * stopping it even work?", and it exists because KAN-221 made Jira the store of
+ * desired state: on a converging machine the board restarts an agent whose
+ * ticket is still In Progress, within a cycle, and this daemon cannot move that
+ * ticket because it holds no Jira write scope and never will.
+ *
+ * The two questions are answered in that order, and the order is the point. The
+ * work summary comes first because unsaved work is *lost either way* — the
+ * board bringing the agent back does not bring back what it had not committed.
+ * A note saying "this will restart anyway" placed above the summary would read
+ * as "so this is harmless", which is the opposite of true and exactly the kind
+ * of confident wrong answer this ticket is about.
+ *
+ * Every word of the note, and the choice between its three versions, lives in
+ * lib/boardControl.js. Nothing about the board is worked out here — see that
+ * file for why a copy of the daemon's rule in a component is the bug rather
+ * than the convenience.
  */
 
 const DANGER = {
@@ -114,6 +136,8 @@ export function AgentOffControl({
   confirming,
   workState,
   error,
+  /** From describeBoardControl; null on a daemon with no reconciler. */
+  board,
   onRequestOff,
   onCancelOff,
   onConfirmOff
@@ -187,6 +211,15 @@ export function AgentOffControl({
       </div>
 
       <WorkSummary state={workState} />
+
+      {/* After the work summary, before the buttons. See the header: what
+          stopping costs is settled first, because the board restarting this
+          agent does not restore anything it had not committed. */}
+      <BoardControlNote
+        note={board?.offNote}
+        reversible={board?.reversible === true}
+        style={{ marginTop: '10px' }}
+      />
 
       <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end' }}>
         <button style={button()} onClick={onCancelOff}>

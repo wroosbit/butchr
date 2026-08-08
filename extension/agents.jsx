@@ -13,6 +13,7 @@ import { AgentOffControl } from './src/components/AgentOffControl.jsx';
 import { ActivationRefusal } from './src/components/ActivationRefusal.jsx';
 import { useFleetControls } from './src/hooks/useFleetControls.js';
 import { buildAgentTree } from './src/lib/agentTree.js';
+import { describeBoardControl } from './src/lib/boardControl.js';
 
 function Agents() {
   const [daemonConnected, setDaemonConnected] = useState(false);
@@ -31,6 +32,11 @@ function Agents() {
   // not an alarm, and it is what tells the reader which of these could be
   // stood down for which.
   const [priorities, setPriorities] = useState({});
+  // Whether the board can undo what this page's buttons do (KAN-222). Null on a
+  // daemon with no board reconciler behind it, and null is not a default — it
+  // is the honest answer to a question that daemon cannot be asked, and it
+  // makes every control on this page render exactly as it did before KAN-221.
+  const [boardControl, setBoardControl] = useState(null);
 
   // Everything a person has asked for and not yet got. Deliberately not part of
   // the poll's state above: the poll owns what is running, this owns what was
@@ -85,6 +91,13 @@ function Agents() {
           setPriorities(
             Object.fromEntries((payload.priorities || []).map((p) => [p.agentName, p.priority]))
           );
+          // Assigned unconditionally, like the three lists above and unlike
+          // staleness: a machine switched from converge to report between two
+          // polls must stop being described as converging on the next one, and
+          // a conditional assignment would leave the old mode on screen for
+          // ever. `?? null` rather than `|| null` so that nothing but a genuine
+          // absence is read as absence.
+          setBoardControl(payload.boardControl ?? null);
         }
       }
     };
@@ -107,6 +120,17 @@ function Agents() {
   const openTab = (url) => {
     chrome.runtime.sendMessage({ type: 'OPEN_TAB', url });
   };
+
+  /**
+   * What the board will do to one agent after a button on its row is pressed.
+   *
+   * Handed to every list rather than computed inside them, so that the running
+   * rows, the three not-running lists and the Off confirmation all answer the
+   * question from one place. The lists differ in *why* an agent is off and not
+   * at all in what the board will do about it, which is the same argument
+   * TurnOnButton.jsx already makes for being one component.
+   */
+  const describeBoard = (agent) => describeBoardControl(boardControl, agent);
 
   /**
    * The refusal that stopped an agent starting, rendered under the row whose
@@ -159,6 +183,7 @@ function Agents() {
         pending={controls.pending}
         onTurnOn={controls.turnOn}
         renderRefusal={renderRefusal}
+        describeBoard={describeBoard}
       />
 
       {/* Below the losses and above the list: work that is stopped on purpose
@@ -169,6 +194,7 @@ function Agents() {
         pending={controls.pending}
         onTurnOn={controls.turnOn}
         renderRefusal={renderRefusal}
+        describeBoard={describeBoard}
       />
 
       {!daemonConnected ? (
@@ -211,6 +237,17 @@ function Agents() {
                     {agent.supervisor ? (
                       <span title="Hands out work and merges what comes back" style={{ backgroundColor: '#1e293b', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '6px', color: '#fbbf24' }}>supervisor</span>
                     ) : null}
+                    {/* Only where it is true: this appears when the board will
+                        actually undo an Off, which means converge mode and an
+                        agent the query can describe. In report mode — the
+                        default — the board decides nothing, and a chip saying
+                        it did would be this ticket's own defect on the row
+                        above its fix. The confirmation carries the full
+                        sentence; this is only so the reader can see which rows
+                        it will apply to before reaching for anything. */}
+                    {describeBoard(agent)?.reversible ? (
+                      <span title={`Jira decides whether this agent runs. Off stops it now; the board starts it again within about ${boardControl?.cycleSeconds ?? 60}s while ${agent.key} is In Progress or In Review.`} style={{ backgroundColor: '#1e3a8a', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginLeft: '6px', color: '#bfdbfe' }}>board-controlled</span>
+                    ) : null}
                   </div>
                   {/* Agents activated by key may have no page to link to; an
                       empty clickable row is worse than no row at all. */}
@@ -242,6 +279,7 @@ function Agents() {
                       pending={controls.pending[agent.agentName]}
                       confirming={false}
                       error={controls.errors[agent.agentName]}
+                      board={describeBoard(agent)}
                       onRequestOff={controls.requestOff}
                       onCancelOff={controls.cancelOff}
                       onConfirmOff={controls.confirmOff}
@@ -258,6 +296,7 @@ function Agents() {
                     confirming
                     workState={controls.workState[agent.agentName]}
                     error={controls.errors[agent.agentName]}
+                    board={describeBoard(agent)}
                     onRequestOff={controls.requestOff}
                     onCancelOff={controls.cancelOff}
                     onConfirmOff={controls.confirmOff}
@@ -280,6 +319,7 @@ function Agents() {
         pending={controls.pending}
         onTurnOn={controls.turnOn}
         renderRefusal={renderRefusal}
+        describeBoard={describeBoard}
       />
     </div>
   );
