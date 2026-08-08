@@ -30,7 +30,10 @@
 //   3. asymmetries — what coalescing must not flatten: the issue's own agent
 //                    still never hears its own status (a), a partial authorship
 //                    suppression still leaves the rest (b), and an agent that
-//                    wrote every comment still hears the transition (c).
+//                    wrote every comment still hears the transition (c). Then
+//                    (d) the board parent from KAN-230, which is the relation a
+//                    hand-off most needs to reach and which every other section
+//                    here passes without exercising.
 //   4. memory      — the grouping is between recognition and delivery and
 //                    touches neither: the state file is advanced past both
 //                    events before the first send, the next tick is silent, and
@@ -214,7 +217,13 @@ const jiraBody = (key, issue) => ({
       id: '1',
       type: { name: 'Relates', inward: 'relates to', outward: 'relates to' },
       outwardIssue: { key: linked }
-    }))
+    })),
+    // The board parent, in the shape the REST API returns it and the shape the
+    // real `snapshotFrom` reads (`fields.parent.key`). Absent unless a section
+    // asks for one, which is the ordinary case for an epic.
+    ...(issue.parent
+      ? { parent: { id: '10048', key: issue.parent, fields: { issuetype: { name: 'Epic' } } } }
+      : {})
   }
 });
 
@@ -675,6 +684,85 @@ console.log(`
       tick.skipped.some((s) => s.agentName === parent.agentName && s.event.kind === 'comment'),
     '(c) the author of every new comment still heard the transition, and heard it once.',
     '(c) a fully-suppressed comment took the status event with it — a silent loss.'
+  );
+}
+
+// ------------------------------------------------- 3d. the board parent --
+
+rule('AC3d — the relation a hand-off most needs to reach: the board parent (KAN-230)');
+
+console.log(`
+  THE GAP THIS SECTION EXISTS TO CLOSE, stated plainly because it nearly shipped.
+
+  KAN-230 added 'parent' — the epic a ticket sits under on the board — and calls
+  it the relation a hand-off most needs to reach, because it is the one that
+  reviews and merges. It landed while this branch was open. Every section above
+  passed on the rebase **without exercising it once**: their stub issues carry no
+  parent field, so snapshot.parentKey is null and that whole leg of notify()
+  never runs.
+
+  So two proofs were green and the composition of the two changes — a coalesced
+  hand-off arriving at a board parent — was tested by neither. That is the shape
+  KAN-145 was burned by: not a wrong assertion in either script, but a gap
+  between them that no script owned. It matters here more than most, because
+  after KAN-230 the board parent is the recipient of nearly every hand-off on
+  this board, which makes it the agent that was being interrupted twice.`);
+
+{
+  const subject = { agentName: nameFor('task', 'KAN-900'), type: 'task', key: 'KAN-900' };
+  const boardParent = { agentName: nameFor('epic', 'KAN-39'), type: 'epic', key: 'KAN-39' };
+  const agents = [subject, boardParent];
+  const herdr = stubHerdr(agents.map((a) => a.agentName));
+  const jira = stubJira({
+    // KAN-900 sits under KAN-39 on the board, and nobody activated anybody:
+    // `activatedBy` is null for every agent the board reconciler starts, which
+    // is the ordinary case KAN-230 was filed for.
+    'KAN-900': { status: 'In Progress', comments: [5000], links: [], parent: 'KAN-39' },
+    'KAN-39': { status: 'In Progress', comments: [], links: [] }
+  });
+  const tape = transcripts();
+  const poller = newPoller(JiraPoller, {
+    jira, herdr, agents,
+    parents: {},                        // no supervisor of record, deliberately
+    stateFile: nextStateFile(),
+    authorship: newAuthorship(CommentAuthorship, tape)
+  });
+
+  await poller.pollOnce();
+  handOff(jira, tape, subject);          // its own comment, then In Review
+  const tick = await poller.pollOnce();
+
+  const toParent = tick.nudges.find((n) => n.agentName === boardParent.agentName);
+  const message = herdr.submitted(boardParent.agentName)[0] ?? '';
+
+  console.log('');
+  row('KAN-900 sits under KAN-39 on the board', 'yes (fields.parent.key)');
+  row('supervisor of record for task/KAN-900', 'none — activatedBy is null');
+  row('events recognised on KAN-900', tick.events.map((e) => e.kind).join(' + '));
+  row('interruptions at epic/KAN-39 (board parent)', String(herdr.interruptions(boardParent.agentName)));
+  row('  the relation it was told under', JSON.stringify(toParent?.relation ?? null));
+  row('  the events that one send carried', JSON.stringify(eventsOf(toParent).map((e) => e.kind)));
+  console.log('\n  the single message the reviewing epic received:\n');
+  console.log(`    ${message}`);
+
+  console.log(`
+  One interruption, both facts, and the board-parent sentence rather than the
+  supervisor one. Before this branch that epic got two Ctrl+Cs for every
+  hand-off it is asked to review; before KAN-230 it got none at all.`);
+
+  verdict(
+    tick.events.length === 2 &&
+      herdr.interruptions(boardParent.agentName) === 1 &&
+      toParent?.relation === 'parent' &&
+      eventsOf(toParent).length === 2 &&
+      message.includes('In Review') &&
+      message.includes('new comment') &&
+      message.includes('sits under your ticket on the board') &&
+      herdr.interruptions(subject.agentName) === 0,
+    'the board parent — the agent that reviews and merges — got one interruption ' +
+      'carrying the transition and the comment, under its own relation.',
+    'the board parent got two interruptions, none, or the wrong sentence: the two ' +
+      'changes do not compose.'
   );
 }
 
