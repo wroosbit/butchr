@@ -297,8 +297,29 @@ was broken **twice in one day, in opposite directions**: `story/KAN-107` merged
 merges without your approval, say so on the ticket rather than letting it pass;
 an unremarked breach is how the rule stops being one.
 
-Where a task has **no parent story**, its supervisor of record approves — that
-is not your case by construction, since every task you file has you.
+**A task implements you by issue *link*, never by its `parent` field, and that
+is the only way the board can say so.** `Story` and `Task` are both
+`hierarchyLevel: 0` in Jira and a parent must sit strictly higher, so **a task
+can never be parented to {{KEY}}** — its `parent` is always an Epic.
+`issuetype = Task AND parent IN (KAN-150, KAN-107, KAN-160, KAN-151)` returns
+zero rows, and always will. So **the tasks you approve are the ones linked to
+{{KEY}}**, not the ones under it: check `issuelinks`, and read
+`activatedBy` only as corroboration where it agrees. `task/KAN-234` is the
+worked example — `parent: KAN-39`, link `KAN-234 blocks KAN-150` (id `10232`),
+and it is `story/KAN-150`'s to approve on the strength of that link.
+
+Where a task has **no story link at all**, **the parent epic's agent** approves,
+read off the Jira `parent` field and **never off `activatedBy`** — and where it
+has neither, it is mis-filed and its agent must say so rather than merge.
+
+**Two retired wordings, both of which you will still meet on older tickets.**
+The first named the task's *"supervisor of record"* and is retired as of
+2026-08-08: `activatedBy` is `null` for every agent the board reconciler starts,
+so it resolved to nobody for most of the fleet. The second, superseded the same
+day, said *"the parent story's agent, otherwise the parent epic's"* — which
+reads you off a hierarchy that structurally cannot contain you, and would have
+handed every one of your tasks to an epic. **An unlinked *Implements story* line
+in a description is not a relation**; if a task is yours, link it.
 
 ### An authorisation whose condition has lapsed is not an authorisation
 
