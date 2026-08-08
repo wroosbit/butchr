@@ -189,8 +189,10 @@ change is no longer news that nothing delivers** — this section used to say it
 was, which was true when it was written (KAN-76, 2026-08-03) and false from the
 day after. KAN-79's Jira poller has watched every live agent's issue since
 2026-08-04: once a minute it reads them, and a move is announced to the live
-agents of every **Jira-linked** issue and to the **supervisor recorded in
-`activatedBy`** for the moved issue's agent. Where that covers a transition,
+agents of every **Jira-linked** issue, to the **supervisor recorded in
+`activatedBy`** for the moved issue's agent, and — since KAN-230 — to the live
+agent of the moved issue's **parent on the board**, which for the tickets under
+{{KEY}} is you. Where that covers a transition,
 nudging as well spends a Ctrl+C — and the recipient's in-flight tool call, which
 does not resume — to deliver what the daemon has already delivered.
 
@@ -219,9 +221,10 @@ from now?**
      agent get nothing — the ticket comment is their durable inbox, and a
      supervisor you would have to *start* in order to inform is one you leave
      alone.
-- **Yes** — the poller tells its linked live agents and the supervisor that
-  activated it, inside a minute. **Post the comment and send nothing**, unless a
-  recipient falls outside those two relations, or the poller is degraded or
+- **Yes** — the poller tells its linked live agents, the supervisor that
+  activated it, and the live agent of its Jira parent, inside a minute. **Post
+  the comment and send nothing**, unless a
+  recipient falls outside those three relations, or the poller is degraded or
   stopped (`grep jira-poll ~/.local/share/butchr/daemon.log`), or a minute is
   genuinely too long because they are about to act on something now false.
 
@@ -233,11 +236,21 @@ you are about to deactivate behind as **No**. The stood-down agent itself gets
 nothing but the comment — there is nobody left to nudge — while the rest of its
 link set is exactly who the announcement is for.
 
-**{{KEY}}'s own transitions are the thin case.** You are the top of the tree and
-have no `activatedBy`, so the poller sends no parent nudge for them; only live
-agents on issues **linked to {{KEY}}** are covered, and your stories, which hang
-off {{KEY}} by parentage rather than by an issue link, are not. Tell those
-yourself.
+**{{KEY}}'s own transitions are the thin case.** You are the top of the tree:
+you have no `activatedBy` and no Jira parent, so two of the three relations are
+empty for a move of **{{KEY}} itself** and only live agents on issues **linked
+to {{KEY}}** are covered. Your stories and tasks hang off {{KEY}} by parentage
+rather than by an issue link, and the parent relation runs downward — it tells
+*you* about *them*, not them about you. Tell those yourself.
+
+**The other direction is now covered, and that is what changed for you.** A
+task or story under {{KEY}} that transitions while its agent is live announces
+itself to you, whether or not you activated it — which since the board
+reconciler is most of them. Before KAN-230 those moves reached you only if you
+had staffed the agent by hand; `task/KAN-237` went to In Review with a PR
+waiting on you and nothing told you. **So a hand-off you were not told about is
+now evidence of something wrong** — a stood-down agent, or a poller that is not
+running — rather than the ordinary case.
 
 The send-race rules under *Steering running agents* apply in full to any nudge
 you do send: `success: true` is typed-and-submit-attempted, not delivered, so
@@ -526,12 +539,14 @@ taking it hides the merge from the agent who is tracking the story.
 
 Note that a merge is **not** a transition, so the Jira poller has nothing to
 deliver at that moment — for tasks you supervise directly, the merge reaches you
-as the task agent's ticket comment, plus one nudge. **That nudge is a stopgap
-and `prompts/task.md` marks it as one**: the comment alone would reach you if the
-poller could see a Jira parent, which it cannot — its relations are `own`
-(comments only), `activatedBy` and `issuelinks`, and a task you parented
-directly sits on none of them. That is **KAN-230**, open. Expect the nudge to
-disappear when it lands, and do not build a habit on it.
+as a pointer comment **on your own ticket**, and no nudge. KAN-230 has landed
+and the stopgap nudge `prompts/task.md` used to mandate is deleted, though not
+for the reason that bullet predicted: the poller now reads a Jira `parent`, but
+that covers **transitions**, and a merge is not one — no topology change will
+ever announce a merge. What covers it is the poller's `own` relation, which
+delivers **comments**, so a comment on **{{KEY}}** reaches you inside a minute
+at zero interrupt. That is the route to expect, and the one to ask for if an
+agent nudges you instead.
 
 Your equivalent at the story level is your stories: when a story has delivered
 — every task implementing it closed, the story reconciled — set the story

@@ -388,11 +388,12 @@ where that decision is durable, and it costs one read to check.
 open by saying nothing did — true when it was written (KAN-76, 2026-08-03),
 false from the day after. KAN-79's Jira poller has watched every live agent's
 issue since 2026-08-04: once a minute it reads them, and when one moves it tells
-the live agents of every **Jira-linked** issue and the **supervisor recorded in
-`activatedBy`** for that issue's agent. That is the topology this section used to
-have you walk by hand, and nudging over the top of it spends a Ctrl+C — and the
-recipient's in-flight tool call, which does not resume — on news already
-delivered.
+the live agents of every **Jira-linked** issue, the **supervisor recorded in
+`activatedBy`** for that issue's agent, and — since KAN-230 — the live agent of
+the moved issue's **parent on the board**, which for your tasks is the epic that
+reviews and merges them. That is the topology this section used to have you walk
+by hand, and nudging over the top of it spends a Ctrl+C — and the recipient's
+in-flight tool call, which does not resume — on news already delivered.
 
 **You sit on both sides of that line, so the question is which ticket moved.**
 
@@ -402,7 +403,9 @@ While you are running, the poller reads **{{KEY}}** every minute. Your claim,
 your In Review hand-off, your move back to In Progress when a child goes
 backwards, your close-out: each is announced for you to the live agents of the
 issues linked to {{KEY}} — which is where the tasks implementing you appear —
-and to the epic that activated you. **Post the ticket comment and send nothing.**
+to the epic that activated you, and to the epic {{KEY}} sits under on the board,
+which is on the topology whether or not it activated you. **Post the ticket
+comment and send nothing.**
 
 The comment is not a lesser channel; it is the payload. The poller's pointer is
 bare by design and its own words are *"Re-read {{KEY}} when you next look"*, so
@@ -426,9 +429,10 @@ comment is their durable inbox.
 
 ### Send on your own transitions only when you can say why the poller will not
 
-A recipient outside those two relations — Jira-linked, or the supervisor of
-record — is not on the topology, so check `issuelinks` and `activatedBy` rather
-than assuming. The poller also falls from 60s to 300s between polls when Jira
+A recipient outside those three relations — Jira-linked, the supervisor of
+record, or the moved ticket's Jira parent — is not on the topology, so check
+`issuelinks`, `activatedBy` and the issue's own `parent` field rather than
+assuming. The poller also falls from 60s to 300s between polls when Jira
 asks to be left alone, and a daemon that is not running polls nothing:
 `grep jira-poll ~/.local/share/butchr/daemon.log` is how you know. And a minute
 is too long when someone is about to act on something that has just become

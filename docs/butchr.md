@@ -852,14 +852,30 @@ requests to notify nobody. The fleet comes from the same census the
 missing-agent sweep uses, and two agents on one ticket are one read.
 
 **Who gets told.** On a status change or a new comment on a watched issue:
-the live agents of its **linked issues** (from the same GET's `issuelinks`), and
-its **parent agent** (the `activatedBy` supervisor of record). Plus, for a **new
-comment only**, the issue's **own** agent — that is the mid-turn steer, and it
-is the point. A **status change** deliberately does *not* go to the issue's own
-agent: its own transitions are announced to it by the prompts layer, and telling
-an agent that the ticket it just moved has moved is noise it caused itself. A
-target that is not running is logged and left alone, for the same reason as
-above.
+the live agents of its **linked issues** (from the same GET's `issuelinks`), its
+**supervisor agent** (the `activatedBy` supervisor of record), and the live
+agent of its **parent issue on the board** (the same GET's `parent` — the epic a
+task sits under, the epic a story sits under). Plus, for a **new comment only**,
+the issue's **own** agent — that is the mid-turn steer, and it is the point. A
+**status change** deliberately does *not* go to the issue's own agent: its own
+transitions are announced to it by the prompts layer, and telling an agent that
+the ticket it just moved has moved is noise it caused itself. A target that is
+not running is logged and left alone, for the same reason as above.
+
+**Why `supervisor` and `parent` are two relations and not one** (KAN-230). They
+answer different questions — "who staffed this agent" and "whose ticket is this
+on the board" — and they disagree in the ordinary case. A task under a story
+under an epic has a story for a supervisor and an epic for a parent; and since
+the board reconciler began starting most agents, `activatedBy` is `null` for
+most of the fleet, honestly, because nothing staffed them. Until the `parent`
+leg existed, such an agent's hand-off reached nobody at all: `task/KAN-237` moved
+to In Review with a PR waiting on `epic/KAN-39`, and the log read `nobody live
+to tell.` The two carry different sentences for the same reason they are
+different relations — *"You activated its agent"* and *"It sits under your
+ticket on the board"* call for different things. Where one agent is both, the
+supervisor relation wins the tie and its wording is unchanged. The `parent`
+relation carries **both** status changes and comments: unlike `own`, a board
+parent caused neither, and the event it most needs is a transition.
 
 **The Jira `status` field is not herdr's agent status.** They share a word and
 nothing else. herdr's `done` is the agent's own per-turn hook boundary, fires at
