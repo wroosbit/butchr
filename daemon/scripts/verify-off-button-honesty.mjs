@@ -213,6 +213,11 @@ function makeRouter({ running, standby = [], mode }) {
     undefined,
     undefined,
     agentRegistry,
+    // 9 launchdarkly, 10 capacitySource, 11 boardControl. Named because this is
+    // a positional tail of optional parameters and #89 and #90 both tried to
+    // take slot 10 on the same day; KAN-226 replaces it with an options object,
+    // at which point these comments go with it.
+    undefined,
     undefined,
     mode ? (agents) => boardControlReport(mode(), agents) : undefined
   );

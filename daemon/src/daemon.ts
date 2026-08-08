@@ -223,6 +223,10 @@ const server = net.createServer((socket) => {
     { repoRoot, daemonStartedAt },
     agentRegistry,
     launchdarkly,
+    // Slot 10 is `capacitySource` (KAN-221) and production wants its default:
+    // the real machine. Named here rather than left to be counted, because the
+    // one thing this tail cannot survive is a caller guessing at a position.
+    undefined,
     reportBoardControl
   );
 
@@ -297,6 +301,7 @@ const daemonRouter = new MessageRouter(
   { repoRoot, daemonStartedAt },
   agentRegistry,
   launchdarkly,
+  undefined,
   reportBoardControl
 );
 

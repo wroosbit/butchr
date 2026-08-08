@@ -23,13 +23,35 @@
 //
 // Real: the reconciler itself, `computeBoardDiff`, the real MessageRouter, the
 // real HerdrBridge (initPty and all), the real WorkspaceRegistry with the real
-// Atlassian integration registered, a real on-disk AgentRegistry, and the real
-// `capacityRefusal` sentence in section 7 — computed by the real capacity model
-// from a zero-headroom machine rather than typed out here.
+// Atlassian integration registered, a real on-disk AgentRegistry, and — in §7 —
+// the real capacity gate inside the real `handleActivateByKey`, refusing a real
+// activation and producing its own refusal sentence.
 //
 // Faked: the `herdr` binary, by a shim on PATH that answers in herdr's own JSON
 // shapes without spawning anything — so the census the router consults contains
 // exactly the agents that were started.
+//
+// **Held still: the machine.** Capacity is injected rather than measured, and
+// this is the fourth thing the script isolates rather than a convenience. herdr
+// is a fake binary, `$HOME` is a temp directory, the registry is a scratch
+// file — and capacity used to be read off whatever else the box was doing, so
+// the verdict moved with the load. Reviewed on a machine at 2.88 of 4 cores,
+// §1 was refused by the real gate and this script exited 1 with the product
+// working perfectly (PR #89 review). It reproduced on the author's machine too.
+//
+// That is worse than an ordinary flaky test, for a reason specific to this
+// file: §1 is what stops §2 being vacuous, so a §1 that fails environmentally
+// invites the next reader to weaken or delete the one section that gives the
+// rest of it meaning. `override: true` was considered as the fix and refused on
+// review — it would have left §7 exercising a path every other section
+// bypassed. Injection is the same move as the fake `herdr`: hold the
+// environment still so the subject is the only variable.
+//
+// **Both fixtures go through the real `computeCapacity`.** Nothing here types
+// out a capacity number or a refusal sentence; it states what the machine looks
+// like and the product does the arithmetic. The real machine's figures are
+// printed at startup, unused, so a reader can see what the verdict did not
+// depend on.
 //
 // **Stubbed: the Jira read.** This script constructs the board's answers,
 // because you cannot ask the real Atlassian to fail on cue. THAT IS A HOLE, AND
@@ -70,8 +92,9 @@
 //   5. unresolved — a board row with no issue type starts nothing AND protects
 //                   the agent on that key from stand-down
 //   6. jurisdiction — agents a Jira query could never describe are left alone
-//   7. capacity   — a desired agent that will not fit names its constraint, is
-//                   retried next cycle, and is never forced
+//   7. capacity   — the REAL gate, on a stated full machine: it refuses, the
+//                   loop reports the constraint in the gate's own words,
+//                   retries next cycle, and never forces
 //   8. partition  — the query is `assignee = currentUser()`, and only what it
 //                   returned can ever be started
 //
@@ -204,7 +227,53 @@ const { createAtlassianIntegration } = await import(
   path.join(distDir, 'integrations', 'atlassian-integration.js')
 );
 const { IntegrationStateStore } = await import(path.join(distDir, 'integrations', 'enablement.js'));
-const { computeCapacity, capacityRefusal } = await import(path.join(distDir, 'capacity.js'));
+const { computeCapacity, capacityRefusal, readCapacity, summarizeCapacity } = await import(
+  path.join(distDir, 'capacity.js')
+);
+
+// ------------------------------------------------------- capacity, held still --
+//
+// The fourth thing this script isolates, and the one it used to leave to
+// chance. herdr is a fake binary, `$HOME` is a temp directory, the registry is
+// a scratch file — and capacity was still read off whatever the machine
+// happened to be doing, so the verdict moved with the load. Reviewed on a box
+// at 2.88 of 4 cores, §1 was refused by the real gate and this script exited 1
+// with the product working perfectly (KAN-221, PR #89 review).
+//
+// Both fixtures are computed by the **real** `computeCapacity` from stated
+// machine facts, so every number and every refusal sentence below is the
+// product's own arithmetic — held still, not faked.
+const GIB = 1024 * 1024 * 1024;
+
+/** A machine with room to spare, for the sections that are not about capacity. */
+const ROOMY_MACHINE = {
+  cores: 16,
+  totalBytes: Math.round(64 * GIB),
+  availableBytes: Math.round(48 * GIB),
+  load1: 0.4,
+  busyCores: 0.4,
+  busyWindowSeconds: 5
+};
+
+/** A machine with none, for §7, which is about exactly that. */
+const FULL_MACHINE = {
+  cores: 4,
+  totalBytes: Math.round(15.4 * GIB),
+  availableBytes: Math.round(0.2 * GIB),
+  load1: 8,
+  busyCores: 3.9,
+  busyWindowSeconds: 5
+};
+
+/**
+ * The knob the sections turn. One router is built with this as its capacity
+ * source, so a section changes what the machine looks like without rebuilding
+ * anything — and the **real** capacity gate runs either way, against facts it
+ * was handed instead of facts it measured.
+ */
+let machineNow = ROOMY_MACHINE;
+const capacitySource = (running, supervisors) =>
+  computeCapacity(machineNow, running, { supervisorsRunning: supervisors });
 const { boardPageFrom } = await import(path.join(distDir, 'jira.js'));
 const {
   BoardReconciler,
@@ -219,15 +288,23 @@ registry.registerIntegration(createAtlassianIntegration());
 registry.setEnabled('jira', true);
 
 const bridge = new HerdrBridge();
+/** The last message the router sent, for the preflight check in §0. */
+let lastSent;
 const router = new MessageRouter(
   registry,
   new PromptLoader(repoRoot),
   bridge,
-  () => {},
+  // Captures rather than discards: `router.handle(data)` answers through this
+  // callback, so §0's `capacity` probe would go into a void if this stayed
+  // `() => {}`.
+  (msg) => { lastSent = msg; },
   () => {},
   undefined,
   undefined,
-  new AgentRegistry(path.join(scratch, 'agents.jsonl'))
+  new AgentRegistry(path.join(scratch, 'agents.jsonl')),
+  // 9 launchdarkly, 10 capacitySource. §0 exists because this is positional.
+  undefined,
+  capacitySource
 );
 
 function cleanup() {
@@ -263,11 +340,21 @@ const showFleet = (label) => {
   return fleet;
 };
 
-/** Put an agent up outside the loop, so the loop meets a fleet it did not build. */
+/**
+ * Put an agent up outside the loop, so the loop meets a fleet it did not build.
+ *
+ * No `override: true`. It used to carry one, which was defensible while
+ * capacity was the machine's and staging could be refused by an unrelated
+ * build running next door — but with the gate held still there is nothing to
+ * override, and a proof whose setup bypasses the gate is one edit away from a
+ * proof whose subject does. Review refused `override` as the fix for §1 for
+ * the same reason; leaving it in the staging path would have kept the smell
+ * without the excuse.
+ */
 async function preexisting(type, key) {
   let response;
   await router.handleActivateByKey(
-    { type, key, defaultAgent: 'claude', override: true },
+    { type, key, defaultAgent: 'claude' },
     (msg) => { response = msg; }
   );
   if (response?.success !== true) {
@@ -366,6 +453,79 @@ const { BoardReconciler: GuardlessReconciler } = await import(guardlessFile);
 console.log(`fake herdr: ${path.join(shimDir, 'herdr')}`);
 console.log(`HOME for this run: ${fakeHome}`);
 console.log(`guardless build: ${guardlessDist}`);
+
+// The machine this run is actually on, printed and then deliberately not used.
+// It is here so a reader can see for themselves that the verdict below did not
+// depend on it: this script was reviewed on a box where the real gate refused
+// §1 and the script exited 1 with the product working perfectly, and the
+// numbers on this line are what that would have been decided from.
+const realHere = readCapacity(0, 0);
+console.log(
+  `\nthe real machine, for reference only — no section below consults it:\n` +
+  `  ${summarizeCapacity(realHere)}\n` +
+  `  (§1–§6 run against a stated 16-core machine, §7 against a stated full one;\n` +
+  `   both are computed by the real capacity model from facts this file states.)`
+);
+
+// ------------------------------------------------- 0. the injection itself --
+//
+// Prove the isolation took effect before trusting a single verdict below.
+//
+// `capacitySource` reaches the router as a POSITIONAL argument in a tail of
+// seven optional parameters. If anything is ever inserted into that slot — and
+// the move that does it is inserting after `launchdarkly`, which two PRs did on
+// one day in August 2026 — this script's argument silently binds to the wrong
+// parameter, `capacitySource` becomes `undefined`, the router falls back to
+// `readCapacity`, and §1 goes back to depending on what else the machine is
+// doing. Every section would still run. Every section would still pass. The
+// property this file was sent back to fix would be gone and nothing would say
+// so.
+//
+// That is the same shape as the guard the whole ticket turns on — absent data
+// must not read as a result — pointed at this script's own setup instead of at
+// Jira. So the answer is the same: refuse to report a verdict rather than
+// report one that cannot be trusted.
+//
+// EXPIRY: KAN-226 replaces the positional tail with an options object, at which
+// point a slot race is a compile error and this check defends against something
+// that can no longer happen. **When KAN-226 lands, delete this section.** A
+// guard whose reason has expired, sitting in a file nobody dares touch, is the
+// sediment this epic keeps paying to dig out.
+rule('0. THE INJECTION — capacity is held still, and this run proves it before asserting anything');
+
+lastSent = undefined;
+router.handle({ action: 'capacity' });
+const injected = lastSent;
+console.log(`   capacity_response.cores:        ${injected?.cores}`);
+console.log(`   the stated fixture says:        ${ROOMY_MACHINE.cores}`);
+console.log(`   this machine actually has:      ${realHere.machine.cores}`);
+
+if (injected?.action !== 'capacity_response' || injected?.cores !== ROOMY_MACHINE.cores) {
+  // Not a verdict and deliberately not counted as one: a script whose isolation
+  // is not in effect has nothing to report, so it refuses rather than failing a
+  // section. Exiting here cannot be mistaken for "the product is broken".
+  console.error(
+    `\n  → REFUSING TO RUN — the capacity injection is not in effect.\n` +
+    `    Expected a capacity_response naming ${ROOMY_MACHINE.cores} cores; got ` +
+    `${injected?.cores ?? 'no answer'}.\n` +
+    `    The likeliest cause is a new MessageRouter constructor parameter taking\n` +
+    `    capacitySource's positional slot. Fix the argument list; do not weaken a\n` +
+    `    section to make this green.`
+  );
+  process.exit(1);
+}
+
+// No verdict() here, deliberately, and the absence is the point rather than an
+// omission: the refusal above already covers the only thing there is to check,
+// so a verdict would be a call that can never fail — in a repo whose required
+// sweep exists to catch exactly that. It would also misreport where the
+// checking happened. Comparing against the real machine was tried and removed:
+// ROOMY_MACHINE is 16 cores, so on a 16-core reviewer it failed while the
+// injection was working perfectly.
+console.log(
+  `\n  → the injection is in effect; §0 is enforced by the refusal above, not by a ` +
+  `verdict — there is nothing left for one to test.`
+);
 
 // ------------------------------------------------------------ 1. converge --
 
@@ -557,30 +717,49 @@ verdict(
 
 // ------------------------------------------------------------ 7. capacity --
 
-rule('7. CAPACITY — a desired agent that will not fit is reported and retried, never forced');
+rule('7. CAPACITY — the real gate, on a machine with no room: reported and retried, never forced');
 
-// A machine with no room, run through the real capacity model, so the sentence
-// below is the product's own words and its arithmetic. What this section does
-// NOT prove is that the gate emits it for a real activation — that is
-// verify-agent-capacity.mjs section 6's subject. This one is about what the
-// loop does when it receives one.
-const GIB = 1024 * 1024 * 1024;
-const fullMachine = computeCapacity(
-  { cores: 4, totalBytes: Math.round(15.4 * GIB), availableBytes: Math.round(0.2 * GIB), load1: 8, busyCores: 3.9, busyWindowSeconds: 5 },
-  40
-);
-const refusalSentence = capacityRefusal(fullMachine, 'task/KAN-905');
-console.log(`   capacity says: atCapacity=${fullMachine.atCapacity} headroom=${fullMachine.headroom}`);
-console.log(`   the refusal the gate would produce:\n${refusalSentence.replace(/^/gm, '       ')}`);
+// The one section where capacity IS the subject, so it gets the real gate
+// rather than a stubbed answer. The machine it runs against is stated rather
+// than measured — that is the whole point of the change this section motivated
+// — but everything downstream of the facts is the product: the real
+// `capacityGate` inside the real `handleActivateByKey`, refusing a real
+// activation, and the refusal sentence built by the real `capacityRefusal`
+// from the real `computeCapacity`.
+//
+// This is strictly stronger than what stood here before, which handed the
+// reconciler a refusal this script had constructed. That version could not
+// have told a working gate from a reconciler being fed a sentence; this one
+// exercises the gate producing it.
+
+await stageFleet([['epic', 'KAN-902']]);
+machineNow = FULL_MACHINE;
+
+const fullCapacity = capacitySource(1, 1);
+console.log(`   stated machine: ${FULL_MACHINE.cores} cores, ${FULL_MACHINE.busyCores} in use, ` +
+  `${(FULL_MACHINE.availableBytes / GIB).toFixed(1)} GiB available`);
+console.log(`   the real model says: atCapacity=${fullCapacity.atCapacity} headroom=${fullCapacity.headroom} ` +
+  `(bound by ${fullCapacity.headroomBoundBy})`);
 
 const attempts = [];
 const capped = reconciler(
   { ok: true, issues: [issue('KAN-902', 'Epic'), issue('KAN-905', 'Task')] },
   {
     quiet: true,
+    // The real activate path — no stub. `attempts` only records what the loop
+    // asked for; whether it succeeds is the gate's answer, not this script's.
     activate: async (agent) => {
       attempts.push(agent);
-      return { success: false, error: refusalSentence, refusedBy: 'capacity' };
+      let response;
+      await router.handleActivateByKey(
+        { type: agent.type, key: agent.key, defaultAgent: 'claude' },
+        (msg) => { response = msg; }
+      );
+      return {
+        success: response?.success === true,
+        ...(response?.error ? { error: response.error } : {}),
+        ...(response?.refusedBy ? { refusedBy: response.refusedBy } : {})
+      };
     }
   }
 );
@@ -588,26 +767,41 @@ const capped = reconciler(
 const cycle7a = await capped.reconcileOnce();
 const cycle7b = await capped.reconcileOnce();
 
-const reported = cycle7a.started[0]?.outcome?.error ?? '';
+const refusal = cycle7a.started[0]?.outcome;
+const refusedBy = refusal?.refusedBy;
+const sentence = refusal?.error ?? '';
+// The same sentence the gate would have produced, rebuilt here independently.
+// Equality is the check that the loop reported the gate's words rather than a
+// paraphrase of its own.
+const expected = capacityRefusal(capacitySource(1, 1), 'task/KAN-905');
+
 const source = fs.readFileSync(path.join(distDir, 'board-reconcile.js'), 'utf8');
 const forces = /override\s*:\s*true|preempt\s*:\s*true/.test(source);
+const stillRunning = new Set(census().map((a) => a.agentName));
 
-console.log(`\n   cycle 1 tried:  ${attempts.slice(0, 1).map((a) => `${a.type}/${a.key}`)}`);
-console.log(`   cycle 2 tried:  ${attempts.slice(1).map((a) => `${a.type}/${a.key}`)}`);
-console.log(`   refusal reported verbatim: ${reported === refusalSentence}`);
-console.log(`   the built module contains an override/preempt: ${forces}`);
+console.log(`\n   what the loop tried, cycle 1: ${attempts.slice(0, 1).map((a) => `${a.type}/${a.key}`)}`);
+console.log(`   what the loop tried, cycle 2: ${attempts.slice(1).map((a) => `${a.type}/${a.key}`)}`);
+console.log(`   the gate refused it:          ${refusedBy === 'capacity'}`);
+console.log(`   reported in the gate's words: ${sentence.startsWith(expected.split('\n')[0])}`);
+console.log(`   the built module can override/preempt: ${forces}`);
+console.log(`\n   the refusal the loop passed on:\n${sentence.replace(/^/gm, '       ')}`);
 
 verdict(
   attempts.length === 2 &&
     attempts.every((a) => a.key === 'KAN-905') &&
-    reported === refusalSentence &&
-    reported.includes('Refusing to activate') &&
+    refusedBy === 'capacity' &&
+    sentence.includes('Refusing to activate task/KAN-905') &&
+    sentence.startsWith(expected.split('\n')[0]) &&
+    !stillRunning.has(agentNameFor('task', 'KAN-905')) &&
     cycle7a.stopped.length === 0 &&
     !forces,
-  'the binding constraint was reported in the gate\'s own words, the agent stayed desired and was ' +
-    'tried again next cycle, nothing was queued, and the loop has no way to override or preempt',
-  'a refused agent was dropped, forced, or silently swallowed'
+  'the real gate refused it, the loop reported the binding constraint in the gate\'s own words, ' +
+    'the agent stayed desired and was tried again next cycle, nothing was queued, and the loop ' +
+    'has no way to override or preempt',
+  'a refused agent was dropped, forced, silently swallowed, or started anyway'
 );
+
+machineNow = ROOMY_MACHINE;
 
 // ----------------------------------------------------------- 8. partition --
 
