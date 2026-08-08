@@ -343,7 +343,7 @@ function routerWith({ sessions, herdr, reachable = true, registry }) {
     listHerdrAgents: () => herdr,
     listHerdrStatuses: () => new Map(herdr.map((a) => [a.name, a.herdrStatus]))
   };
-  return new MessageRouter(null, null, herdrBridge, () => {}, () => {}, undefined, undefined, registry);
+  return new MessageRouter(null, null, herdrBridge, () => {}, () => {}, { agentRegistry: registry });
 }
 
 const session = (key) => ({

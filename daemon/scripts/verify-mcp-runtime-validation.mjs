@@ -331,9 +331,7 @@ async function harness(dir, registryFile) {
     bridge,
     (msg) => { sent = msg; },
     () => {},
-    undefined,
-    undefined,
-    agentRegistry
+    { agentRegistry }
   );
 
   // override: the capacity gate reads the real machine, and whether this box is

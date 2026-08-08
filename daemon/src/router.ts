@@ -544,8 +544,162 @@ function providedMcpServersOf(integration: Integration): ProvidedMcpServer[] {
   return describeMcpServers(integration.mcpServers?.() ?? {});
 }
 
+/**
+ * Everything the router can be given but does not require.
+ *
+ * WHY THIS IS AN OBJECT AND NOT A PARAMETER LIST (KAN-226)
+ *
+ * It used to be six optional positional parameters, and on 2026-08-07 two
+ * branches raced for the same slot: PR #89 added `capacitySource` tenth and
+ * PR #90 added `boardControl` tenth, one conflicted hunk in one file. The
+ * textual conflict was trivial; the resolution was a trap. Both proofs passed
+ * their argument positionally, `.mjs` is not typechecked, and one of the two
+ * orderings was *silent* — `verify-board-reconciler-guard.mjs` would have fed
+ * its `capacitySource` into the `boardControl` slot, never called the misbound
+ * function, and quietly gone back to reading the real machine. That is the
+ * defect review had already sent #89 back for, restored invisibly.
+ *
+ * The other ordering happened to fail loudly, but only because the two
+ * parameters were structurally incompatible. Two optional parameters of
+ * compatible shape would have made *both* orderings silent. Naming the slots
+ * is what removes the hazard: a field cannot be taken by the wrong argument,
+ * so the next optional parameter cannot disarm an existing one. Callers that
+ * TypeScript checks get excess-property errors on a misspelling; callers it
+ * does not — the `verify-*.mjs` proofs — get the constructor's unknown-key
+ * throw below, which is the same protection delivered a moment later.
+ *
+ * The first five constructor parameters are genuinely required and genuinely
+ * ordered; they stay positional. This is the optional tail only.
+ */
+export interface MessageRouterOptions {
+  jira?: JiraIssueTypeService;
+  /**
+   * Where this daemon is installed and when it started — everything the
+   * staleness check needs. Absent in the unit-test constructions that do not
+   * care, in which case the check is simply not offered.
+   */
+  install?: { repoRoot: string; daemonStartedAt: Date };
+  /**
+   * The durable record of which agents should exist. Optional for the same
+   * reason `install` is — the unit-test constructions do not care — and when
+   * absent nothing is recorded and nothing is reported missing, which is
+   * exactly the pre-KAN-21 behaviour.
+   */
+  agentRegistry?: AgentRegistry;
+  /**
+   * Optional exactly as `jira` is: a construction that does not pass one
+   * simply answers "no LaunchDarkly credential support" on the credential
+   * actions, and `list_integrations` reports the integration unavailable.
+   */
+  launchdarkly?: LaunchDarklyIntegration;
+  /**
+   * Where capacity comes from, so a proof can hold it still.
+   *
+   * WHY THIS SEAM EXISTS, AND IT IS NOT A CONFIGURATION KNOB (KAN-221)
+   *
+   * `readCapacity` measures the machine this daemon is running on, which is
+   * exactly right in production and is the one thing a proof cannot control.
+   * `verify-board-reconciler-guard.mjs` isolates herdr with a fake binary and
+   * `$HOME` with a temp directory, and its verdict was *still* a function of
+   * what else the box happened to be doing: reviewed on a machine at 2.88 of
+   * 4 cores, its first section was refused by the real gate and the script
+   * exited 1 with the product working perfectly.
+   *
+   * That is worse than an ordinary flaky test, and the reason is specific to
+   * that script. Its first section exists to prove the loop *can* stand an
+   * agent down — without it, "the loop stood nothing down on a failed read"
+   * is a claim a loop that never acts would also satisfy. So a first section
+   * that fails environmentally invites the next reader to weaken or delete
+   * the one section that gives the rest of the file its meaning.
+   *
+   * Injecting capacity is the same move as the fake `herdr`: hold the
+   * environment still so the thing under test is the only variable. The
+   * alternative offered — `override: true` on the activations — was refused
+   * on review and rightly: it would have made the capacity section the only
+   * one exercising a path every other section bypassed.
+   *
+   * **Optional, and unreachable from a client.** Nothing in a request can
+   * set it; the daemon constructs its routers without one, so production
+   * behaviour is `readCapacity` exactly as before. A construction that passes
+   * one is a proof, and the refusals it produces are still the real gate's,
+   * computed by the real `computeCapacity` from the facts it was handed.
+   *
+   * (This read "Optional, last, and unreachable" while it was the tenth
+   * positional parameter. KAN-226 made it a named field, so "last" no longer
+   * describes anything — and being last is precisely what stopped protecting
+   * it the moment an eleventh parameter was added.)
+   */
+  capacitySource?: (running: number, supervisors: number) => Capacity;
+  /**
+   * The board's grip on the fleet, for the Agents page's Off and On controls
+   * (KAN-222). Optional by the same rule as everything above it, and the
+   * absence is load-bearing rather than incidental: a daemon that does not
+   * pass one omits `boardControl` from `list_agents_response` entirely, and
+   * the page then says nothing about the board at all.
+   *
+   * That is the honest degradation. "This daemon has no board reconciler" and
+   * "the reconciler is switched off" are different facts, and only the second
+   * is a claim about the board — so a client that cannot tell them apart must
+   * not be handed a default that looks like either. An older extension
+   * ignores the field; an older daemon never sends it; both keep the
+   * pre-KAN-222 behaviour, which was correct for a world with no reconciler
+   * in it.
+   */
+  boardControl?: (agents: AddressableAgent[]) => BoardControlReport;
+}
+
+/**
+ * The option names, listed once so the constructor can reject anything else.
+ *
+ * This exists for the callers TypeScript never sees. Every `verify-*.mjs` in
+ * `daemon/scripts` constructs a real router, and a plain `.mjs` object literal
+ * gets no excess-property check — so `{ capacitySrc: … }` would be accepted,
+ * silently ignored, and the proof would go on measuring the real machine while
+ * reporting a verdict about an injected one. Naming the slots removes the
+ * *positional* hazard for everybody; this removes the *spelling* hazard for
+ * the callers that are not typechecked.
+ *
+ * Keep it in step with `MessageRouterOptions`. The `satisfies` clause makes
+ * that mechanical rather than a matter of discipline: a field added to the
+ * interface and not to this array is a compile error, and a name here that is
+ * not a field of the interface is too.
+ */
+const MESSAGE_ROUTER_OPTION_NAMES = [
+  'jira',
+  'install',
+  'agentRegistry',
+  'launchdarkly',
+  'capacitySource',
+  'boardControl'
+] as const satisfies readonly (keyof MessageRouterOptions)[];
+
+// The other direction. `satisfies` above catches a name in the array that is
+// not a field; this catches a field that is not in the array. Without it the
+// array could fall behind the interface, and an option the constructor has
+// never heard of would be rejected as unknown by the very throw meant to
+// protect it — the same silent-then-baffling failure one layer along. The
+// default type argument is the set of undeclared fields, and it has to be
+// `never` for this line to compile, so adding a field without adding its name
+// is a compile error naming the field.
+type MissingOptionNames = Exclude<keyof MessageRouterOptions, (typeof MESSAGE_ROUTER_OPTION_NAMES)[number]>;
+type AssertEveryOptionIsDeclared<_T extends never = MissingOptionNames> = true;
+export type _MessageRouterOptionsAreFullyDeclared = AssertEveryOptionIsDeclared;
+
 export class MessageRouter {
   private activePtyListeners = new Map<string, () => void>();
+
+  /** See {@link MessageRouterOptions.jira}. */
+  private readonly jira?: JiraIssueTypeService;
+  /** See {@link MessageRouterOptions.install}. */
+  private readonly install?: { repoRoot: string; daemonStartedAt: Date };
+  /** See {@link MessageRouterOptions.agentRegistry}. */
+  private readonly agentRegistry?: AgentRegistry;
+  /** See {@link MessageRouterOptions.launchdarkly}. */
+  private readonly launchdarkly?: LaunchDarklyIntegration;
+  /** See {@link MessageRouterOptions.capacitySource}. */
+  private readonly capacitySource: (running: number, supervisors: number) => Capacity;
+  /** See {@link MessageRouterOptions.boardControl}. */
+  private readonly boardControl?: (agents: AddressableAgent[]) => BoardControlReport;
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -553,76 +707,32 @@ export class MessageRouter {
     private herdrBridge: HerdrBridge,
     private send: (msg: any) => void,
     private broadcast: (msg: any) => void = send,
-    private jira?: JiraIssueTypeService,
-    /**
-     * Where this daemon is installed and when it started — everything the
-     * staleness check needs. Absent in the unit-test constructions that do not
-     * care, in which case the check is simply not offered.
-     */
-    private install?: { repoRoot: string; daemonStartedAt: Date },
-    /**
-     * The durable record of which agents should exist. Optional for the same
-     * reason `install` is — the unit-test constructions do not care — and when
-     * absent nothing is recorded and nothing is reported missing, which is
-     * exactly the pre-KAN-21 behaviour.
-     */
-    private agentRegistry?: AgentRegistry,
-    /**
-     * Optional exactly as `jira` is: a construction that does not pass one
-     * simply answers "no LaunchDarkly credential support" on the credential
-     * actions, and `list_integrations` reports the integration unavailable.
-     */
-    private launchdarkly?: LaunchDarklyIntegration,
-    /**
-     * Where capacity comes from, so a proof can hold it still.
-     *
-     * WHY THIS SEAM EXISTS, AND IT IS NOT A CONFIGURATION KNOB (KAN-221)
-     *
-     * `readCapacity` measures the machine this daemon is running on, which is
-     * exactly right in production and is the one thing a proof cannot control.
-     * `verify-board-reconciler-guard.mjs` isolates herdr with a fake binary and
-     * `$HOME` with a temp directory, and its verdict was *still* a function of
-     * what else the box happened to be doing: reviewed on a machine at 2.88 of
-     * 4 cores, its first section was refused by the real gate and the script
-     * exited 1 with the product working perfectly.
-     *
-     * That is worse than an ordinary flaky test, and the reason is specific to
-     * that script. Its first section exists to prove the loop *can* stand an
-     * agent down — without it, "the loop stood nothing down on a failed read"
-     * is a claim a loop that never acts would also satisfy. So a first section
-     * that fails environmentally invites the next reader to weaken or delete
-     * the one section that gives the rest of the file its meaning.
-     *
-     * Injecting capacity is the same move as the fake `herdr`: hold the
-     * environment still so the thing under test is the only variable. The
-     * alternative offered — `override: true` on the activations — was refused
-     * on review and rightly: it would have made the capacity section the only
-     * one exercising a path every other section bypassed.
-     *
-     * **Optional, last, and unreachable from a client.** Nothing in a request
-     * can set it; the daemon constructs its routers without one, so production
-     * behaviour is `readCapacity` exactly as before. A construction that passes
-     * one is a proof, and the refusals it produces are still the real gate's,
-     * computed by the real `computeCapacity` from the facts it was handed.
-     */
-    private capacitySource: (running: number, supervisors: number) => Capacity = readCapacity,
-    /**
-     * The board's grip on the fleet, for the Agents page's Off and On controls
-     * (KAN-222). Optional by the same rule as everything above it, and the
-     * absence is load-bearing rather than incidental: a daemon that does not
-     * pass one omits `boardControl` from `list_agents_response` entirely, and
-     * the page then says nothing about the board at all.
-     *
-     * That is the honest degradation. "This daemon has no board reconciler" and
-     * "the reconciler is switched off" are different facts, and only the second
-     * is a claim about the board — so a client that cannot tell them apart must
-     * not be handed a default that looks like either. An older extension
-     * ignores the field; an older daemon never sends it; both keep the
-     * pre-KAN-222 behaviour, which was correct for a world with no reconciler
-     * in it.
-     */
-    private boardControl?: (agents: AddressableAgent[]) => BoardControlReport
-  ) {}
+    opts: MessageRouterOptions = {}
+  ) {
+    // Loud on a name nobody declared. TypeScript already refuses a misspelled
+    // field in a checked caller; this is the same refusal for the `.mjs`
+    // proofs, which are the callers that actually got burned. Throwing beats
+    // ignoring because the failure mode being replaced was *being ignored*: an
+    // option that silently does not arrive leaves the proof asserting against
+    // production defaults while it reports on an injected world.
+    const unknown = Object.keys(opts).filter(
+      (key) => !(MESSAGE_ROUTER_OPTION_NAMES as readonly string[]).includes(key)
+    );
+    if (unknown.length > 0) {
+      throw new TypeError(
+        `MessageRouter: unknown option${unknown.length > 1 ? 's' : ''} ${unknown
+          .map((key) => `'${key}'`)
+          .join(', ')}. Known options: ${MESSAGE_ROUTER_OPTION_NAMES.join(', ')}.`
+      );
+    }
+
+    this.jira = opts.jira;
+    this.install = opts.install;
+    this.agentRegistry = opts.agentRegistry;
+    this.launchdarkly = opts.launchdarkly;
+    this.capacitySource = opts.capacitySource ?? readCapacity;
+    this.boardControl = opts.boardControl;
+  }
 
   /**
    * Write an activation down before it is acknowledged.

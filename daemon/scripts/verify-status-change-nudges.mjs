@@ -264,9 +264,7 @@ function newRouter(bridge, seed = []) {
     bridge,
     () => {},
     () => {},
-    undefined,
-    undefined,
-    agentRegistry
+    { agentRegistry }
   );
   return { router, agentRegistry };
 }
@@ -794,7 +792,7 @@ if (LIVE) {
   const bridge = new HerdrBridge();
   const agentRegistry = new AgentRegistry(path.join(TMP, 'live.jsonl'));
   const router = new MessageRouter(
-    registry, prompts, bridge, () => {}, () => {}, undefined, undefined, agentRegistry
+    registry, prompts, bridge, () => {}, () => {}, { agentRegistry }
   );
   const log = [];
   const notifier = new SupervisionNotifier({

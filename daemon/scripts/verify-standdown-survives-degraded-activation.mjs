@@ -232,9 +232,7 @@ const router = new MessageRouter(
   bridge,
   (msg) => { last = msg; },
   () => {},
-  undefined,
-  undefined,
-  agentRegistry
+  { agentRegistry }
 );
 
 function cleanup() {

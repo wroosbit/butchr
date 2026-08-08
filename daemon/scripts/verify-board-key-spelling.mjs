@@ -223,15 +223,10 @@ function makeRouter(reportBoardControl) {
     herdrStub(CENSUS, workDirs),
     (msg) => { last = msg; },
     () => {},
-    undefined,
-    undefined,
-    agentRegistry,
-    // 9 launchdarkly, 10 capacitySource, 11 boardControl. Named because this is a
-    // positional tail of optional parameters that two PRs raced for on one day;
-    // KAN-226 replaces it with an options object, and these comments go with it.
-    undefined,
-    undefined,
-    reportBoardControl
+    // KAN-226 replaced the positional tail with this object, which is why the
+    // slot-counting comment that used to live here is gone: there are no slots
+    // left to count, and a name cannot be taken by the wrong argument.
+    { agentRegistry, boardControl: reportBoardControl }
   );
   return { router, list: () => { router.handle({ action: 'list_agents' }); return last; } };
 }

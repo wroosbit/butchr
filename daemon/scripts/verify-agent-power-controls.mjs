@@ -182,9 +182,7 @@ function newRouter(bridge, seed = []) {
     bridge,
     (msg) => { last = msg; },
     (msg) => events.push(msg),
-    undefined,
-    undefined,
-    agentRegistry
+    { agentRegistry }
   );
   return { router, events, agentRegistry, sent: () => last };
 }

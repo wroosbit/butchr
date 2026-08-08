@@ -175,9 +175,7 @@ const router = new MessageRouter(
   bridge,
   (msg) => { sent = msg; },
   () => {},
-  undefined,
-  undefined,
-  agentRegistry
+  { agentRegistry }
 );
 
 function cleanup() {

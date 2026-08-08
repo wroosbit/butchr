@@ -169,9 +169,7 @@ const router = new MessageRouter(
   bridge,
   (msg) => { last = msg; },
   () => {},
-  undefined,
-  undefined,
-  new AgentRegistry(path.join(scratch, 'agents.jsonl'))
+  { agentRegistry: new AgentRegistry(path.join(scratch, 'agents.jsonl')) }
 );
 
 function cleanup() {

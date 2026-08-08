@@ -228,16 +228,14 @@ function makeRouter({ running, standby = [], mode }) {
     bridge,
     (msg) => { last = msg; },
     () => {},
-    undefined,
-    undefined,
-    agentRegistry,
-    // 9 launchdarkly, 10 capacitySource, 11 boardControl. Named because this is
-    // a positional tail of optional parameters and #89 and #90 both tried to
-    // take slot 10 on the same day; KAN-226 replaces it with an options object,
-    // at which point these comments go with it.
-    undefined,
-    undefined,
-    mode ? (agents) => boardControlReport(mode(), agents) : undefined
+    // KAN-226 replaced the positional tail with this object. The slot-counting
+    // comment that used to live here — "9 launchdarkly, 10 capacitySource, 11
+    // boardControl", written because #89 and #90 both tried to take slot 10 on
+    // the same day — has nothing left to describe.
+    {
+      agentRegistry,
+      boardControl: mode ? (agents) => boardControlReport(mode(), agents) : undefined
+    }
   );
   return { router, bridge, agentRegistry, list: () => { router.handle({ action: 'list_agents' }); return last; } };
 }

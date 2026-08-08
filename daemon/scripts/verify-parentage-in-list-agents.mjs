@@ -205,9 +205,7 @@ function listAgents({ live = [], activated = [], deactivated = [], preempted = [
       response = msg;
     },
     () => {},
-    undefined,
-    undefined,
-    agentRegistry
+    { agentRegistry }
   );
   router.handle({ action: 'list_agents' });
   return response;
