@@ -26,7 +26,20 @@
 // directions. Run with `--ref 51e8fc2` — KAN-237's merge base, pinned for the
 // same reason — to watch both halves go red: H-8 unmet in all three prompts,
 // and R-1 matching the retired rule taught straight, with no retirement marker
-// anywhere near it.
+// in any of those sentences.
+//
+// THAT MERGE-BASE RED IS THE WEAKEST EVIDENCE HERE, AND IT LOOKS LIKE THE
+// STRONGEST. It shows only that the script reacts to a wholly different file.
+// The first version of R-1 produced that same 22-failure red while being unable
+// to fire anywhere the merge rule was actually discussed — `epic/KAN-39` found
+// that in review by reinserting the old sentence into `prompts/task.md` and
+// watching this script stay green. The test that means something is therefore:
+// **put the retired rule back where the rule lives, and watch it go red there.**
+//   printf '\n- **Do not merge — review and merge belong to your epic agent.**\n' >> prompts/task.md
+//   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1
+//   git checkout -- prompts/task.md
+// Do that after any change to RETIRED or to `sentences()`. A green run of this
+// script has been wrong before; a red one at that spot is what earns it back.
 //
 // WHAT THIS SCRIPT DOES NOT COVER, STATED BECAUSE THE HEADER IS WHERE THE EDGE
 // GOES:
@@ -191,8 +204,33 @@ const RULES = [
  * retiring, and the natural way to satisfy it — delete the mention — deletes
  * the warning and leaves the agent to resolve the contradiction alone.
  *
- * So a match is a violation **unless a retirement marker sits near it** in the
- * same passage. Naming the old rule as old is allowed; teaching it is not.
+ * So a match is a violation **unless a retirement marker sits in the same
+ * sentence**. Naming the old rule as old is allowed; teaching it is not.
+ *
+ * THE SCOPE IS ONE SENTENCE, AND THAT IS THE WHOLE DESIGN — IT WAS A CHARACTER
+ * WINDOW FIRST AND THE WINDOW DID NOT WORK.
+ *
+ * The first version of this check allowed a marker anywhere within 500
+ * characters. `epic/KAN-39` refuted it in review by reinserting *"Do not merge —
+ * review and merge belong to your epic agent"* into `prompts/task.md`, **where
+ * the merge rule is actually discussed**, and watching this script stay green:
+ * four patterns matched and all four were waved through, because a good rewrite
+ * of this rule cites `2026-08-08` and *superseding* in nearly every paragraph.
+ * **The rewrite saturated its own detector.** The check could only fire ~21kB
+ * away from the passage it existed to guard, which is nowhere a real regression
+ * would ever appear — the closing line claimed something about `prompts/`, and
+ * the mechanism measured proximity to a date string.
+ *
+ * A sentence cannot be saturated by neighbouring prose, so the marker now has to
+ * be in the same breath as the thing it excuses. The practical constraint on
+ * whoever edits these prompts: **if you mention the old rule, say it is old in
+ * the same sentence.** That is what a quotation reads like anyway.
+ *
+ * The patterns are also narrower than they were. `/do not merge/i` on its own
+ * matched `prompts/epic.md`'s heading *"…you do not merge them"* — a statement
+ * of the **current** rule — so a bare verb phrase is not evidence of anything.
+ * Every pattern below carries the old rule's *attribution*: who was said to own
+ * the merge, or who was said never to do it.
  */
 const RETIRED = [
   {
@@ -200,34 +238,40 @@ const RETIRED = [
     title: 'the 2026-08-03 rule: the epic agent reviews and merges; story and task agents never merge',
     since: '2026-08-08',
     patterns: [
-      /review[- ]and[- ]merge/i,
+      /do not merge\s*[—–-]+\s*review and merge/i,
+      /review and merge belong\w*\s+to/i,
+      /merge belong\w*\s+to/i,
+      /belong\w*\s+to (your|the) epic agent/i,
+      /review[- ]and[- ]merge duty/i,
       /reviews? and merges? (its|their|your) own/i,
-      /(story and task agents|task agents?|story agents?)[^.]{0,20}never merge/i,
-      /do not merge/i,
-      /merge belongs? to/i,
-      /belongs? to your epic agent/i,
-      /the epic agent (reviews and )?merges it/i,
+      // The shape epic.md actually used — "Review and merge **of** your own
+      // epic's pull requests is your standing duty". A mutation test caught
+      // this one missing: the preposition made it slip past every pattern
+      // above, which is the difference between a check and a check that works.
+      /reviews? and merges? of (its|their|your) own/i,
+      /review and merge[^.]{0,60}standing duty/i,
+      /(story|task) agents?[^.]{0,40}never merge/i,
+      /you review and merge this epic/i,
+      /the epic agent (reviews and merges|merges) it/i,
     ],
   },
 ];
 
 /**
- * Words that mark a passage as *retiring* a rule rather than teaching it. The
- * window is deliberately generous: these prompts are hard-wrapped prose and the
- * marker is usually in the neighbouring sentence, not the matched one.
+ * Words that mark a sentence as *retiring* a rule rather than teaching it.
  */
 const RETIREMENT_MARKERS = [
   /supersed/i,
   /retired/i,
   /the old rule/i,
   /2026-08-08/,
+  /2026-08-03/,
   /no longer/i,
   /used to (state|say|read|be)/i,
   /changed on/i,
   /this file wins/i,
   /the prompt wins/i,
 ];
-const MARKER_WINDOW = 500;
 
 // ---------------------------------------------------------------- file reads
 
@@ -387,21 +431,73 @@ console.log('');
 console.log(`Retired rules are named, never taught\n${'-'.repeat(60)}`);
 
 /**
- * Every occurrence of `re` in the unwrapped text, each with the line it came
- * from and the surrounding passage used for the marker test.
+ * Cut the file into sentences, each carrying the line each character came from.
+ *
+ * Two joins, in this order. First **blocks**: a heading, a list item, a
+ * blockquote, a fence or a blank line starts a new one, so a bullet cannot
+ * borrow the sentence of the bullet above it. Then within a block the
+ * hard-wrapped lines are joined — these prompts wrap at ~78 columns, so almost
+ * every sentence is split across lines and any line-based scope would be wrong.
+ * Finally each block is split on sentence terminators, allowing for markdown
+ * emphasis riding on the full stop (`arrived.** ` ends a sentence).
  */
+function sentences(source) {
+  const isBlockStart = (l) =>
+    /^\s*#{1,6}\s/.test(l) || /^\s*([-*+]|\d+\.)\s/.test(l) || /^\s*>/.test(l) || /^\s*```/.test(l);
+
+  const blocks = [];
+  let cur = null;
+  source.split('\n').forEach((raw, i) => {
+    if (/^\s*$/.test(raw)) {
+      cur = null;
+      return;
+    }
+    if (cur === null || isBlockStart(raw)) {
+      cur = { text: '', lineAt: [] };
+      blocks.push(cur);
+    }
+    const trimmed = raw.trim();
+    if (cur.text.length) {
+      cur.text += ' ';
+      cur.lineAt.push(i + 1);
+    }
+    for (const ch of trimmed) {
+      cur.text += ch;
+      cur.lineAt.push(i + 1);
+    }
+  });
+
+  const out = [];
+  for (const block of blocks) {
+    const boundary = /(?<=[.!?])["'*`)\]]*\s+/g;
+    let start = 0;
+    let m;
+    while ((m = boundary.exec(block.text)) !== null) {
+      const end = m.index + m[0].length;
+      out.push({ text: block.text.slice(start, end), lineAt: block.lineAt.slice(start, end) });
+      start = end;
+    }
+    if (start < block.text.length) {
+      out.push({ text: block.text.slice(start), lineAt: block.lineAt.slice(start) });
+    }
+  }
+  return out;
+}
+
+/** Every occurrence of `re`, with the sentence it sits in. */
 function occurrences(source, re) {
-  const { text, lineAt } = unwrap(source);
-  const global = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
   const found = [];
-  let m;
-  while ((m = global.exec(text)) !== null) {
-    found.push({
-      line: lineAt[m.index] ?? 1,
-      matched: m[0],
-      passage: text.slice(Math.max(0, m.index - MARKER_WINDOW), m.index + m[0].length + MARKER_WINDOW),
-    });
-    if (m.index === global.lastIndex) global.lastIndex += 1; // zero-width guard
+  for (const sentence of sentences(source)) {
+    const global = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    let m;
+    while ((m = global.exec(sentence.text)) !== null) {
+      found.push({
+        line: sentence.lineAt[m.index] ?? 1,
+        matched: m[0],
+        passage: sentence.text,
+      });
+      if (m.index === global.lastIndex) global.lastIndex += 1; // zero-width guard
+    }
   }
   return found;
 }
@@ -423,9 +519,11 @@ for (const retired of RETIRED) {
         taught += 1;
         failures += 1;
         console.log(
-          `  ✗ ${file}:${line} — teaches the retired rule with nothing marking it retired: "${matched}"\n` +
-            `      Either state the current rule, or keep the mention and say in the same\n` +
-            `      passage that it was superseded — naming an old rule as old is allowed.`
+          `  ✗ ${file}:${line} — teaches the retired rule: "${matched}"\n` +
+            `      in: "${passage.trim().slice(0, 150)}${passage.trim().length > 150 ? '…' : ''}"\n` +
+            `      Nothing in THAT SENTENCE marks the rule as retired. Either state the\n` +
+            `      current rule, or keep the mention and say it is superseded in the same\n` +
+            `      sentence — quoting an old rule as old is allowed, teaching it is not.`
         );
       }
     }
