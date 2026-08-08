@@ -64,6 +64,51 @@ jobs:
       - name: Sweep verify-* scripts for verdict-driven exits
         run: node daemon/scripts/sweep-verify-exit-paths.mjs --verbose
 
+  # KAN-240: the sweep that keeps `prompts/*.md` honest — every operative rule
+  # present where an agent will meet it, no reference dangling, and no *retired*
+  # rule still being taught. It was the only guard on the prompts and it ran only
+  # when somebody remembered, so a pull request could delete an operative rule
+  # from `prompts/task.md`, or reinstate a retired one, with all three required
+  # checks green.
+  #
+  # WHY THIS IS SAFE TO REQUIRE — the same argument that earned `verify-script-sweep`
+  # its required status, and it is the argument. The script imports only node
+  # builtins (fs, path, child_process, url); it reads the four Markdown files off
+  # the checkout and matches regexes. No build, no `npm install`, no daemon, no
+  # herdr, no PTY, no network, no Jira, no wall clock. Its `--ref` mode is the
+  # only thing that shells out to git, and CI does not pass `--ref`. Nearly all
+  # ~50 other `verify-*.mjs` need a built daemon, a real herdr and PTYs, which is
+  # why they are not here and this one is; if you find a second that genuinely
+  # does not, file it rather than adding it to this job.
+  #
+  # WHY A SEPARATE JOB RATHER THAN A STEP IN verify-script-sweep — that would
+  # have cost no runner and no branch-protection change, and it was rejected on
+  # two counts. The check name is what a red sends the reader to: a failure here
+  # is a prompt that lost a rule, and reporting it as `verify-script-sweep` would
+  # point at the wrong file and falsify that job's own closing comment. And a
+  # failing first step short-circuits the second, so two independent defects
+  # would surface one per run. The jobs run in parallel, so the separate runner
+  # costs start-up, not wall clock.
+  #
+  # Do not "soften" this job by adding `continue-on-error`, a path filter, or an
+  # `|| true` — see the note at the top of this file on why a path filter in
+  # particular is wrong for a required check. If it goes red, the fix is in the
+  # prompt it names, not here.
+  operative-rule-carriage:
+    name: operative-rule-carriage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # No dependency install, for the reason above: the script imports only
+      # node builtins. Keeping it dependency-free is what keeps it un-flaky.
+      - name: Verify every operative rule is carried by a prompt
+        run: node daemon/scripts/verify-operative-rules-are-carried.mjs --verbose
+
   extension-build:
     name: extension-build
     runs-on: ubuntu-latest
