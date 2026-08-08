@@ -3,6 +3,14 @@
 **Finding for KAN-217, establishing the premise KAN-167 left open.**
 Repository read at `177568b`. Probe run 2026-08-07, Claude Code **`2.1.224`**.
 
+> **Re-confirmed at `2.1.226` on 2026-08-08 by KAN-219**, incidentally rather
+> than by re-running this probe: bringing up a channelled agent still raises
+> **two** blocking dialogs, still prints the startup notice, and a real daemon
+> broadcast still reaches the model as a channel event it echoes back over the
+> `reply` tool. See [`docs/channel-inflight-disturbance.md`](channel-inflight-disturbance.md).
+> Everything below that KAN-219 did **not** exercise — print mode, the negative
+> control, the failure path — remains a statement about `2.1.224` only.
+
 ---
 
 ## The answer, plainly
@@ -466,12 +474,16 @@ the input arrives:
   citation (`router.ts:1412`, `:1601`, `:1683`, `:1747`, `:2003`) and it is not
   re-established here. What D tests is that a real broadcast, once emitted,
   reaches the model of a real Butchr agent.
-- **Not covered by anything, by anyone: whether a channel event arriving
-  mid-tool-call disturbs that call.** Every configuration here fires at an
-  **idle** agent. That is the destructive question, it is a large part of why
-  channels would be worth migrating to, and it only became reachable now that
-  delivery is established. **No script owns it today** — filed as follow-up
-  rather than left unowned.
+- **Whether a channel event arriving mid-tool-call disturbs that call is not
+  covered here.** Every configuration in this probe fires at an **idle** agent,
+  and that is still true — nothing in this document may be read as saying
+  anything about an in-flight one. It was the destructive question, it is a
+  large part of why channels would be worth migrating to, and it only became
+  reachable once delivery was established.
+  **KAN-219 now owns it and has answered it**: `daemon/scripts/probe-inflight-disturbance.mjs`
+  and [`docs/channel-inflight-disturbance.md`](channel-inflight-disturbance.md).
+  It reuses this probe's configuration-D bring-up rather than copying it — both
+  now import `daemon/scripts/lib/channel-probe.mjs`.
 - **D's agent is briefed by `.butchr-prompt.md` that the channel is expected.**
   Given [the refusal](#the-refusal--delivery-is-not-compliance) that is not a
   thumb on the scale but a necessary condition, and it is how a real agent would
