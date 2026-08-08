@@ -1,4 +1,5 @@
 import { HerdrAgentStatus, HerdrBridge, agentNameFor } from './herdr.js';
+import { renderedKey } from './keys.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { ResumeCause, resumeNudge } from './resume.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
@@ -515,9 +516,17 @@ export class SupervisionNotifier {
       /** How the notifier resolves an agent's parent — the durable registry. */
       supervisorFor: (agentName: string) => SupervisorOfRecord | null;
       /**
-       * The key as the registry spells it. Optional: without it a notice names
-       * the key the census had, which for a sessionless agent is lower-cased
-       * off its agent name rather than spelled the way its ticket is.
+       * The key as the registry spells it, which is the only place a key the
+       * activation was given — rather than one parsed back out of a pane name —
+       * survives.
+       *
+       * Optional, and safe to omit since KAN-229: `spelling()` renders whatever
+       * it ends up with, so a notifier built without this names a Jira-shaped
+       * key the way the board spells it either way. What is lost without it is
+       * a *non*-Jira key's original spelling — `confluence/AbC` is passed
+       * through untouched by `renderedKey` and so comes back as the census's
+       * lower-cased `abc`. Production wires it (daemon.ts); proofs that do not
+       * are choosing to test the census path.
        */
       recordedKeyFor?: (agentName: string) => string | undefined;
       log: (...args: any[]) => void;
@@ -633,9 +642,39 @@ export class SupervisionNotifier {
     return changes;
   }
 
-  /** The registry's spelling of a key, falling back to the census's. */
+  /**
+   * The key as a reader should see it: the registry's spelling when it has one,
+   * the census's otherwise, and either of them rendered the way the board spells
+   * it (KAN-229).
+   *
+   * WHY `renderedKey` WRAPS THE WHOLE EXPRESSION AND NOT JUST THE FALLBACK
+   *
+   * Because both halves can be lower-cased, and only one of them is the half
+   * this was filed for.
+   *
+   * The fallback is the obvious half: `recordedKeyFor` misses for an agent the
+   * durable registry never recorded, and that is exactly the agent whose `key`
+   * came out of a pane name. But `supervisorFor` reads the *same* record, so
+   * when the fallback fires there is no supervisor of record either and
+   * `notify` drops the change before delivering anything. That half reaches the
+   * `[supervision]` log subject — built above the supervisor check — and never a
+   * delivered nudge.
+   *
+   * The half that does reach a delivered nudge is the lookup *succeeding*:
+   * `handleActivateByKey` records the key its caller passed, verbatim, so a
+   * supervisor that staffs `task/kan-500` writes `kan-500` into the registry
+   * with its own parentage attached. `recordedKeyFor` then returns it, the
+   * supervisor of record resolves, and the notice goes out naming a ticket no
+   * board has. Wrapping only the `?? key` would have left that untouched — and
+   * left the thing the ticket was filed to stop still happening.
+   *
+   * Non-Jira keys are returned exactly as they arrived, which this caller needs:
+   * the notifier watches agents of every workspace type, so `confluence/123456789`
+   * and `task/scratch` reach here and must not be mangled into looking like
+   * tickets.
+   */
   private spelling(agentName: string, key: string): string {
-    return this.opts.recordedKeyFor?.(agentName) ?? key;
+    return renderedKey(this.opts.recordedKeyFor?.(agentName) ?? key);
   }
 
   /** Deliver one change, or say why it was dropped. `null` means delivered. */
