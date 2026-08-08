@@ -49,6 +49,26 @@
 // moves and that recipe goes green; pin it to KAN-239's merge base, `efde3cb`,
 // to keep reproducing it.
 //
+// R-2 FENCES WORDINGS, NOT THE CONCEPT — AND THAT LIMIT HAS ALREADY LET ONE
+// THROUGH, SO DO NOT READ A GREEN R-2 AS "NO PROMPT MISDIRECTS APPROVAL".
+// Every pattern below matches a *form of words*. A sentence that says the same
+// thing in different words passes. That is not hypothetical: while this file
+// was green, `prompts/task.md` still read "**Done** on {{KEY}} is *your
+// supervisor's* to set" — the retired concept, none of the retired phrases,
+// resolving to nobody for a board-started task exactly as the clause beside it
+// did. `epic/KAN-39` found it by reading the file, not by running this script.
+// Two patterns for that specific attribution have since been added, which
+// closes *that* sentence and does not close the class.
+//
+// The class cannot be closed by pattern here, and the reason is structural
+// rather than a want of effort: after KAN-230, `supervisor` is a **correct**
+// name for the `activatedBy` relation, so the retired thing is a *claim about*
+// the word and not the word. Distinguishing "the supervisor that activated you"
+// (correct) from "your supervisor sets Done" (retired) is a reading, and this
+// script does not read. **What covers the class is a human or an approver
+// reading the prompts** — the same coverage note H-8 carries below, for the
+// same reason. Nothing else covers it; do not infer that anything does.
+//
 // R-2 IS ALSO WHERE THIS FILE'S RETIREMENT MECHANISM IS EASIEST TO GET WRONG,
 // so its docblock below is longer than R-1's: the retired thing is a *claim
 // about* "supervisor of record", not the phrase itself, which is still the
@@ -212,13 +232,20 @@ const RULES = [
     // read the old wording — on its own ticket, or in a sibling prompt — with
     // two readings and no way to choose.
     id: 'H-10',
-    title: 'the approver is read off the Jira hierarchy (parent story, else parent epic), never off `activatedBy`',
-    carriedBy: Object.fromEntries(
-      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
-        f,
-        [/read off the Jira hierarchy/i, /never off `activatedBy`/i, /parent epic's agent/i],
-      ])
-    ),
+    title: 'the approver: the story by issue LINK, else the parent epic, and never off `activatedBy`',
+    // Three things every prompt has to carry, because dropping any one of them
+    // reintroduces a defect that has already shipped once:
+    //   - `hierarchyLevel` — WHY the story is a link. Without it the next
+    //     author "simplifies" the rule back to the hierarchy, which is how the
+    //     second wrong version got written.
+    //   - `parent epic's agent` — the branch-2 answer.
+    //   - the `activatedBy` negation — the refutation of the first wrong
+    //     version, which an agent will still meet on older tickets.
+    carriedBy: {
+      'prompts/task.md': [/hierarchyLevel/, /never by your `parent` field/i, /parent epic's agent/i, /never consulted for this branch/i],
+      'prompts/story.md': [/hierarchyLevel/, /never by its `parent` field/i, /parent epic's agent/i, /never off `activatedBy`/i],
+      'prompts/epic.md': [/hierarchyLevel/, /issue \*link\*/i, /parent epic's agent/i, /never off `activatedBy`/i],
+    },
   },
   {
     // KAN-238's AC3, absorbed here because KAN-238 is a duplicate of KAN-239
@@ -230,9 +257,9 @@ const RULES = [
     // only: the epic-side duty is filing a parent, not stopping, and that
     // sentence lives in the ticket-writing checklist instead.
     id: 'H-11',
-    title: 'the terminating case: when the hierarchy names nobody, say so and do not merge',
+    title: 'the terminating case: when nothing names an approver, say so and do not merge',
     carriedBy: {
-      'prompts/task.md': [/hierarchy names nobody/i, /filing defect, not a licence/i, /quietly invents an approver/i],
+      'prompts/task.md': [/nobody names you an approver/i, /filing defect, not a licence/i, /quietly invents an approver/i],
     },
   },
   {
@@ -352,6 +379,21 @@ const RETIRED = [
       /(approver|approves|approval)[^.]{0,60}(read|taken|derived|worked) (off|out of|from) (your |its |their |the )?\*{0,2}`?activatedBy/i,
       /(approver|approves|approval)[^.]{0,60}the agent that activated you/i,
       /the agent that activated you[^.]{0,60}(approver|approves|approval)/i,
+      // THIS PAIR EXISTS BECAUSE THE REST OF R-2 MISSED A LIVE INSTANCE.
+      // `epic/KAN-39` found `prompts/task.md`'s "**Done** on {{KEY}} is *your
+      // supervisor's* to set" while this file was green: it says the retired
+      // *concept* — the closer/approver identified as whoever staffed you —
+      // without any of the retired *phrases*. For a board-started task that
+      // resolves to nobody, exactly as the clause beside it did.
+      //
+      // These two are anchored on the attribution (Done / to-set attributed to
+      // "your supervisor") and NOT on the bare word, deliberately: after
+      // KAN-230, `supervisor` is a *correct* poller relation meaning
+      // `activatedBy`, and both `prompts/task.md` and `prompts/story.md` use
+      // "because your supervisor told you to" correctly in their storm guards.
+      // A bare /supervisor/ would fire on those and be "fixed" by deleting them.
+      /\bDone\b[^.]{0,80}\byour supervisor'?s?\b/i,
+      /\byour supervisor'?s\b[^.]{0,30}\bto set\b/i,
     ],
   },
 ];
