@@ -213,52 +213,23 @@ import {
  * costs somebody their context.
  */
 
-/** What a Jira issue key looks like, so a `shell` workspace is out of scope. */
-const JIRA_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
-
 /**
- * A key spelled the way the board spells it, for anything a human will read.
+ * The spelling rule, which now lives in keys.ts.
  *
- * WHY A RENDERING HELPER AND NOT A CORRECTION AT THE SOURCE (KAN-225)
+ * It was defined here until KAN-229 found a third surface that needs it —
+ * nudge.ts, whose supervision notices name an agent the same way these log lines
+ * do. The notifier importing this module to get it would have made the
+ * supervision sweep depend on the reconciliation loop, jira.js and the Atlassian
+ * integration for one regex, so the rule moved down to a module that depends on
+ * nothing rather than sideways into a second copy.
  *
- * A running agent's `key` is parsed back out of its herdr pane name, and
- * `agentNameFor` lower-cases it — so an agent read off a census is `kan-500`,
- * and a sentence telling somebody to *"move kan-500 out of those statuses"*
- * names nothing that exists on any board. Two surfaces print that key at a
- * human: this module's log lines, and the Agents page's Off note via
- * board-control.ts.
- *
- * The reflex fix is to correct the key where it is produced, or to drop agents
- * the durable registry cannot spell for us. **Both are wrong, and the second is
- * dangerous.** `inJurisdiction` answers one question — could this query ever
- * have described this agent? — and it deliberately does not ask whether this
- * daemon happens to hold a registry record. If it did, an agent this daemon
- * never started would become invisible to step 4: running, Jira-shaped, not on
- * the board, and unstoppable by the loop forever. That is a silent, unbounded
- * hole in *"anything running that is not in that list → off"*, traded for a
- * visible cosmetic one. The `.toUpperCase()` in `inJurisdiction` is doing its
- * job — it makes the loop *see* `kan-500` as the Jira key it is. The source is
- * correct; only the rendering was not, so only the rendering is fixed.
- *
- * WHY THE GUARD, WHEN ONE CALLER HAS ALREADY FILTERED
- *
- * board-control.ts calls this on agents that have already passed
- * `inJurisdiction`, so everything it asks about is Jira-shaped by construction
- * and the test below is redundant there. `address()` is the caller that makes
- * the guard load-bearing: it renders arbitrary agents, **including
- * out-of-jurisdiction ones**, so `confluence/123456789` and `task/scratch` reach
- * it and must come back untouched rather than mangled into looking like tickets.
- * One helper, two callers, only one of them pre-filtered — so it is written to be
- * safe for the unfiltered one.
- *
- * A key that is Jira-shaped is returned upper-cased, which for anything the
- * `JIRA_KEY` test accepts is exactly how Jira spells it. Everything else is
- * returned exactly as it arrived.
+ * Re-exported because this is where the other surfaces already import it from,
+ * and one helper reached by two paths is still one rule; two definitions would
+ * not be. See keys.ts for why the guard is written to be safe for an unfiltered
+ * caller.
  */
-export function renderedKey(key: string): string {
-  const upper = key.trim().toUpperCase();
-  return JIRA_KEY.test(upper) ? upper : key;
-}
+export { renderedKey } from './keys.js';
+import { JIRA_KEY, renderedKey } from './keys.js';
 
 /**
  * The query. `currentUser()` is the partition, and it is per machine: each

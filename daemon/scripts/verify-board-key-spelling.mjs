@@ -515,8 +515,14 @@ function patchedDist(tag, edits) {
   return { dir, report, ok: report.every((r) => r.hits === 1) };
 }
 
+// `keys.js` rather than `board-reconcile.js` since KAN-229, which moved the rule
+// down to a module that depends on nothing so nudge.ts could reach it without
+// importing the reconciliation loop. board-reconcile.js re-exports it, so every
+// import below is unchanged and the patched copy still reaches both surfaces —
+// the check under this call is what proved the move had happened rather than
+// leaving this section silently patching nothing.
 const raw = patchedDist('unnormalised', [
-  ['board-reconcile.js', 'return JIRA_KEY.test(upper) ? upper : key;', 'return key;']
+  ['keys.js', 'return JIRA_KEY.test(upper) ? upper : key;', 'return key;']
 ]);
 check(
   raw.ok,
