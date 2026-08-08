@@ -506,12 +506,17 @@ contains:
 - **Standing rules** — work lands as a PR to protected `main`; required CI
   checks must pass; **approval before merge** — the task agent merges its own
   PR, but only after its approver has reviewed it, and green CI is not
-  approval. Name the approver on the ticket, read off the Jira hierarchy and
-  never off `activatedBy`: the parent story's agent, or **the parent epic's
-  agent** where the task has no parent story. **A ticket you file with no
-  parent at all has no approver** — give it a parent rather than naming a
-  substitute, because the agent's only correct move when the hierarchy names
-  nobody is to stop and say so. Nothing enforces a parent yet (KAN-212, open),
+  approval. Name the approver on the ticket, and **never off `activatedBy`**:
+  the agent of the Story the task is **linked** to, or **the parent epic's
+  agent** where it implements no story. **If you mean a story to approve it,
+  file the `Blocks` link** — Jira cannot parent a task to a story, so an
+  *Implements story* line on its own names an approver the board cannot see.
+  **A ticket you file with neither has no approver** — give it one rather than
+  letting its agent name a substitute, because the agent's only correct move
+  when nothing names an approver is to stop and say so. KAN-212 is the filing
+  rule that makes a
+  parentless ticket hard to create, and the task-side terminating case stays
+  after it lands — a filing rule makes an orphan unlikely, never impossible —
   so this is yours to get right at filing time.
 
 When several agents will run in parallel, add a coordination note naming the
