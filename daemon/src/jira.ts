@@ -702,10 +702,38 @@ export interface JiraIssueSnapshot {
   commentIds: string[];
   /** Keys of every issue linked to this one, in either direction, de-duplicated. */
   linkedKeys: string[];
+  /**
+   * The key of the issue this one sits under on the board, or null.
+   *
+   * Jira's **own** `parent` — the epic a task belongs to, the epic a story
+   * belongs to — and deliberately not a synonym for anything else that has been
+   * called a parent around here. KAN-230: the poller had one relation named
+   * `parent` and it meant `activatedBy`, the agent that *staffed* another agent.
+   * The two coincide whenever an epic activates its own task directly and come
+   * apart everywhere else, and since the board reconciler started most agents
+   * (KAN-221/222, which passes no `activatedBy` and is right not to) they come
+   * apart in the common case: a task with `activatedBy: null` whose epic is
+   * live and has no way to be told the task's PR is waiting.
+   *
+   * Carried here rather than fetched separately because it arrives in the same
+   * GET for the cost of one more name in {@link WATCH_FIELDS} — see there.
+   */
+  parentKey: string | null;
 }
 
-/** The `fields` this read asks for. One GET, no expansion, nothing extra. */
-const WATCH_FIELDS = 'status,updated,comment,issuelinks';
+/**
+ * The `fields` this read asks for. One GET, no expansion, nothing extra.
+ *
+ * `parent` is the newest and the one worth a sentence, because it is free and
+ * that is not obvious. Jira returns exactly the fields a request names, so
+ * adding it costs no extra round trip and no extra rate-limit budget — the
+ * arithmetic in `POLL_INTERVAL_MS` (jira-poll.ts) is unchanged. It is also the
+ * reason this constant is exported: a proof that fed the parser its own body
+ * would pass with `parent` missing from here and the feature dead in
+ * production, so `verify-jira-parent-topology.mjs` asserts on the request
+ * rather than on a snapshot it built itself.
+ */
+export const WATCH_FIELDS = 'status,updated,comment,issuelinks,parent';
 
 /**
  * One issue as the board reconciler needs to see it (KAN-221).
@@ -937,12 +965,22 @@ export function snapshotFrom(key: string, body: any): JiraIssueSnapshot {
     }
   }
 
+  // An issue with no parent is the ordinary case for an epic, and a response
+  // that did not carry the field at all is the case when somebody narrows
+  // WATCH_FIELDS. Both read as "no parent", which routes to nobody — the same
+  // safe direction every other field in this parser defaults towards.
+  const parentKey =
+    typeof fields?.parent?.key === 'string' && fields.parent.key.trim()
+      ? fields.parent.key.trim()
+      : null;
+
   return {
     key: typeof body?.key === 'string' && body.key ? body.key : key,
     statusName: typeof fields?.status?.name === 'string' ? fields.status.name : null,
     updated: typeof fields?.updated === 'string' ? fields.updated : null,
     commentIds,
-    linkedKeys: [...linked]
+    linkedKeys: [...linked],
+    parentKey
   };
 }
 

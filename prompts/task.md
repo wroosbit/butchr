@@ -9,7 +9,7 @@ Your current working directory is this task's dedicated **workspace**. All of yo
 ### 1. Jira Task Retrieval
 - Use the official Atlassian MCP tools to read the Jira task **{{KEY}}** (summary, description, acceptance criteria, associated organization/repository info, and comments).
 - **Claim it before doing substantive work:** assign **{{KEY}}** to yourself and transition it to **In Progress**, both via the Atlassian MCP and both idempotent. Once your pull request is open, transition it to **In Review** so the board shows the review queue rather than one undifferentiated bucket — you then wait for your approver, and **you** merge once they have approved (see *Submitting Work* below; this changed on 2026-08-08). **Done** is your supervisor's to set after that merge, never yours — your parent story's agent, or the supervisor of record where **{{KEY}}** has no parent story. Note that agents reach Jira through the human's account, so the assignee records only that *someone* picked this up — never which agent; your comments and `butchr_list_agents` are what identify you.
-- **Both of those transitions are announcements, and the daemon delivers them for you.** The Jira poller reads **{{KEY}}** every minute and tells your linked live agents and the supervisor that activated you when it moves, so at each of those moments **post the ticket comment and send no nudge** — the comment is what the poller's pointer sends them to read. See **📣 Announce a transition only where the board will not** below for the four cases where you must still send, and for why the old rule told you to send always.
+- **Both of those transitions are announcements, and the daemon delivers them for you.** The Jira poller reads **{{KEY}}** every minute and, when it moves, tells your linked live agents, the supervisor that activated you, and **the live agent of {{KEY}}'s parent on the board** — the epic or story {{KEY}} sits under, which is the agent tracking your work and, under the 2026-08-08 merge rule, usually your approver. So at each of those moments **post the ticket comment and send no nudge** — the comment is what the poller's pointer sends them to read. See **📣 Announce a transition only where the board will not** below for the four cases where you must still send, and for why the old rule told you to send always.
 
 ### 2. Environment & Repository Setup
 Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task works in its own git worktree inside the workspace.
@@ -137,10 +137,21 @@ nothing did, and that was true when it was written (KAN-76, 2026-08-03) and
 false from the day after. KAN-79's Jira poller has watched every live agent's
 issue since 2026-08-04: once a minute it reads them, and when one moves it tells
 the agents that move concerns — the live agents of every **Jira-linked** issue,
-and the **supervisor recorded as having activated** the moved issue's agent.
-That is the same topology this section used to have you walk by hand, so
-following the old rule meant spending an interrupt to deliver news the daemon
-had already delivered.
+the **supervisor recorded as having activated** the moved issue's agent, and
+since KAN-230 the live agent of the moved issue's **parent on the board**. That
+is the same topology this section used to have you walk by hand, so following
+the old rule meant spending an interrupt to deliver news the daemon had already
+delivered.
+
+**The board parent is the newest of the three and the one that matters most to
+you.** It is your epic — the agent that reviews and merges your PR — and it is
+on the topology whether or not anybody activated you by hand. Before KAN-230 it
+was on neither leg: `task/KAN-237` moved to In Review with a PR waiting and the
+daemon logged `nobody live to tell`, because its `activatedBy` was `null` (the
+board started it, honestly) and its ticket had no issue links. That hole is
+closed. **You do not nudge your epic about your own transition** — it hears
+about it a minute later, in its own words: *"It sits under your ticket on the
+board."*
 
 **And the interrupt is what it costs.** `butchr_send_to_agent` begins with a
 Ctrl+C; it cancels whatever the recipient is doing, and **a tool call in flight
@@ -153,8 +164,8 @@ disobeyed is a defect in the rule**, so the rule changed rather than them.
 ### The rule: post the comment, and do not send
 
 **{{KEY}} has a live agent — you — so the poller reads it every minute and
-covers both of your transitions.** At the moment you transition: **post the
-ticket comment, and stop.** The comment is the payload, and the poller's pointer
+covers both of your transitions, including the hand-off to whoever merges.** At
+the moment you transition: **post the ticket comment, and stop.** The comment is the payload, and the poller's pointer
 is what sends the reader to it; its own words are *"Re-read {{KEY}} when you next
 look"*.
 
@@ -179,11 +190,13 @@ These are holes in the poller's coverage, not hedges:
    live agents, so a ticket whose agent is stood down, or was never staffed, is
    never read and its move is invisible to everybody. You meet this when you
    transition a ticket that is not **{{KEY}}**.
-2. **The recipient is neither Jira-linked to the moved ticket nor the supervisor
-   that activated its agent.** Those two relations are the whole of the
-   topology — check `issuelinks` and the recipient's `activatedBy` in
-   `butchr_list_agents` rather than assuming. A parent named only in an
-   *Implements story* line, with no Jira issue link, is not on it.
+2. **The recipient is on none of the three relations.** They are: Jira-linked to
+   the moved ticket (`issuelinks`), the supervisor that activated its agent
+   (`activatedBy` in `butchr_list_agents`), and **the moved ticket's parent on
+   the board** (Jira's own `parent` field — read it, do not assume it). Those
+   three are the whole of the topology. A supervisor named only in an
+   *Implements story* line — no issue link, no `activatedBy`, not the Jira
+   parent — is on none of them.
 3. **The poller is degraded or not running.** It falls from 60s to 300s between
    polls when Jira asks to be left alone, and a daemon that is not running polls
    nothing. `grep jira-poll ~/.local/share/butchr/daemon.log` is how you know.
