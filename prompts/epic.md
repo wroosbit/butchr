@@ -69,13 +69,15 @@ friction.
 - **Why it matters, and it is not tidiness.** An unparented ticket is
   **invisible in its epic's org chart**, so the supervisor that should be
   reviewing it never sees it — KAN-183/184/185 were a story's delivered work,
-  unreachable from the epic that owned them. It is also what an approver is read
-  off: [KAN-239](https://wroosbit.atlassian.net/browse/KAN-239) (PR #100, in
-  flight as this was written) makes a task's approver its parent story's agent,
-  else its **parent epic's** agent, with no third branch — so a ticket filed
-  without a parent names **nobody** as its approver. Two such tickets were
-  merged past before anyone noticed, and nothing went red, because the filer was
-  the approver in practice regardless.
+  unreachable from the epic that owned them. It is also half of how an
+  **approver** is found: merge governance reads the approver off the board, and
+  `parent` is the branch that names one where no Story link does — so an
+  unparented ticket deletes a branch of that lookup, and a ticket with neither
+  names **nobody**. **Read that order out of the approval section of this file
+  rather than from memory or from here**; restating it in two places is how it
+  drifts, and it has been got wrong twice already in opposite directions. Two
+  unparented tickets were merged past before anyone noticed, and nothing went
+  red, because the filer was the approver in practice regardless.
 
 ## You coordinate; you never build
 

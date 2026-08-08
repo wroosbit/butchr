@@ -118,12 +118,20 @@ a problem to record or retry.
 **Why it matters, and it is not tidiness.** An unparented ticket is **invisible
 in its epic's org chart**, so the supervisor that should be reviewing it never
 sees it — KAN-183/184/185 were a story's delivered work, unreachable from the
-epic that owned them. It is also what an approver is read off:
-[KAN-239](https://wroosbit.atlassian.net/browse/KAN-239) (PR #100, in flight as
-this was written) makes a task's approver its parent story's agent, else its
-**parent epic's** agent, with no third branch — so a ticket filed without a
-parent names **nobody**, and two such tickets were merged past before anyone
-noticed, with nothing going red.
+epic that owned them. It is also half of how an **approver** is found: merge
+governance reads the approver off the board, and `parent` is the branch that
+names one where no Story link does. **Read that order out of the merge-governance
+section of this file rather than from memory or from here** — restating it in
+two places is how it drifts, and it has been got wrong twice already in opposite
+directions. What matters at filing time is only this: a ticket filed with no
+parent has deleted a branch of that lookup, and two unparented tickets were
+merged past before anyone noticed, with nothing going red.
+
+**The `Blocks` link above is load-bearing for the same reason,** and it is worth
+seeing the two together: the link is what makes *you* the approver of a task you
+filed, and `parent` is what names an approver when there is no link. An
+*Implements story* line in prose is neither — it is not a relation the board can
+see. So file both, every time.
 
 ### Link liberally — all four standard types
 
