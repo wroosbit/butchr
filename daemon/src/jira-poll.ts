@@ -202,7 +202,15 @@ export type NudgeRelation = 'own' | 'supervisor' | 'parent' | 'linked';
 
 /** One nudge the poller decided to send. */
 export interface PollNudge {
-  event: JiraIssueEvent;
+  /**
+   * The events this one interruption carried, as this recipient was told them.
+   *
+   * An array rather than a single event since KAN-207: one issue's status
+   * change and its new comment, recognised in the same tick, reach a recipient
+   * as one message. It is a list of what was *announced*, not of what happened
+   * — after per-recipient suppression the two are not always the same.
+   */
+  events: JiraIssueEvent[];
   relation: NudgeRelation;
   type: string;
   key: string;
@@ -252,14 +260,31 @@ export interface PollTick {
  * It informs and instructs nothing. Every sentence a nudge spends telling an
  * agent to *act* is a sentence that can produce another nudge, another ticket
  * comment, or a reply to a daemon that is not listening.
+ *
+ * ONE TICKET, ONE SENTENCE (KAN-207)
+ *
+ * Takes a *list* of events, because a hand-off is a comment and a transition
+ * and the poller sees both in the same tick. Two pointers to one ticket are two
+ * Ctrl+Cs at one terminal to say "go and read KAN-207" twice, so the clauses are
+ * joined — `status changed to In Review and has a new comment` — and the reader
+ * is sent to the ticket once. A single event renders exactly as it always did:
+ * the join is what changed, not the wording.
  */
-export function jiraEventNudgeText(event: JiraIssueEvent, relation: NudgeRelation): string {
-  const what =
+export function jiraEventNudgeText(
+  events: JiraIssueEvent | JiraIssueEvent[],
+  relation: NudgeRelation
+): string {
+  const list = Array.isArray(events) ? events : [events];
+  const key = list[0].key;
+
+  const clause = (event: JiraIssueEvent): string =>
     event.kind === 'status'
-      ? `status changed to ${event.to ?? 'an unnamed status'}.`
+      ? `status changed to ${event.to ?? 'an unnamed status'}`
       : (event.newComments ?? 1) > 1
-        ? `has ${event.newComments} new comments.`
-        : 'has a new comment.';
+        ? `has ${event.newComments} new comments`
+        : 'has a new comment';
+
+  const what = `${list.map(clause).join(' and ')}.`;
 
   // One sentence each, because the four relations are four different reasons to
   // be interrupted and a recipient that cannot tell which one it is cannot
@@ -275,8 +300,8 @@ export function jiraEventNudgeText(event: JiraIssueEvent, relation: NudgeRelatio
   };
 
   return (
-    `${DAEMON_SENDER_TAG} ${event.key} ${what} ${whose[relation]} ` +
-    `Re-read ${event.key} when you next look; this is a notification, ` +
+    `${DAEMON_SENDER_TAG} ${key} ${what} ${whose[relation]} ` +
+    `Re-read ${key} when you next look; this is a notification, ` +
     `not an instruction, and no reply is expected.`
   );
 }
@@ -508,6 +533,18 @@ export interface JiraPollerOptions {
  * A supervisor, a board parent or a linked agent that is not running is not
  * woken. Its ticket is its durable inbox, and starting an agent to receive a
  * notification would be the daemon staffing the fleet on its own initiative.
+ *
+ * AND EACH OF THEM ONCE PER ISSUE PER TICK (KAN-207)
+ *
+ * A hand-off is a comment and a transition, so a tick routinely recognises two
+ * events on one issue. They reach a recipient as one interruption carrying
+ * both facts — see {@link JiraPoller.notify} for why that is not the coalescing
+ * KAN-187 declined, and for what it deliberately does not fix.
+ *
+ * The two changes compose in the direction that matters: KAN-230 added the
+ * board parent, which is the relation a hand-off most needs to reach, and it is
+ * therefore the relation that would otherwise have been interrupted twice for
+ * every hand-off on the board.
  */
 export class JiraPoller {
   private readonly state: JiraPollState;
@@ -685,8 +722,24 @@ export class JiraPoller {
       }
     }
 
+    // One issue's events are announced together (KAN-207). `recognise` returns
+    // a status change and a comment as separate events because they are
+    // separate facts, and the memory records them separately — but a recipient
+    // does not want two Ctrl+Cs to be pointed at one ticket twice, so the
+    // grouping happens here, between recognition and delivery, and touches
+    // neither. Insertion order is the read order (`pollable` is sorted) and
+    // within an issue it is `recognise`'s order, so the composed sentence is
+    // deterministic.
+    const byIssue = new Map<string, { snapshot: JiraIssueSnapshot; events: JiraIssueEvent[] }>();
     for (const { event, snapshot } of pending) {
-      await this.notify(event, snapshot, byKey, running, tick);
+      const key = event.key.toUpperCase();
+      const bucket = byIssue.get(key);
+      if (bucket) bucket.events.push(event);
+      else byIssue.set(key, { snapshot, events: [event] });
+    }
+
+    for (const { snapshot, events } of byIssue.values()) {
+      await this.notify(events, snapshot, byKey, running, tick);
     }
 
     return tick;
@@ -809,9 +862,89 @@ export class JiraPoller {
     return { ...event, newComments: theirs.length, newCommentIds: theirs };
   }
 
-  /** Work out who this event concerns, and tell each of them once. */
+  /**
+   * One issue's events as one recipient should hear them, in order.
+   *
+   * Empty means there is nothing left to tell this agent, which is not the same
+   * as there being nothing to tell: an agent whose own comment was the only
+   * comment, on a ticket whose status also moved, ends up here with the status
+   * dropped for the reason below and the comment dropped by {@link newsFor}.
+   */
+  private eventsFor(
+    events: JiraIssueEvent[],
+    agent: LiveAgent,
+    relation: NudgeRelation,
+    tick: PollTick
+  ): JiraIssueEvent[] {
+    const mine: JiraIssueEvent[] = [];
+
+    for (const event of events) {
+      // The asymmetry, decided on KAN-79's ticket: a comment reaches the
+      // issue's own agent, a status change does not. It used to be enforced by
+      // never making an own agent a *target* of a status event; now that one
+      // recipient can be handed a whole issue's events at once, it has to be
+      // enforced per event as well, or coalescing would smuggle back exactly
+      // the "the ticket you just moved has moved" noise that rule removed.
+      // Silent, as it was before: nothing was ever announced to record.
+      if (relation === 'own' && event.kind === 'status') continue;
+
+      // The one question that has to be asked of each recipient separately:
+      // news is news *to somebody*, and the same three comments can be an echo
+      // for one agent and a steer for the next. Answered per target rather than
+      // per event for exactly that reason — an agent that wrote one of three
+      // comments is still told about the other two.
+      const forThisAgent = this.newsFor(event, agent);
+      if (!forThisAgent) {
+        this.opts.log(
+          `[jira-poll] ${event.key} (${event.kind}): not telling ${agent.type}/${agent.key} ` +
+          `(${relation}) — it wrote every new comment itself.`
+        );
+        tick.skipped.push({
+          event,
+          relation,
+          reason: 'every new comment on this issue was written by the recipient',
+          agentName: agent.agentName
+        });
+        continue;
+      }
+
+      mine.push(forThisAgent);
+    }
+
+    return mine;
+  }
+
+  /**
+   * Work out who one issue's events concern, and interrupt each of them once.
+   *
+   * ONE ISSUE, ONE INTERRUPTION PER RECIPIENT (KAN-207)
+   *
+   * The recipient de-duplication below — `targets`, most specific relation wins
+   * — has always been *within* one event. A task agent handing off posts its
+   * comment and then transitions, both inside one poll interval, so one tick
+   * recognised two events on one issue and delivered them as two
+   * `sendToAgent` calls, 1.2 seconds apart, to the same supervisor. Every
+   * prompt in `prompts/` forbids agents to do precisely that — *"never send two
+   * nudges in a row to the same agent"* — because each send opens with a Ctrl+C
+   * that kills the recipient's in-flight tool call and it does not resume.
+   *
+   * So the de-duplication now spans the tick's events for the issue. Both facts
+   * are legitimate news and neither is dropped; they arrive in one sentence.
+   *
+   * WHY THIS IS NOT THE COALESCING KAN-187 DECLINED
+   *
+   * KAN-187 refused to "rate-limit or coalesce" because *"it would delay a real
+   * steer to reduce the count of a nudge that should not have been sent"*, and
+   * that was right about the case it was deciding — a self-echo, whose fix was
+   * to not send at all. Neither half of the reason reaches here. There is no
+   * delay: both events are already in hand, in this loop, and the message is
+   * composed from them without waiting for anything. And nothing is suppressed:
+   * a recipient told about one event instead of two is told about *both*, in
+   * one interruption, so no steer is delayed or lost. The count that falls is
+   * the count of Ctrl+Cs, which was never the news.
+   */
   private async notify(
-    event: JiraIssueEvent,
+    events: JiraIssueEvent[],
     snapshot: JiraIssueSnapshot,
     byKey: Map<string, LiveAgent[]>,
     running: Set<string>,
@@ -819,6 +952,10 @@ export class JiraPoller {
   ): Promise<void> {
     const { log, herdrBridge, supervisorFor } = this.opts;
     const deliver = this.opts.deliver ?? deliverToAgent;
+
+    // Every event in the group is one issue's, by construction in `pollOnce`.
+    const issueKey = events[0].key;
+    const kinds = events.map((e) => e.kind).join('+');
 
     // Most specific relation wins, so an agent that is both the ticket's own
     // and a linked one is told once, in the terms that actually apply.
@@ -828,11 +965,13 @@ export class JiraPoller {
       if (!targets.has(agent.agentName)) targets.set(agent.agentName, { agent, relation });
     };
 
-    const own = byKey.get(event.key.toUpperCase()) ?? [];
+    const own = byKey.get(issueKey.toUpperCase()) ?? [];
 
-    // The asymmetry, decided on the ticket: a comment reaches the issue's own
-    // agent, a status change does not.
-    if (event.kind === 'comment') {
+    // An own agent is a candidate only when there is a comment in the group;
+    // `eventsFor` then keeps the status event away from it. Both halves are
+    // needed: without this one, a pure status change would make the issue's own
+    // agent a target and then have nothing to say to it.
+    if (events.some((event) => event.kind === 'comment')) {
       for (const agent of own) consider(agent, 'own');
     }
 
@@ -844,15 +983,20 @@ export class JiraPoller {
       if (supervisorName === agent.agentName) continue; // Guarded at write time too.
       if (!running.has(supervisorName)) {
         log(
-          `[jira-poll] ${event.key} (${event.kind}): supervisor ` +
+          `[jira-poll] ${issueKey} (${kinds}): supervisor ` +
           `${supervisor.type}/${supervisor.key} is not running; logging and stopping. ` +
           `Its ticket comments and its own polling remain its inbox.`
         );
-        tick.skipped.push({
-          event,
-          relation: 'supervisor',
-          reason: 'supervisor of record is not running'
-        });
+        // Recorded per event rather than per interruption: `skipped` answers
+        // "what was recognised and not delivered", which is a question about
+        // events, and collapsing two of them into one row would under-report.
+        for (const event of events) {
+          tick.skipped.push({
+            event,
+            relation: 'supervisor',
+            reason: 'supervisor of record is not running'
+          });
+        }
         continue;
       }
       consider(
@@ -872,7 +1016,7 @@ export class JiraPoller {
     // wins" tie-break keeps the existing sentence for an agent that is both.
     // Nothing that is told something today is told anything different.
     const parentKey = snapshot.parentKey?.toUpperCase();
-    if (parentKey && parentKey !== event.key.toUpperCase()) {
+    if (parentKey && parentKey !== issueKey.toUpperCase()) {
       const parents = byKey.get(parentKey) ?? [];
       if (!parents.length) {
         // Said out loud rather than folded into "nobody live to tell", which is
@@ -880,14 +1024,17 @@ export class JiraPoller {
         // distinguish "this ticket concerns nobody" from "the agent it most
         // concerns is switched off".
         log(
-          `[jira-poll] ${event.key} (${event.kind}): board parent ${parentKey} ` +
+          `[jira-poll] ${issueKey} (${kinds}): board parent ${parentKey} ` +
           `has no live agent; logging and stopping. Its ticket remains its inbox.`
         );
-        tick.skipped.push({
-          event,
-          relation: 'parent',
-          reason: 'the issue\'s board parent has no live agent'
-        });
+        // One row per event, for the reason given on the supervisor leg above.
+        for (const event of events) {
+          tick.skipped.push({
+            event,
+            relation: 'parent',
+            reason: 'the issue\'s board parent has no live agent'
+          });
+        }
       }
       for (const agent of parents) consider(agent, 'parent');
     }
@@ -899,33 +1046,19 @@ export class JiraPoller {
     }
 
     if (!targets.size) {
-      log(`[jira-poll] ${event.key} (${event.kind}): nobody live to tell.`);
+      log(`[jira-poll] ${issueKey} (${kinds}): nobody live to tell.`);
       return;
     }
 
     for (const { agent, relation } of targets.values()) {
-      // The one question that has to be asked of each recipient separately:
-      // news is news *to somebody*, and the same three comments can be an echo
-      // for one agent and a steer for the next. Answered per target rather than
-      // per event for exactly that reason — an agent that wrote one of three
-      // comments is still told about the other two.
-      const forThisAgent = this.newsFor(event, agent);
-      if (!forThisAgent) {
-        log(
-          `[jira-poll] ${event.key} (${event.kind}): not telling ${agent.type}/${agent.key} ` +
-          `(${relation}) — it wrote every new comment itself.`
-        );
-        tick.skipped.push({
-          event,
-          relation,
-          reason: 'every new comment on this issue was written by the recipient',
-          agentName: agent.agentName
-        });
-        continue;
-      }
+      const forThisAgent = this.eventsFor(events, agent, relation, tick);
+      // Every reason it is empty has already been logged and recorded by
+      // `eventsFor`; there is nothing left to say and nobody to interrupt.
+      if (!forThisAgent.length) continue;
 
       log(
-        `[jira-poll] ${event.key} (${event.kind}): telling ${agent.type}/${agent.key} (${relation}).`
+        `[jira-poll] ${issueKey} (${forThisAgent.map((e) => e.kind).join('+')}): ` +
+        `telling ${agent.type}/${agent.key} (${relation}).`
       );
       const outcome = await deliver({
         herdrBridge,
@@ -939,9 +1072,9 @@ export class JiraPoller {
         ...(this.opts.confirmPollMs !== undefined ? { pollMs: this.opts.confirmPollMs } : {})
       });
       tick.nudges.push({
-        // The event as this recipient was told it, which after suppression is
-        // not always the event the issue had. A record of what was sent.
-        event: forThisAgent,
+        // The events as this recipient was told them, which after suppression
+        // is not always what the issue had. A record of what was sent.
+        events: forThisAgent,
         relation,
         type: agent.type,
         key: agent.key,
