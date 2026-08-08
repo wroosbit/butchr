@@ -90,7 +90,7 @@ import {
  * SUPERVISORS ARE NOT EXEMPT FROM STEP 4, AND THAT IS A DECISION (KAN-221)
  *
  * The question was asked explicitly and had to be answered rather than
- * inherited: an epic agent owns review and merge, and the loop's first cycle
+ * inherited: an epic agent owns review and approval, and the loop's first cycle
  * reaches it like anything else. **The answer is no exemption.**
  *
  *   - An exemption *is* a second store of desired state. "These agents run
