@@ -58,24 +58,31 @@ What did **not** move is the reviewing. Approving is still a standing duty, not
 something you wait for the human to delegate — it just applies to a narrower
 set of PRs than it used to:
 
-- A task that hangs off a **story** is approved by that **story's agent**, not
+- A task that **implements a story** is approved by that **story's agent**, not
   by you. Leave it alone; approving it yourself takes a review off an agent who
   owns it and teaches them they can skip theirs.
-- A task with **no parent story** is approved by **the parent epic's agent** —
-  read off the Jira hierarchy, never off `activatedBy`, so for a task whose
-  Jira `parent` is {{KEY}} that is you, whether or not you staffed it. This
-  clause is a derivation rather than a quoted instruction, and it is the reading
-  that keeps *never your own author* true for the tasks an epic parents
-  directly, which on this epic is most of them.
-- **The wording this replaced said "its supervisor of record — the agent that
-  activated you", and that is retired as of 2026-08-08 because it resolved to
-  nobody.** `activatedBy` is `null` for every agent the board reconciler starts
-  — correctly, since nothing staffed them — and the board starts most of the
-  fleet, so a board-started task with no parent story had no approver and could
-  never legitimately merge. **So a task you did not staff is still yours to
-  approve if {{KEY}} is its Jira parent**, and that is now the ordinary case
-  rather than the exception: `activatedBy` records who staffed a run, the
-  hierarchy records who owns the ticket, and approval follows ownership.
+- **That relation is an issue *link*, and it has to be, because Jira cannot
+  express it any other way.** `Story` and `Task` are both `hierarchyLevel: 0`
+  and a parent must sit strictly higher, so **every** task's `parent` is an
+  Epic — usually {{KEY}} — and `issuetype = Task AND parent IN (KAN-150,
+  KAN-107, KAN-160, KAN-151)` returns zero rows. **So "it is parented to me"
+  does not make a task yours to approve**, and reading the hierarchy alone would
+  hand you every task on the board, silently deleting *story approves, task
+  merges*. Check `issuelinks` for a Story before you take one.
+- A task with **no story link** is approved by **the parent epic's agent** —
+  read off the Jira `parent` field and **never off `activatedBy`** — so for a
+  task whose `parent` is {{KEY}} and which implements no story, that is you,
+  whether or not you staffed it. Where it has neither, the ticket is mis-filed:
+  its agent will stop and say so, and giving it a parent is yours.
+- **Two retired wordings you will still meet on older tickets.** The first said
+  *"its supervisor of record — the agent that activated you"*, retired
+  2026-08-08: `activatedBy` is `null` for every agent the board reconciler
+  starts — correctly, since nothing staffed them — so it named nobody for most
+  of the fleet. The second, superseded the same day, said *"the parent story's
+  agent, otherwise the parent epic's"*, which reads the story off a hierarchy
+  that cannot hold one. `activatedBy` records who staffed a run; a link records
+  which story a task implements; the `parent` records which epic owns it. Only
+  the last two decide approval.
 
 The human stays high-level, dives deep sometimes, and retains veto.
 
