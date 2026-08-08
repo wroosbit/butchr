@@ -42,7 +42,13 @@ function since(iso) {
 // before KAN-38. That is not defensiveness — the sidepanel does not pass one,
 // and a banner that broke when nobody could act on it would be a banner that
 // stopped reporting losses on the surface that only reports them.
-export function MissingAgentsBanner({ missingAgents, pending, onTurnOn, renderRefusal }) {
+export function MissingAgentsBanner({
+  missingAgents,
+  pending,
+  onTurnOn,
+  renderRefusal,
+  describeBoard
+}) {
   if (!Array.isArray(missingAgents) || missingAgents.length === 0) return null;
 
   return (
@@ -121,6 +127,7 @@ export function MissingAgentsBanner({ missingAgents, pending, onTurnOn, renderRe
                         pending={pending?.[agent.agentName]}
                         onTurnOn={onTurnOn}
                         label="Restore"
+                        board={describeBoard?.(agent)}
                       />
                     ) : null}
                   </div>

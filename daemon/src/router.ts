@@ -39,6 +39,7 @@ import {
   selectVictim
 } from './priority.js';
 import { getStalenessReport, StalenessReport } from './staleness.js';
+import { AddressableAgent, BoardControlReport } from './board-control.js';
 import {
   Capacity,
   capacityReason,
@@ -604,7 +605,23 @@ export class MessageRouter {
      * one is a proof, and the refusals it produces are still the real gate's,
      * computed by the real `computeCapacity` from the facts it was handed.
      */
-    private capacitySource: (running: number, supervisors: number) => Capacity = readCapacity
+    private capacitySource: (running: number, supervisors: number) => Capacity = readCapacity,
+    /**
+     * The board's grip on the fleet, for the Agents page's Off and On controls
+     * (KAN-222). Optional by the same rule as everything above it, and the
+     * absence is load-bearing rather than incidental: a daemon that does not
+     * pass one omits `boardControl` from `list_agents_response` entirely, and
+     * the page then says nothing about the board at all.
+     *
+     * That is the honest degradation. "This daemon has no board reconciler" and
+     * "the reconciler is switched off" are different facts, and only the second
+     * is a claim about the board — so a client that cannot tell them apart must
+     * not be handed a default that looks like either. An older extension
+     * ignores the field; an older daemon never sends it; both keep the
+     * pre-KAN-222 behaviour, which was correct for a world with no reconciler
+     * in it.
+     */
+    private boardControl?: (agents: AddressableAgent[]) => BoardControlReport
   ) {}
 
   /**
@@ -2649,6 +2666,31 @@ export class MessageRouter {
     // getStalenessReport, so a 2s poll does not mean a 2s git invocation.
     const staleness = this.staleness();
 
+    const preempted = this.preemptedAgents();
+
+    // Whether the board can undo what this page's buttons do (KAN-222). Every
+    // list below carries a control the reconciler is capable of reversing —
+    // Off on a running row, On on the other three — so all four are handed to
+    // the reporter together. Asking about only the running ones would leave
+    // the On buttons making a promise the loop can break, which is the same
+    // defect this field exists to remove, moved one list down.
+    //
+    // Running agents go through `recordedKeyFor` first, for the reason that
+    // method exists: their `key` came out of a pane name and is therefore
+    // lower-cased, and the board's answer is a sentence telling somebody which
+    // ticket to move. The other three lists are read from the registry and
+    // already carry its spelling. jira-poll.ts and board-reconcile.ts make the
+    // same correction at the same boundary.
+    const boardControl = this.boardControl?.([
+      ...agents.map((agent) => ({
+        ...agent,
+        key: this.recordedKeyFor(agent.agentName) ?? agent.key
+      })),
+      ...missingAgents,
+      ...standby,
+      ...preempted
+    ]);
+
     respond({
       action: 'list_agents_response',
       success: true,
@@ -2667,7 +2709,7 @@ export class MessageRouter {
       // moment one of these is re-activated it leaves the list. Nothing here
       // restarts them, deliberately — a preemption queue is a scheduler and
       // this ticket said so.
-      preemptedAgents: this.preemptedAgents(),
+      preemptedAgents: preempted,
       // Where the Agents page's On button gets its candidates. Always present
       // and empty rather than absent, by the same rule as the two lists above:
       // "nothing is switched off" and "this daemon does not track that" are
@@ -2689,6 +2731,10 @@ export class MessageRouter {
         priority: c.priority,
         herdrStatus: c.herdrStatus
       })),
+      // Omitted rather than nulled when this daemon has no reconciler behind
+      // it, so that "no board reconciler here" cannot be mistaken for "the
+      // reconciler says nothing controls this". See the constructor parameter.
+      ...(boardControl ? { boardControl } : {}),
       ...(staleness ? { staleness } : {}),
       ...(usage ? {
         herdrHealth: {

@@ -288,15 +288,21 @@ registry.registerIntegration(createAtlassianIntegration());
 registry.setEnabled('jira', true);
 
 const bridge = new HerdrBridge();
+/** The last message the router sent, for the preflight check in §0. */
+let lastSent;
 const router = new MessageRouter(
   registry,
   new PromptLoader(repoRoot),
   bridge,
-  () => {},
+  // Captures rather than discards: `router.handle(data)` answers through this
+  // callback, so §0's `capacity` probe would go into a void if this stayed
+  // `() => {}`.
+  (msg) => { lastSent = msg; },
   () => {},
   undefined,
   undefined,
   new AgentRegistry(path.join(scratch, 'agents.jsonl')),
+  // 9 launchdarkly, 10 capacitySource. §0 exists because this is positional.
   undefined,
   capacitySource
 );
@@ -459,6 +465,66 @@ console.log(
   `  ${summarizeCapacity(realHere)}\n` +
   `  (§1–§6 run against a stated 16-core machine, §7 against a stated full one;\n` +
   `   both are computed by the real capacity model from facts this file states.)`
+);
+
+// ------------------------------------------------- 0. the injection itself --
+//
+// Prove the isolation took effect before trusting a single verdict below.
+//
+// `capacitySource` reaches the router as a POSITIONAL argument in a tail of
+// seven optional parameters. If anything is ever inserted into that slot — and
+// the move that does it is inserting after `launchdarkly`, which two PRs did on
+// one day in August 2026 — this script's argument silently binds to the wrong
+// parameter, `capacitySource` becomes `undefined`, the router falls back to
+// `readCapacity`, and §1 goes back to depending on what else the machine is
+// doing. Every section would still run. Every section would still pass. The
+// property this file was sent back to fix would be gone and nothing would say
+// so.
+//
+// That is the same shape as the guard the whole ticket turns on — absent data
+// must not read as a result — pointed at this script's own setup instead of at
+// Jira. So the answer is the same: refuse to report a verdict rather than
+// report one that cannot be trusted.
+//
+// EXPIRY: KAN-226 replaces the positional tail with an options object, at which
+// point a slot race is a compile error and this check defends against something
+// that can no longer happen. **When KAN-226 lands, delete this section.** A
+// guard whose reason has expired, sitting in a file nobody dares touch, is the
+// sediment this epic keeps paying to dig out.
+rule('0. THE INJECTION — capacity is held still, and this run proves it before asserting anything');
+
+lastSent = undefined;
+router.handle({ action: 'capacity' });
+const injected = lastSent;
+console.log(`   capacity_response.cores:        ${injected?.cores}`);
+console.log(`   the stated fixture says:        ${ROOMY_MACHINE.cores}`);
+console.log(`   this machine actually has:      ${realHere.machine.cores}`);
+
+if (injected?.action !== 'capacity_response' || injected?.cores !== ROOMY_MACHINE.cores) {
+  // Not a verdict and deliberately not counted as one: a script whose isolation
+  // is not in effect has nothing to report, so it refuses rather than failing a
+  // section. Exiting here cannot be mistaken for "the product is broken".
+  console.error(
+    `\n  → REFUSING TO RUN — the capacity injection is not in effect.\n` +
+    `    Expected a capacity_response naming ${ROOMY_MACHINE.cores} cores; got ` +
+    `${injected?.cores ?? 'no answer'}.\n` +
+    `    The likeliest cause is a new MessageRouter constructor parameter taking\n` +
+    `    capacitySource's positional slot. Fix the argument list; do not weaken a\n` +
+    `    section to make this green.`
+  );
+  process.exit(1);
+}
+
+// No verdict() here, deliberately, and the absence is the point rather than an
+// omission: the refusal above already covers the only thing there is to check,
+// so a verdict would be a call that can never fail — in a repo whose required
+// sweep exists to catch exactly that. It would also misreport where the
+// checking happened. Comparing against the real machine was tried and removed:
+// ROOMY_MACHINE is 16 cores, so on a 16-core reviewer it failed while the
+// injection was working perfectly.
+console.log(
+  `\n  → the injection is in effect; §0 is enforced by the refusal above, not by a ` +
+  `verdict — there is nothing left for one to test.`
 );
 
 // ------------------------------------------------------------ 1. converge --

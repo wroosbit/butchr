@@ -24,6 +24,7 @@ import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
 import { BoardMode, BoardReconciler } from './board-reconcile.js';
+import { AddressableAgent, BoardControlReport, boardControlReport } from './board-control.js';
 import { CommentAuthorship } from './comment-authorship.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
 import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
@@ -221,7 +222,12 @@ const server = net.createServer((socket) => {
     jira,
     { repoRoot, daemonStartedAt },
     agentRegistry,
-    launchdarkly
+    launchdarkly,
+    // Slot 10 is `capacitySource` (KAN-221) and production wants its default:
+    // the real machine. Named here rather than left to be counted, because the
+    // one thing this tail cannot survive is a caller guessing at a position.
+    undefined,
+    reportBoardControl
   );
 
   onJsonLines(
@@ -294,7 +300,9 @@ const daemonRouter = new MessageRouter(
   jira,
   { repoRoot, daemonStartedAt },
   agentRegistry,
-  launchdarkly
+  launchdarkly,
+  undefined,
+  reportBoardControl
 );
 
 /**
@@ -409,6 +417,25 @@ function boardReconcileMode(): BoardMode {
     );
   }
   return 'report';
+}
+
+/**
+ * What the Agents page is told about the board's grip on the fleet (KAN-222).
+ *
+ * Deliberately built from `boardReconcileMode` — the *same function* the
+ * reconciler below is constructed with, not a second read of the same env var.
+ * That is the whole point of routing this through one function: if the mode the
+ * page reports and the mode the loop obeys were two readings, they could differ,
+ * and a UI confidently describing a mode the loop is not in is a worse failure
+ * than the silence it replaced.
+ *
+ * A function declaration rather than a const because both `MessageRouter`
+ * constructions above it need it, and hoisting is what lets this stay next to
+ * the reconciler it describes rather than being hauled to the top of the file
+ * away from its reason.
+ */
+function reportBoardControl(agents: AddressableAgent[]): BoardControlReport {
+  return boardControlReport(boardReconcileMode(), agents);
 }
 
 const boardReconciler = new BoardReconciler({

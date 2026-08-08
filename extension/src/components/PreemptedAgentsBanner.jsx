@@ -45,7 +45,13 @@ function since(iso) {
 // here restarts anything by itself. A preemption queue is a scheduler, which
 // KAN-37 ruled out and KAN-38 did not reopen — this is a person deciding, one
 // agent at a time, exactly as the sidepanel toggle already let them.
-export function PreemptedAgentsBanner({ preemptedAgents, pending, onTurnOn, renderRefusal }) {
+export function PreemptedAgentsBanner({
+  preemptedAgents,
+  pending,
+  onTurnOn,
+  renderRefusal,
+  describeBoard
+}) {
   if (!Array.isArray(preemptedAgents) || preemptedAgents.length === 0) return null;
 
   return (
@@ -109,6 +115,7 @@ export function PreemptedAgentsBanner({ preemptedAgents, pending, onTurnOn, rend
                         pending={pending?.[agent.agentName]}
                         onTurnOn={onTurnOn}
                         label="Put back"
+                        board={describeBoard?.(agent)}
                       />
                     ) : null}
                   </div>
@@ -117,10 +124,23 @@ export function PreemptedAgentsBanner({ preemptedAgents, pending, onTurnOn, rend
               );
             })}
             <li style={{ listStyle: 'none', color: '#94a3b8', fontSize: '11px', marginTop: '4px' }}>
+              {/*
+                "Nothing restarts them automatically, including a reboot" stood here unqualified
+                until KAN-222, and KAN-221 made it false: a converging board reconciler starts a
+                preempted agent whose ticket is still In Progress, because Jira is the store of
+                desired state and a preemption was never recorded there. The sentence was true
+                about the machinery it was written against — the restore path — and the fix is to
+                say which machinery rather than to soften it into something that no longer
+                promises anything. The exception is named here and quantified on the row: only
+                the row knows the mode and whether the board can describe that agent at all.
+              */}
               Switching one back on resumes the conversation it was stopped in — it is told it was
-              interrupted and continues from what it finds, rather than starting over. Nothing
-              restarts them automatically, including a reboot: the machine that was full is not
-              obliged to be free later, and a restart must not overturn the choice that was made.
+              interrupted and continues from what it finds, rather than starting over. Nothing on
+              this page puts them back by itself, and neither does a reboot: the machine that was
+              full is not obliged to be free later, and a restart must not overturn the choice that
+              was made. A converging board reconciler is the one exception — it takes intent from
+              Jira, where a preemption is not written down — and where that applies the row's own
+              Put back note says so.
             </li>
           </ul>
         </div>
