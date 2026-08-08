@@ -207,6 +207,34 @@ These are holes in the poller's coverage, not hedges:
 If none of them holds, the poller has it. Say nothing, and let the agent keep
 the tool call it is running.
 
+### When the poller cannot announce it at all, comment on their ticket — not their pane
+
+**A merge is not a transition**, so no topology change makes the poller announce
+one — broadening it to read a Jira parent (KAN-230) did not, and nothing will.
+The same holds for anything that happens outside Jira. That is the gap the
+standing rules used to fill with a nudge, and there is a route that fills it at
+**zero interrupt**:
+
+**Post a short pointer comment on _their_ ticket.** The poller's `own` relation
+covers **comments**, so a live agent is told about a comment on its own ticket
+inside a minute — no Ctrl+C, no in-flight tool call destroyed. `epic/KAN-39`
+recorded three deliveries by this route on 2026-08-08 and ruled it strictly
+better than the nudge on every axis. The durable record still goes on
+**{{KEY}}**, as always; the comment on theirs is the pointer to it.
+
+**The one remainder, stated precisely, because the obvious version of it is
+wrong.** The route fails only for a supervisor that is **live but whose
+workspace key is not a Jira issue the poller reads** — a `confluence` workspace
+is keyed by a page id, and the poller polls only keys matching
+`^[A-Z][A-Z0-9]*-\d+$` (`JIRA_KEY`, `jira-poll.ts`). It has a pane to type into
+and no ticket to comment on. **That** is where one nudge is still right.
+
+*"A supervisor whose own ticket has no live agent"* is **not** that case, and
+should not be written down as one: a nudge types into a pane, so no live agent
+means no pane, and both routes fail together — it does not distinguish them. The
+comment is the better of the two there as well, because it is durable and they
+read their ticket when they start.
+
 ### Absence from a tail is not evidence — the poll has not run yet
 
 At the moment you transition, the next poll is up to **60 seconds** away. The
