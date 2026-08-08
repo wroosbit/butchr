@@ -58,6 +58,35 @@ import {
  * upstream. The fleet census this module reads gets the same treatment for the
  * same reason — see `refuse('fleet-unreadable')` below.
  *
+ * WHY A PERIODIC CONVERGER BEATS AN EVENT-TRIGGERED ONE
+ *
+ * Carried in verbatim from KAN-107 (comment 10997), where it was written to be
+ * lifted rather than re-derived. It is here because the named failure mode is
+ * that this property gets lost the moment somebody describes this loop as "a
+ * restart mechanism", and a module header is what a future reader actually
+ * meets. The live evidence behind it is on KAN-107 comment 10996 (KAN-203).
+ *
+ * **Why a periodic converger beats an event-triggered one, and it is not "in
+ * case we missed an event".**
+ *
+ * `reconcile.ts` restores the fleet when the _daemon_ restarts. That trigger was
+ * never wrong — it was incomplete, and the missing case was undiscoverable by
+ * inspection: on 2026-08-08 herdr restarted alone, took eight agents with it,
+ * and nothing fired for seven hours because the daemon had been up throughout.
+ * Both prior recoveries worked only because the power cuts restarted daemon and
+ * herdr together.
+ *
+ * **This loop never asks why an agent is gone.** It asks what the board says
+ * should be running and what is running, and converges the difference. An agent
+ * missing after a herdr restart is just an agent missing. That is the property —
+ * not extra coverage of a longer event list, but **needing no event list at
+ * all** — and it is the reason this design replaces the other rather than
+ * supplementing it.
+ *
+ * The corollary is the guard: because the loop trusts the difference between two
+ * readings, a reading that did not happen must never be treated as a difference.
+ * See the failed-read guard above; it is the same property from the other side.
+ *
  * SUPERVISORS ARE NOT EXEMPT FROM STEP 4, AND THAT IS A DECISION (KAN-221)
  *
  * The question was asked explicitly and had to be answered rather than
@@ -186,6 +215,50 @@ import {
 
 /** What a Jira issue key looks like, so a `shell` workspace is out of scope. */
 const JIRA_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
+
+/**
+ * A key spelled the way the board spells it, for anything a human will read.
+ *
+ * WHY A RENDERING HELPER AND NOT A CORRECTION AT THE SOURCE (KAN-225)
+ *
+ * A running agent's `key` is parsed back out of its herdr pane name, and
+ * `agentNameFor` lower-cases it — so an agent read off a census is `kan-500`,
+ * and a sentence telling somebody to *"move kan-500 out of those statuses"*
+ * names nothing that exists on any board. Two surfaces print that key at a
+ * human: this module's log lines, and the Agents page's Off note via
+ * board-control.ts.
+ *
+ * The reflex fix is to correct the key where it is produced, or to drop agents
+ * the durable registry cannot spell for us. **Both are wrong, and the second is
+ * dangerous.** `inJurisdiction` answers one question — could this query ever
+ * have described this agent? — and it deliberately does not ask whether this
+ * daemon happens to hold a registry record. If it did, an agent this daemon
+ * never started would become invisible to step 4: running, Jira-shaped, not on
+ * the board, and unstoppable by the loop forever. That is a silent, unbounded
+ * hole in *"anything running that is not in that list → off"*, traded for a
+ * visible cosmetic one. The `.toUpperCase()` in `inJurisdiction` is doing its
+ * job — it makes the loop *see* `kan-500` as the Jira key it is. The source is
+ * correct; only the rendering was not, so only the rendering is fixed.
+ *
+ * WHY THE GUARD, WHEN ONE CALLER HAS ALREADY FILTERED
+ *
+ * board-control.ts calls this on agents that have already passed
+ * `inJurisdiction`, so everything it asks about is Jira-shaped by construction
+ * and the test below is redundant there. `address()` is the caller that makes
+ * the guard load-bearing: it renders arbitrary agents, **including
+ * out-of-jurisdiction ones**, so `confluence/123456789` and `task/scratch` reach
+ * it and must come back untouched rather than mangled into looking like tickets.
+ * One helper, two callers, only one of them pre-filtered — so it is written to be
+ * safe for the unfiltered one.
+ *
+ * A key that is Jira-shaped is returned upper-cased, which for anything the
+ * `JIRA_KEY` test accepts is exactly how Jira spells it. Everything else is
+ * returned exactly as it arrived.
+ */
+export function renderedKey(key: string): string {
+  const upper = key.trim().toUpperCase();
+  return JIRA_KEY.test(upper) ? upper : key;
+}
 
 /**
  * The query. `currentUser()` is the partition, and it is per machine: each
@@ -434,8 +507,16 @@ export function describeBoardDiff(diff: BoardDiff): string {
   return parts.join(', ');
 }
 
+/**
+ * How every line below names an agent.
+ *
+ * Through {@link renderedKey}, because a `RunningAgent`'s key may have come out
+ * of a pane name — and this is one of the two surfaces KAN-225 was filed for.
+ * The other is board-control.ts; they share the helper so that the log and the
+ * Agents page cannot name one agent two ways.
+ */
 const address = (agent: { type: string | null; key: string }) =>
-  `${agent.type ?? 'unknown'}/${agent.key}`;
+  `${agent.type ?? 'unknown'}/${renderedKey(agent.key)}`;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -677,7 +758,11 @@ export class BoardReconciler {
       this.opts.log(
         supervisor
           ? `[board] ${verb}: STAND DOWN SUPERVISOR ${address(agent)} — the board does not ` +
-            `have ${agent.key} In Progress or In Review. Supervisors are not exempt from ` +
+            // Through the helper as well, and not only for consistency: this is
+            // the one line in the file that names a key *outside* an address, and
+            // it is the sentence that tells a reader which ticket to go and move.
+            // `agent` here is a RunningAgent, so its key can be the pane spelling.
+            `have ${renderedKey(agent.key)} In Progress or In Review. Supervisors are not exempt from ` +
             `this rule (KAN-221); to keep one running, its ticket has to say so.`
           : `[board] ${verb}: stop ${address(agent)} — not In Progress or In Review on the board.`
       );
