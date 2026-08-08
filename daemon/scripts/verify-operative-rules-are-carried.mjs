@@ -221,6 +221,21 @@ const RULES = [
     ),
   },
   {
+    // KAN-238's AC3, absorbed here because KAN-238 is a duplicate of KAN-239
+    // and this is the one requirement of it that KAN-239 did not already have.
+    // A chain of fallbacks needs a stated end, and the end has to be *stop*.
+    // The failure mode of an unstated terminating case is not an agent that
+    // halts — it is an agent that quietly appoints an approver and merges,
+    // which is the one thing nothing mechanical would catch. It is `task/`
+    // only: the epic-side duty is filing a parent, not stopping, and that
+    // sentence lives in the ticket-writing checklist instead.
+    id: 'H-11',
+    title: 'the terminating case: when the hierarchy names nobody, say so and do not merge',
+    carriedBy: {
+      'prompts/task.md': [/hierarchy names nobody/i, /filing defect, not a licence/i, /quietly invents an approver/i],
+    },
+  },
+  {
     // The half of KAN-237 that is specific to the agent who now presses the
     // button: dozens of tickets predate the change and were deliberately not
     // mass-edited, so a task agent will meet the old rule on its own ticket and

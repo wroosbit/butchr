@@ -488,7 +488,11 @@ contains:
   PR, but only after its approver has reviewed it, and green CI is not
   approval. Name the approver on the ticket, read off the Jira hierarchy and
   never off `activatedBy`: the parent story's agent, or **the parent epic's
-  agent** where the task has no parent story.
+  agent** where the task has no parent story. **A ticket you file with no
+  parent at all has no approver** — give it a parent rather than naming a
+  substitute, because the agent's only correct move when the hierarchy names
+  nobody is to stop and say so. Nothing enforces a parent yet (KAN-212, open),
+  so this is yours to get right at filing time.
 
 When several agents will run in parallel, add a coordination note naming the
 shared files and warning that branches will need updating against `main`.
