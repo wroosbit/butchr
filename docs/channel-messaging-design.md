@@ -19,7 +19,7 @@ unknown I say that instead of choosing a plausible answer.
 | 2 | What carries an *addressed* message? | **Nothing today — this is the missing piece.** §1.3 |
 | 3 | What may a sender claim? | **Four distinct claims, never collapsed.** §2 |
 | 4 | Does the channel supersede KAN-149's tag? | **No — they coexist, and the tag stays.** §3 |
-| 5 | Do channel events disturb a tool call? | **UNANSWERED. KAN-219 has not reported.** §4 |
+| 5 | Do channel events disturb a tool call? | **No — measured. And the composer does.** §4 |
 | 6 | What happens to the composer path? | **Kept, for a named and shrinking set of cases.** §5 |
 | 7 | CrabCast: CLI or socket? | **Socket — the lean holds, and I read why.** §5.3 |
 
@@ -45,6 +45,15 @@ Re-checked at the moment of starting rather than taken from the ticket:
   same path anyway — but §6.1 records that the premise's stated scope no longer
   covers today's client, because that is exactly the moving contract §6.1 is
   about.
+
+**And one condition changed after I had finished.** This design first shipped
+with §4 marked explicitly incomplete, because KAN-219 had not reported.
+**KAN-219 reported while this document was in review**, so §4 was rewritten
+against its measurement rather than left as a gap for someone else to reconcile.
+That is the only section whose conclusion changed; §7's T7 became unblocked as a
+consequence, and §2 and §5.1 gained a caveat and a case respectively. Recorded
+as a sequence rather than smoothed over, because the incomplete version is what
+`epic/KAN-39` was first shown.
 
 ---
 
@@ -277,6 +286,22 @@ plainly drawn, flapping YES/NO across runs while the model received it every
 time. A pane-scraping health check on this path would report failures that did
 not happen.
 
+**And C3 is weaker than this table implies, on evidence that arrived after the
+section was first written.** KAN-219's fifth detector defect: **Claude Code
+renders a *suggested* next prompt into the composer**, `capture-pane` cannot
+tell it from typed text, and in their run it *swallowed the model's real
+account entirely*. `messageLanded` (`daemon/src/nudge.ts:222-247`) decides
+delivery by exactly that reading — where text sits relative to the composer
+marker — so the client's own chrome is in principle indistinguishable from a
+message. KAN-219 flagged this as an observation and **deliberately did not file
+it**, saying it is `epic/KAN-39`'s call whether it deserves a ticket.
+
+**It is not in my seven** (§7), and I am naming it rather than quietly folding
+it in, because it is a defect in the path this design **keeps** — so it
+outlives the migration and wants an owner either way. It also sharpens §5.1:
+the composer is retained for cases a channel cannot serve, not because the
+composer is sound.
+
 **Composer-path confirmation is not ours to reimplement.** Per KAN-234 comment
 11041, relaying the human's decision: Butchr consumes CrabCast's interface and
 never its source, and CrabCast's `send_to_agent` already returns a three-way
@@ -358,63 +383,106 @@ failure.
 
 ---
 
-## 4. Interruption semantics — **INCOMPLETE, and deliberately so**
+## 4. Interruption semantics — **answered, and the answer is the migration's case**
 
-**KAN-219 has not reported. This section is a gap, not an answer.**
+**KAN-219 reported while this design was already in review.** Its finding is
+`docs/channel-inflight-disturbance.md` (PR #97, In Review), and the section
+below is written against it rather than around it. What I had here before was
+an explicit gap and an "Assumption A" marked unverified; the assumption is now
+**confirmed by measurement**, so the gap is closed and the hedge is gone.
 
-Checked at 2026-08-08 09:4x: KAN-219 is **In Progress** under another owner,
-with one comment (11028) that is a **plan**, not a finding. It states its
-approach — three arms (**U** undisturbed control, **C** channel mid-call, **X**
-`send_to_agent` mid-call), the in-flight outcome recorded on the filesystem by
-the tool itself rather than by the model, the window observed rather than
-assumed and widened with that fact stated. **No result exists yet.**
+### The measured answer
 
-Per KAN-234's acceptance criterion 4, I am leaving this unanswered rather than
-assuming, because assuming it is what cost this story four days.
+Two carriers, the same in-flight window, the same agent, the same work, the
+same sentence delivered:
 
-### What the design provisionally assumes, marked as an assumption
-
-**Assumption A (unverified): a channel event does not disturb an in-flight tool
-call.** Its only basis is the reference — *"Events queue into the session and
-are processed in order. If several notifications arrive while Claude is busy,
-they're delivered together on the next turn"* — and KAN-219's own ticket says
-in terms **not to let that sentence stand in for the observation**, because
-that substitution is this epic's named defect. The reference was right about
-acknowledgement and about Bun; it was silent about the blocking startup dialog
-and about a model declining to act on delivered content, both of which KAN-217
-found only by running it.
-
-**What rests on Assumption A, and what does not:**
-
-* **Everything in §1, §2, §3 and §5 stands without it.** Delivery, addressing,
-  confirmation, provenance and the cutover shape do not depend on the answer.
-* **The storm guards depend on it entirely**, and so does the *value* of the
-  migration. If channels interrupt too, the migration buys provenance and
-  confirmation but not the thing KAN-150's defect list is mostly about.
-
-### The storm guards: re-derived conditionally, relaxed on nothing
-
-The guards in `prompts/task.md:202-215` (and the same text in `epic.md`,
-`story.md`) exist because **a send is a preemption**: `butchr_send_to_agent`
-opens with a Ctrl+C, and a tool call in flight is killed and does not resume.
-Each guard traces to that cost:
-
-| Guard | Why it exists today | If Assumption A holds | If it does not |
+| | U (control) | **C — channel** | **X — composer** |
 | --- | --- | --- | --- |
-| Meaningful transitions only | every send destroys work | **relaxable** — cost falls to context, not lost work | unchanged |
-| Never notify the actor | it already knows; the interrupt is pure loss | **stays** — noise, not destruction | unchanged |
-| A nudge must not generate nudges | cascade of preemptions | **stays** — cascades are still bad | unchanged |
-| **Never two in a row** | *"the second kills its session"* | **relaxable, and this is the one that matters** | unchanged |
+| fired inside a real window | n/a | **YES** | **YES** |
+| steps completed, on disk | 3/3 | **3/3** | **1/3** |
+| ran to completion | YES | **YES** | **NO** |
+| result reached the model | YES | **YES** | **NO** |
+| **the call was disturbed** | NO | **NO** | **YES** |
 
-**None of these may be relaxed until KAN-219 reports.** The fourth is the one
-KAN-207 is currently fixing on the daemon side (§5.2), and it is the clearest
-example of a rule whose entire justification is the Ctrl+C. If channels do not
-interrupt, that rule is obsolete on the channel path — and if they do, it
-applies unchanged and the migration's headline benefit is much smaller.
+**A channel event arriving mid-tool-call does not disturb that call.** It ran
+to completion, its result reached the model intact, and the event was acted on
+**afterwards, at the turn boundary** — the reference's predicted behaviour,
+measured rather than quoted.
 
-**Recommendation to `epic/KAN-39`: do not file the prompt-rewrite ticket (T7)
-until KAN-219 reports.** Every other ticket in §7 can be filed and worked now.
-T7 is the only one that needs the answer, which is why it is last.
+**`butchr_send_to_agent` in the same window does.** Killed at step 1 of 3, side
+effects left on disk, result never delivered, and the model then **reported a
+refusal nobody had made** — in all six composer rounds across four runs. That
+is **KAN-150's defect 4 measured instead of inferred**, and it is the strongest
+evidence this story has for its own existence.
+
+**The outcome was read off the filesystem, not off a pane or a model.** The
+in-flight work stamps its own lifecycle to disk and mints its result token at
+the final step, so half-application is literal and the token cannot be obtained
+any other way.
+
+### Two consequences for this design that are not about storm guards
+
+**1. A channel message is not a preemption — which also means it is not
+urgent.** Events wait for the turn boundary. That is exactly what makes them
+safe, and it is also a capability the composer has that the channel does not:
+if you genuinely need an agent to *stop now*, only the interrupt does that.
+This is why §5.1's list of retained composer cases has a fifth entry, and that
+entry is now evidence-based rather than speculative.
+
+**2. An agent cannot self-report interruption damage.** KAN-219's sharpest
+observation: six for six, the agent said the command *"did not run"* or *"was
+rejected before execution"* while `step-1` sat on disk. **That the work
+half-landed is not in the model's context at all** — the client told it the
+tool use was rejected, and only the filesystem knows better. So this is *"an
+asymmetry of context, not dishonesty"*, and **no amount of asking an agent what
+happened recovers it.** Any future health check built on an agent's own account
+of being interrupted is building on something structurally unavailable.
+
+### The storm guards: re-derived on evidence, and deliberately not relaxed far
+
+The guards in `prompts/task.md:202-215` (same text in `epic.md`, `story.md`)
+exist because **a send is a preemption**. That premise is now measured, and it
+is measured as **true of the composer and false of the channel** — so the
+guards are not wrong, they are *carrier-specific*, which nothing could have
+known before this week.
+
+**KAN-219 names the limit of its own evidence and I am holding to it:** *"what
+is measured here is one event in one window, not a storm."* One non-disturbing
+event does not license a claim about ten arriving together.
+
+| Guard | Why it exists | On the channel path | On the composer path |
+| --- | --- | --- | --- |
+| Meaningful transitions only | every send destroys work | **relaxable** — cost falls to context, not lost work | **unchanged** |
+| Never notify the actor | it already knows; the interrupt is pure loss | **stays** — noise, and context is not free | unchanged |
+| A nudge must not generate nudges | cascade of preemptions | **stays** — a cascade is still a cascade | unchanged |
+| **Never two in a row** | *"the second kills its session"* | **narrowed, not deleted** — see below | **unchanged, and now measured** |
+
+**On "never two in a row": the justification is gone on the channel path and
+the rule should still not be deleted.** Its stated reason — *"the second kills
+its session"* — is a fact about the Ctrl+C and is now measured false for
+channels. But KAN-219 measured *one* event, and the guard is about *storms*. So
+the honest rewrite narrows it to what the evidence supports and says what it
+does not: two channel events in a row do not destroy work, and nobody has
+measured what a burst does to a session's context. **T7 writes that sentence;
+it does not delete the rule.**
+
+**T7 is now unblocked and may be filed.** It was the only ticket in §7 waiting
+on this, and the recommendation in the previous draft — *do not file it yet* —
+is withdrawn as of KAN-219's report.
+
+### What remains uncovered, per KAN-219's own scope statement
+
+Carried here rather than paraphrased away, because these bound what §7's
+tickets may claim:
+
+* **The in-flight call is `Bash` — the friendly case**, because its side
+  effects are files the probe chose. **Whether an interrupted `Edit`, or an
+  in-flight MCP call, half-applies the same way is untested by this or
+  anything.** Butchr's own sends land on agents doing all three.
+* **Whether a disturbed agent recovers** is not covered.
+* One client, one model, one machine, scoped to `2.1.226`.
+* KAN-217's print mode, negative control and failure path were **not** re-run
+  and remain `2.1.224`-only claims.
 
 ---
 
@@ -436,6 +504,15 @@ here so the set is closed rather than open:
 | **An agent with no live session** | a channel is not a queue; there is nothing to deliver into |
 | **Any agent not launched with the channels flag** | KAN-217's negative control: the event reaches nobody, silently |
 | **Fallback while channels are a research preview** | §6.1 — the contract may move under us |
+| **When preemption is the point** | §4 — channel events wait for the turn boundary, so they *cannot* stop an agent now. Only the interrupt can. |
+
+**The fifth case is a genuine capability, not a concession.** KAN-219 measured
+the composer destroying an in-flight call — and *"they are about to conflict
+with you"* is precisely the case where destroying it is the correct outcome.
+The prompts' fourth send-anyway exception (*"a minute is too long"*) is that
+case, and it survives the migration on the composer path. A design that retired
+the composer entirely would remove the fleet's only stop-now signal and would
+not have noticed until it needed one.
 
 **AC 4 is satisfied not by having one mechanism, but by removing the guess.**
 The rule that makes it honest: **an agent never chooses its transport and never
@@ -473,13 +550,18 @@ prompts impose on agents.
 
 **One genuine interaction its owner should know about**, and the reason it is
 named here rather than left to be discovered: KAN-207 asks *"whether the two
-events should coalesce, or whether the status event alone should win"*. If
-Assumption A (§4) turns out true, the pressure behind that question drops
-sharply — two channel events cost context, not destroyed work, and the
-reference says they would be *"delivered together on the next turn"* anyway,
-which is coalescing performed by the runtime. **This is not a reason to change
-KAN-207.** It is a reason not to be surprised later that its careful trade-off
-became cheap, and its coalescing remains correct either way.
+events should coalesce, or whether the status event alone should win"*. **On
+the channel path that question gets cheaper, and this is now measured rather
+than hoped** (§4): two channel events cost context, not destroyed work, and the
+runtime delivers them together at the turn boundary anyway — coalescing
+performed for us.
+
+**This is not a reason to change KAN-207, and two things stop it being one.**
+Its fix applies to the composer path, where §4 measured the destruction as
+real and worse than anyone had proved; and KAN-219 measured *one* event, not a
+burst, so nothing licenses relaxing volume control on the channel path either.
+The note is here so its owner is not surprised later that a careful trade-off
+became cheap on one carrier — **its coalescing is correct on both.**
 
 ### 5.3 KAN-233's substance — CrabCast's, and the question that actually matters
 
@@ -614,10 +696,14 @@ parallel once T2 lands; T7 is blocked on KAN-219.
 | **T4** | **Addressed send over the channel** — `butchr_send_to_agent` routes to a connection; response names transport and claim (§2, §5.1) | T2 | The behaviour change the story is actually about. Reviewed on semantics, not plumbing. |
 | **T5** | **Per-agent startup self-check** — prove the loop at bring-up, record it with the client version, fall back to composer and say so | T3 | §6.1. The only thing that catches a silent contract move. |
 | **T6** | **Brief the agents** — `.butchr-prompt.md` and the server `instructions`; describe the reply tool **without** urging its use | T2 | §3. Must land **before** any enablement, or agents refuse correctly and it reads as delivery failure. |
-| **T7** | **Re-derive the storm guards** in the four prompts | **KAN-219** | §4. Cannot be written until the interruption answer exists. Do not file it yet. |
+| **T7** | **Re-derive the storm guards** in the four prompts — carrier-specific, **narrowing "never two in a row" rather than deleting it** | KAN-219 (**reported — unblocked**) | §4. The answer now exists, so this is writable. Its hardest constraint is not over-claiming: one measured event is not a storm. |
 
-**Ordering:** T1 → T2 → {T3, T4, T6} → T5 → *(KAN-219)* → T7. The cutover
-sequence in §5.4 rides on top of this and is not itself a ticket.
+**Ordering:** T1 → T2 → {T3, T4, T6} → T5 → T7. The cutover sequence in §5.4
+rides on top of this and is not itself a ticket.
+
+**T7 was blocked when this document was first written and is not any more.**
+KAN-219 reported during this design's own review, which is why the section
+above reads as a live correction rather than a plan.
 
 **KAN-223 and KAN-224 stay outside this set**, per `story/KAN-150`'s decision
 (KAN-150 comment 11042) — parallel, `Relates`, not inside the decomposition.
@@ -639,8 +725,11 @@ the condition unexamined.
 Stated plainly, because an artifact whose sentence claims more than its
 mechanism covers is this epic's recurring defect.
 
-* **Interruption is unanswered** (§4). Assumption A is unverified and is
-  labelled everywhere it is load-bearing.
+* **Interruption is answered, but narrowly** (§4). KAN-219 measured **one event
+  in one window, on one tool — `Bash`, the friendly case**. An interrupted
+  `Edit`, an in-flight MCP call, a burst rather than a single event, and whether
+  a disturbed agent recovers are all uncovered by that finding or any other.
+  §4's storm-guard table is held to exactly what was measured.
 * **Nothing here was measured by me.** This is a design built on KAN-167's and
   KAN-217's measurements plus a reading of the tree at `51e8fc2`. The claims I
   verified myself are citations — that the lines say what they were said to say,
@@ -667,6 +756,7 @@ mechanism covers is this epic's recurring defect.
 | Source | What it establishes |
 | --- | --- |
 | `docs/channel-delivery.md` (KAN-217) | channels reach the model; flag is load-bearing; `ECONNREFUSED`; refusal; no Bun |
+| `docs/channel-inflight-disturbance.md` (KAN-219) | **a channel event mid-call does not disturb it; the composer does** — and the pane can carry text the model never wrote |
 | `docs/mcp-notification-delivery.md` (KAN-167) | `notifications/message` is discarded — a different path, still true |
 | `docs/message-provenance.md` (KAN-149) | the tag, and that it is convention not authentication |
 | `daemon/src/mcp.ts:54-56`, `:84-92`, `:208-210` | capabilities, the pump, `butchr_send_to_agent`'s contract |
