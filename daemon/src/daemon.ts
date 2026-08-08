@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { HerdrBridge } from './herdr.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
@@ -153,7 +154,7 @@ log(
     Object.keys({ ...registry.mcpServerDefinitions(), ...coreMcpServerDefinitions() }).join(', ')
 );
 const promptLoader = new PromptLoader(repoRoot);
-const herdrBridge = new HerdrBridge();
+const herdrBridge: AgentRuntime = new HerdrBridge();
 
 // The one piece of state that outlives the machine. Everything else here —
 // the session map, herdr's panes, the extension's view — dies in a power cut,

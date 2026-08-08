@@ -6,7 +6,6 @@ import { LaunchDarklyIntegration } from './integrations/launchdarkly.js';
 import { Integration, McpServerDefinitions } from './integrations/integration.js';
 import { coreMcpServerDefinitions } from './launchers.js';
 import {
-  HerdrBridge,
   HerdrSession,
   HerdrAgentDescription,
   HerdrAgentRecord,
@@ -16,6 +15,7 @@ import {
   typeFromAgentName,
   workspaceDirFor
 } from './herdr.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import { readWorkState } from './work-state.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
 import {
@@ -704,7 +704,7 @@ export class MessageRouter {
   constructor(
     private registry: WorkspaceRegistry,
     private promptLoader: PromptLoader,
-    private herdrBridge: HerdrBridge,
+    private herdrBridge: AgentRuntime,
     private send: (msg: any) => void,
     private broadcast: (msg: any) => void = send,
     opts: MessageRouterOptions = {}
