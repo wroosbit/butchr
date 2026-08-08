@@ -412,6 +412,12 @@ rule('AC4 — a daemon restart between events does not replay what was already s
   console.log('');
   row('run 1 — a status change and a comment', `${announced.events.length} event(s), ${announced.nudges.length} nudge(s)`);
   row('  panes after run 1', received(herdr, agents));
+  console.log(`
+    Two events, three nudges — not five. Since KAN-207 one issue's events are
+    announced to a recipient together, so task/KAN-77 and story/KAN-75 each get
+    one interruption carrying both facts, and task/KAN-79 gets the comment
+    alone (an agent is never told its own ticket's status moved). What that
+    section proves is unchanged: nothing here repeats after the restart.`);
 
   const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8')).issues['KAN-79'];
   row('  persisted for KAN-79', JSON.stringify(persisted));
@@ -465,7 +471,10 @@ rule('AC4 — a daemon restart between events does not replay what was already s
   const restartStatus = firstAfterRestart.events.find((e) => e.kind === 'status');
   verdict(
     announced.events.length === 2 &&
-      announced.nudges.length === 5 &&
+      // Three interruptions for two events on one issue (KAN-207), where this
+      // used to assert five. The recipient set is unchanged — what changed is
+      // that two of them hear both facts once instead of twice.
+      announced.nudges.length === 3 &&
       firstAfterRestart.events.length === 2 &&
       restartStatus?.from === 'In Review' &&
       restartStatus?.to === 'Done' &&
@@ -519,7 +528,10 @@ console.log(`
   row('  …its comment id already advanced?', String(seenOnDisk[0]?.maxCommentId === '10499'));
 
   verdict(
-    seenOnDisk.length === 5 &&
+    // Three since KAN-207 — one hand-over to the delivery primitive per
+    // recipient rather than per event. The claim under test is about *when*
+    // the file was written, not how many times.
+    seenOnDisk.length === 3 &&
       seenOnDisk.every((s) => s?.status === 'In Review' && s?.maxCommentId === '10499'),
     'every nudge went out with the event already durable, so a crash mid-delivery ' +
       'loses a notification rather than repeating one.',

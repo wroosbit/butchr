@@ -468,7 +468,7 @@ rule('AC3c — one of each in one tick: nudged, and told the count that is news'
   console.log('');
   row('comments new on the issue this tick', '2 (5003 its own, 5004 the supervisor\'s)');
   row('the event the poller recognised', JSON.stringify(tick.events[0]));
-  row('the event task/KAN-900 was actually told', JSON.stringify(toSubject?.event ?? null));
+  row('the event task/KAN-900 was actually told', JSON.stringify(toSubject?.events ?? null));
   console.log('\n  the words it received:\n');
   for (const line of herdr.submitted(subject.agentName)) console.log(`    ${line}`);
 
@@ -480,8 +480,11 @@ rule('AC3c — one of each in one tick: nudged, and told the count that is news'
   verdict(
     herdr.submitted(subject.agentName).length === 1 &&
       tick.events[0].newComments === 2 &&
-      toSubject?.event.newComments === 1 &&
-      toSubject?.event.newCommentIds?.join() === '5004' &&
+      // One interruption carrying one event since KAN-207; the assertion is
+      // on that event, which is still the one comment that is news to it.
+      toSubject?.events.length === 1 &&
+      toSubject?.events[0].newComments === 1 &&
+      toSubject?.events[0].newCommentIds?.join() === '5004' &&
       herdr.submitted(subject.agentName)[0].includes('a new comment') &&
       !herdr.submitted(subject.agentName)[0].includes('2 new comments'),
     'the agent was told about the one comment that was news to it, counted as one.',
@@ -565,7 +568,7 @@ console.log(`
   row('epic/KAN-902 wrote 5011 on its child KAN-900', 'yes');
   row('  → suppressed for epic/KAN-902', JSON.stringify(skippedFor(parent.agentName)));
   console.log('');
-  row('nudges task/KAN-900 still received', JSON.stringify(toSubject.map((n) => `${n.relation}:${n.event.key}`)));
+  row('nudges task/KAN-900 still received', JSON.stringify(toSubject.map((n) => `${n.relation}:${n.events.map((e) => e.key).join()}`)));
   row('nudges epic/KAN-902 still received', String(herdr.submitted(parent.agentName).length));
   row('nudges task/KAN-901, which wrote neither', String(herdr.submitted(linked.agentName).length));
 
@@ -583,7 +586,8 @@ console.log(`
     skippedFor(subject.agentName).join() === 'linked:KAN-901' &&
       skippedFor(parent.agentName).join() === 'parent:KAN-900' &&
       toSubject.length === 1 &&
-      toSubject[0].event.key === 'KAN-900' &&
+      toSubject[0].events.length === 1 &&
+      toSubject[0].events[0].key === 'KAN-900' &&
       herdr.submitted(parent.agentName).length === 0 &&
       herdr.submitted(linked.agentName).length === 2,
     'neither the linked author nor the parent author was interrupted about its own ' +
