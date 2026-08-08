@@ -61,11 +61,21 @@ set of PRs than it used to:
 - A task that hangs off a **story** is approved by that **story's agent**, not
   by you. Leave it alone; approving it yourself takes a review off an agent who
   owns it and teaches them they can skip theirs.
-- A task with **no parent story** is approved by its **supervisor of record** —
-  for a task you parented directly to {{KEY}}, that is you. This clause is a
-  derivation rather than a quoted instruction, and it is the reading that keeps
-  *never your own author* true for the tasks an epic parents directly, which on
-  this epic is most of them.
+- A task with **no parent story** is approved by **the parent epic's agent** —
+  read off the Jira hierarchy, never off `activatedBy`, so for a task whose
+  Jira `parent` is {{KEY}} that is you, whether or not you staffed it. This
+  clause is a derivation rather than a quoted instruction, and it is the reading
+  that keeps *never your own author* true for the tasks an epic parents
+  directly, which on this epic is most of them.
+- **The wording this replaced said "its supervisor of record — the agent that
+  activated you", and that is retired as of 2026-08-08 because it resolved to
+  nobody.** `activatedBy` is `null` for every agent the board reconciler starts
+  — correctly, since nothing staffed them — and the board starts most of the
+  fleet, so a board-started task with no parent story had no approver and could
+  never legitimately merge. **So a task you did not staff is still yours to
+  approve if {{KEY}} is its Jira parent**, and that is now the ordinary case
+  rather than the exception: `activatedBy` records who staffed a run, the
+  hierarchy records who owns the ticket, and approval follows ownership.
 
 The human stays high-level, dives deep sometimes, and retains veto.
 
@@ -476,8 +486,9 @@ contains:
 - **Standing rules** — work lands as a PR to protected `main`; required CI
   checks must pass; **approval before merge** — the task agent merges its own
   PR, but only after its approver has reviewed it, and green CI is not
-  approval. Name the approver on the ticket: the parent story's agent, or the
-  supervisor of record where the task has no parent story.
+  approval. Name the approver on the ticket, read off the Jira hierarchy and
+  never off `activatedBy`: the parent story's agent, or **the parent epic's
+  agent** where the task has no parent story.
 
 When several agents will run in parallel, add a coordination note naming the
 shared files and warning that branches will need updating against `main`.

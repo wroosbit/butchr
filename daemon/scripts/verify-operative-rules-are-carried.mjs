@@ -28,6 +28,34 @@
 // and R-1 matching the retired rule taught straight, with no retirement marker
 // in any of those sentences.
 //
+// AND (KAN-239) THE SAME DEFECT ONE CLAUSE DOWN, WHICH IS THE INTERESTING ONE:
+// a rule can be retired while the rule it sits inside stays current. KAN-237's
+// merge rule is right; its *fallback* was wrong. All three prompts said a task
+// with **no parent story** is approved by its **supervisor of record — the
+// agent that activated you**, and `activatedBy` is `null` for every agent the
+// board reconciler starts (correctly — nothing staffed them), which since
+// KAN-221/222 is most of the fleet. So the clause resolved to **nobody**: those
+// tasks had no approver, and under *approval is a precondition* could never
+// legitimately merge. KAN-207, KAN-218, KAN-219, KAN-230 and KAN-233 were all
+// in that hole. R-2 retires the fallback; H-10 requires the correction.
+//
+// **The red for R-2 needs no merge base and no mutation, which is unusual.**
+// `origin/main` still teaches the retired clause verbatim in all three prompts,
+// so at the time KAN-239 was written:
+//   node daemon/scripts/verify-operative-rules-are-carried.mjs --ref origin/main
+// goes red on exactly the sentences this entry exists to catch — 10 failures:
+// seven R-2 hits across `prompts/{epic,story,task}.md`, plus H-10 missing from
+// all three. Once KAN-239 lands, `origin/main`
+// moves and that recipe goes green; pin it to KAN-239's merge base, `efde3cb`,
+// to keep reproducing it.
+//
+// R-2 IS ALSO WHERE THIS FILE'S RETIREMENT MECHANISM IS EASIEST TO GET WRONG,
+// so its docblock below is longer than R-1's: the retired thing is a *claim
+// about* "supervisor of record", not the phrase itself, which is still the
+// correct name for who staffed a run and appears correctly in every prompt's
+// notification-topology paragraphs. A pattern matching the bare phrase would
+// go red on three correct sentences and be "fixed" by deleting them.
+//
 // THAT MERGE-BASE RED IS THE WEAKEST EVIDENCE HERE, AND IT LOOKS LIKE THE
 // STRONGEST. It shows only that the script reacts to a wholly different file.
 // The first version of R-1 produced that same 22-failure red while being unable
@@ -177,6 +205,22 @@ const RULES = [
     ),
   },
   {
+    // KAN-239, correcting a clause of KAN-237's. The rule has two halves and
+    // the second is what makes it answerable: naming the parent epic is the
+    // *rule*, and "never off `activatedBy`" is the *refutation of the wording
+    // it replaced*. A prompt carrying only the first leaves an agent that has
+    // read the old wording — on its own ticket, or in a sibling prompt — with
+    // two readings and no way to choose.
+    id: 'H-10',
+    title: 'the approver is read off the Jira hierarchy (parent story, else parent epic), never off `activatedBy`',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [/read off the Jira hierarchy/i, /never off `activatedBy`/i, /parent epic's agent/i],
+      ])
+    ),
+  },
+  {
     // The half of KAN-237 that is specific to the agent who now presses the
     // button: dozens of tickets predate the change and were deliberately not
     // mass-edited, so a task agent will meet the old rule on its own ticket and
@@ -253,6 +297,46 @@ const RETIRED = [
       /(story|task) agents?[^.]{0,40}never merge/i,
       /you review and merge this epic/i,
       /the epic agent (reviews and merges|merges) it/i,
+    ],
+  },
+  {
+    // KAN-239. Retiring one clause of a rule whose other clauses are current,
+    // which is why every pattern here carries **both** halves of the old
+    // clause: the fallback it applied to (`no parent story`) and the answer it
+    // gave (`supervisor of record`, or `activatedBy` as the thing you read the
+    // approver off). "Supervisor of record" on its own is NOT retired and must
+    // not be matched — it is still the correct name for who staffed a run, and
+    // all three prompts use it that way when describing the poller's
+    // notification topology (`prompts/story.md`'s "Jira-linked, or the
+    // supervisor of record" is the live example). What is retired is the claim
+    // that it is who *approves* you.
+    //
+    // That distinction is the whole difficulty of this entry. A pattern of
+    // `/supervisor of record/i` would go red on three correct sentences today
+    // and push whoever met it into deleting the word from the topology
+    // paragraphs, which is the failure mode R-1's docblock describes in the
+    // other direction: a check that forbids the sentences that do the work.
+    id: 'R-2',
+    title: 'the pre-2026-08-08 fallback: a task with no parent story is approved by its supervisor of record (`activatedBy`)',
+    since: '2026-08-08',
+    patterns: [
+      /no parent story[^.]{0,80}supervisor of record/i,
+      /supervisor of record[^.]{0,80}no parent story/i,
+      /supervisor of record[^.]{0,40}approves/i,
+      /approved by (its|their|your) \*{0,2}supervisor of record/i,
+      // These two are deliberately anchored on the *affirmative attribution* —
+      // approver **read off / visible as** `activatedBy` — and not on the two
+      // words appearing near each other. The loose version, `/approver
+      // is[^.]{0,120}activatedBy/i`, was written first and went red on this
+      // ticket's own correction: *"Your approver is read off the Jira
+      // hierarchy, never off `activatedBy`"* is the sentence that retires the
+      // rule, and a check that forbids it is a check that forbids being fixed.
+      // Same defect as the 500-character window R-1's docblock describes, in
+      // mirror image. The negated form must pass; only the sourcing form fails.
+      /approver[^.]{0,80}visible as (your|its|their) \*{0,2}`?activatedBy/i,
+      /(approver|approves|approval)[^.]{0,60}(read|taken|derived|worked) (off|out of|from) (your |its |their |the )?\*{0,2}`?activatedBy/i,
+      /(approver|approves|approval)[^.]{0,60}the agent that activated you/i,
+      /the agent that activated you[^.]{0,60}(approver|approves|approval)/i,
     ],
   },
 ];

@@ -252,8 +252,15 @@ was broken **twice in one day, in opposite directions**: `story/KAN-107` merged
 merges without your approval, say so on the ticket rather than letting it pass;
 an unremarked breach is how the rule stops being one.
 
-Where a task has **no parent story**, its supervisor of record approves — that
-is not your case by construction, since every task you file has you.
+Where a task has **no parent story**, **the parent epic's agent** approves —
+read off the Jira hierarchy, never off `activatedBy`. That is not your case by
+construction, since every task you file has you as its Jira parent. **The
+wording this replaced named the task's "supervisor of record", and it is retired
+as of 2026-08-08 because it resolved to nobody:** `activatedBy` is `null` for
+every agent the board reconciler starts, so a board-started task with no parent
+story had no approver at all. It matters to you in one direction — **a task you
+did not staff is still yours to approve if {{KEY}} is its Jira parent**, because
+approval follows who owns the ticket, not who started the run.
 
 ### An authorisation whose condition has lapsed is not an authorisation
 
