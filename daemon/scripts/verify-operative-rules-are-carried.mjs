@@ -199,14 +199,29 @@ const RULES = [
     //
     // FOR: it is an operative rule by this script's own test — an agent
     // satisfies it at the moment it calls `createJiraIssue`, and its failure
-    // mode is a wrong action in the next thirty seconds. It is also no longer
-    // hygiene: KAN-239 makes a task's approver its parent story's agent, else
-    // its parent epic's agent, with **no third branch**, so a ticket filed with
-    // no parent names nobody and cannot legitimately merge. A merge rule now
-    // stands on this, and since KAN-240 this sweep is a required check — so a
-    // rewrite that drops the rule goes red before review instead of in it,
-    // which is precisely how the rule went missing the first time (it existed
-    // only as a backfill of the board, and a backfill reaches nobody).
+    // mode is a wrong action in the next thirty seconds. The rule went missing
+    // the first time because it existed *only* as a backfill of the board — 74
+    // tickets re-parented and no sentence anywhere an agent reads — and four
+    // more orphans were filed within the day by four different agents, one of
+    // them while the backfill was still running. Since KAN-240 this sweep is a
+    // required check, so a rewrite that drops the rule goes red before review
+    // instead of in it. That is the whole argument, and it stands on its own.
+    //
+    // WHAT THIS PARAGRAPH USED TO ARGUE, AND WHY THE CORRECTION IS KEPT RATHER
+    // THAN SWALLOWED: it said a merge rule *depends* on this one, because
+    // KAN-239's approver lookup had "no third branch" and so a parentless
+    // ticket would name nobody and merge anyway. Both halves were wrong within
+    // the hour. KAN-239 landed a permanent terminating branch — nothing names
+    // an approver → the ticket is mis-filed, say so, do not merge, appoint no
+    // substitute — pinned by H-11; and its primary branch reads the Story off
+    // an issue *link*, never off `parent`, since a task's `parent` is always an
+    // Epic. So a parentless ticket does **not** silently name nobody: its agent
+    // stops. That removes a reason for this entry and not the entry, which is
+    // why the argument above no longer leans on another ticket's rule at all.
+    // Recorded because an argument quietly repaired reads as one that was
+    // always right, and because this docblock survived the same correction
+    // being applied to all three prompts — the audit was scoped to `prompts/`
+    // and this file is not in it. `task/KAN-239` caught it; no check did.
     //
     // AGAINST, AND IT IS NOT WEAK: this sweep proves **presence in a file**,
     // and the whole of KAN-212 is that the convention existed and no agent
