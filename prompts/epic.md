@@ -539,12 +539,14 @@ taking it hides the merge from the agent who is tracking the story.
 
 Note that a merge is **not** a transition, so the Jira poller has nothing to
 deliver at that moment — for tasks you supervise directly, the merge reaches you
-as the task agent's ticket comment, plus one nudge. **That nudge is a stopgap
-and `prompts/task.md` marks it as one**: the comment alone would reach you if the
-poller could see a Jira parent, which it cannot — its relations are `own`
-(comments only), `activatedBy` and `issuelinks`, and a task you parented
-directly sits on none of them. That is **KAN-230**, open. Expect the nudge to
-disappear when it lands, and do not build a habit on it.
+as a pointer comment **on your own ticket**, and no nudge. KAN-230 has landed
+and the stopgap nudge `prompts/task.md` used to mandate is deleted, though not
+for the reason that bullet predicted: the poller now reads a Jira `parent`, but
+that covers **transitions**, and a merge is not one — no topology change will
+ever announce a merge. What covers it is the poller's `own` relation, which
+delivers **comments**, so a comment on **{{KEY}}** reaches you inside a minute
+at zero interrupt. That is the route to expect, and the one to ask for if an
+agent nudges you instead.
 
 Your equivalent at the story level is your stories: when a story has delivered
 — every task implementing it closed, the story reconciled — set the story
