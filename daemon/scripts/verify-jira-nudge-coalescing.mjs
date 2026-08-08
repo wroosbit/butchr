@@ -80,10 +80,9 @@
 //   node scripts/verify-jira-nudge-coalescing.mjs dist-unfixed
 //
 //   --live  additionally runs section 5, which starts two real inert agents on
-//           this machine and types at their real terminals. Opt-in — and see
-//           THE WINDOW in that section: with the Butchr daemon running, its
-//           board reconciler stands these panes down mid-run and the section
-//           reports a failure rather than pretending otherwise.
+//           this machine and types at their real terminals. Opt-in. They run as
+//           the `probe` workspace type deliberately — see THE WINDOW in that
+//           section before changing it.
 //   --keep  leave the live panes standing so they can be tailed.
 
 import fs from 'fs';
@@ -772,34 +771,30 @@ if (LIVE) {
   interruption, not that a real hand-off produces both events in one tick. That
   leg is verify-jira-poller-nudges.mjs --live and the production daemon.log.
 
-  THE WINDOW — read this before believing a failure here.
+  THE WINDOW, AND HOW IT WAS CLOSED — read this before changing the agent type.
 
-  These panes have a life expectancy, and it is not this script's to set. The
-  keys are invented (KAN-99xx) so that the real board is never written to, and
-  the daemon's board reconciler stands down any agent whose ticket it cannot
-  find In Progress or In Review — which an invented key never is. Observed, on
-  the run that first found it:
+  The keys are invented (KAN-99xx) so the real board is never written to. For
+  the first four runs of this section they were 'task' keys, and the daemon's
+  board reconciler stood the panes down mid-run every time, because a task on a
+  key the board cannot find In Progress is an agent it converges away:
 
       [board] converging: stop task/KAN-9900 — not In Progress or In Review
       [board] stood down task/KAN-9900: the board does not have it In Progress
 
-  About ninety seconds from spawn, on a machine with the daemon running. That
-  is the reconciler working exactly as designed, and it is why this section
-  keeps its confirm timeout short and asserts liveness before each reading: a
-  pane that vanished mid-run must report as an inconclusive run rather than as
-  a failed assertion, because the two are not the same fact.
+  It is a sweep rather than a fixed delay, so where the spawn landed in its
+  cycle decided whether a run got ninety seconds or fifteen; across those four
+  runs it got both. That is the reconciler working exactly as designed.
+
+  The fix is the agent *type* — see AGENTS below. A 'probe' is outside the
+  board's jurisdiction while its Jira-shaped key keeps it inside the poller's,
+  so nothing converges these panes and nothing had to be weakened to stop it.
+
+  What is kept from those runs is the liveness check: a pane that vanishes
+  mid-run must report as a failure and not as a pass, because "inconclusive"
+  and "passed" must never be spelled the same way. It should no longer fire.
 
   Nothing here is safe to run against real board keys instead — that would mean
-  this proof transitioning real tickets to keep its own panes alive.
-
-  SO: ON A MACHINE RUNNING THE BUTCHR DAEMON, EXPECT THIS SECTION TO FAIL.
-  The stand-down is not on a fixed delay from spawn — it is a sweep, so where
-  the spawn lands in its cycle decides whether this gets ninety seconds or
-  fifteen. Across four runs on 2026-08-08 it got both. Run it with the daemon
-  stopped, or read the partial runs in the PR body, which captured the whole
-  measurement before the panes went: three events, two sends, one of them
-  carrying both of one ticket's facts. What those runs could not capture is a
-  green exit, and this section will not manufacture one.`);
+  this proof transitioning real tickets to keep its own panes alive.`);
 
   const { HerdrBridge } = await import(path.join(path.resolve(distDir), 'herdr.js'));
   const { waitForAgentReady } = await import(path.join(path.resolve(distDir), 'nudge.js'));
@@ -815,10 +810,26 @@ if (LIVE) {
   // linked to each other, so task/KAN-9900's pane is a recipient for events on
   // both tickets: `linked` for KAN-9901's and `own` for a comment on its own.
   // Both of this ticket's claims are then readable off that single pane.
+  // `probe`, not `task`, and that one word is what lets this section finish.
+  //
+  // The board reconciler asks two questions before it has an opinion about an
+  // agent (`inJurisdiction`, board-reconcile.ts): is its *type* one the board
+  // can describe — epic, story, task — and does its *key* look like a Jira key.
+  // The Jira poller asks only the second, of the key alone. So a `probe` agent
+  // on a Jira-shaped key is polled here and is none of the reconciler's
+  // business, which is the gap this needs and the reason it is not a dodge:
+  // the type is honest. These are not task agents and the board should not be
+  // asked to hold an opinion about tickets that do not exist.
+  //
+  // Found the hard way (see THE WINDOW) and named by task/KAN-233, which hit
+  // the same wall building its own probe companion and solved it from the key
+  // side — a `-PROBE` suffix that fails the key regex. That direction is closed
+  // to this script: a key the reconciler ignores is also a key the poller will
+  // not poll, and polling it is the whole point here.
   const KEYS = { subject: 'KAN-9900', other: 'KAN-9901' };
   const AGENTS = [
-    { type: 'task', key: KEYS.subject, agentName: nameFor('task', KEYS.subject) },
-    { type: 'task', key: KEYS.other, agentName: nameFor('task', KEYS.other) }
+    { type: 'probe', key: KEYS.subject, agentName: nameFor('probe', KEYS.subject) },
+    { type: 'probe', key: KEYS.other, agentName: nameFor('probe', KEYS.other) }
   ];
   const WATCHER = AGENTS[0];
 
@@ -855,12 +866,11 @@ if (LIVE) {
       console.log(`    ${line}`);
     },
     state: new JiraPollState(nextStateFile()),
-    // Shortened because this section runs against a clock it does not own — see
-    // THE WINDOW above. The production default is 20s per unconfirmed send plus
-    // a retry, which on the first run of this section spent the whole window
-    // before poll 3 and had both panes stood down underneath it mid-assertion.
-    // The code path is unchanged; only the patience is.
-    confirmTimeoutMs: 8_000,
+    // A little under the 20s production default, and no longer because it has
+    // to be: with the panes out of the reconciler's jurisdiction this section
+    // owns its own clock again. Kept short only so a run costs a minute rather
+    // than three. The code path is unchanged; only the patience is.
+    confirmTimeoutMs: 15_000,
     confirmPollMs: 500
   });
 
