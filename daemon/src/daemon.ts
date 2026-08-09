@@ -25,6 +25,12 @@ import {
   addressFromAnnouncement,
   describeAddress
 } from './agent-connections.js';
+import {
+  CHANNEL_MESSAGE_ACTION,
+  CHANNEL_SWITCH_PATH,
+  channelEmissionEnabled,
+  writeChannelSwitch
+} from './channel.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
@@ -259,6 +265,106 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         connectionId: connection.id,
         workspaceType: connection.address.type,
         workspaceKey: connection.address.key
+      });
+      return true;
+    }
+    case 'channel_send': {
+      // THE ADDRESSED SEND (KAN-244, T2). KAN-243 built the identity → connection
+      // map and routed nothing with it; this is what writes down one of those
+      // connections and no others.
+      //
+      // Handled here beside `hello` for the same reason `hello` is: the router
+      // is constructed with a `send` closure and deliberately knows nothing
+      // about the transport, and this action's whole subject is *which socket*.
+      // Keeping it out of the router also means `MessageRouter.handle` is
+      // reached by exactly the actions it was reached by before, so no existing
+      // caller's behaviour moves — `butchr_send_to_agent` still types into a
+      // composer, unchanged and untouched. Routing it over this is T4.
+      //
+      // WHAT THE REPLY CLAIMS, AND WHAT IT REFUSES TO. `success: true` here
+      // means the bytes were written to a named connection. It does NOT mean an
+      // agent read them and does NOT mean a model received them — those are
+      // different facts with different failure modes, and `success: true`
+      // standing in for them is the shape this board has been burned by five
+      // times (design §2). So the reply carries `claim` saying in words what it
+      // is asserting, and the honest negative — no connection for that identity
+      // — is a first-class, sender-visible answer rather than a silent discard
+      // (design §1.3).
+      const address = addressFromAnnouncement(msg);
+      if (!address) {
+        reply({
+          action: 'channel_send_response',
+          success: false,
+          reason: 'no-address',
+          error: 'channel_send requires both workspaceType and workspaceKey'
+        });
+        return true;
+      }
+      if (!channelEmissionEnabled()) {
+        // Off is the default and is not an error condition — it is the fleet
+        // configured as it ships. Said explicitly and with the path in it, so a
+        // sender that expected delivery learns why it did not happen and where
+        // the switch is, rather than reading a bare failure as a dead agent.
+        reply({
+          action: 'channel_send_response',
+          success: false,
+          reason: 'channel-disabled',
+          error:
+            'channel emission is off; nothing was written to any connection ' +
+            `(switch: ${CHANNEL_SWITCH_PATH})`,
+          switchPath: CHANNEL_SWITCH_PATH
+        });
+        return true;
+      }
+      const target = agentConnections.resolve(address);
+      if (!target) {
+        reply({
+          action: 'channel_send_response',
+          success: false,
+          reason: 'no-connection',
+          error: `no live connection for ${describeAddress(address)}`
+        });
+        return true;
+      }
+      const wrote = writeJsonLine(target.socket, {
+        action: CHANNEL_MESSAGE_ACTION,
+        content: msg.content,
+        meta: msg.meta
+      });
+      log(
+        `channel_send → ${describeAddress(address)} on ${target.id}: ` +
+          (wrote ? 'written' : 'socket destroyed between resolve and write')
+      );
+      reply({
+        action: 'channel_send_response',
+        success: wrote,
+        ...(wrote ? {} : { reason: 'socket-closed', error: 'the connection closed before the frame could be written' }),
+        connectionId: target.id,
+        workspaceType: target.address.type,
+        workspaceKey: target.address.key,
+        claim: wrote
+          ? `the frame was written to ${target.id}; this is not a claim that the agent read it, ` +
+            'nor that a model received it'
+          : 'nothing was written'
+      });
+      return true;
+    }
+    case 'channel_switch': {
+      // The kill switch, readable and settable over the socket so it does not
+      // need a shell on the machine. Omit `enabled` to read it. Not an MCP tool
+      // — §1.2 asks for a control that does not touch the tool surface, and
+      // this is a daemon action like `connected_agents` beside it.
+      if (typeof msg?.enabled === 'boolean') {
+        writeChannelSwitch(msg.enabled);
+        log(`channel emission switched ${msg.enabled ? 'ON' : 'OFF'} via channel_switch`);
+      }
+      // Reported by reading it back rather than by echoing what was asked for:
+      // the value that matters is the one the next `channel_send` will read.
+      reply({
+        action: 'channel_switch_response',
+        success: true,
+        enabled: channelEmissionEnabled(),
+        switchPath: CHANNEL_SWITCH_PATH
       });
       return true;
     }
