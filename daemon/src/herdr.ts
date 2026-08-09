@@ -1213,6 +1213,55 @@ export class HerdrBridge implements AgentRuntime {
   }
 
   /**
+   * The workspace address behind a caller's `key` and optional `type`.
+   *
+   * WHY THIS EXISTS (KAN-247, T4 of KAN-150)
+   *
+   * `butchr_send_to_agent` now has two carriers, and they are addressed
+   * differently: the composer reaches a herdr *pane*, and the channel reaches a
+   * *connection* in KAN-243's identity map, which is keyed by type **and** key.
+   * A caller may still omit the type, so something has to supply one before the
+   * channel can be consulted at all.
+   *
+   * **The danger is two resolutions that disagree.** If the channel resolved a
+   * bare key its own way, `KAN-1` could route to `story/KAN-1` over a channel
+   * while the composer would have typed into `task/KAN-1` — the same call
+   * reaching two different agents depending on a carrier the caller cannot see.
+   * That is the transport becoming visible in the worst possible way, and
+   * design §5.1's rule (*the daemon decides; the agent never infers*) is only
+   * honest if both carriers mean the same agent.
+   *
+   * So this reuses {@link resolveAgentName} rather than re-deriving anything —
+   * one rule, one place — and inverts {@link agentNameFor} to recover the type.
+   * The inversion is asserted rather than assumed: a name that does not have
+   * the shape `agentNameFor` produces means the two have drifted, and guessing
+   * a type from a name we do not recognise is how a message reaches the wrong
+   * agent. Throws for the same reasons `resolveAgentName` throws — no agent, or
+   * an ambiguous key — so a bare key that is unaddressable stays unaddressable
+   * and does not silently become a channel send to somebody.
+   *
+   * **The key is returned as the caller spelled it**, not lower-cased. The
+   * connection map canonicalises on its own (`agent-connections.ts`), and the
+   * composer path has always taken the caller's spelling; normalising here
+   * would change what `sendToAgent` receives for no benefit this ticket needs.
+   */
+  public resolveAddress(key: string, type?: string): { type: string; key: string } {
+    const trimmedType = typeof type === 'string' ? type.trim() : '';
+    if (trimmedType) return { type: trimmedType, key };
+
+    const name = this.resolveAgentName(key);
+    const prefix = 'butchr-';
+    const suffix = `-${key.toLowerCase()}`;
+    if (!name.startsWith(prefix) || !name.endsWith(suffix) || name.length <= prefix.length + suffix.length) {
+      throw new Error(
+        `Resolved agent '${name}' for key '${key}' is not spelled the way agentNameFor spells one, ` +
+          'so its workspace type cannot be recovered; name the type explicitly.'
+      );
+    }
+    return { type: name.slice(prefix.length, name.length - suffix.length), key };
+  }
+
+  /**
    * The session for an address, if this daemon owns one. An explicit type has
    * to match: a session for a different type is a different agent, and
    * answering with it would silently ignore the address the caller gave.

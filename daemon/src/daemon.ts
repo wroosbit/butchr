@@ -27,9 +27,9 @@ import {
   describeAddress
 } from './agent-connections.js';
 import {
-  CHANNEL_MESSAGE_ACTION,
   CHANNEL_SWITCH_PATH,
   channelEmissionEnabled,
+  routeChannelMessage,
   writeChannelSwitch
 } from './channel.js';
 import { reconcileAgents } from './reconcile.js';
@@ -301,52 +301,42 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         });
         return true;
       }
-      if (!channelEmissionEnabled()) {
-        // Off is the default and is not an error condition — it is the fleet
-        // configured as it ships. Said explicitly and with the path in it, so a
-        // sender that expected delivery learns why it did not happen and where
-        // the switch is, rather than reading a bare failure as a dead agent.
-        reply({
-          action: 'channel_send_response',
-          success: false,
-          reason: 'channel-disabled',
-          error:
-            'channel emission is off; nothing was written to any connection ' +
-            `(switch: ${CHANNEL_SWITCH_PATH})`,
-          switchPath: CHANNEL_SWITCH_PATH
-        });
-        return true;
-      }
-      const target = agentConnections.resolve(address);
-      if (!target) {
-        reply({
-          action: 'channel_send_response',
-          success: false,
-          reason: 'no-connection',
-          error: `no live connection for ${describeAddress(address)}`
-        });
-        return true;
-      }
-      const wrote = writeJsonLine(target.socket, {
-        action: CHANNEL_MESSAGE_ACTION,
+      // The switch check, the map lookup and the write moved into
+      // `routeChannelMessage` when KAN-247 gave `butchr_send_to_agent` a channel
+      // route: two callers needed all three, and a second copy of the *gate* in
+      // particular would mean a send that routed over a channel the fleet
+      // believes is off. See channel.ts. What stays here is this action's own
+      // reply shape, which KAN-244's proofs read field by field.
+      const outcome = routeChannelMessage({
+        registry: agentConnections,
+        address,
         content: msg.content,
         meta: msg.meta
       });
       log(
-        `channel_send → ${describeAddress(address)} on ${target.id}: ` +
-          (wrote ? 'written' : 'socket destroyed between resolve and write')
+        `channel_send → ${describeAddress(address)}: ` +
+          (outcome.routed ? `written to ${outcome.connectionId}` : `refused (${outcome.reason})`)
       );
+      if (!outcome.routed) {
+        reply({
+          action: 'channel_send_response',
+          success: false,
+          reason: outcome.reason,
+          error: outcome.detail,
+          ...(outcome.switchPath ? { switchPath: outcome.switchPath } : {}),
+          claim: 'nothing was written'
+        });
+        return true;
+      }
       reply({
         action: 'channel_send_response',
-        success: wrote,
-        ...(wrote ? {} : { reason: 'socket-closed', error: 'the connection closed before the frame could be written' }),
-        connectionId: target.id,
-        workspaceType: target.address.type,
-        workspaceKey: target.address.key,
-        claim: wrote
-          ? `the frame was written to ${target.id}; this is not a claim that the agent read it, ` +
-            'nor that a model received it'
-          : 'nothing was written'
+        success: true,
+        connectionId: outcome.connectionId,
+        workspaceType: outcome.address.type,
+        workspaceKey: outcome.address.key,
+        claim:
+          `the frame was written to ${outcome.connectionId}; this is not a claim that the agent read it, ` +
+          'nor that a model received it'
       });
       return true;
     }
@@ -418,7 +408,16 @@ const server = net.createServer((socket) => {
       // default, the real machine. Under KAN-226 that is an omitted field
       // rather than an `undefined` placeholder holding a slot open, so nothing
       // here has to be counted and a new option cannot displace an existing one.
-      boardControl: reportBoardControl
+      boardControl: reportBoardControl,
+      // The channel carrier for `butchr_send_to_agent` (KAN-247, T4). This is
+      // the seam that lets the router decide a transport without knowing what a
+      // socket is: the identity map lives here, beside the connections it
+      // indexes, and the router gets a closure over it rather than a reference
+      // to it. `routeChannelMessage` reads the kill switch on every call, so a
+      // channel switched off mid-flight stops the very next send with nothing
+      // restarted — see channel.ts on why the gate is read fresh.
+      channelRoute: (address, content, meta) =>
+        routeChannelMessage({ registry: agentConnections, address, content, meta })
     }
   );
 
