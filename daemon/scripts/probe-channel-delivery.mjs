@@ -112,7 +112,7 @@ import {
   sleep, yn,
   makeChannelWorkspace, writeMcpJson, writeClaudeSettings, trustDir,
   channelFramesOnWire, awaitServerUp, serverStderr, repliesCarrying,
-  killServersFor, postTo, primeSession,
+  killServersFor, postTo, primeSession, askAndReadAnswer,
   connectDaemonRpc, observeDaemonBroadcasts, bringUpChannelAgent, standDownAgent
 } from './lib/channel-probe.mjs';
 
@@ -608,51 +608,23 @@ async function configD() {
 
     // CP4b — KAN-167's reading, kept for comparability. Asked down the
     // composer; the question carries qtag and never the nonce.
+    //
+    // The reader itself — 40 x 5s, the echoed-question cut, the wrap-tolerant
+    // match, and the two defects that motivated each — moved to
+    // `askAndReadAnswer` in lib/channel-probe.mjs when KAN-244 needed to ask the
+    // same question of two agents at once. A PURE MOVE: the logic is unchanged
+    // and its reasoning travelled with it rather than being summarised here.
     say('  asking down the composer as KAN-167 did (CP4b)…');
-    await call('send_to_agent', {
-      key: PROBE_KEY, type: PROBE_TYPE,
-      message: `[${qtag}] Since your last turn, has any text arrived in your context from a `
+    const { answered, quoted, answer } = await askAndReadAnswer({
+      send: (message) => call('send_to_agent', { key: PROBE_KEY, type: PROBE_TYPE, message }),
+      tail,
+      qtag,
+      nonce,
+      question: `[${qtag}] Since your last turn, has any text arrived in your context from a `
         + `channel — for example a line inside a <channel> tag, or beginning "[Butchr]"? `
         + `Quote every such line VERBATIM. If nothing of the kind arrived, reply with `
         + `exactly: NOTHING ARRIVED. Do not call any tool.`
     });
-    // 40 x 5s. The first run of this probe gave it 120s and captured the agent
-    // still mid-turn ("thinking with high effort"), which scored CP4b as a NO
-    // that was really a timeout. CP4a had already answered the ticket by then,
-    // so the mis-scoring changed no conclusion — but a NO that means "we
-    // stopped watching" is exactly the over-claim this file is about.
-    // READING THE PANE IS HARDER THAN IT LOOKS, and this probe got it wrong
-    // first. Two defects, both found by watching the detector rather than
-    // trusting it:
-    //
-    //   1. THE QUESTION IS ECHOED ON THE PANE, and it contains the sentinel —
-    //      it literally says `reply with exactly: NOTHING ARRIVED`. Searching
-    //      the whole region matched the QUESTION, so the loop exited on the
-    //      first poll and scored CP4b before the model had answered. The
-    //      recorded "answer" was the agent still thinking. A NO that means "we
-    //      matched our own prompt" is worse than no reading at all.
-    //   2. THE PANE WRAPS. Both the sentinel and the nonce can be split across
-    //      lines, so a naive `includes` misses text that is plainly there.
-    //
-    // So: cut the echoed question off by its final sentence, compare with
-    // whitespace collapsed, and match the nonce with whitespace removed.
-    const QEND = 'Do not call any tool.';
-    let answer = '';
-    let answered = false;
-    let quoted = false;
-    for (let i = 0; i < 40; i += 1) {
-      await sleep(5000);
-      const t = await tail(200);
-      const at = t.lastIndexOf(qtag);
-      if (at === -1) continue;
-      const region = t.slice(at + qtag.length);
-      const flat = region.replace(/\s+/g, ' ');
-      const qe = flat.lastIndexOf(QEND);
-      const afterQuestion = qe === -1 ? flat : flat.slice(qe + QEND.length);
-      answer = afterQuestion.trim();
-      quoted = afterQuestion.replace(/\s/g, '').includes(nonce);
-      if (quoted || /NOTHING ARRIVED/.test(afterQuestion)) { answered = true; break; }
-    }
     if (!answered) say('  CP4b: the agent had not finished answering before the window closed —');
     if (!answered) say('        scored as "no answer captured", NOT as "the model did not have it".');
 
