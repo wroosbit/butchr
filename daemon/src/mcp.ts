@@ -81,6 +81,16 @@ function daemonLink(): Promise<net.Socket> {
             clearTimeout(entry.timer);
             const { id, ...body } = msg;
             entry.resolve(body);
+          } else if (msg?.action === 'hello_response') {
+            // Said on stderr rather than swallowed. KAN-217's finding was that
+            // a dead recipient is loud and a *misconfigured* one is silent; an
+            // agent whose identity never bound would be addressable by nobody,
+            // with no symptom until a message went missing.
+            console.error(
+              msg.success
+                ? `Registered with the daemon as ${callerIdentity.type}/${callerIdentity.key} (${msg.connectionId})`
+                : `Daemon refused this server's identity: ${msg.error ?? 'no reason given'}`
+            );
           } else if (typeof msg?.action === 'string' && msg.action.endsWith('_event')) {
             server.notification({
               method: "notifications/message",
@@ -91,6 +101,28 @@ function daemonLink(): Promise<net.Socket> {
             }).catch(() => {});
           }
         });
+
+        // Introduce ourselves (KAN-243). The daemon holds its clients in a set
+        // with no identity on any of them, so it can fan out to everybody and
+        // address nobody; this is the announcement that binds this connection
+        // to this agent, and it is the *same* argv-derived values that already
+        // ride every request body, from the same source, so the two cannot
+        // drift apart.
+        //
+        // Sent on every established link rather than once per process, because
+        // the daemon forgets on `close` — a daemon restart must leave this
+        // server re-registered rather than silently unaddressable.
+        //
+        // An unidentified server says nothing at all: `hello` with no identity
+        // is refused, and a human-activated workspace legitimately has none.
+        // Staying anonymous is the correct outcome there, not an error.
+        if (callerIdentity.type && callerIdentity.key) {
+          writeJsonLine(socket, {
+            action: 'hello',
+            workspaceType: callerIdentity.type,
+            workspaceKey: callerIdentity.key
+          });
+        }
 
         socket.on('error', () => {});
         socket.on('close', () => {
