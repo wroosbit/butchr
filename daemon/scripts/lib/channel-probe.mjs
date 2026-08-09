@@ -461,7 +461,7 @@ export async function readAnswerFromPane({
  * wire: `notifications/claude/channel` frames that left THIS agent's server, and
  * the absence of any on the other's, observed rather than inferred.
  */
-export function teeExistingServer(ws, dir, serverName) {
+export function teeExistingServer(ws, dir, serverName, extraEnv = {}) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'tee.mjs'), TEE);
   for (const f of ['wire.log', 'stderr.log']) fs.writeFileSync(path.join(dir, f), '');
@@ -478,7 +478,16 @@ export function teeExistingServer(ws, dir, serverName) {
     env: {
       ...(existing.env ?? {}),
       PROBE_WIRE_LOG: path.join(dir, 'wire.log'),
-      PROBE_STDERR: path.join(dir, 'stderr.log')
+      PROBE_STDERR: path.join(dir, 'stderr.log'),
+      // `extraEnv` exists for ONE case and it is not a convenience (KAN-249).
+      // The MCP server is spawned by the CLIENT, which herdr spawned, so it
+      // inherits HERDR'S environment — including the real `HOME`. `ipc.ts`
+      // resolves the daemon socket from `os.homedir()`, so an agent driven by a
+      // daemon under a relocated `$HOME` still connects to the FLEET'S socket
+      // and registers its `hello` there. The isolated daemon's identity map
+      // stays empty and it can address nobody. Passing `HOME` here is what puts
+      // the server on the same socket as the daemon that activated it.
+      ...extraEnv
     }
   };
   fs.writeFileSync(p, JSON.stringify(config, null, 2));
@@ -591,9 +600,16 @@ export function postTo(port, body) {
 /**
  * An ordinary RPC client on the daemon's Unix socket — the same socket the
  * product's own MCP server speaks, addressed the same way.
+ *
+ * `socketPath` defaults to the FLEET's socket, which is what KAN-217's and
+ * KAN-244's probes have always used. KAN-249 passes an isolated daemon's socket
+ * instead: a daemon started under a relocated `$HOME` claims its own socket and
+ * its own workspace root, so a probe can drive a build the fleet's daemon is not
+ * running without restarting anything anybody else is using. The parameter is
+ * defaulted rather than required so no existing caller changes behaviour.
  */
-export async function connectDaemonRpc() {
-  const rpc = net.connect(SOCKET_PATH);
+export async function connectDaemonRpc(socketPath = SOCKET_PATH) {
+  const rpc = net.connect(socketPath);
   rpc.on('error', () => {});
   await new Promise((r) => rpc.once('connect', r));
   const pending = new Map();
@@ -714,10 +730,33 @@ export async function bringUpChannelAgent({
   // here twice over: it pushes a machine past its own guard while other agents
   // are working, and every timing a probe reads is a timing off a loaded
   // machine. Waiting costs minutes; overriding costs the measurement.
-  activationRetryMs = 0
+  activationRetryMs = 0,
+  /**
+   * Where the daemon being driven keeps its workspaces, and where its own
+   * product code lives.
+   *
+   * Both default to the FLEET's, which is what KAN-217 and KAN-244 use. KAN-249
+   * drives a daemon started under a relocated `$HOME`, whose workspace root and
+   * `dist` are elsewhere — so these are read from the caller rather than from
+   * this module's constants. **They must agree**: `launchersJs` has to be the
+   * `launchers.js` of the same build as the daemon that wrote the `.mcp.json`
+   * being read out of `butchrDir`, or `configureClaudeSettings` is run from one
+   * build against a workspace laid down by another. The caller passes both from
+   * one staged dist, which is what keeps them in step.
+   */
+  butchrDir = BUTCHR_DIR,
+  launchersJs = LAUNCHERS_JS,
+  /**
+   * Extra environment for the agent's own MCP server entry in `.mcp.json`.
+   *
+   * `channelServer: 'core'` only. Empty by default, so no existing caller
+   * changes. KAN-249 passes `{ HOME }` — see the note in `teeExistingServer`
+   * for why nothing else puts an isolated daemon's agent on its own socket.
+   */
+  serverEnv = {}
 }) {
   const agentName = `butchr-${type}-${key.toLowerCase()}`;
-  const ws = path.join(BUTCHR_DIR, 'workspaces', type, key.toLowerCase());
+  const ws = path.join(butchrDir, 'workspaces', type, key.toLowerCase());
 
   say('activating a real agent through the daemon (defaultAgent: shell — see note 3)…');
   let act = await call('activate_by_key', { type, key, defaultAgent: 'shell' });
@@ -751,13 +790,20 @@ export async function bringUpChannelAgent({
   const coreArgs = daemonMcp.mcpServers?.butchr?.args ?? [];
   say(`  core butchr server identity flags: ${coreArgs.slice(1).join(' ') || '(none)'}`);
 
-  fs.writeFileSync(path.join(ws, '.butchr-prompt.md'), brief);
+  // A caller that passes no brief keeps THE ONE THE DAEMON JUST WROTE, rendered
+  // by the product from `<repoRoot>/prompts/<type>.md`. KAN-217 and KAN-244 both
+  // overwrite it, because their scratch keys have no Jira ticket and the real
+  // task brief would send the agent looking for one; KAN-249 instead stages its
+  // own `prompts/task.md` into the repo root the daemon under test resolves
+  // against, so the product writes the brief and nothing here has to. Skipping
+  // rather than defaulting keeps that distinction visible at the call site.
+  if (brief != null) fs.writeFileSync(path.join(ws, '.butchr-prompt.md'), brief);
 
   if (channelServer === 'core') {
     // KAN-244: the channel is on the PRODUCT'S OWN server, so there is no
     // probe server to merge in — the entry the daemon already wrote is wrapped
     // in the tee instead, and the flag below names that same server.
-    const teed = teeExistingServer(ws, chanDir, serverName);
+    const teed = teeExistingServer(ws, chanDir, serverName, serverEnv);
     if (!teed.ok) {
       say(`  BLOCKED: ${teed.error}`);
       return { ok: false, activated: true, reason: teed.error };
@@ -771,7 +817,7 @@ export async function bringUpChannelAgent({
 
   // The two setup steps the `shell` launcher skips, run from THE PRODUCT'S OWN
   // code so this cannot drift from what a claude activation does.
-  const launchers = await import(`file://${LAUNCHERS_JS}`);
+  const launchers = await import(`file://${launchersJs}`);
   launchers.configureClaudeSettings(ws);
   const trust = launchers.trustClaudeWorkspace(ws);
   say(`  product configureClaudeSettings + trustClaudeWorkspace: ${trust.ok ? 'ok' : 'FAILED — ' + trust.error}`);

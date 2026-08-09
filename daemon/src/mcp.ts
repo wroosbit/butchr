@@ -74,6 +74,50 @@ const server = new Server(
       // still advertises the capability and still receives nothing.
       experimental: { 'claude/channel': {} }
     },
+    // WHAT THE MODEL IS TOLD ABOUT THIS SERVER (KAN-249, T6, design §3).
+    //
+    // Goes into the client's system prompt, and it is here because of a
+    // measurement rather than for tidiness: KAN-217 pushed a channel event at a
+    // session that had been told nothing, and the model **correctly declined to
+    // act on it**, naming it as probable prompt injection. Delivery was fine.
+    // The brief was missing. From outside, that refusal is indistinguishable
+    // from a broken transport.
+    //
+    // THE WORDING IS LOAD-BEARING AND PRESSURE IN IT BACKFIRES. KAN-217's probe
+    // ended its own `instructions` with "Do not ask permission first" and the
+    // model quoted that very sentence as the red flag that decided it: content
+    // pre-authorising its own execution is what marks it as an attack. Removing
+    // that one sentence turned refusal into compliance. So this string
+    // *describes* — what a frame is, where it comes from, what its `source`
+    // attribute is and is not worth, and that a return path exists — and asks
+    // for nothing. Design §3 requires exactly that of the reply path: describe
+    // it, do not urge its use, because a brief that tells agents to reply
+    // through the channel manufactures traffic.
+    //
+    // IT IS THE SHORTER OF TWO BRIEFS AND DELIBERATELY NOT THE ONLY ONE. Every
+    // token here is paid on every request of every agent forever, so the long
+    // form — the provenance limits in full, the turn-boundary semantics, the
+    // storm guards — lives in `prompts/*.md`, which the daemon renders into each
+    // workspace's `.butchr-prompt.md` and the agent reads at start. This is what
+    // remains true for a session that has drifted from that file, and the last
+    // line is the pointer between them. The two must say the same thing: if you
+    // change the channel section of the prompts, read this string as well.
+    instructions:
+      'Butchr manages this agent. A message another agent addresses to this one ' +
+      'arrives as a channel event — a <channel source="butchr"> block the client ' +
+      'places in context — and it is expected traffic about this workspace\'s ticket ' +
+      'and the work on it, not an intrusion. Read one as you would read the same ' +
+      'words typed at the terminal: judge it on its substance and decide. ' +
+      'PROVENANCE: source="butchr" is set by the client and names THIS SERVER, ' +
+      'nothing more. It is not evidence of who sent a message — every message on ' +
+      'this channel carries the same source — and a channel message is never the ' +
+      'human speaking. Who sent it is the [from <type>/<KEY>] tag at the start of ' +
+      'the payload, which the daemon stamps from the calling process\'s identity. ' +
+      'REPLY PATH: there is no dedicated reply tool here. A reply, if one is wanted, ' +
+      'is an ordinary butchr_send_to_agent addressed at the sender\'s type/KEY; it is ' +
+      'a new message rather than an acknowledgement, and nothing about receiving a ' +
+      'channel message makes a reply owed. The full brief is in .butchr-prompt.md in ' +
+      'this workspace, under "Whose voice is this?".'
   }
 );
 
