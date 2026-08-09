@@ -280,7 +280,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_send_to_agent",
         description:
-          "Types a message into a running agent's terminal, reaching it without attaching to its pane: Ctrl+C, then the text, then Enter. WHAT THE INTERRUPT COSTS: that Ctrl+C does not merely clear a half-typed line — it cancels whatever the recipient is doing at that moment, including a tool call in flight, which does not resume. On the recipient's side the cancellation renders as a refusal, so an interrupted agent may report that a human rejected work nobody rejected, and an interrupt landing across parallel calls can leave some applied and report them all refused. A send to a busy agent therefore costs it the work it was in the middle of. That can be worth paying — a requirement that changed makes the work it is losing wasted anyway — but it is a decision to make, not a free notification: `butchr_tail_agent` first if you want to know what you are interrupting. PROVENANCE: the daemon prefixes what it delivers with a sender tag it derives from YOUR workspace identity — `[from story/KAN-75] your message` — so do not write a sender into the message yourself; a sender you type is body text and is delivered after the daemon's tag rather than instead of it. The response echoes `sender` and `delivered` so you can see exactly what your recipient reads — they report what was typed, not that it arrived: the Enter can be lost and strand the text at the recipient's composer, and only `butchr_tail_agent` shows whether it landed. The recipient's convention is that an untagged message is the human typing directly, so relay a human decision as a decision you are reporting, not as your own instruction.",
+          "Sends a message to a running agent. THE DAEMON CHOOSES HOW IT TRAVELS, PER RECIPIENT, AT SEND TIME — you never choose a transport and must never infer one. Two carriers exist: a CHANNEL, which delivers into the recipient's context and is acted on at its next turn boundary without disturbing work in flight; and the COMPOSER, which types into the recipient's terminal after a Ctrl+C. Which one carried your message is stated in the response as `transport`, together with `transportChosenBecause`. Read it there; do not work it out from whether the recipient has a channel, because you cannot see that and it changes underneath you. WHAT THE COMPOSER COSTS: its Ctrl+C does not merely clear a half-typed line — it cancels whatever the recipient is doing at that moment, including a tool call in flight, which does not resume. On the recipient's side the cancellation renders as a refusal, so an interrupted agent may report that a human rejected work nobody rejected, and an interrupt landing across parallel calls can leave some applied and report them all refused. The response says `interrupted: true` when that is what happened. A channel send costs the recipient nothing but context. WHAT YOU MAY CLAIM AFTERWARDS: the response carries `claims`, four separate facts that are never collapsed into one — the transport accepted the bytes (C1), a live session exists (C2), the text entered the transcript (C3), the model read it (C4). Each is `true`, `false`, or `null`, and NULL IS SILENCE, NOT A NEGATIVE: it means nothing here measured that, so resending on it may type a duplicate at an agent already working on the first copy. `licenses` says in one sentence what you may and may not state. Never report a message as received by an agent on the strength of `success` alone — `success` is C1 and nothing more. PROVENANCE: the daemon prefixes what it delivers with a sender tag it derives from YOUR workspace identity — `[from story/KAN-75] your message` — so do not write a sender into the message yourself; a sender you type is body text and is delivered after the daemon's tag rather than instead of it. The response echoes `sender` and `delivered` so you can see exactly what your recipient reads. On the composer, `butchr_tail_agent` is still the only thing that shows whether the Enter took. The recipient's convention is that an untagged message is the human typing directly, so relay a human decision as a decision you are reporting, not as your own instruction.",
         inputSchema: {
           type: "object",
           properties: {
@@ -295,7 +295,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             message: {
               type: "string",
-              description: "The message to type into the agent's terminal",
+              description: "The message to send to the agent",
+            },
+            intent: {
+              type: "string",
+              enum: ["steer", "stop-now"],
+              description:
+                "Optional, default 'steer'. WHAT YOU NEED, NOT HOW IT TRAVELS — this is not a transport selector and choosing a carrier is not yours to do. 'steer' is the ordinary case: the recipient should read this, and it can finish what it is doing first. 'stop-now' says the recipient must STOP what it is doing — it is about to conflict with you, or it is acting on something that has just become false. Only 'stop-now' can destroy a tool call in flight, and it destroys one every time it reaches a busy agent, so it is a decision about somebody else's work rather than a way of being heard sooner: `butchr_tail_agent` first if you want to know what you are about to take. The daemon maps your intent to a carrier and names the carrier it used in the response.",
             },
           },
           required: ["key", "message"],
@@ -430,10 +436,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (name === "butchr_send_to_agent") {
-      const { key, type, message } = args as any;
+      const { key, type, message, intent } = args as any;
       if (!key || !message) throw new Error("Missing required arguments: key, message");
 
-      const res = await callDaemonAPI('send_to_agent', { key, type, message });
+      const res = await callDaemonAPI('send_to_agent', { key, type, message, intent });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
         isError: res?.success === false,

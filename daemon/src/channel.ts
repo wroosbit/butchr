@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BUTCHR_DIR, ensureButchrDir } from './ipc.js';
+import { BUTCHR_DIR, ensureButchrDir, writeJsonLine } from './ipc.js';
+import type { AgentAddress, AgentConnectionRegistry } from './agent-connections.js';
+import { describeAddress } from './agent-connections.js';
 
 /**
  * The channel: what may cross it, and the switch that decides whether anything
@@ -148,4 +150,81 @@ export function writeChannelSwitch(enabled: boolean): void {
   const tmp = `${CHANNEL_SWITCH_PATH}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify({ enabled }, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, CHANNEL_SWITCH_PATH);
+}
+
+/** Why an addressed frame did not go out. Every one of these is sender-visible. */
+export type ChannelRefusal = 'channel-disabled' | 'no-connection' | 'socket-closed';
+
+/** What one attempt to write an addressed frame did. */
+export type ChannelRouteOutcome =
+  | { routed: true; connectionId: string; address: AgentAddress }
+  | { routed: false; reason: ChannelRefusal; detail: string; switchPath?: string };
+
+/**
+ * Write one addressed frame to one connection, or say why not.
+ *
+ * ONE COPY, AND THAT IS THE WHOLE REASON THIS IS A FUNCTION (KAN-247, T4)
+ *
+ * Two callers need this now: the `channel_send` action KAN-244 added, and
+ * `butchr_send_to_agent`'s channel route, which is T4's subject. The tempting
+ * shape is for the second to grow its own switch check and its own `resolve`,
+ * and it is the shape this codebase has already been burned by — KAN-145's
+ * defect was one fact with two implementations, and the copy nobody exercised
+ * was the wrong one. A second copy of *the gate in particular* would be worse
+ * than most: a `butchr_send_to_agent` that forgot to consult the switch would
+ * route over a channel the fleet believes is off, and §1.2's mitigation — the
+ * thing that made putting this capability on the shared server defensible — is
+ * exactly the claim that could not then be made.
+ *
+ * So the order of the three refusals is fixed here rather than at either call
+ * site, and it is deliberate: **the switch is read before the map is consulted.**
+ * A disabled channel must answer `channel-disabled` for an agent that is not
+ * connected as well as for one that is, because the alternative leaks the
+ * identity map's contents through a gate that is supposed to be shut.
+ */
+export function routeChannelMessage(opts: {
+  registry: AgentConnectionRegistry;
+  address: AgentAddress;
+  content: string;
+  meta?: unknown;
+}): ChannelRouteOutcome {
+  const { registry, address, content, meta } = opts;
+
+  if (!channelEmissionEnabled()) {
+    return {
+      routed: false,
+      reason: 'channel-disabled',
+      detail:
+        'channel emission is off; nothing was written to any connection ' +
+        `(switch: ${CHANNEL_SWITCH_PATH})`,
+      switchPath: CHANNEL_SWITCH_PATH
+    };
+  }
+
+  const target = registry.resolve(address);
+  if (!target) {
+    return {
+      routed: false,
+      reason: 'no-connection',
+      detail: `no live connection for ${describeAddress(address)}`
+    };
+  }
+
+  const wrote = writeJsonLine(target.socket, {
+    action: CHANNEL_MESSAGE_ACTION,
+    content,
+    meta
+  });
+
+  // `resolve` skips destroyed sockets, so this is the narrow race where one died
+  // between the lookup and the write. Reported rather than retried: a retry
+  // would be a second delivery attempt the caller did not ask for, and the
+  // caller can see a refusal and decide.
+  return wrote
+    ? { routed: true, connectionId: target.id, address: target.address }
+    : {
+        routed: false,
+        reason: 'socket-closed',
+        detail: 'the connection closed before the frame could be written'
+      };
 }
