@@ -108,6 +108,17 @@ export interface AgentRuntime {
 
   describeAgent(key: string, type?: string): HerdrAgentDescription;
 
+  /**
+   * Resolve a (key, type) address, inferring the type from the agent's name
+   * when it is not given. **Throws** when the key names no agent or an
+   * ambiguous one, so an unaddressable key stays unaddressable rather than
+   * silently reaching the wrong agent — callers are expected to catch.
+   *
+   * Added by KAN-247, which gave it its first caller in `router.ts`. It is on
+   * this interface for the same reason everything else is: a real call site.
+   */
+  resolveAddress(key: string, type?: string): { type: string; key: string };
+
   // -- the runtime's own census ---------------------------------------------
 
   /** Whether the underlying runtime answers at all. */

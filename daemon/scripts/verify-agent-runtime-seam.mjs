@@ -207,8 +207,29 @@ for (let i = start + 1; i < lines.length; i++) {
   i = j;
 }
 
-check('the interface declares 20 members (the 20 distinct methods called)', members.length === 20,
-  `found ${members.length}`);
+// Derived, not hardcoded. This started life as `members.length === 20` and
+// KAN-247 added a caller for `resolveAddress`, which made the literal wrong and
+// the check a maintenance tax that fails on every legitimate addition. Comparing
+// the interface's member set against the methods actually called says the thing
+// the ticket actually requires — *derived from the call sites* — and catches
+// drift in both directions without anyone updating a number.
+const CONSUMERS = ['daemon.ts', 'jira-poll.ts', 'nudge.ts', 'reconcile.ts', 'router.ts'];
+const called = new Set();
+for (const file of CONSUMERS) {
+  const src = fs.readFileSync(path.join(work, 'src', file), 'utf8');
+  for (const m of src.matchAll(/herdrBridge\.([A-Za-z_][A-Za-z0-9_]*)\(/g)) called.add(m[1]);
+}
+const declared = new Set(members.map((m) => m.name));
+const missing = [...called].filter((n) => !declared.has(n));
+const extra = [...declared].filter((n) => !called.has(n));
+check(
+  `the interface declares exactly the ${called.size} methods the daemon calls`,
+  missing.length === 0 && extra.length === 0,
+  [
+    missing.length ? `called but not declared: ${missing.join(', ')}` : '',
+    extra.length ? `declared but never called: ${extra.join(', ')}` : ''
+  ].filter(Boolean).join('\n')
+);
 
 const unnecessary = [];
 for (const member of members) {

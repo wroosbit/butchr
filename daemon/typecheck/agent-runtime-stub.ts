@@ -92,6 +92,10 @@ class StubRuntime implements AgentRuntime {
     return { agentName: 'stub', type: null, workDir: null, herdrStatus: 'unknown' };
   }
 
+  resolveAddress(_key: string, _type?: string): { type: string; key: string } {
+    return unimplemented();
+  }
+
   herdrReachable(): boolean {
     return false;
   }
