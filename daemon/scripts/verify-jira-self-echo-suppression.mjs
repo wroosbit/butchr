@@ -12,7 +12,7 @@
 // comment (1), another agent's comment on the same ticket in the same tick (2),
 // a mix of both where the count must be the news rather than the total (3), a
 // human's comment which is attributable to nobody (4), and the `linked` and
-// `parent` relations, which are where the echo was observed live and which a
+// `supervisor` relations, which are where the echo was observed live and which a
 // fix written only for `own` would miss (5). It also catches an attribution
 // built on something weaker than the comment's id — section 6 hands the parser
 // a *read* whose response is full of comment ids and requires that none of them
@@ -26,7 +26,7 @@
 //   2. somebody else  — another agent's comment on that same ticket: nudged
 //   3. mixed          — one of each in one tick: nudged, and told "1", not "2"
 //   4. unattributed   — a comment nobody in the fleet wrote: nudged
-//   5. linked/parent  — the two relations the live reports came from
+//   5. linked/supervisor — the two relations the live reports came from
 //   6. reads          — a getJiraIssue result is not a write, however many
 //                       comment ids it contains
 //
@@ -524,9 +524,9 @@ console.log(`
   );
 }
 
-// ----------------------------------------------------- 5. linked / parent --
+// ------------------------------------------------- 5. linked / supervisor --
 
-rule('AC3e — the `linked` and `parent` relations, where the echo was observed live');
+rule('AC3e — the `linked` and `supervisor` relations, where the echo was observed live');
 
 console.log(`
   Both live reports on this ticket came through these two paths, not through
@@ -549,7 +549,8 @@ console.log(`
   jira.issues['KAN-901'].comments.push(5010);
 
   // And the supervisor comments on its child's ticket, where it hears about the
-  // event under `parent`.
+  // event under `supervisor` (the relation KAN-230 renamed from `parent`, which
+  // now means the issue's parent on the board).
   tape.wroteComment(parent, 'KAN-900', 5011);
   jira.issues['KAN-900'].comments.push(5011);
 
@@ -581,15 +582,15 @@ console.log(`
 
   verdict(
     skippedFor(subject.agentName).join() === 'linked:KAN-901' &&
-      skippedFor(parent.agentName).join() === 'parent:KAN-900' &&
+      skippedFor(parent.agentName).join() === 'supervisor:KAN-900' &&
       toSubject.length === 1 &&
       toSubject[0].event.key === 'KAN-900' &&
       herdr.submitted(parent.agentName).length === 0 &&
       herdr.submitted(linked.agentName).length === 2,
-    'neither the linked author nor the parent author was interrupted about its own ' +
+    'neither the linked author nor the supervisor author was interrupted about its own ' +
       'text, while the same tick still delivered the supervisor\'s steer to the agent ' +
       'it was written for.',
-    'the echo survived on the linked or the parent path — the two the live reports came from.'
+    'the echo survived on the linked or the supervisor path — the two the live reports came from.'
   );
 }
 
