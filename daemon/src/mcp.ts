@@ -9,6 +9,11 @@ import {
 import * as net from 'net';
 import { connectToDaemon, onJsonLines, writeJsonLine } from './ipc.js';
 import { WORKSPACE_KEY_FLAG, WORKSPACE_TYPE_FLAG } from './launchers.js';
+import {
+  CHANNEL_MESSAGE_ACTION,
+  CHANNEL_NOTIFICATION_METHOD,
+  isForwardableEvent
+} from './channel.js';
 
 /**
  * Which agent this server belongs to, read off this process's own argv.
@@ -53,7 +58,21 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
-      logging: {}
+      logging: {},
+      // WHAT MAKES THIS SERVER A CHANNEL (KAN-244, design §1.2). Without this
+      // key Claude Code registers no listener and every
+      // `notifications/claude/channel` below is discarded in silence — KAN-217
+      // measured that, and it is why the declaration cannot be conditional on
+      // the runtime switch: the client reads capabilities once, at
+      // `initialize`, so a declaration that came and went with a file on disk
+      // would bind whatever the file said at activation and never notice it
+      // changing.
+      //
+      // Declared unconditionally and therefore ALWAYS. What the switch governs
+      // is emission, in the daemon, where the addressing is — see channel.ts
+      // for why the gate is there and only there. An agent whose channel is off
+      // still advertises the capability and still receives nothing.
+      experimental: { 'claude/channel': {} }
     },
   }
 );
@@ -91,7 +110,29 @@ function daemonLink(): Promise<net.Socket> {
                 ? `Registered with the daemon as ${callerIdentity.type}/${callerIdentity.key} (${msg.connectionId})`
                 : `Daemon refused this server's identity: ${msg.error ?? 'no reason given'}`
             );
-          } else if (typeof msg?.action === 'string' && msg.action.endsWith('_event')) {
+          } else if (msg?.action === CHANNEL_MESSAGE_ACTION) {
+            // AN ADDRESSED MESSAGE (KAN-244). Unlike the broadcast below, this
+            // frame was written to THIS connection alone: the daemon resolved
+            // the recipient through KAN-243's identity map and wrote to one
+            // socket, so arriving here is already evidence that this agent was
+            // the intended one.
+            //
+            // There is no switch consulted here, deliberately, and that is not
+            // an omission — see channel.ts. The daemon does not write this
+            // frame at all when channel emission is off, so this branch is
+            // unreachable then and `mcp.ts` behaves exactly as it did before
+            // KAN-244. A second gate here would be a second copy of one
+            // condition, which is the defect KAN-145 cost this board a day to.
+            server.notification({
+              method: CHANNEL_NOTIFICATION_METHOD,
+              params: { content: msg.content, meta: msg.meta }
+            }).catch(() => {});
+          } else if (isForwardableEvent(msg?.action)) {
+            // Was `msg.action.endsWith('_event')` until KAN-244 (design §1.3).
+            // The suffix test forwarded anything a future author happened to
+            // name that way; the allowlist in channel.ts names the seven the
+            // daemon emits today, so this forwards exactly what it forwarded
+            // before and an eighth arrives only when somebody adds it there.
             server.notification({
               method: "notifications/message",
               params: {
