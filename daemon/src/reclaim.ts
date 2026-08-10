@@ -35,7 +35,23 @@
  *     hard-linked tree unlinks names and frees only what nothing else
  *     references, so it cannot corrupt a store — but `bytes` below counts
  *     allocated blocks, which over-reports what `df` will show once a store
- *     exists. `epic/KAN-39` owns reconciling that metric after KAN-262 lands.
+ *     exists. KAN-262 measured the gap on its own implementation: `rm -rf` of a
+ *     174M hard-linked `extension/node_modules` recovered **5 MB**. So once
+ *     that has landed, *"bytes recovered"* stops being the number that says
+ *     whether reclaiming worked, and the question becomes "does any workspace
+ *     still hold a private copy of a tree the store already has?".
+ *     `story/KAN-151` recorded that reconciliation and `epic/KAN-39` owns it;
+ *     it is written here because whichever of the two tickets merges second
+ *     owes it a line, and this may be that one.
+ *
+ * THE STORE IS NOT A ROOT OF THIS SWEEP, AND MUST NOT BECOME ONE. KAN-262 puts
+ * its shared store at `~/.local/share/butchr/dep-store` — a *sibling* of the
+ * workspaces root, not a descendant — and its `RECLAIMER CONTRACT` asks this
+ * module by name not to add it. Nothing here can: the root is `workspacesRoot()`
+ * and is not a parameter of the daemon action, so a store outside it is
+ * unreachable both lexically and after `realpath`. Verified against KAN-262's
+ * head rather than taken from its ticket. If a future change ever makes the
+ * root configurable, that is the moment this paragraph stops being true.
  */
 
 import * as fs from 'fs';
