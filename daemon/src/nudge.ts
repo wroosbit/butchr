@@ -339,7 +339,21 @@ export async function deliverToAgent(opts: {
   return { delivered: false, attempts: 2, error: lastError };
 }
 
-/** This message's current count in the pane, or 0 if the pane cannot be read. */
+/**
+ * This message's current count in the pane, or 0 if the pane cannot be read.
+ *
+ * THE `0` STILL COLLAPSES "NOTHING THERE" INTO "COULD NOT LOOK", AND KAN-255
+ * LEFT IT THAT WAY DELIBERATELY. `tailAgent` now keeps those two apart —
+ * `success: false` is a claim about the read, `text: ''` a claim about the pane
+ * — so the information exists here for the first time. What it would change is
+ * the RETRY: an unreadable pane currently reads as "the message is not there",
+ * which fails confirmation and sends a second time, and a second send is a
+ * second Ctrl+C at an agent that may be working. Making that decision properly
+ * is a change to the delivery contract rather than to a tail, and it is not
+ * this ticket's. What KAN-255 does buy here is that the *empty* answer is now
+ * worth something: before it, a `0` could come from a pane the tail never
+ * really saw, and no amount of care at this layer could have told.
+ */
 function readLandedCount(
   herdrBridge: AgentRuntime,
   type: string,
