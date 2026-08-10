@@ -293,6 +293,37 @@ async function bringUp(side, key, { attempts = 3 } = {}) {
  * ten-minute reply would outlive any client's own timeout — see the
  * `channel_liveness` case in daemon.ts.
  */
+/**
+ * Fire until the instrument works, and never until the answer is the one wanted.
+ *
+ * **The distinction is the whole of why this is allowed to loop.** `no-answer`
+ * and `echoed` are results about a model and are taken as they come — retrying
+ * either would be running the experiment until it agrees. `pane-unreadable` and
+ * `not-routed` are the instrument failing: nothing was observed and nothing is
+ * concluded, so the run is worth nothing and is worth repeating.
+ *
+ * This is not hypothetical padding. The FIRST live run of this probe produced
+ * exactly it: the agent's pane died seconds after the frame went out (KAN-24's
+ * herdr spawn flakiness, under CPU pressure), and the pre-fix build recorded a
+ * MODEL non-answer for a terminal that no longer existed. That run is why
+ * `pane-unreadable` now covers the mid-wait case at all.
+ */
+async function fireProbeUntilObserved(side, { budgetMs, attempts = 3 }) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const state = await fireProbe(side, { budgetMs });
+    const outcome = state.lastRun?.outcome;
+    if (outcome !== 'pane-unreadable' && outcome !== 'not-routed') return state;
+    say('');
+    say(`  ATTEMPT ${attempt} OBSERVED NOTHING — outcome '${outcome}'. That is the instrument`);
+    say('  failing rather than a model answering, so this run says nothing either way:');
+    say(`    | ${state.lastRun?.detail}`);
+    if (attempt === attempts) return state;
+    say('  Trying again. (A `no-answer` would NOT be retried — that is a real result.)');
+    await sleep(5000);
+  }
+  throw new Error('unreachable');
+}
+
 async function fireProbe(side, { budgetMs }) {
   const before = (await side.call('channel_liveness'))?.state?.runs ?? 0;
   const kicked = await side.call('channel_liveness', {
@@ -343,7 +374,7 @@ try {
     say('  token, the message, the recipient, the frame, the pane read and the verdict — is');
     say('  the daemon\'s. This script supplies none of it.');
     const startedAt = Date.now();
-    const state = await fireProbe(side, { budgetMs: WINDOW_MS + 120_000 });
+    const state = await fireProbeUntilObserved(side, { budgetMs: WINDOW_MS + 120_000 });
     const took = Date.now() - startedAt;
     const last = state.lastRun;
 
@@ -419,7 +450,7 @@ try {
     const before = await awaitSelfCheck(side, SILENT_KEY, { newerThan: readyAt - 60_000 });
     say(`  its startup self-check: ${before.channel?.outcome} → transport ${before.channel?.transport}`);
 
-    const state = await fireProbe(side, { budgetMs: WINDOW_MS + 120_000 });
+    const state = await fireProbeUntilObserved(side, { budgetMs: WINDOW_MS + 120_000 });
     const last = state.lastRun;
     const after = await channelRow(side, SILENT_KEY);
 

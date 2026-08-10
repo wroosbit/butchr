@@ -203,12 +203,15 @@ function world({
   routeReason = 'no-connection',
   paneBefore = 'a perfectly ordinary terminal\n$ ',
   paneReadable = true,
+  /** `true` = the pane stops being readable the moment the frame goes out. */
+  paneDiesAfterSend = false,
   answer = 'echo'
 } = {}) {
   const state = { sent: [], panes: [], clock: 1_770_000_000_000, logs: [], slept: 0 };
   let message = null;
   const pane = () => {
     if (!paneReadable) return null;
+    if (paneDiesAfterSend && message !== null) return null;
     if (message === null) return paneBefore;
     if (answer === 'frame') return `${paneBefore}\n${message}\n`;
     if (answer === 'echo') {
@@ -308,6 +311,19 @@ const scenarios = [
     outcome: 'pane-unreadable',
     proved: false,
     version: '2.1.226'
+  },
+  {
+    // FOUND BY THE FIRST LIVE RUN OF THIS PROBE, not reasoned about in advance.
+    // The agent's pane died seconds after the frame went out — KAN-24's herdr
+    // spawn flakiness — and the run was on course to record a MODEL non-answer
+    // for a terminal that no longer existed. A non-answer manufactured by a
+    // broken instrument is the same defect as a pass manufactured by one, and
+    // it points the reader at a model rather than at the dead pane.
+    label: 'the pane dies after the frame goes out and is never readable again',
+    opts: { paneDiesAfterSend: true },
+    outcome: 'pane-unreadable',
+    proved: false,
+    version: '2.1.226'
   }
 ];
 
@@ -326,12 +342,32 @@ for (const s of scenarios) {
     result.clientVersion === s.version ? '' : `got ${JSON.stringify(result.clientVersion)}`);
   check(typeof result.detail === 'string' && result.detail.length > 40,
     '  …with a sentence a reader can act on', result.detail.slice(0, 110) + '…');
-  if (s.outcome === 'pane-unreadable') {
+  if (s.outcome === 'pane-unreadable' && !s.opts.paneDiesAfterSend) {
     check(w.state.sent.length === 0,
       '  …and NOTHING was sent at an agent whose answer could not have been seen',
       `${w.state.sent.length} send(s)`);
   }
+  if (s.opts.paneDiesAfterSend) {
+    check(/NOT a non-answer and is not counted as one/i.test(result.detail),
+      '  …and says in as many words that it is NOT a non-answer — the agent went away',
+      result.detail.slice(0, 120) + '…');
+  }
 }
+
+// And the counting half, which is where the misattribution would actually do
+// damage: a dead pane must not push the fleet toward a drought that reads as
+// "no channel frame has reached a model".
+const paneDeathRecord = new ChannelLivenessRecord(60_000);
+const { result: died } = await run({ paneDiesAfterSend: true });
+paneDeathRecord.record(died);
+paneDeathRecord.record(died);
+paneDeathRecord.record(died);
+check(paneDeathRecord.state().nonAnswersSinceProof === 0,
+  'three runs lost to a dead pane count as zero non-answers',
+  `nonAnswers=${paneDeathRecord.state().nonAnswersSinceProof} ` +
+  `unrun=${paneDeathRecord.state().unrunSinceProof}`);
+check(paneDeathRecord.state().drought === false,
+  '  …and therefore cannot raise a drought about a model that was never observed');
 
 // A non-answer must not read as a fault, in the words a supervisor actually
 // meets. This is prose and it is asserted anyway: the ticket's AC 2 is about

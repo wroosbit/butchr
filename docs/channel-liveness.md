@@ -92,6 +92,23 @@ to send if the assembled token is in it.
 removes that guard; the run then reports `echoed` for an agent that printed
 nothing, and the proof goes red on it. That is the failure worth having watched.
 
+### And the one that runs the other way, found by the first live run
+
+**A non-answer manufactured by a broken instrument is the same defect pointed at a
+different reader.** The first live run of `probe-channel-liveness.mjs` had its
+agent's pane die seconds after the frame went out — KAN-24's herdr spawn
+flakiness, under CPU pressure — and the build at that moment recorded a **model
+non-answer for a terminal that no longer existed**. Nothing was wrong with the
+delivery, nothing was wrong with the model, and the record would have sent the
+next reader looking at the wrong one of the two.
+
+So a wait in which the pane was **never once readable** is `pane-unreadable`, not
+`no-answer`, and does not count toward a drought. The pane is also read *before*
+the frame goes out, and a blind instrument does not spend an agent's turn at all.
+Both are asserted in `verify-channel-liveness.mjs` section 1, and the second of
+them exists because a live run produced it rather than because it was reasoned
+about in advance.
+
 ## Where a reader meets it
 
 `butchr_list_agents` carries `channelLiveness` beside the per-agent `channel`

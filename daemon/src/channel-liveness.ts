@@ -149,7 +149,16 @@ export type ChannelLivenessOutcome =
   | 'channel-disabled'
   /** No agent was eligible — none connected, or every one degraded. */
   | 'no-candidate'
-  /** The chosen agent's pane could not be read, so the instrument was blind. */
+  /**
+   * The agent's pane could not be read, so the instrument was blind.
+   *
+   * Two moments produce it and both mean the same thing — *nothing was
+   * observed* — which is why they share an outcome rather than being told
+   * apart by it: before the send, where nothing is sent at all; and after it,
+   * where the frame went out and the terminal was never readable again. The
+   * second is the one that matters, because without it a pane that died would
+   * be recorded as a model that declined.
+   */
   | 'pane-unreadable'
   /** The gate refused the frame. Nothing was delivered and nothing was asked. */
   | 'not-routed'
@@ -468,19 +477,36 @@ export async function runChannelLivenessProbe(opts: {
 
   const waitStartedAt = world.now();
   let echoed = false;
+  // HOW OFTEN THE INSTRUMENT ACTUALLY WORKED. A pane that becomes unreadable
+  // mid-wait is not worth abandoning the run for — the agent may simply be
+  // redrawing — but a wait in which it was NEVER readable saw nothing, and
+  // calling that a non-answer would blame a model for an agent that went away.
+  // Found by the first live run of this probe: the agent's pane died seconds
+  // after the frame went out, and the run was on course to record a model
+  // non-answer for a terminal that no longer existed.
+  let readableReads = 0;
   while (world.now() - waitStartedAt < answerWindowMs) {
     await world.sleep(panePollMs);
     const pane = world.readPane(candidate.address);
-    // A pane that becomes unreadable mid-wait is not a non-answer either, but it
-    // is also not worth abandoning the run for: the agent may simply be
-    // redrawing. Keep waiting; if it never becomes readable the run ends as
-    // `no-answer`, and the detail below says the pane was last unreadable.
-    if (pane !== null && paneShowsToken(pane, token)) {
+    if (pane === null) continue;
+    readableReads += 1;
+    if (paneShowsToken(pane, token)) {
       echoed = true;
       break;
     }
   }
   const waitedMs = world.now() - waitStartedAt;
+
+  if (!echoed && readableReads === 0) {
+    return done(
+      'pane-unreadable',
+      `the frame was delivered to ${who} and its terminal could not be read once in the ` +
+      `${Math.round(waitedMs / 1000)}s that followed, so an answer could not have been seen. ` +
+      `This is NOT a non-answer and is not counted as one: the agent went away — most often a ` +
+      `pane that died or an agent stood down mid-run — and nothing here is evidence about a model`,
+      { ...carried, waitedMs }
+    );
+  }
 
   if (!echoed) {
     return done(
