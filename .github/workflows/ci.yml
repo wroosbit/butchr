@@ -32,6 +32,20 @@ jobs:
         run: npx tsc --noEmit
         working-directory: daemon
 
+      # KAN-223: the step above cannot see the seam being undone. Revert both
+      # `router.ts` and `daemon.ts` to the concrete `HerdrBridge` and it passes
+      # green with the property the ticket exists to establish entirely gone —
+      # demonstrated by `verify-agent-runtime-seam.mjs`, section 1. This project
+      # typechecks the stub implementation against the real wiring sites, so
+      # "a second runtime can drop in" is enforced rather than asserted.
+      #
+      # Same job, not a new one: it is the same pure `tsc` invocation over the
+      # same checkout with the same install, so it adds no flakiness surface.
+      # It emits nothing — the fixture lives outside `src/` and is noEmit.
+      - name: Typecheck the agent-runtime seam
+        run: npx tsc -p typecheck/tsconfig.json
+        working-directory: daemon
+
   # KAN-133: the sweep enforcing that every `verify-` script can report failure
   # and states what failure it would catch. It ran only when a reviewer
   # remembered to run it, so two consecutive PRs (#65, #67) were bounced for the

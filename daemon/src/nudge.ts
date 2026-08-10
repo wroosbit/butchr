@@ -1,4 +1,5 @@
-import { HerdrAgentStatus, HerdrBridge, agentNameFor } from './herdr.js';
+import { HerdrAgentStatus, agentNameFor } from './herdr.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import { renderedKey } from './keys.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { ResumeCause, resumeNudge } from './resume.js';
@@ -67,7 +68,7 @@ export function monotonicNow(): number {
  * reason to fail the restore — the agent is up either way.
  */
 export async function waitForAgentReady(
-  herdrBridge: HerdrBridge,
+  herdrBridge: AgentRuntime,
   key: string,
   type: string
 ): Promise<boolean> {
@@ -100,7 +101,7 @@ export interface NudgeResult {
  * answered.
  */
 export async function nudgeResumedAgent(opts: {
-  herdrBridge: HerdrBridge;
+  herdrBridge: AgentRuntime;
   type: string;
   key: string;
   cause: ResumeCause;
@@ -284,7 +285,7 @@ export interface DeliveryResult {
  * Never throws. Every caller is a timer or a fire-and-forget handler.
  */
 export async function deliverToAgent(opts: {
-  herdrBridge: HerdrBridge;
+  herdrBridge: AgentRuntime;
   type: string;
   key: string;
   message: string;
@@ -340,7 +341,7 @@ export async function deliverToAgent(opts: {
 
 /** This message's current count in the pane, or 0 if the pane cannot be read. */
 function readLandedCount(
-  herdrBridge: HerdrBridge,
+  herdrBridge: AgentRuntime,
   type: string,
   key: string,
   message: string
@@ -351,7 +352,7 @@ function readLandedCount(
 
 /** Poll the pane until one more copy has been submitted than there was, or time out. */
 async function confirmDelivered(
-  herdrBridge: HerdrBridge,
+  herdrBridge: AgentRuntime,
   type: string,
   key: string,
   message: string,
@@ -512,7 +513,7 @@ export class SupervisionNotifier {
 
   constructor(
     private readonly opts: {
-      herdrBridge: HerdrBridge;
+      herdrBridge: AgentRuntime;
       /** How the notifier resolves an agent's parent — the durable registry. */
       supervisorFor: (agentName: string) => SupervisorOfRecord | null;
       /**
