@@ -33,13 +33,25 @@
 //      defect survived every section here except the one that was written after a
 //      live run found it, which is why the header of `probe-channel-launch.mjs`
 //      says what it says about deterministic harnesses agreeing with the bug.
-//   5. **The brick misreported because the pane went blank — SECTION 7b, also
-//      measured rather than imagined.** `recent-unwrapped` reports what has
-//      RECENTLY SCROLLED, and a full-screen dialog paints once and then emits
-//      nothing, so a pane wedged behind one reads EMPTY within a minute. Deciding
-//      the outcome on the last frame would score that agent as a plain
-//      `no-connection` and send an operator hunting a channel fault instead of a
-//      box nobody pressed Enter at.
+//   5. **The brick misreported because the outcome was decided on the LAST
+//      FRAME — SECTION 7b.** A run that saw a dialog and never saw a connection
+//      is a brick whatever the final read says, so the verdict is a memory of
+//      the whole run. Deciding it on the last frame would score that agent as a
+//      plain `no-connection` and send an operator hunting a channel fault
+//      instead of a box nobody pressed Enter at.
+//
+//      **THE REASON THIS SECTION USED TO GIVE FOR A BLANK LAST FRAME WAS FALSE,
+//      and KAN-255 measured it out.** It said `recent-unwrapped` "reports what
+//      has RECENTLY SCROLLED" so a wedged pane "reads EMPTY within a minute".
+//      There is no time dependence in either direction: a live pane holding an
+//      unanswered full-screen dialog was read at nine different `--lines` every
+//      ten seconds for 100 seconds and every column was BYTE-IDENTICAL. What
+//      decides an empty read is geometry — `--lines N` windows the last N rows
+//      of the grid, and a dialog FILLS the screen, so there are no blank rows
+//      to window. The section survives the correction because it never depended
+//      on the reason: what it tests is that the verdict does not read the last
+//      frame, and a blank last frame is a legitimate input to that test however
+//      one arises.
 //
 // ---------------------------------------------------------------------------
 // WHAT THIS SCRIPT SUPPLIES ITSELF, AND WHO COVERS THE REST
@@ -393,18 +405,21 @@ say('');
 rmSync(scratch, { recursive: true, force: true });
 
 say('');
-say('== 7b. the brick as it ACTUALLY looks: a dialog, and then a blank pane ==');
+say('== 7b. the verdict is a memory of the run, not a reading of the last frame ==');
 say('');
 {
-  // `herdr agent read --source recent-unwrapped` reports what has recently
-  // scrolled. A full-screen dialog paints once and then emits nothing, so a pane
-  // wedged behind one reads EMPTY within a minute — measured by
-  // `probe-channel-launch.mjs` phase 3 on 2026-08-10, where the dialog was on the
-  // tail at t+30s and gone from it at t+60s with the agent still stuck.
+  // THE VERDICT MUST NOT BE DECIDED ON THE LAST FRAME. A run that saw a dialog
+  // and never saw a connection is a brick whatever the final read says; if the
+  // outcome were read off the final frame, that agent would come back as a
+  // plain `no-connection` and an operator would go hunting a channel fault
+  // instead of a box nobody pressed Enter at.
   //
-  // If the outcome were decided on the LAST frame, that agent would be reported
-  // as a plain `no-connection` and an operator would go looking for a channel
-  // fault instead of a box nobody pressed Enter at.
+  // THE BLANK LAST FRAME IS AN INPUT HERE, NOT A CLAIM ABOUT HOW PANES BEHAVE.
+  // This section used to justify it with a time-based drain — "a dialog paints
+  // once and then emits nothing, so the pane reads EMPTY within a minute" —
+  // and KAN-255 measured that false: nothing drains, and a dialog fills the
+  // screen so it has no blank rows for `--lines` to window. What the section
+  // tests is unaffected, which is why it is kept rather than deleted.
   const { result, lines } = await run({
     pane: (s) => (s.reads < 3 ? DIALOG_FRAME : ''),
     connection: () => null,
@@ -416,8 +431,13 @@ say('');
     `got '${result.outcome}'`
   );
   check(
-    /may read EMPTY now/.test(result.detail),
-    'and the detail warns the reader that the pane will look empty',
+    /HAS NOT REACHED ITS PROMPT/.test(result.detail) && /Enter/.test(result.detail),
+    'and the detail names the brick — a box waiting on an Enter, not a channel fault',
+    result.detail
+  );
+  check(
+    !/read EMPTY|produces no further output|paints once/.test(result.detail),
+    'and it no longer explains the blank pane with a drain that does not happen (KAN-255)',
     result.detail
   );
   check(

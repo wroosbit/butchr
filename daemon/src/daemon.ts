@@ -585,9 +585,22 @@ herdrBridge.setAgentSpawnedListener((session, spawnedAt, command) => {
     address,
     spawnedAt,
     world: {
-      // `recent-unwrapped`, via the same reader `butchr_tail_agent` uses, so
-      // what this matches against is what a human would see if they looked.
-      readPane: () => herdrBridge.tailAgent(session.key, session.type, 140).text ?? null,
+      // Via the same reader `butchr_tail_agent` uses, so what this matches
+      // against is what a human would see if they looked.
+      //
+      // THE `null` IS "COULD NOT LOOK" AND IS DERIVED FROM `success`, NOT FROM
+      // THE TEXT BEING ABSENT (KAN-255). `ChannelStartupWorld.readPane` has
+      // three meanings — text, an empty pane, and no reading at all — and the
+      // last is `null`. Before `tailAgent` asked every source, a spurious empty
+      // read arrived here as `''`, which is the SECOND of those: this loop
+      // concluded no dialog and no prompt about a pane it had not really seen,
+      // and `unreadable-pane` (which counts pane FAILURES) could never fire for
+      // it. Reading `success` rather than `text ?? null` says that out loud
+      // instead of leaving it to the shape of an optional field.
+      readPane: () => {
+        const tail = herdrBridge.tailAgent(session.key, session.type, 140);
+        return tail.success && typeof tail.text === 'string' ? tail.text : null;
+      },
       pressEnter: () => herdrBridge.pressPaneKey(session.key, session.type, 'Enter'),
       now: () => Date.now(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
