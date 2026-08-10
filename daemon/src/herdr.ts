@@ -8,6 +8,7 @@ import { resolveLauncher, sleepSync, unusableMcpServers, withWorkspaceIdentity, 
 import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import {
   RESUME_ENV,
   ResumeCause,
@@ -340,7 +341,7 @@ export interface HerdrAgentRecord {
   herdrStatus: HerdrAgentStatus;
 }
 
-export class HerdrBridge {
+export class HerdrBridge implements AgentRuntime {
   private sessions: Map<string, HerdrSession> = new Map();
 
   /** Set by the daemon so a dying PTY can be announced to connected clients. */
