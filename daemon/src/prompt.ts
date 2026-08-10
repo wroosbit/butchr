@@ -123,6 +123,15 @@ export function templateProvenance(
   // HEAD would make every brief look freshly-ruled and turn the comparison
   // below into noise — the reader would see commits between the two shas that
   // touched nothing they care about.
+  //
+  // AND MERGES ARE DELIBERATELY NOT EXCLUDED, though a merge commit's subject
+  // is a duller thing to read than a real change's. `--no-merges` looks like a
+  // tidy-up and is a correctness bug: where a merge is what last changed this
+  // path, skipping it stamps an OLDER commit, and the reader's
+  // `log <older>..origin/main` then lists that merge — reporting "a rule
+  // changed after you were briefed" about a change their file already contains.
+  // A dull subject line is worth far less than a false positive, because the
+  // false positive is what teaches an agent to stop running the check.
   const line = git(repoRoot, [
     'log',
     '-1',
