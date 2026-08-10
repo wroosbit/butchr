@@ -605,7 +605,7 @@ const RULES = [
     // stale prompt, and this bullet is where an agent meets the sentence — so
     // the bullet is where the limit has to sit, not only in the snapshot
     // section above it. Without it the two rules read as agreeing while
-    // pointing opposite ways: H-9 says trust this file, H-14 says this file is
+    // pointing opposite ways: H-9 says trust this file, H-16 says this file is
     // the copy nobody refreshes. They are reconciled by the scope of the
     // comparison — a *ticket*, never the repository — and that clause is the
     // reconciliation.
@@ -689,7 +689,18 @@ const RULES = [
     // and reads which rule each obeyed off the filesystem. It is a live
     // experiment, not a CI check, so a green run here is never evidence that
     // the section works — only that it is present.
-    id: 'H-14',
+    //
+    // THIS ENTRY WAS `H-14` ON `main` AND COLLIDED WITH KAN-212'S, WHICH WAS
+    // ALREADY THERE (KAN-241, renumbered here to H-16). Both were live on
+    // `origin/main` at once — KAN-212's from `3578774`, this one from
+    // `4e7183a` — and every check in the repository was green over it. It is
+    // the third instance of this collision in three days and the first that no
+    // human caught: `2a24912` was found by `epic/KAN-39` grepping on a hunch,
+    // and this one by the duplicate-id leg added below. Where both sides are
+    // already on the trunk the id stays with whichever landed first, which is
+    // also the cheaper edit here — KAN-212's number is quoted throughout its
+    // own docblock and this one appeared only in the `id:` field.
+    id: 'H-16',
     title: 'the brief is a snapshot: the commit it came from, when to re-check, and that it does not outrank `origin/main`',
     carriedBy: Object.fromEntries(
       PROMPTS.map((f) => [
@@ -1190,7 +1201,12 @@ console.log(`Inventory integrity\n${'-'.repeat(60)}`);
 
 const INVENTORY_FILE = 'daemon/scripts/rule-inventory.md';
 const SELF_FILE = 'daemon/scripts/verify-operative-rules-are-carried.mjs';
-const ID_IN_SOURCE = /id:\s*'([HR]-\d+)'/g;
+// Anchored to the start of a line, so it reads `id:` **fields** and not the
+// same text quoted in a comment. The unanchored version matched this file's own
+// header — "a resolution that keeps `id: 'H-13'` and takes one side's patterns"
+// — which would invent an id at the baseline and then report it as vanished.
+// Caught on the KAN-241 branch itself, by its ids not matching its own arrays.
+const ID_IN_SOURCE = /^\s*id:\s*'([HR]-\d+)'/gm;
 
 const baselineIndex = process.argv.indexOf('--baseline');
 const baseline = baselineIndex === -1 ? 'origin/main' : process.argv[baselineIndex + 1];
@@ -1241,9 +1257,12 @@ const duplicates = (ids) => [...new Set(ids.filter((id, i) => ids.indexOf(id) !=
 for (const id of duplicates(present)) {
   failures += 1;
   console.log(`  ✗ two entries in ${SELF_FILE} both claim id "${id}"`);
-  console.log('      That is the 2026-08-08 collision (`2a24912`): two independently written');
-  console.log('      rules given the same number. Renumber the one not yet on `main` — and');
-  console.log('      check you have not just dropped one of them instead.');
+  console.log('      Two independently written rules given the same number — the 2026-08-08');
+  console.log('      collision (`2a24912`), and again on `main` at `4e7183a`. Renumber the one');
+  console.log('      not yet on `main`; where BOTH are already on the trunk the id stays with');
+  console.log('      whichever landed first. Check you have not just dropped one of them, and');
+  console.log('      renumber the `id:` field AND every mention of it in its own docblock —');
+  console.log('      `2a24912` moved the field and left the prose behind.');
 }
 
 if (declared) {

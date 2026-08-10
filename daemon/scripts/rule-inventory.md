@@ -21,6 +21,17 @@ a plausible-looking file with no duplicate left in it to notice. It was caught
 by a person grepping on a hunch (`2a24912`), not by anything mechanical, and
 there is no reason to expect a next time.
 
+**There was no next time to wait for.** While the PR that added this file sat in
+review, it happened again and reached `main`: KAN-242 (`4e7183a`) landed an entry
+numbered `H-14`, the number KAN-212 had been given at `2a24912` two days
+earlier. Both were live on the trunk at once. `node --check` passed, the sweep
+passed, `verify-script-sweep` passed, and the PR was reviewed and approved — the
+duplicate is visible in none of them. It was caught by this file's own
+duplicate-id leg, at the moment its branch merged `main` in order to be merged
+itself, and renumbered to `H-16`. Three instances in three days; the first two
+were caught by a person reading, and the third was not caught by a person at
+all. That is the argument for this file, and it is no longer hypothetical.
+
 ## Why it is a *separate* file, which is the whole of the design
 
 **The accident this exists to catch is a conflict inside the script.** A merge
@@ -87,6 +98,8 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-12` — KAN-249 — the channel brief: an expected carrier, what its frame is worth, a reply path not urged
 - `H-13` — KAN-250 — the storm guards, per carrier: narrowed rather than deleted, no claim of burst safety
 - `H-14` — KAN-212 — every Story and Task filed carries a parent epic — the epic, never the story
+- `H-15` — KAN-262 — workspace dependencies are linked from the shared store, not installed privately
+- `H-16` — KAN-242 — the brief is a snapshot: the commit it came from, and it does not outrank `origin/main`
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
 <!-- INVENTORY:END -->

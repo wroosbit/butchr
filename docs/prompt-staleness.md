@@ -142,7 +142,7 @@ knows: *your brief was rewritten by this restart and you have not re-read it.*
 
 | claim | proved by | kind |
 | --- | --- | --- |
-| every prompt carries the section, and the placeholder inside it | `verify-operative-rules-are-carried.mjs` rule **H-14** | required CI |
+| every prompt carries the section, and the placeholder inside it | `verify-operative-rules-are-carried.mjs` rule **H-16** | required CI |
 | the stamp names the template's commit and not `HEAD`; its embedded commands run, answer "current" when current, and name the superseding commit when the rule moves; it degrades honestly off-git | `verify-prompt-provenance-stamp.mjs` | deterministic, 21 cases |
 | **an agent reads it, runs the check, and follows the new rule** | `probe-stale-rule-compliance.mjs` | live experiment, not CI |
 
