@@ -47,6 +47,12 @@ const unimplemented = (): never => {
 class StubRuntime implements AgentRuntime {
   setSessionEndedListener(_listener: (event: SessionEndedEvent) => void): void {}
 
+  // KAN-246. A runtime that spawns no pane of its own simply never fires this,
+  // which is why the daemon treats it as a notification rather than a promise.
+  setAgentSpawnedListener(
+    _listener: (session: HerdrSession, spawnedAt: number, command: string) => void
+  ): void {}
+
   spawnSession(
     _type: string,
     _key: string,
@@ -127,6 +133,10 @@ class StubRuntime implements AgentRuntime {
   ): { success: boolean; text?: string; truncated?: boolean; error?: string } {
     return { success: false, error: 'stub' };
   }
+
+  // KAN-246. One key, no interrupt — see the interface for why this is not a
+  // smaller `sendToAgent`.
+  pressPaneKey(_key: string, _type: string | undefined, _keyName: string): void {}
 
   async sendToAgent(
     _key: string,

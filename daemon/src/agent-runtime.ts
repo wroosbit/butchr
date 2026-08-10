@@ -18,10 +18,12 @@ import type {
  *
  * ## Derived from call sites, not from the class
  *
- * The 20 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
- * `nudge.ts`, `reconcile.ts` and `router.ts` actually call, across 43 call
- * sites. `HerdrBridge` declares 31 methods; the other 11 are implementation
- * and are deliberately absent:
+ * The 22 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
+ * `nudge.ts`, `reconcile.ts` and `router.ts` actually call. (KAN-223 derived 20
+ * from 43 call sites; KAN-246 added `setAgentSpawnedListener` and
+ * `pressPaneKey`, both called from `daemon.ts`, by the same rule — a method is
+ * on this interface because daemon code calls it.) `HerdrBridge` declares 33
+ * methods; the other 11 are implementation and are deliberately absent:
  *
  * - **9 are private** — `liveAttachFor`, `startAgentInOwnTab`,
  *   `createAgentTab`, `closeTabPlaceholder`, `initPty`, `runHerdr`,
@@ -72,6 +74,24 @@ export interface AgentRuntime {
 
   /** Register the callback fired when a session ends. Called once, by `daemon.ts`. */
   setSessionEndedListener(listener: (event: SessionEndedEvent) => void): void;
+
+  /**
+   * Register the callback fired once per pane this runtime actually spawns,
+   * with the moment of the spawn and the command line it ran. Called once, by
+   * `daemon.ts`, which uses it to watch a channel-enabled agent through its
+   * startup (KAN-246, channel-startup.ts).
+   *
+   * **The command string is part of the contract, not a convenience.** It is
+   * what makes "was this a channel-enabled spawn?" answerable from the thing
+   * that was spawned, rather than from a second read of a switch that anything
+   * may have rewritten in between — see the note on the implementation.
+   *
+   * A runtime that never spawns a pane of its own may leave this unfired; the
+   * daemon installs a listener and does not require it to be called.
+   */
+  setAgentSpawnedListener(
+    listener: (session: HerdrSession, spawnedAt: number, command: string) => void
+  ): void;
 
   spawnSession(
     type: string,
@@ -151,6 +171,18 @@ export interface AgentRuntime {
     type?: string,
     lines?: number
   ): { success: boolean; text?: string; truncated?: boolean; error?: string };
+
+  /**
+   * Press one key at an agent's pane. Throws when the agent, the pane or the
+   * runtime itself is not there.
+   *
+   * **Not a smaller `sendToAgent`.** That method opens with a Ctrl+C, which
+   * cancels the recipient's turn and abandons any tool call in flight; this
+   * sends exactly the key it is given. Its one caller answers a full-screen
+   * startup dialog that is blocking the session's own boot, where there is no
+   * turn to cancel because the agent has not begun one (KAN-246).
+   */
+  pressPaneKey(key: string, type: string | undefined, keyName: string): void;
 
   /**
    * Types a message into an agent's terminal. Resolves to whether the
