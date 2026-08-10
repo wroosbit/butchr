@@ -76,6 +76,13 @@ the server can look at will ever detect leg 4 breaking.
 **So the ticket's framing — "the only thing that catches the silent contract
 move" — is more than this mechanism can carry, and it does not claim it.**
 
+**And nothing since has changed that sentence.** KAN-252's scheduled probe
+([`channel-liveness.md`](channel-liveness.md)) watches legs 4 and 5 from the only
+place they are visible — a model's own output — and it did not make them
+observable *from the server*, because they are not. Everything on this page about
+what a handshake does and does not reveal is still true; what is no longer true is
+that nobody is looking.
+
 ---
 
 ## The version pin
@@ -193,9 +200,25 @@ rejected as a **startup** check on three counts:
   transport;
 * at bring-up the agent has not yet read its own brief.
 
-**Who covers it: nobody on a schedule.** That is filed as
-[KAN-252](https://wroosbit.atlassian.net/browse/KAN-252) rather than left for a
-reader to infer a coverage that does not exist.
+**Who covers it: the scheduled probe in
+[`channel-liveness.md`](channel-liveness.md)** —
+[KAN-252](https://wroosbit.atlassian.net/browse/KAN-252), which this page filed
+rather than leaving a reader to infer a coverage that did not exist. This section
+used to end *"nobody on a schedule"*, and that is the sentence KAN-252 made false.
+
+One agent, every few hours, long after bring-up, is asked over the channel to
+assemble and print a token whose two halves are never adjacent in the message, so
+only something that read both can put it on a pane. The result is pinned to the
+client version **this** check recorded for that agent.
+
+**All three objections above still stand, which is why it is not folded in here.**
+It costs a turn; a model may decline; and it needs an agent that has read its
+brief. What changed is only *where* it runs. A leg-4 break leaves this check
+passing on every agent forever; it leaves the liveness record with a `lastProof`
+that ages and a drought counter that climbs. Neither mechanism can tell a broken
+dispatcher from a fleet of models that declined — nothing outside the client can —
+and the improvement is exactly that an unobservable break becomes an observable
+absence of evidence.
 
 ---
 

@@ -46,6 +46,11 @@
  *   4. the client's channel dispatcher accepts it                   **NOT proved**
  *   5. the model reads it                                           **NOT proved**
  *
+ * Legs 4 and 5 are not proved *here* and are no longer unwatched: KAN-252's
+ * scheduled probe (channel-liveness.ts) asks one model, occasionally, to echo a
+ * token, and that is the only instrument that reaches them. See the section on
+ * leg 4 below for what it can and cannot say.
+ *
  * Leg 3 is proved as *consumed by the client*, per the ping above, rather than
  * merely written.
  *
@@ -88,10 +93,27 @@
  * may decline on the merits and be right to (KAN-217 measured a correct refusal,
  * and from outside a refusal is indistinguishable from a broken transport); and
  * it cannot run at bring-up, because at bring-up the agent has not yet read its
- * own brief. **Who covers it: nobody on a schedule.** That gap is filed rather
- * than left to be inferred — **KAN-252**, linked `Relates` to KAN-248, which also
- * records why bolting a model echo onto *this* check would be the change that
- * looks like a fix and is not one.
+ * own brief. **Bolting a model echo onto *this* check is the change that looks
+ * like a fix and is not one**, and it stays rejected: it would put a false
+ * negative — a model correctly declining — into the decision that gives an agent
+ * a channel at all.
+ *
+ * **WHO COVERS IT: `daemon/src/channel-liveness.ts` (KAN-252), on a schedule.**
+ * This sentence used to read *"nobody on a schedule"*, and that is the thing
+ * KAN-252 made false. One agent, every few hours, long after bring-up, is asked
+ * over the channel to assemble and print a token whose two halves are never
+ * adjacent in the message — so only a model that read both can put it on a pane.
+ * The result is pinned to the client version **this** module recorded for that
+ * agent, and it is read off `butchr_list_agents` as `channelLiveness` beside the
+ * per-agent rows below.
+ *
+ * **What that does and does not buy, because the two are easy to run together.**
+ * It cannot distinguish a broken dispatcher from a fleet of models that all
+ * declined — nothing outside the client can. What it does is stop being green:
+ * a leg-4 break leaves *this* check passing on every agent forever, and leaves
+ * the liveness record with a `lastProof` that ages and a drought counter that
+ * climbs. An unobservable break becomes an observable absence of evidence. That
+ * is the whole of the improvement and this module does not claim more of it.
  *
  * ---------------------------------------------------------------------------
  * WHAT A FAILURE DOES: DEGRADE THE TRANSPORT, LOUDLY, AND NEVER REFUSE THE AGENT
