@@ -368,7 +368,7 @@ takes the composer.
 | Guard | Composer path | Channel path |
 | --- | --- | --- |
 | **Meaningful transitions only** — To Do ↔ In Progress, → In Review, → Done; never on edits, comments or assignment | **unchanged** — every send destroys the work the recipient had in flight | **the cost changes rather than vanishes**: destroyed work becomes consumed context, which is not free. The rule stands as written, because you cannot know before sending which column applies. |
-| **Never notify the agent whose action caused the event** | unchanged — it already knows, and the interrupt is pure loss | **stays** — it already knows, so the message is noise on either carrier |
+| **Never notify the agent whose action caused the event** — if you transitioned because your supervisor told you to, the supervisor already knows | unchanged — the interrupt is pure loss | **stays** — it already knows, so the message is noise on either carrier |
 | **A nudge you receive must never itself generate nudges** | unchanged | **stays** — a cascade of turn-boundary events is still a cascade |
 | **Never send two in a row to the same agent** | **unchanged, and now measured** — the second kills the session and the first already cost it the work in flight | **narrowed, not deleted** — see directly below |
 
