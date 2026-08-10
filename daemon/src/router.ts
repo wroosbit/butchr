@@ -245,6 +245,27 @@ function capacityDto(c: Capacity) {
     cpuBusySource: c.cpuBusySource,
     cpuBusyWindowSeconds:
       c.cpuBusyWindowSeconds === null ? null : Math.round(c.cpuBusyWindowSeconds),
+    // The stall veto (KAN-218), which is not a count and so has no
+    // `headroomBy…` companion. `stallPercent: null` is the one reading a caller
+    // must not read as "fine": it means this machine has no /proc/pressure and
+    // nothing at all is bounding I/O saturation. `stalled` is therefore sent
+    // separately from the figure rather than inferred from it.
+    stallPercent: c.stallPercent === null ? null : Math.round(c.stallPercent * 100) / 100,
+    stallSource: c.stallSource,
+    stallIoPercent:
+      typeof c.stall?.ioFullPercent === 'number'
+        ? Math.round(c.stall.ioFullPercent * 100) / 100
+        : null,
+    stallMemoryPercent:
+      typeof c.stall?.memoryFullPercent === 'number'
+        ? Math.round(c.stall.memoryFullPercent * 100) / 100
+        : null,
+    stallRefusePercent: c.stallRefusePercent,
+    stalled: c.stalled,
+    // What the three counting terms allowed before the veto. Equal to
+    // `headroom` unless `stalled`, and the pair is what makes the veto's effect
+    // legible instead of looking like a machine that happened to be full.
+    headroomBeforeStall: c.headroomBeforeStall,
     totalMb: Math.round(c.machine.totalBytes / (1024 * 1024)),
     availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
     agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
@@ -1170,7 +1191,29 @@ export class MessageRouter {
     // agent on a board of task agents outranks nothing, and neither does
     // anything at all when the only things running are epic or story agents.
     const candidates = this.preemptionCandidates(agents, agentName);
-    const victim = selectVictim(candidates, priority);
+    // A stall is not a slot shortage, so no stand-down can relieve it (KAN-218).
+    //
+    // Preemption's bargain is that destroying one agent's work frees a slot the
+    // incoming agent then takes. That holds for the count term exactly, and the
+    // block below already accepts that it holds only approximately for cpu and
+    // memory — it proceeds unconditionally after a successful stand-down rather
+    // than re-running the gate, because "the kernel has not yet reclaimed the
+    // memory" and refusing after killing an agent is the worst outcome
+    // available.
+    //
+    // For a stall the bargain fails outright. `full avg10` is a decaying
+    // ten-second average of time the machine spent making no progress, so it
+    // cannot drop inside this call however many agents are stood down, and the
+    // condition it reports — a disk that is failing, or a machine thrashing on
+    // swap — is not one that a freed slot addresses. Preempting here would
+    // destroy an agent's work and then start a new agent onto the same stalled
+    // machine, which is strictly worse than either refusing or admitting.
+    //
+    // So a stall-bound refusal offers no victim and takes none. `override:
+    // true` still works and is still recorded with these figures: an operator
+    // who can see the machine may know something the gate does not.
+    const stallBound = capacity.headroomBoundBy === 'stall';
+    const victim = stallBound ? null : selectVictim(candidates, priority);
     const derivation = describeCapacity(capacity);
     const offer = (v: PreemptionCandidate): PreemptionOfferDto => ({
       agentName: v.agentName,
@@ -1254,9 +1297,19 @@ export class MessageRouter {
     if (!override) {
       // Both branches name what is running and what it is worth. Losing a slot
       // is survivable; not being able to see who you lost it to is not.
-      const refusal =
-        `${capacityRefusal(capacity, what)}\n` +
-        (victim ? preemptionOffer(victim, priority) : noVictimReason(candidates, priority));
+      // `noVictimReason` would be false here: on a stalled machine there may
+      // well be something below this priority, and saying there is not would
+      // send the reader to check an ordering that is not what refused them.
+      // The reason no victim is offered is that a stand-down cannot help.
+      const whyNoVictim = stallBound
+        ? 'No stand-down is offered: a stalled machine is not short of a slot, so freeing one ' +
+          'would destroy an agent\'s work without making room. Wait for the stall to clear ' +
+          '(the figure above is a 10-second average, so give it at least that long), fix what ' +
+          'is stalling the machine, or pass override: true to start anyway.'
+        : victim
+          ? preemptionOffer(victim, priority)
+          : noVictimReason(candidates, priority);
+      const refusal = `${capacityRefusal(capacity, what)}\n${whyNoVictim}`;
       return {
         capacity,
         refusal,

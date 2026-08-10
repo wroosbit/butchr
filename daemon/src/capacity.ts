@@ -206,6 +206,112 @@ import * as os from 'os';
  * not a measurement cannot falsify one).
  * daemon/scripts/verify-cost-estimate-plausibility.mjs is the proof, and it
  * reproduces the post-restart collapse before showing its absence.
+ *
+ * KAN-218 puts back a protection KAN-201 removed without naming, which
+ * `epic/KAN-59` found in their own port of the same change and reported as a
+ * regression in their own work.
+ *
+ * `load1` was accidentally a signal about more than CPU. The run queue counts
+ * tasks in uninterruptible sleep as well as tasks wanting CPU, so a machine
+ * thrashing on swap or stalled on a failing disk showed a high load with idle
+ * cores — and the old gate refused there, for the wrong reason but with the
+ * right outcome. `busyCores` deliberately counts iowait as *not busy* (see
+ * {@link sampleCpuBusy}), which is correct for a CPU term and leaves I/O
+ * saturation bounded by nothing at all.
+ *
+ * THE INSTRUMENT, AND WHY NOT THE OBVIOUS ONE
+ *
+ * The obvious candidate is /proc/stat's `iowait`, and it is the wrong one — not
+ * merely "famously misleading" but wrong in a way that was measured here on
+ * 2026-08-08 rather than repeated from folklore. `iowait` is a *per-CPU* bucket:
+ * a jiffy counts as iowait only when that CPU is **idle** and has at least one
+ * task on it blocked on I/O. Two consequences, both fatal for a gate:
+ *
+ *   - It is divided by the core count. One task fully blocked on I/O reads as
+ *     25% iowait on this 4-core laptop and 1.6% on a 64-core box. The same
+ *     physical stall reports differently depending on hardware that has nothing
+ *     to do with the disk, so a threshold on it measures core count as much as
+ *     saturation.
+ *   - It goes to **zero** precisely when the machine is busiest. If the CPUs
+ *     have other runnable work, blocked tasks contribute nothing to iowait at
+ *     all. Under a deliberate 8-way synchronous-direct-write load on this
+ *     machine, `iowait` peaked at 14.5% and then fell to **0.00%** while the
+ *     disk was doing the same work — because CPU use had risen from 32% to 55%
+ *     and there were no longer idle CPUs to charge the wait to. At that instant
+ *     PSI reported 21% of wall time with something stalled on I/O and 3% with
+ *     everything stalled. A gate on iowait would have seen a healthy machine.
+ *
+ * So: **pressure stall information**, /proc/pressure/{io,memory}, which measures
+ * the thing directly — the share of wall-clock time that tasks spent stalled,
+ * machine-wide, independent of core count and independent of whether the CPUs
+ * had other work. `some` is "at least one task stalled"; `full` is "every
+ * non-idle task stalled", i.e. the machine made no forward progress at all.
+ * This term reads `full`, because `some` fires on one process doing one honest
+ * read and `full` is the share of time the machine was actually stopped.
+ *
+ * BOTH FILES, BECAUSE SWAP THRASH IS NOT FILED UNDER I/O
+ *
+ * The ticket's headline case is a machine thrashing on swap, and an io-only term
+ * would miss it: the kernel accounts a task waiting on swap-in as a **memory**
+ * stall (`psi_memstall_enter`, alongside direct reclaim and cache thrashing),
+ * not an I/O one. So this term reads both files and takes the worse of the two,
+ * and reports which one it was. That is also why it is not folded into the
+ * memory term above: `availableBytes` asks *is there room*, and this asks *is
+ * the machine stalling to make room*. They disagree exactly when it matters —
+ * measured here on 2026-08-08 at 934 MB swapped out against 7.2 GiB reported
+ * available, a machine the memory term reads as entirely healthy.
+ *
+ * A VETO, NOT A DIVISOR — WHICH IS WHY IT HAS NO `headroomBy…` COUNT
+ *
+ * Every other term is `(budget − in use − reserved) ÷ per-agent cost`, and
+ * answers in agents. This one cannot honestly take that shape: there is no
+ * measured per-agent I/O cost to divide by, and inventing one to make the
+ * arithmetic look symmetrical would be the dimensional confusion KAN-201 exists
+ * to have removed. A stalled machine does not have room for 0.4 of an agent; it
+ * has no room, and the honest model is a veto that zeroes the headroom the other
+ * three terms computed. It is reported as {@link Capacity.stallPercent} and a
+ * boolean, and `headroomBoundBy` gains `'stall'` rather than a fourth count.
+ *
+ * It names itself only when it is the reason there is no room — if the board was
+ * already full, `cap` still binds, by the same tie rule as the other terms:
+ * closing an agent is something the reader can act on, waiting for a disk is not.
+ *
+ * THE THRESHOLD IS A DECISION, NOT A MEASUREMENT, AND THERE IS NO INCIDENT
+ *
+ * Said plainly because the rest of this file is careful about the difference.
+ * {@link STALL_REFUSE_PERCENT} is 20%, and no observed outage calibrated it,
+ * because — as the ticket says — this is a real gap with no observed instance.
+ * What it is calibrated against is the other side: what this machine produces
+ * when nothing is wrong. Over five minutes spanning a full agent fleet, several
+ * builds and two deliberately induced I/O loads, `io full avg10` averaged 1.05%
+ * and peaked at 7.24%; `memory full avg10` averaged 0.016% and peaked at 0.54%.
+ * 20% sits roughly 3x above the worst reading a deliberate stress test produced
+ * and two orders of magnitude above the ordinary one, so the term is inert in
+ * normal operation, which is what is wanted from a saturation guard. It is an
+ * env override (BUTCHR_STALL_PERCENT) for the same reason every other constant
+ * here is, and a value above 100 disables it outright.
+ *
+ * `avg10` and not `avg60`, deliberately: admission is a question about now, and
+ * preferring a smoother, more-lagging average is the exact mistake KAN-201
+ * catalogued as (3). Ten seconds is the same order as the CPU term's window.
+ *
+ * WHERE PSI IS ABSENT — AND THERE IS NO FALLBACK, ON PURPOSE
+ *
+ * Pre-4.20 kernels, kernels without CONFIG_PSI, and everything that is not
+ * Linux have no /proc/pressure. The term then goes inert and every report says
+ * so. It is tempting to fall back to `procs_blocked` from /proc/stat, which is
+ * available everywhere, and it is declined: that is an instantaneous count of
+ * tasks in uninterruptible sleep, one `dd` puts it at 1 on a perfectly healthy
+ * machine, and without a rate and a window there is no threshold that separates
+ * healthy from thrashing. A fabricated instrument that refuses activations on a
+ * healthy machine is worse than a named hole. So the hole is named: on a machine
+ * without PSI, I/O saturation is bounded by nothing, the derivation says that in
+ * words, and this comment is the line beside the CPU term that the next reader
+ * needs in order to learn that the gap is known rather than missed.
+ *
+ * daemon/scripts/verify-io-stall-gate.mjs is the proof; it drives the reader
+ * from fixture files, so the arithmetic and the parsing are both exercised, and
+ * it removes the term to show the same machine admitted.
  */
 
 export const GIB = 1024 ** 3;
@@ -382,6 +488,75 @@ export function boundCoresByObservedCpu(
  */
 export const HERDR_OVERHEAD_CORES = 0.5;
 
+/**
+ * How much wall-clock time the machine spent stalled, from
+ * /proc/pressure/{io,memory}.
+ *
+ * Both figures are the `full avg10` field: the share of the last ten seconds in
+ * which *every* non-idle task was stalled on that resource — the machine
+ * stopped, not merely something waiting. See the header for why `full` rather
+ * than `some`, and why both files rather than just `io`.
+ *
+ * Either may be null on its own if that file is unreadable; both null means PSI
+ * is unavailable on this machine and the term is inert.
+ */
+export interface StallFacts {
+  /** `/proc/pressure/io` → `full avg10`, as a percentage. */
+  ioFullPercent: number | null;
+  /** `/proc/pressure/memory` → `full avg10`, as a percentage. Swap-in lives here. */
+  memoryFullPercent: number | null;
+}
+
+/**
+ * The share of wall time at or above which no agent is admitted, whatever the
+ * other three terms say.
+ *
+ * A decision rather than a measurement, and the header says so at length: no
+ * outage calibrated it, because this gap has no observed instance. It is
+ * calibrated from the other side — 20% is ~3x the worst reading (7.24%) a
+ * deliberate I/O stress test produced on the machine this was written on, and
+ * ~20x its ordinary 1.05% average under a full agent fleet.
+ *
+ * BUTCHR_STALL_PERCENT overrides it; a value above 100 disables the term, since
+ * `full` cannot exceed 100.
+ */
+export const STALL_REFUSE_PERCENT = 20;
+
+/**
+ * Which pressure file produced the figure that was compared against the
+ * threshold — the worse of the two. Reported so a refusal can say "stalled on
+ * I/O" or "thrashing on memory", which are different problems with different
+ * operator responses, and KAN-60 is about a refusal naming its real constraint.
+ */
+export type StallSource = 'io' | 'memory';
+
+/**
+ * The worse of the two stall figures, and which one it was, or null when
+ * neither could be read.
+ *
+ * Exported because the verify script drives it directly: a max() over two
+ * nullable numbers is exactly the kind of thing that quietly returns 0 instead
+ * of null on the day one file disappears, and that failure would silently
+ * disable the gate while every report still printed a figure.
+ */
+export function worstStall(
+  stall: StallFacts | null | undefined
+): { percent: number; source: StallSource } | null {
+  if (!stall) return null;
+  const candidates: Array<{ percent: number; source: StallSource }> = [];
+  if (typeof stall.ioFullPercent === 'number' && Number.isFinite(stall.ioFullPercent)) {
+    candidates.push({ percent: stall.ioFullPercent, source: 'io' });
+  }
+  if (typeof stall.memoryFullPercent === 'number' && Number.isFinite(stall.memoryFullPercent)) {
+    candidates.push({ percent: stall.memoryFullPercent, source: 'memory' });
+  }
+  if (candidates.length === 0) return null;
+  // Ties go to io: it is the cheaper of the two to act on (a disk is a thing an
+  // operator can look at), and a tie between two equal figures is arbitrary
+  // anyway. reduce with `>` rather than `>=` keeps that stable.
+  return candidates.reduce((worst, c) => (c.percent > worst.percent ? c : worst));
+}
+
 /** What the machine looks like right now, or what we pretend it looks like. */
 export interface MachineFacts {
   cores: number;
@@ -408,6 +583,13 @@ export interface MachineFacts {
   busyCores?: number | null;
   /** Length of the window `busyCores` was averaged over, in seconds. */
   busyWindowSeconds?: number | null;
+  /**
+   * How much of the last ten seconds this machine spent stalled on I/O or on
+   * memory reclaim, from /proc/pressure (KAN-218). Null or absent where PSI is
+   * unavailable, and the term is then inert and says so — there is deliberately
+   * no fallback instrument, see the header.
+   */
+  stall?: StallFacts | null;
 }
 
 /**
@@ -442,8 +624,15 @@ export type CapBound = 'cpu' | 'memory' | 'floor' | 'configured';
  * deliberately not kept as an alias: a reader who sees `cpu` must be able to
  * conclude that CPU actually in use is what bound, and a payload that could
  * still say `load` would leave that in doubt.
+ *
+ * `'stall'` (KAN-218) is the odd one out and is meant to be: the other three
+ * are counts of agents and the smallest wins, while `'stall'` is a veto that
+ * zeroes them. It is reported here anyway because the question this type
+ * answers — "which thing said no" — is the same question, and a caller that
+ * switched on three cases and silently mishandled a fourth is why it is in the
+ * union rather than a separate boolean nobody reads.
  */
-export type HeadroomBound = 'cap' | 'cpu' | 'memory';
+export type HeadroomBound = 'cap' | 'cpu' | 'memory' | 'stall';
 
 /** Where the `busyCores` figure the CPU term divided came from. */
 export type CpuBusySource = 'measured' | 'load-average';
@@ -506,12 +695,40 @@ export interface Capacity {
   headroomByCpu: number;
   headroomByMemory: number;
   headroomBoundBy: HeadroomBound;
+  /**
+   * What the three counting terms agreed on before the stall veto was applied
+   * (KAN-218). Equal to `headroom` in the ordinary case; when `stalled` is true
+   * this is the room the machine would otherwise have had, and printing it is
+   * what makes the veto's effect visible instead of looking like a machine that
+   * happened to be full.
+   */
+  headroomBeforeStall: number;
 
   /** The cores-in-use figure the CPU term used, and where it came from. */
   cpuBusyCores: number;
   cpuBusySource: CpuBusySource;
   /** Window `cpuBusyCores` was averaged over; null on the fallback path. */
   cpuBusyWindowSeconds: number | null;
+
+  /**
+   * The worse of the two `/proc/pressure` `full avg10` figures — the share of
+   * the last ten seconds in which every non-idle task was stalled (KAN-218).
+   * Null where PSI is unavailable, which is also the one case where nothing
+   * bounds I/O saturation at all.
+   */
+  stallPercent: number | null;
+  /** Which pressure file `stallPercent` came from. Null when it is null. */
+  stallSource: StallSource | null;
+  /** Both figures as read, so a report can show the one that did not bind. */
+  stall: StallFacts | null;
+  /** The threshold `stallPercent` was compared against, after any override. */
+  stallRefusePercent: number;
+  /**
+   * True when the veto fired: the machine is stalled and no agent is admitted
+   * however much CPU and memory are free. Always false where PSI is
+   * unavailable — an absent instrument refuses nothing.
+   */
+  stalled: boolean;
 
   /** True when starting another agent would exceed what the machine can carry. */
   atCapacity: boolean;
@@ -531,6 +748,11 @@ export interface CapacityOptions {
   configuredCap?: number | null;
   /** Supervisors observed running. Reported only; it changes no arithmetic. */
   supervisorsRunning?: number;
+  /**
+   * BUTCHR_STALL_PERCENT: the stall threshold, overriding
+   * {@link STALL_REFUSE_PERCENT}. Above 100 disables the term.
+   */
+  stallRefusePercent?: number | null;
 }
 
 /**
@@ -667,15 +889,33 @@ export function computeCapacity(
     Math.floor(Math.max(0, machine.availableBytes - reservedBytes) / cost.residentBytes)
   );
 
-  const headroom = Math.min(headroomByCap, headroomByCpu, headroomByMemory);
+  const headroomBeforeStall = Math.min(headroomByCap, headroomByCpu, headroomByMemory);
   // Ties resolve to the term the reader can most directly act on: closing an
   // agent is a decision, waiting for the machine to go quiet is not.
-  const headroomBoundBy: HeadroomBound =
+  const countingBoundBy: HeadroomBound =
     headroomByCap <= headroomByCpu && headroomByCap <= headroomByMemory
       ? 'cap'
       : headroomByCpu <= headroomByMemory
         ? 'cpu'
         : 'memory';
+
+  // The stall veto (KAN-218). Not a fourth count — a machine that is stalled
+  // has no room at all, whatever the three terms above computed, and there is
+  // no per-agent I/O cost to divide by that would make it one. See the header.
+  //
+  // `worst` is null exactly when /proc/pressure could not be read, and a
+  // missing instrument must refuse nothing: `stalled` is false, the derivation
+  // says the term is inert, and I/O saturation is bounded by nothing on that
+  // machine. That is a named hole rather than a silent one.
+  const worst = worstStall(machine.stall);
+  const stallRefusePercent = options.stallRefusePercent ?? STALL_REFUSE_PERCENT;
+  const stalled = worst !== null && worst.percent >= stallRefusePercent;
+  const headroom = stalled ? 0 : headroomBeforeStall;
+  // `stall` names itself only when it is the reason there is no room. If the
+  // board was already full the count still binds, by the same tie rule as
+  // above: the reader can close an agent, and cannot hurry a disk.
+  const headroomBoundBy: HeadroomBound =
+    stalled && headroomBeforeStall > 0 ? 'stall' : countingBoundBy;
 
   return {
     machine,
@@ -696,9 +936,15 @@ export function computeCapacity(
     headroomByCpu,
     headroomByMemory,
     headroomBoundBy,
+    headroomBeforeStall,
     cpuBusyCores,
     cpuBusySource,
     cpuBusyWindowSeconds,
+    stallPercent: worst ? worst.percent : null,
+    stallSource: worst ? worst.source : null,
+    stall: machine.stall ?? null,
+    stallRefusePercent,
+    stalled,
     atCapacity: headroom <= 0
   };
 }
@@ -722,6 +968,60 @@ export function readAvailableBytes(): number {
     // not Linux, or /proc is not mounted
   }
   return os.freemem();
+}
+
+/**
+ * `full avg10` out of one /proc/pressure file, as a percentage.
+ *
+ * The file looks like this, and both lines are always present except for
+ * /proc/pressure/cpu, whose `full` is undefined at system level:
+ *
+ *     some avg10=2.27 avg60=2.32 avg300=1.98 total=537036752
+ *     full avg10=0.01 avg60=0.18 avg300=0.24 total=313582439
+ *
+ * Returns null for every way this can fail — no file (pre-4.20, no CONFIG_PSI,
+ * not Linux), no `full` line, an unparseable field, a figure outside 0..100 —
+ * because the caller's handling of "no instrument" is to leave the gate open
+ * and say so, and a half-read file must take that path rather than produce a
+ * number that looks measured.
+ *
+ * The path is a parameter so the proof can drive it from fixtures. That is not
+ * only convenience: a gate whose arithmetic is verified on facts the test
+ * supplied has not been shown to receive real ones (KAN-145), and pointing the
+ * real parser at a file containing a real stalled machine's numbers is what
+ * closes the seam between the parse and the arithmetic.
+ */
+export function readPressureFull(path: string): number | null {
+  try {
+    const line = fs
+      .readFileSync(path, 'utf8')
+      .split('\n')
+      .find((l) => l.startsWith('full '));
+    if (!line) return null;
+    const field = line.split(/\s+/).find((f) => f.startsWith('avg10='));
+    if (!field) return null;
+    const value = Number(field.slice('avg10='.length));
+    if (!Number.isFinite(value) || value < 0 || value > 100) return null;
+    return value;
+  } catch {
+    // no /proc/pressure: pre-4.20, CONFIG_PSI off, or not Linux
+    return null;
+  }
+}
+
+/**
+ * How stalled this machine is, from both pressure files.
+ *
+ * `root` is a parameter for the same reason {@link readPressureFull}'s path is:
+ * the proof points it at a directory of fixtures so that the reader, the
+ * worst-of-two, the veto and the sentence are all exercised by one call, rather
+ * than the arithmetic being tested against a `StallFacts` a script typed out.
+ */
+export function readStallFacts(root = '/proc/pressure'): StallFacts {
+  return {
+    ioFullPercent: readPressureFull(`${root}/io`),
+    memoryFullPercent: readPressureFull(`${root}/memory`)
+  };
 }
 
 /**
@@ -854,7 +1154,11 @@ export function readMachineFacts(): MachineFacts {
     // Null until the first window closes — one capacity call cannot measure a
     // rate. The fallback is labelled, and it is the conservative direction.
     busyCores: cpu ? cpu.busyFraction * cores : null,
-    busyWindowSeconds: cpu ? cpu.windowSeconds : null
+    busyWindowSeconds: cpu ? cpu.windowSeconds : null,
+    // Unlike the CPU window, this needs no baseline and no timer: PSI is
+    // already an average over the last ten seconds, so the first call answers
+    // as well as the thousandth. Both fields are null where PSI is absent.
+    stall: readStallFacts()
   };
 }
 
@@ -878,6 +1182,8 @@ function envNumber(name: string, allowZero = false): number | undefined {
  *   BUTCHR_MAX_AGENTS        — set the cap outright, skipping the derivation
  *   BUTCHR_AGENT_MEMORY_MB   — resident cost of one agent
  *   BUTCHR_AGENT_CORES       — cores one active agent tree spends
+ *   BUTCHR_STALL_PERCENT     — the /proc/pressure `full avg10` at which no
+ *                              agent is admitted; above 100 disables the term
  */
 export function optionsFromEnv(): CapacityOptions {
   const memoryMb = envNumber('BUTCHR_AGENT_MEMORY_MB');
@@ -889,7 +1195,8 @@ export function optionsFromEnv(): CapacityOptions {
   if (cores !== undefined) overrides.cores = cores;
   return {
     overrides,
-    configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null
+    configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null,
+    stallRefusePercent: envNumber('BUTCHR_STALL_PERCENT') ?? null
   };
 }
 
@@ -1034,6 +1341,35 @@ export function describeCapacity(c: Capacity): string {
       ? `, plus ${c.supervisors} epic/story supervisor agent(s) (not counted against the cap)`
       : '')
   );
+  // The stall term gets its own line whether or not it fired, and says so when
+  // it cannot fire at all. A gate that is silent when it is inert is a gate a
+  // reader will assume is protecting them (KAN-218) — the whole reason this
+  // ticket exists is that a protection disappeared without a line anywhere
+  // saying it had.
+  if (c.stallPercent === null) {
+    lines.push(
+      'io/memory stall: no /proc/pressure on this machine (needs Linux 4.20+ with CONFIG_PSI), ' +
+      'so this term is inert and nothing here bounds a machine thrashing on swap or stalled ' +
+      'on a failing disk. The cpu term deliberately counts iowait as idle, and there is no ' +
+      'honest fallback instrument — see capacity.ts'
+    );
+  } else {
+    const io = c.stall?.ioFullPercent;
+    const mem = c.stall?.memoryFullPercent;
+    const both =
+      `${typeof io === 'number' ? `${io.toFixed(2)}% io` : 'io unreadable'}, ` +
+      `${typeof mem === 'number' ? `${mem.toFixed(2)}% memory` : 'memory unreadable'}`;
+    lines.push(
+      `io/memory stall: ${both} (/proc/pressure \`full avg10\` — the share of the last 10s in ` +
+      `which every non-idle task was stalled); worst is ${c.stallPercent.toFixed(2)}% on ` +
+      `${c.stallSource}, against a ${c.stallRefusePercent}% threshold` +
+      (c.stalled
+        ? ` — AT OR OVER, so headroom is 0 regardless of the ${c.headroomBeforeStall} the ` +
+          'terms below allow. Swap-in is accounted to memory pressure, not io, which is why ' +
+          'both files are read'
+        : ' — under, so this term does not bind')
+    );
+  }
   lines.push(
     `headroom: ${c.headroom} more — ` +
     `count allows ${c.headroomByCap} (${c.cap} cap − ${c.running} running), ` +
@@ -1043,8 +1379,15 @@ export function describeCapacity(c: Capacity): string {
       ? `${c.liveCoresBound.used.toFixed(3)}, the bounded figure from the contradiction above`
       : `${c.cost.cores}`) + '), ' +
     `memory allows ${c.headroomByMemory} ((${gib(m.availableBytes)} available ` +
-    `− ${gib(c.reservedForHuman.bytes)} reserved) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB); ` +
-    `bound by ${c.headroomBoundBy}`
+    `− ${gib(c.reservedForHuman.bytes)} reserved) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB)` +
+    // The veto is arithmetic the reader cannot see in the three terms, so it is
+    // spelled out where it acts rather than only on the line above: min(...) of
+    // the three would not reproduce `headroom`, and the derivation promises it
+    // does.
+    (c.stalled
+      ? `; the smallest of those is ${c.headroomBeforeStall}, vetoed to 0 by the ` +
+        `${c.stallPercent?.toFixed(2)}% ${c.stallSource} stall above; bound by ${c.headroomBoundBy}`
+      : `; bound by ${c.headroomBoundBy}`)
   );
 
   return lines.join('\n');
@@ -1065,7 +1408,12 @@ export function summarizeCapacity(c: Capacity): string {
   const figures =
     `${c.running}/${c.cap} task agents, room for ${c.headroom} more ` +
     `(${c.machine.cores} cores, ${c.cpuBusyCores.toFixed(2)} in use, ` +
-    `${gib(c.machine.availableBytes)} available; bound by ${c.headroomBoundBy})`;
+    `${gib(c.machine.availableBytes)} available` +
+    // Only when it fired: a stall figure on every line would be noise, and its
+    // absence must not read as "measured and fine" on a machine that has no
+    // instrument at all — the derivation is where that distinction lives.
+    (c.stalled ? `, ${c.stallPercent?.toFixed(2)}% ${c.stallSource} stall` : '') +
+    `; bound by ${c.headroomBoundBy})`;
   if (!c.atCapacity) return figures;
   // Count-bound, the figures already open with N-of-cap; repeating the whole
   // reason would bury a one-line summary under its own headline.
@@ -1084,6 +1432,21 @@ export function summarizeCapacity(c: Capacity): string {
  * built from the same numbers, so they cannot drift into disagreeing.
  */
 export function capacityReason(c: Capacity): string {
+  if (c.headroomBoundBy === 'stall') {
+    // Every figure the veto compared, in the order it compared them, so the
+    // sentence is checkable without opening the derivation — and naming which
+    // resource, because "your disk is stalling" and "you are thrashing on swap"
+    // send the reader to different levers, which is the KAN-60 requirement.
+    const what =
+      c.stallSource === 'memory'
+        ? 'stalled reclaiming memory — swap thrash, not a shortage of free memory'
+        : 'stalled on I/O';
+    return (
+      `this machine spent ${c.stallPercent?.toFixed(2)}% of the last 10 seconds with every ` +
+      `non-idle task ${what}, at or above the ${c.stallRefusePercent}% threshold, so no agent ` +
+      `is admitted even though CPU and memory allow ${c.headroomBeforeStall}`
+    );
+  }
   if (c.headroomBoundBy === 'cpu') {
     // Every figure the CPU term divided, in the order it divides them, so the
     // sentence is checkable without opening the derivation: in use, total,
@@ -1126,16 +1489,31 @@ export function capacityHeadline(c: Capacity): string {
       ? 'not enough cpu'
       : c.headroomBoundBy === 'memory'
         ? 'not enough memory'
-        : 'at capacity';
+        : c.headroomBoundBy === 'stall'
+          ? // Not "not enough" anything: the machine has room and cannot use
+            // it, which is a different problem and must not read as a shortage.
+            c.stallSource === 'memory'
+            ? 'machine thrashing on memory'
+            : 'machine stalled on i/o'
+          : 'at capacity';
   return `${constraint} — ${capacityReason(c)}`;
 }
 
 /** Why an activation was refused, with the arithmetic that refused it. */
 export function capacityRefusal(c: Capacity, what: string): string {
-  return (
-    `Refusing to activate ${what}: ${capacityHeadline(c)}.\n` +
-    `${describeCapacity(c)}\n` +
-    `Deactivate an agent to make room, or pass override: true to start it anyway ` +
-    `(the override is recorded with these numbers).`
-  );
+  // "Deactivate an agent to make room" is false advice on a stalled machine: a
+  // stall is not a slot shortage, and freeing a slot destroys an agent's work
+  // without moving the figure that refused. Saying it anyway would send the
+  // reader to a lever that does nothing, which is the KAN-60 defect wearing the
+  // new term's clothes. router.ts declines to offer a victim for the same
+  // reason; this is the same decision said in the sentence.
+  const remedy =
+    c.headroomBoundBy === 'stall'
+      ? `Wait for the machine to stop stalling — the figure above is a 10-second average, ` +
+        `so give it at least that long — or fix what is stalling it. Deactivating an agent ` +
+        `will not help: this is not a shortage of slots. Pass override: true to start it ` +
+        `anyway (the override is recorded with these numbers).`
+      : `Deactivate an agent to make room, or pass override: true to start it anyway ` +
+        `(the override is recorded with these numbers).`;
+  return `Refusing to activate ${what}: ${capacityHeadline(c)}.\n${describeCapacity(c)}\n${remedy}`;
 }
