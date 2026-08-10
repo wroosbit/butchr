@@ -1,5 +1,5 @@
 import { AgentRegistry } from './agent-registry.js';
-import { HerdrBridge } from './herdr.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import { MessageRouter } from './router.js';
 import { ResumeCause } from './resume.js';
 import { delay, monotonicNow, nudgeResumedAgent } from './nudge.js';
@@ -63,7 +63,7 @@ export interface ReconcileResult {
  * daemon's unit only orders itself `After=herdr.service`, which says herdr was
  * *launched* first, not that its socket is accepting.
  */
-async function waitForHerdr(herdrBridge: HerdrBridge): Promise<boolean> {
+async function waitForHerdr(herdrBridge: AgentRuntime): Promise<boolean> {
   const deadline = monotonicNow() + HERDR_READY_TIMEOUT_MS;
   for (;;) {
     if (herdrBridge.herdrReachable()) return true;
@@ -80,7 +80,7 @@ async function waitForHerdr(herdrBridge: HerdrBridge): Promise<boolean> {
  */
 export async function reconcileAgents(opts: {
   registry: AgentRegistry;
-  herdrBridge: HerdrBridge;
+  herdrBridge: AgentRuntime;
   router: MessageRouter;
   cause: ResumeCause;
   log: (...args: any[]) => void;
