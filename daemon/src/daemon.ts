@@ -15,7 +15,7 @@ import {
   createLaunchDarklyIntegration
 } from './integrations/launchdarkly.js';
 import { createAtlassianIntegration } from './integrations/atlassian-integration.js';
-import { coreMcpServerDefinitions } from './launchers.js';
+import { coreMcpServerDefinitions, DEV_CHANNELS_FLAG } from './launchers.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport } from './staleness.js';
@@ -32,6 +32,10 @@ import {
   routeChannelMessage,
   writeChannelSwitch
 } from './channel.js';
+import {
+  freshConnectionFrom,
+  superviseChannelStartup
+} from './channel-startup.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
@@ -379,6 +383,44 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
 // A PTY that dies takes the terminal with it, and the client has no other way
 // to find out: output simply stops. Announcing it is what lets the sidepanel
 // show a disconnected state instead of a frozen last frame.
+// Watch every pane the bridge spawns through the channel dialog and on to a
+// connected MCP server (KAN-246). Installed here because readiness is defined in
+// terms of `agentConnections` — the map an addressed frame is routed through —
+// and the bridge has no view of it; the same seam, and the same reason, as the
+// router's `channelRoute` below.
+//
+// THE SWITCH IS NOT RE-READ HERE, DELIBERATELY. The launcher read it moments ago
+// to decide whether to pass the flag, and asking the same question of the same
+// file a second time admits an answer that disagrees with what is now running in
+// the pane — a switch turned off in that window would leave a `claude` launched
+// WITH the flag and nothing watching the dialog it raises, which is the wedged
+// agent this ticket exists to prevent. So the test is on the command string that
+// was actually spawned. One fact, read from the thing itself.
+herdrBridge.setAgentSpawnedListener((session, spawnedAt, command) => {
+  if (!command.includes(DEV_CHANNELS_FLAG)) return;
+
+  const address = { type: session.type, key: session.key };
+  void superviseChannelStartup({
+    address,
+    spawnedAt,
+    world: {
+      // `recent-unwrapped`, via the same reader `butchr_tail_agent` uses, so
+      // what this matches against is what a human would see if they looked.
+      readPane: () => herdrBridge.tailAgent(session.key, session.type, 140).text ?? null,
+      pressEnter: () => herdrBridge.pressPaneKey(session.key, session.type, 'Enter'),
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      freshConnection: freshConnectionFrom(agentConnections, address),
+      log: (message) => log(message)
+    }
+  }).catch((err) => {
+    // Cannot happen — superviseChannelStartup does not throw — and is caught
+    // anyway because an unhandled rejection here would take the daemon down and
+    // the fleet with it, over a watcher.
+    log(`[ChannelStartup] ${describeAddress(address)}: watcher failed unexpectedly:`, err);
+  });
+});
+
 herdrBridge.setSessionEndedListener((event) => {
   log(
     `Session ended: ${event.sessionId} (${event.type}/${event.key}) ` +
