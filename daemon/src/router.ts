@@ -31,6 +31,7 @@ import { nudgeResumedAgent } from './nudge.js';
 import { senderTagFor, withSenderTag } from './provenance.js';
 import type { ChannelRouteOutcome } from './channel.js';
 import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
+import type { ChannelLivenessState } from './channel-liveness.js';
 import { licenceFor, sealClaims } from './message-claims.js';
 
 /**
@@ -768,6 +769,25 @@ export interface MessageRouterOptions {
    * would let "this daemon cannot tell you" read as "nothing is wrong".
    */
   channelSelfCheck?: (address: { type: string; key: string }) => ChannelSelfCheckReport | null;
+
+  /**
+   * What the scheduled end-to-end channel probe has found (KAN-252).
+   *
+   * Fleet-level rather than per-agent, and that is the shape of the fact: the
+   * probe asks **one** agent per run, so a row cannot carry it without implying
+   * the other rows were asked and were silent. What a reader needs is when a
+   * channel frame last reached a *model*, on which client version, and how many
+   * delivered runs have gone unanswered since — one answer for the fleet.
+   *
+   * A reader for the same reason `channelSelfCheck` is one, plus a sharper one:
+   * handing the router the probe itself would put "start a run" one typo away
+   * from a listing, and a run costs a real agent a turn.
+   *
+   * Absent when no probe is wired, `null` never — see `channelLiveness` in the
+   * response, which is omitted rather than nulled for the reason `boardControl`
+   * is.
+   */
+  channelLiveness?: () => ChannelLivenessState;
 }
 
 /**
@@ -794,7 +814,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'capacitySource',
   'boardControl',
   'channelRoute',
-  'channelSelfCheck'
+  'channelSelfCheck',
+  'channelLiveness'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -828,6 +849,8 @@ export class MessageRouter {
   private readonly channelRoute?: MessageRouterOptions['channelRoute'];
   /** See {@link MessageRouterOptions.channelSelfCheck}. */
   private readonly channelSelfCheck?: MessageRouterOptions['channelSelfCheck'];
+  /** See {@link MessageRouterOptions.channelLiveness}. */
+  private readonly channelLiveness?: MessageRouterOptions['channelLiveness'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -862,6 +885,7 @@ export class MessageRouter {
     this.boardControl = opts.boardControl;
     this.channelRoute = opts.channelRoute;
     this.channelSelfCheck = opts.channelSelfCheck;
+    this.channelLiveness = opts.channelLiveness;
   }
 
   /**
@@ -3190,6 +3214,16 @@ export class MessageRouter {
       // it, so that "no board reconciler here" cannot be mistaken for "the
       // reconciler says nothing controls this". See the constructor parameter.
       ...(boardControl ? { boardControl } : {}),
+      // WHEN A CHANNEL FRAME LAST REACHED A MODEL (KAN-252), on the poll a
+      // supervisor is already making. Omitted rather than nulled by the same
+      // rule as `boardControl`: a daemon with no probe wired must not be
+      // readable as a fleet whose channel has never been proved.
+      //
+      // It sits beside the per-agent `channel` rows deliberately. Those say
+      // whether each agent's loop was proved as far as its *client*; this says
+      // whether anything got past the client into a *model*, which is the leg
+      // none of those rows can see.
+      ...(this.channelLiveness ? { channelLiveness: this.channelLiveness() } : {}),
       ...(staleness ? { staleness } : {}),
       ...(usage ? {
         herdrHealth: {

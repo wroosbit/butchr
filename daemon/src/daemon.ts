@@ -43,6 +43,7 @@ import {
   ChannelSelfCheckStore,
   runChannelSelfCheck
 } from './channel-selfcheck.js';
+import { ChannelLivenessProbe } from './channel-liveness.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
@@ -248,6 +249,76 @@ const channelSelfChecks = new ChannelSelfCheckStore();
 const selfCheckAcks = new ChannelSelfCheckAckRegistry();
 
 /**
+ * The scheduled end-to-end channel probe (KAN-252).
+ *
+ * The startup self-check above proves four legs of the channel loop and cannot
+ * reach the fifth — whether the client's dispatcher actually put the frame in
+ * front of a model. Nothing observes that, and a break in it is silent. This
+ * asks one agent, occasionally, to echo a token, and keeps the answer beside the
+ * client version the self-check recorded for that agent.
+ *
+ * **It decides nothing.** It never degrades an agent, never changes a carrier
+ * and never fails an activation — a model declining is a judgement call, not a
+ * fault, and wiring a judgement call into the transport decision is exactly the
+ * change KAN-252's own ticket forbids. It is a reader of two maps and a writer
+ * of one record.
+ */
+const channelLiveness = new ChannelLivenessProbe({
+  world: {
+    // The same reader the launcher, the router and the self-check use.
+    emissionEnabled: () => channelEmissionEnabled(),
+    candidates: () =>
+      agentConnections
+        .addresses()
+        .filter((address) => {
+          // A degraded agent is excluded because it is ON THE COMPOSER: the gate
+          // would refuse its frame, and asking anyway would spend a run to learn
+          // something `list_agents` already says. This is a reader of the same
+          // verdict `routeChannelMessage` consults, not a second opinion on it.
+          if (channelSelfChecks.degraded(address)) return false;
+          const conn = agentConnections.resolve(address);
+          return conn !== undefined;
+        })
+        .map((address) => {
+          const conn = agentConnections.resolve(address);
+          const report = channelSelfChecks.get(address);
+          return {
+            address,
+            connectionId: conn?.id ?? '(unknown)',
+            // Carried from the startup self-check rather than re-derived. The
+            // version pin is one fact and this is not a second source of it —
+            // `null` here means "unchecked", which is what the row says too.
+            clientName: report?.clientName ?? null,
+            clientVersion: report?.clientVersion ?? null,
+            clientVersionVerified: report?.clientVersionVerified ?? null
+          };
+        }),
+    // `recent-unwrapped`, through the same reader `butchr_tail_agent` uses, so
+    // what this matches against is what a human would see if they looked.
+    readPane: (address) => herdrBridge.tailAgent(address.key, address.type, 200).text ?? null,
+    // THE CHANNEL, AND ONLY THE CHANNEL. A composer send types into the pane,
+    // which is the surface this probe reads its answer off — it would write its
+    // own token there and read it back as proof that a model had seen it. There
+    // is no composer in `ChannelLivenessWorld` at all, deliberately.
+    send: (address, content) => {
+      const outcome = routeChannelMessage({
+        registry: agentConnections,
+        address,
+        content,
+        meta: { livenessProbe: true },
+        selfCheck: channelSelfChecks
+      });
+      return outcome.routed
+        ? { routed: true }
+        : { routed: false, reason: outcome.reason, detail: outcome.detail };
+    },
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log: (message) => log(message)
+  }
+});
+
+/**
  * The two actions that are about the connection itself rather than about the
  * fleet, answered here instead of in the router.
  *
@@ -405,6 +476,65 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
       // timed out and reported, and resolving one then would overwrite a verdict
       // with a stale reading of a client that has since gone.
       selfCheckAcks.deliver(msg);
+      return true;
+    }
+    case 'channel_liveness': {
+      // KAN-252's record, and — with `run: true` — a way to fire the shipped
+      // probe now instead of waiting for its interval.
+      //
+      // Handled beside `channel_send` for the same reason: its subject is the
+      // identity map and the connections in it, which the router deliberately
+      // knows nothing about.
+      //
+      // **The forced run is the same code path the timer takes**, which is the
+      // only thing that makes it legitimate: a "run it now" that went round the
+      // scheduler would be a second implementation of the mechanism, and the one
+      // nobody runs in production is the one that stays right (KAN-145). It is
+      // how `probe-channel-liveness.mjs` gets a result in minutes rather than
+      // hours, and how somebody looking at a drought asks again by hand.
+      //
+      // **It answers immediately and does NOT wait for the run.** A probe waits
+      // up to ten minutes for a model, and a reply held open that long is a
+      // socket call that every client's own timeout would abandon — after which
+      // the run finishes into a connection nobody is reading. So this starts it
+      // and says so; the caller polls this same action without `run` and watches
+      // `state.runs` change. `running` is what tells a poller which it is
+      // looking at.
+      if (msg?.run === true) {
+        // The two knobs a caller asking BECAUSE something looks wrong actually
+        // wants, clamped rather than trusted: an unbounded window would let one
+        // request hold the probe — which is single-flight — for as long as it
+        // liked, and every scheduled run after it would find one in progress
+        // and decline. Absent means the shipped default.
+        const clamp = (v: unknown, lo: number, hi: number): number | undefined =>
+          typeof v === 'number' && Number.isFinite(v)
+            ? Math.min(hi, Math.max(lo, Math.round(v)))
+            : undefined;
+        const overrides = {
+          answerWindowMs: clamp(msg.answerWindowMs, 5_000, 30 * 60_000),
+          panePollMs: clamp(msg.panePollMs, 1_000, 60_000)
+        };
+        const started = !channelLiveness.isRunning();
+        if (started) void channelLiveness.runOnce(overrides).catch(() => {});
+        reply({
+          action: 'channel_liveness_response',
+          success: true,
+          started,
+          ...(started
+            ? {}
+            : { reason: 'already-running', error: 'a channel liveness probe is already running' }),
+          running: channelLiveness.isRunning(),
+          state: channelLiveness.state()
+        });
+        return true;
+      }
+      reply({
+        action: 'channel_liveness_response',
+        success: true,
+        started: false,
+        running: channelLiveness.isRunning(),
+        state: channelLiveness.state()
+      });
       return true;
     }
     case 'connected_agents': {
@@ -567,7 +697,12 @@ const server = net.createServer((socket) => {
       // What each agent's startup self-check found, for `list_agents` (KAN-248).
       // A reader rather than the store, for the same reason `channelRoute` is a
       // closure: the router does not learn what a connection is.
-      channelSelfCheck: (address) => channelSelfChecks.get(address) ?? null
+      channelSelfCheck: (address) => channelSelfChecks.get(address) ?? null,
+      // KAN-252's fleet-level record, on the same poll a supervisor already
+      // makes. A reader rather than the probe itself, for the same reason
+      // `channelSelfCheck` is a reader: the router does not learn what a
+      // connection is, and must not be able to *start* a probe by accident.
+      channelLiveness: () => channelLiveness.state()
     }
   );
 
@@ -1132,6 +1267,13 @@ function onListen() {
   // is still running, and a reconciler that read the fleet mid-restore would
   // compute a diff against a fleet that is deliberately incomplete.
   boardReconciler.start();
+
+  // KAN-252. Started unconditionally rather than behind the channel switch: the
+  // switch is read fresh on every run, so a probe that started while channels
+  // were off would begin working the moment they were turned on, and one gated
+  // at boot would stay dead until the daemon restarted. A run with the switch
+  // off costs one file read and records `channel-disabled`.
+  channelLiveness.start();
 }
 
 const shutdown = () => {
