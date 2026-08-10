@@ -555,6 +555,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "butchr_reclaim_workspaces",
+        description:
+          "Reclaims disk by deleting `node_modules` directories from Butchr workspaces that have NO live agent in them. A workspace is ~296MB and almost all of it is regenerable dependencies; nothing in the daemon ever removed them, so they accumulate without bound. DEFAULTS TO A DRY RUN — it reports what it would delete and deletes nothing. Pass dryRun: false to actually reclaim, and mean it: the deletion is not reversible, though everything it removes is restored by `npm install`. WHAT IT WILL NOT TOUCH: any workspace with a live agent or an occupied pane (derived from the running fleet at the moment of the sweep, never from a list), source, git worktrees, `.git`, `.butchr-prompt.md`, `.mcp.json`, `.claude/`, `dist/`, a `node_modules` that is a symlink, or anything git does not report as ignored in its own worktree. It never deletes a workspace directory, so conversation history and worktree registrations survive — a reclaimed workspace still resumes the conversation it was stopped in, it just needs `npm install` before it can build again. The response lists every path removed with its bytes; a summary of the last sweep also rides the `butchr_list_agents` response under `reclaim`.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            dryRun: {
+              type: "boolean",
+              description:
+                "Optional, defaults to TRUE. When true (or omitted) nothing is deleted and the response reports what would be. Pass false to actually reclaim.",
+            },
+          },
+          required: [],
+        },
+      },
+      {
         name: "butchr_reset_agent",
         description: "Deactivates an agent and securely deletes its workspace directory",
         inputSchema: {
@@ -673,6 +689,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
         isError: res?.success === false || res?.stale === true,
+      };
+    }
+
+    if (name === "butchr_reclaim_workspaces") {
+      const { dryRun } = (args ?? {}) as any;
+      // The default lives in one place — the daemon — and this only forwards
+      // what the caller actually said. Defaulting here as well would put two
+      // copies of "is this destructive by default?" in the codebase, and the
+      // one that drifts is the one that deletes.
+      const res = await callDaemonAPI('reclaim_sweep', { dryRun });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false,
       };
     }
 

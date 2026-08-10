@@ -56,6 +56,7 @@ import {
   selectVictim
 } from './priority.js';
 import { getStalenessReport, StalenessReport } from './staleness.js';
+import { sweepWorkspaces, lastReclaimSummary } from './reclaim.js';
 import { AddressableAgent, BoardControlReport } from './board-control.js';
 import {
   Capacity,
@@ -1067,6 +1068,9 @@ export class MessageRouter {
         break;
       case 'staleness_check':
         this.handleStalenessCheck(data, respond);
+        break;
+      case 'reclaim_sweep':
+        this.handleReclaimSweep(data, respond);
         break;
       case 'capacity':
         this.handleCapacity(data, respond);
@@ -3066,6 +3070,46 @@ export class MessageRouter {
   }
 
   /**
+   * Reclaim `node_modules` from every workspace with no live agent in it.
+   *
+   * **The live-agent exclusion is derived here, from the running fleet**, and
+   * that is the whole reason this handler exists rather than the sweep reading
+   * the filesystem for itself. `surveyAgents()` is the same census
+   * `list_agents` is built from, so the set of workspaces this refuses to touch
+   * and the set of agents a supervisor is looking at are one answer to one
+   * question. The 2026-08-04 manual pass excluded its five running workspaces
+   * by hand and that is exactly what must not happen again: a list written down
+   * is a list that goes stale between being written and being used.
+   *
+   * `unbackedPanes` are excluded too, though they are not agents. A pane with a
+   * bare shell in it is something a person is plausibly sitting in front of,
+   * possibly mid-`npm install`, and the cost of being wrong in that direction
+   * is one workspace's worth of bytes left on disk.
+   *
+   * Defaults to a dry run — see `sweepWorkspaces`. `dryRun: false` is the only
+   * thing that deletes, and a caller has to mean it.
+   */
+  private handleReclaimSweep(data: any, respond: Respond) {
+    const { agents, unbackedPanes } = this.surveyAgents();
+
+    const liveWorkDirs = [
+      ...agents.map((a) => a.workDir),
+      ...unbackedPanes.map((p) => p.workDir)
+    ].filter((dir): dir is string => typeof dir === 'string' && dir.length > 0);
+
+    const dryRun = data?.dryRun !== false;
+
+    try {
+      const sweep = sweepWorkspaces({ liveWorkDirs, dryRun });
+      respond({ action: 'reclaim_sweep_response', success: true, ...sweep });
+    } catch (e: any) {
+      const error = `Reclaim sweep failed: ${e?.message ?? String(e)}`;
+      console.error('[MessageRouter]', error);
+      respond({ action: 'reclaim_sweep_response', success: false, error });
+    }
+  }
+
+  /**
    * Everything running, from herdr's view unioned with our own.
    *
    * The session map is emptied by a daemon restart while the herdr panes keep
@@ -3111,6 +3155,13 @@ export class MessageRouter {
     // having to know when to ask. The report is cached for 15s inside
     // getStalenessReport, so a 2s poll does not mean a 2s git invocation.
     const staleness = this.staleness();
+
+    // What the last reclaim sweep took, in the same response and for the same
+    // reason as staleness: it is the poll a supervisor is already making, so
+    // the fact arrives without anybody having to know to ask for it. A reclaim
+    // nobody can see after the fact is a reclaim that surprises somebody later
+    // (KAN-259). Null until a sweep has run in this daemon's lifetime.
+    const reclaim = lastReclaimSummary();
 
     const preempted = this.preemptedAgents();
 
@@ -3191,6 +3242,10 @@ export class MessageRouter {
       // reconciler says nothing controls this". See the constructor parameter.
       ...(boardControl ? { boardControl } : {}),
       ...(staleness ? { staleness } : {}),
+      // Omitted rather than nulled when no sweep has run, by the same rule as
+      // `staleness` directly above: absent means "this daemon has reclaimed
+      // nothing", which is a different answer from any summary it could carry.
+      ...(reclaim ? { reclaim } : {}),
       ...(usage ? {
         herdrHealth: {
           pid: usage.pid,
