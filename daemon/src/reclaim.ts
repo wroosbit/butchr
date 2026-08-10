@@ -21,28 +21,42 @@
  * not worth 1%. (The staleness checker cannot be affected either way: its
  * `repoRoot` is the installation's own checkout, never a workspace.)
  *
- * WHAT IT ASSUMES ABOUT THE TREES IT REMOVES — stated for KAN-262, which is
- * changing what those trees are:
+ * WHAT IT ASSUMES ABOUT THE TREES IT REMOVES — KAN-262 has landed (`2a259d6`),
+ * so this is the world as it is rather than one being anticipated:
  *
- *   - **A private copy.** Today every worktree runs its own `npm install`, so
- *     removing one frees its bytes and affects nothing else.
+ *   - **Not necessarily a private copy any more.** Until KAN-262, every
+ *     worktree ran its own `npm install` and removing one freed its bytes.
+ *     New workspaces now hard-link from a shared store instead, so both kinds
+ *     are on this disk at once and the sweep meets them interchangeably.
  *   - **A real directory, not a link.** A `node_modules` that is a symlink is
  *     SKIPPED, never followed — see `classifyCandidate`. That is the dangerous
  *     shape KAN-262 names: `rm -rf` through a symlink into a shared store
  *     empties it for everyone. Skipping costs a workspace's worth of bytes and
  *     cannot empty a store.
- *   - **Hard links are safe but change the meaning of the number.** Deleting a
- *     hard-linked tree unlinks names and frees only what nothing else
- *     references, so it cannot corrupt a store — but `bytes` below counts
- *     allocated blocks, which over-reports what `df` will show once a store
- *     exists. KAN-262 measured the gap on its own implementation: `rm -rf` of a
- *     174M hard-linked `extension/node_modules` recovered **5 MB**. So once
- *     that has landed, *"bytes recovered"* stops being the number that says
- *     whether reclaiming worked, and the question becomes "does any workspace
- *     still hold a private copy of a tree the store already has?".
- *     `story/KAN-151` recorded that reconciliation and `epic/KAN-39` owns it;
- *     it is written here because whichever of the two tickets merges second
- *     owes it a line, and this may be that one.
+ *   - **Hard links are safe, and they have already broken the number.** This is
+ *     the line the epic's ruling assigns to whichever of KAN-259/KAN-262 merged
+ *     second; KAN-262 merged first, so it is this one, and it is written in the
+ *     present tense because the store exists on this machine **now**.
+ *
+ *     Deleting a hard-linked tree unlinks names and frees only what nothing
+ *     else references, so it cannot corrupt a store. But `bytes` below counts
+ *     allocated blocks, so it reports a hard-linked tree at full apparent size:
+ *     KAN-262 measured `rm -rf` of a 174M hard-linked `extension/node_modules`
+ *     recovering **5 MB**, store intact at 292M.
+ *
+ *     So `bytes` **is misleading today**, not one day: it is the right number
+ *     for a private copy and the wrong one for a linked tree, and a workspace
+ *     reclaimed for ~0 bytes is the mechanism working rather than failing. The
+ *     question that replaces it is *"does any workspace still hold a private
+ *     copy of a tree the store already has?"*. `story/KAN-151` recorded the
+ *     reconciliation and `epic/KAN-39` owns it.
+ *
+ *     **And no assertion here catches the drift** — section 1 of
+ *     `verify-workspace-reclaim.mjs` asserts `sweep.bytes > 0`, which passes on
+ *     a hard-linked tree just as it does on a private copy. That is not a
+ *     defect in the script; it is why this paragraph has to do the work
+ *     instead, and why nobody should read a large `bytes` as proof of a large
+ *     `df` movement. (Raised by `task/KAN-262` on KAN-259 after its merge.)
  *
  * THE STORE IS NOT A ROOT OF THIS SWEEP, AND MUST NOT BECOME ONE. KAN-262 puts
  * its shared store at `~/.local/share/butchr/dep-store` — a *sibling* of the
