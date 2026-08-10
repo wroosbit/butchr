@@ -5,7 +5,7 @@
 //
 // WHAT FAILURE THIS WOULD CATCH: a fix that reads well and changes nothing.
 // KAN-242 lands prose plus one rendered variable, and prose has no compiler.
-// `verify-operative-rules-are-carried.mjs` (rule H-14) proves the four prompts
+// `verify-operative-rules-are-carried.mjs` (rule H-16) proves the four prompts
 // *contain* the snapshot section; `verify-prompt-provenance-stamp.mjs` proves
 // the stamp is real and its commands work. **Neither can prove an agent reads
 // the section, runs the check, and then obeys `origin/main` instead of the file

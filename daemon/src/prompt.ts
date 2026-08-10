@@ -228,7 +228,7 @@ export function renderProvenanceBlock(p: PromptProvenance): string {
  * The variable name a prompt template carries to receive the block above.
  *
  * Declared beside the writer and asserted by
- * `verify-operative-rules-are-carried.mjs` (rule H-14), so a template cannot
+ * `verify-operative-rules-are-carried.mjs` (rule H-16), so a template cannot
  * quietly stop carrying it: an unsubstituted `{{...}}` in a shipped brief is
  * visible, but a *deleted* one is not, and the deleted one is the failure.
  */

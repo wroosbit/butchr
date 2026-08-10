@@ -487,7 +487,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_tail_agent",
         description:
-          "Reads the recent terminal output of an agent without attaching to it. Use this to find out what an agent is actually doing — or why it stopped — when its reported status alone is not enough.",
+          "Reads the recent terminal output of an agent without attaching to it. Use this to find out what an agent is actually doing — or why it stopped — when its reported status alone is not enough. READ THE THREE ANSWERS APART, because two of them look alike and only one is a claim about the agent: `success: true` with text is the pane; `success: true` with `text: \"\"` and `source: null` means EVERY read source was asked and every one was silent, so the pane really is blank; `success: false` means the read did not happen and you know NOTHING about the pane — in particular you must not read it as an idle agent. `source` names which source answered and `sourcesTried` lists what was asked. This matters most before a `stop-now` send: an agent you conclude is idle because a read failed is an agent whose in-flight tool call you are about to destroy.",
         inputSchema: {
           type: "object",
           properties: {
