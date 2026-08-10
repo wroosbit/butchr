@@ -153,7 +153,11 @@ export function writeChannelSwitch(enabled: boolean): void {
 }
 
 /** Why an addressed frame did not go out. Every one of these is sender-visible. */
-export type ChannelRefusal = 'channel-disabled' | 'no-connection' | 'socket-closed';
+export type ChannelRefusal =
+  | 'channel-disabled'
+  | 'selfcheck-failed'
+  | 'no-connection'
+  | 'socket-closed';
 
 /** What one attempt to write an addressed frame did. */
 export type ChannelRouteOutcome =
@@ -176,19 +180,36 @@ export type ChannelRouteOutcome =
  * thing that made putting this capability on the shared server defensible — is
  * exactly the claim that could not then be made.
  *
- * So the order of the three refusals is fixed here rather than at either call
+ * So the order of the four refusals is fixed here rather than at either call
  * site, and it is deliberate: **the switch is read before the map is consulted.**
  * A disabled channel must answer `channel-disabled` for an agent that is not
  * connected as well as for one that is, because the alternative leaks the
  * identity map's contents through a gate that is supposed to be shut.
+ *
+ * **`selfcheck-failed` sits second, between the switch and the map, and it is
+ * what makes T5's fallback a behaviour rather than a label** (KAN-248). An agent
+ * whose startup self-check failed is on the composer, and the only way to make
+ * that true of its traffic — rather than merely reported on its row — is to
+ * refuse it here, where the carrier is chosen. It is ordered ahead of the map for
+ * the same reason the switch is: a degraded agent that also happens to be
+ * disconnected should read as degraded, which is the cause somebody can act on,
+ * rather than as an incidental `no-connection`.
+ *
+ * `selfCheck` is optional and its ABSENCE ROUTES. A daemon wired without one —
+ * the daemon's own internal router, and every harness — behaves exactly as it
+ * did before KAN-248. So does an agent with no verdict recorded: unchecked is not
+ * failed, and channel-selfcheck.ts argues at length why conflating the two would
+ * take the fleet off channels on every daemon restart.
  */
 export function routeChannelMessage(opts: {
   registry: AgentConnectionRegistry;
   address: AgentAddress;
   content: string;
   meta?: unknown;
+  /** KAN-248's verdicts. Asked one question: has this agent been degraded? */
+  selfCheck?: { degraded: (address: AgentAddress) => boolean };
 }): ChannelRouteOutcome {
-  const { registry, address, content, meta } = opts;
+  const { registry, address, content, meta, selfCheck } = opts;
 
   if (!channelEmissionEnabled()) {
     return {
@@ -198,6 +219,16 @@ export function routeChannelMessage(opts: {
         'channel emission is off; nothing was written to any connection ' +
         `(switch: ${CHANNEL_SWITCH_PATH})`,
       switchPath: CHANNEL_SWITCH_PATH
+    };
+  }
+
+  if (selfCheck?.degraded(address)) {
+    return {
+      routed: false,
+      reason: 'selfcheck-failed',
+      detail:
+        `${describeAddress(address)} failed its startup channel self-check and has been degraded ` +
+        `to the composer; butchr_list_agents carries the outcome and the client version on its row`
     };
   }
 

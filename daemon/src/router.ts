@@ -30,6 +30,7 @@ import { ResumeCause } from './resume.js';
 import { nudgeResumedAgent } from './nudge.js';
 import { senderTagFor, withSenderTag } from './provenance.js';
 import type { ChannelRouteOutcome } from './channel.js';
+import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
 import { licenceFor, sealClaims } from './message-claims.js';
 
 /**
@@ -143,6 +144,53 @@ interface ListedAgent {
    * "this daemon cannot answer that" by exactly that difference.
    */
   activatedBy: SupervisorOfRecord | null;
+  /**
+   * What this agent's startup channel self-check found (KAN-248, T5).
+   *
+   * **This is the field that makes a degraded agent visible**, and visibility is
+   * the whole requirement: an agent silently on the composer while the fleet
+   * believes it is on channels is the state T5 exists to prevent, and a log line
+   * does not prevent it because nobody reads the log until something is already
+   * wrong. So it goes on the row a supervisor already polls.
+   *
+   * Three shapes, three different facts, deliberately not collapsed:
+   *
+   * - **omitted** — this daemon has no self-check reader wired in and cannot
+   *   answer. An older daemon sends no field at all, and a client tells that
+   *   from the two below by exactly that difference.
+   * - `outcome: 'unchecked'` — nobody has checked this agent. The ordinary case
+   *   for one that outlived a daemon restart, and for one spawned while channels
+   *   were off. Not a fault, and it degrades nothing (channel-selfcheck.ts says
+   *   why at length).
+   * - anything else — the check ran. `outcome` names what it found,
+   *   `clientVersion` is the client's own report of itself, and `transport` is
+   *   the carrier this agent's messages will actually take.
+   */
+  channel?: ListedAgentChannel;
+}
+
+/**
+ * A row's channel state, flattened for a reader who is skimming.
+ *
+ * The `unchecked` shape carries the same keys with nulls rather than being a
+ * bare string, so a client can read `row.channel.transport` without first asking
+ * which of two shapes it got. Nulls are explicit for the reason
+ * {@link ListedAgent} gives: over JSON an absent field reads as "not answered",
+ * and these are answered — with nothing.
+ */
+interface ListedAgentChannel {
+  /** `'unchecked'` when no verdict exists; otherwise the report's own outcome. */
+  outcome: ChannelSelfCheckReport['outcome'] | 'unchecked';
+  /** The carrier this agent's messages take. An unchecked agent still routes. */
+  transport: ChannelSelfCheckReport['transport'];
+  /** True only when the loop was proved on a client version somebody measured. */
+  proved: boolean;
+  clientName: string | null;
+  clientVersion: string | null;
+  clientVersionVerified: boolean | null;
+  checkedAt: string | null;
+  elapsedMs: number | null;
+  detail: string;
 }
 
 /**
@@ -683,6 +731,22 @@ export interface MessageRouterOptions {
     content: string,
     meta?: unknown
   ) => ChannelRouteOutcome;
+  /**
+   * What one agent's startup channel self-check found (KAN-248, T5 of KAN-150).
+   *
+   * A reader, not the store, and injected for the same reason `channelRoute` is:
+   * the verdicts live in `daemon.ts` beside the connections they describe, and
+   * the router must not learn what a connection is to report a row.
+   *
+   * **Absence and `null` are different answers and the row says which.** A
+   * daemon that passes no reader cannot answer the question at all — every
+   * harness router, and any embedding without a socket set — so `channel` is
+   * omitted from the row entirely. A reader that answers `null` is saying this
+   * agent has no verdict, which is a real state (`unchecked`) with a real
+   * meaning: nobody has proved this agent's channel loop. Collapsing the two
+   * would let "this daemon cannot tell you" read as "nothing is wrong".
+   */
+  channelSelfCheck?: (address: { type: string; key: string }) => ChannelSelfCheckReport | null;
 }
 
 /**
@@ -708,7 +772,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'launchdarkly',
   'capacitySource',
   'boardControl',
-  'channelRoute'
+  'channelRoute',
+  'channelSelfCheck'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -740,6 +805,8 @@ export class MessageRouter {
   private readonly boardControl?: (agents: AddressableAgent[]) => BoardControlReport;
   /** See {@link MessageRouterOptions.channelRoute}. */
   private readonly channelRoute?: MessageRouterOptions['channelRoute'];
+  /** See {@link MessageRouterOptions.channelSelfCheck}. */
+  private readonly channelSelfCheck?: MessageRouterOptions['channelSelfCheck'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -773,6 +840,7 @@ export class MessageRouter {
     this.capacitySource = opts.capacitySource ?? readCapacity;
     this.boardControl = opts.boardControl;
     this.channelRoute = opts.channelRoute;
+    this.channelSelfCheck = opts.channelSelfCheck;
   }
 
   /**
@@ -2140,6 +2208,15 @@ export class MessageRouter {
           : channelOutcome?.reason === 'channel-disabled'
             ? 'channel emission is switched off fleet-wide, so nothing was written to any connection' +
               (channelOutcome.switchPath ? ` (switch: ${channelOutcome.switchPath})` : '')
+            : channelOutcome?.reason === 'selfcheck-failed'
+              // KAN-248. Named as its own cause rather than folded into
+              // `no-connection`, because it sends the reader somewhere
+              // different: the recipient IS reachable and its channel loop did
+              // not prove out, so the thing to read is its `channel` row in
+              // butchr_list_agents rather than its connection.
+              ? `${address.type}/${address.key} failed its startup channel self-check and is ` +
+                'degraded to the composer; butchr_list_agents carries the outcome and the ' +
+                "client version on that agent's row"
             : channelOutcome?.reason === 'no-connection'
               ? `no live channel connection is registered for ${address.type}/${address.key}`
               : channelOutcome?.reason === 'socket-closed'
@@ -3487,7 +3564,8 @@ export class MessageRouter {
         // Through the same helper the notifier resolves parentage with, so
         // the row the page nests by and the supervisor a nudge is delivered to
         // can never be two different answers to one question.
-        activatedBy: this.supervisorFor(agentName)
+        activatedBy: this.supervisorFor(agentName),
+        ...this.channelStateOf(dto.type, dto.key)
       });
     }
 
@@ -3530,11 +3608,70 @@ export class MessageRouter {
         // Not a session-only field, so not null-by-construction here: the
         // registry outlives the session map, which is the whole reason an
         // agent that survived a daemon restart still knows who staffed it.
-        activatedBy: this.supervisorFor(record.name)
+        activatedBy: this.supervisorFor(record.name),
+        // NOT null-by-construction either, and this is the row where it most
+        // often says `unchecked` — a sessionless agent is one that outlived a
+        // daemon restart, and the daemon that restarted took its verdict with
+        // it. The reader answers `unchecked` honestly rather than this row
+        // pretending the question does not apply to it.
+        ...this.channelStateOf(address.type, address.key)
       });
     }
 
     return { agents, unbackedPanes, staleSessions };
+  }
+
+  /**
+   * One agent's channel row (KAN-248, T5), or nothing when this daemon cannot say.
+   *
+   * Returns a spreadable fragment rather than a value so that "no reader wired
+   * in" is an ABSENT key rather than a null one. That distinction is the whole
+   * reason this is not a one-liner at each call site: a client reading `null`
+   * must be able to conclude *"this daemon checked and found no verdict"*, and
+   * it can only do that if a daemon which cannot check says nothing at all.
+   */
+  private channelStateOf(
+    type: string | null,
+    key: string
+  ): { channel: ListedAgentChannel } | {} {
+    if (!this.channelSelfCheck || !type) return {};
+    const report = this.channelSelfCheck({ type, key });
+    if (!report) {
+      return {
+        channel: {
+          outcome: 'unchecked',
+          // AN UNCHECKED AGENT ROUTES OVER THE CHANNEL, so this says `channel`
+          // rather than hedging — it is a statement about what will happen to
+          // the next message, and `routeChannelMessage` will not refuse this
+          // agent. `outcome` is where the reader learns that nothing proved it.
+          transport: 'channel',
+          proved: false,
+          clientName: null,
+          clientVersion: null,
+          clientVersionVerified: null,
+          checkedAt: null,
+          elapsedMs: null,
+          detail:
+            'no startup channel self-check has run for this agent — most often because it ' +
+            'outlived the daemon that would have checked it, or because it was spawned while ' +
+            'channel emission was off. Unchecked is not failed: its messages still route over ' +
+            'the channel when one is registered. Re-activating it runs the check.'
+        }
+      };
+    }
+    return {
+      channel: {
+        outcome: report.outcome,
+        transport: report.transport,
+        proved: report.proved,
+        clientName: report.clientName,
+        clientVersion: report.clientVersion,
+        clientVersionVerified: report.clientVersionVerified,
+        checkedAt: report.checkedAt,
+        elapsedMs: report.elapsedMs,
+        detail: report.detail
+      }
+    };
   }
 
   /**

@@ -112,14 +112,30 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawn, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { connectDaemonRpc, sleep, yn, BUTCHR_DIR, SOCKET_PATH } from './lib/channel-probe.mjs';
+import { connectDaemonRpc, sleep, yn, SOCKET_PATH } from './lib/channel-probe.mjs';
+// THE STAGING MOVED TO `lib/isolated-daemon.mjs` (KAN-248) AND IS OTHERWISE
+// UNCHANGED. KAN-248 needs the identical bring-up to prove that a message
+// crosses the socket this probe's activation produces, and a second copy of the
+// `HOME` shim, the trust editing and the credential handling would be one fact
+// with two implementations — the shape KAN-219 extracted `lib/channel-probe.mjs`
+// to avoid. What did NOT move is `removeAnswerer`: patching the copied build is
+// this probe's own business and is passed in as `patchDist` below.
+import {
+  DIALOG_ON_PANE,
+  stagedDaemons as daemons,
+  PROMPT_READY,
+  activateWaitingForRoom,
+  awaitStartupOutcome,
+  negotiated,
+  stageIsolatedDaemon,
+  startupLines
+} from './lib/isolated-daemon.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(daemonDir, '..');
-const realHome = os.homedir();
 
 const KEEP = process.argv.includes('--keep');
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
@@ -177,42 +193,6 @@ function channelSection() {
   return next === -1 ? rest : rest.slice(0, next + 1);
 }
 
-/**
- * The staged `dist/mcp.js`: set `HOME`, then be the real server, teeing the wire.
- *
- * See the header for why this exists. It is deliberately the smallest thing that
- * restores production's shared-`$HOME` property — it does not import the product,
- * it spawns it, so the server under test is byte-identical to the shipped one.
- */
-const MCP_SHIM = (home, realMcp, wireLog, stderrLog) => `
-import fs from 'fs';
-import { spawn } from 'child_process';
-const WIRE = ${JSON.stringify(wireLog)};
-const rec = (dir, line) => {
-  if (!line.trim()) return;
-  let frame; try { frame = JSON.parse(line); } catch { frame = { unparsed: line }; }
-  try { fs.appendFileSync(WIRE, JSON.stringify({ t: Date.now(), dir, frame }) + '\\n'); } catch {}
-};
-const child = spawn(process.execPath, [${JSON.stringify(realMcp)}, ...process.argv.slice(2)], {
-  env: { ...process.env, HOME: ${JSON.stringify(home)} },
-  stdio: ['pipe', 'pipe', fs.openSync(${JSON.stringify(stderrLog)}, 'a')]
-});
-child.on('error', (e) => rec('shim-error', JSON.stringify({ error: String(e.message) })));
-let up = '';
-process.stdin.on('data', (c) => {
-  up += c.toString('utf8'); let i;
-  while ((i = up.indexOf('\\n')) !== -1) { rec('client->server', up.slice(0, i)); up = up.slice(i + 1); }
-  child.stdin.write(c);
-});
-let down = '';
-child.stdout.on('data', (c) => {
-  down += c.toString('utf8'); let i;
-  while ((i = down.indexOf('\\n')) !== -1) { rec('server->client', down.slice(0, i)); down = down.slice(i + 1); }
-  process.stdout.write(c);
-});
-child.on('exit', (code) => process.exit(code ?? 0));
-`;
-
 // ---------------------------------------------------------------- preflight --
 
 if (!fs.existsSync(path.join(daemonDir, 'dist', 'daemon.js'))) {
@@ -260,227 +240,45 @@ say(`run id         : ${runId}`);
 say(`scratch        : ${scratch}`);
 say(`phases         : ${PHASES.join(', ')}`);
 
-const daemons = [];
-const trustAdded = [];
 const results = {};
 
-/** Read-modify-write the REAL ~/.claude.json atomically, or leave it alone. */
-function editRealClaudeConfig(mutate) {
-  const p = path.join(realHome, '.claude.json');
-  try {
-    if (!fs.existsSync(p)) return false;
-    const config = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (!mutate(config)) return false;
-    const tmp = `${p}.kan246-${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(config, null, 2));
-    fs.renameSync(tmp, p);
-    return true;
-  } catch (e) {
-    say(`  (could not edit ${p}: ${e?.message ?? e})`);
-    return false;
-  }
-}
-
-process.on('exit', () => {
-  for (const d of daemons) { try { d.proc.kill('SIGKILL'); } catch {} }
-  for (const key of trustAdded) {
-    editRealClaudeConfig((config) => {
-      if (!config.projects?.[key]) return false;
-      delete config.projects[key];
-      return true;
-    });
-  }
-});
-
 /**
- * Stage one isolated daemon and start it.
+ * Stage one isolated daemon for this probe, with this probe's brief.
  *
- * `removeAnswerer` is phase 3's whole apparatus: it patches the COPIED
+ * The staging itself lives in `lib/isolated-daemon.mjs` (KAN-248). What stays
+ * here is what is this probe's own: the brief these agents get, and
+ * `removeAnswerer` — phase 3's whole apparatus, which patches the COPIED
  * `daemon.js` so the channel-startup watcher returns immediately. That build is
- * a stand-in for a world in which the flag ships and nothing answers the dialog —
+ * a stand-in for a world in which the flag ships and nothing answers the dialog,
  * which is what `origin/main` plus the flag alone would be, and what this ticket
  * exists to not do.
  */
 async function stageDaemon(label, { key, removeAnswerer = false }) {
-  const root = path.join(scratch, label);
-  const home = path.join(root, 'home');
-  const stagedRepo = path.join(root, 'repo');
-  const distDir = path.join(stagedRepo, 'daemon', 'dist');
-  const wireDir = path.join(root, 'wire');
-
-  fs.mkdirSync(path.join(stagedRepo, 'prompts'), { recursive: true });
-  fs.mkdirSync(path.dirname(distDir), { recursive: true });
-  fs.mkdirSync(wireDir, { recursive: true });
-  fs.cpSync(path.join(daemonDir, 'dist'), distDir, { recursive: true });
-  for (const name of ['package.json', 'node_modules']) {
-    fs.symlinkSync(path.join(daemonDir, name), path.join(stagedRepo, 'daemon', name));
-  }
-
-  // The brief, written by the PRODUCT from the staged prompts at activation.
-  fs.writeFileSync(path.join(stagedRepo, 'prompts', 'task.md'), PREAMBLE + channelSection());
-
-  // The mcp.js shim — see the header.
-  const wireLog = path.join(wireDir, 'wire.log');
-  const stderrLog = path.join(wireDir, 'stderr.log');
-  fs.writeFileSync(wireLog, '');
-  fs.writeFileSync(stderrLog, '');
-  fs.renameSync(path.join(distDir, 'mcp.js'), path.join(distDir, 'mcp.real.js'));
-  fs.writeFileSync(
-    path.join(distDir, 'mcp.js'),
-    MCP_SHIM(home, path.join(distDir, 'mcp.real.js'), wireLog, stderrLog)
-  );
-
-  if (removeAnswerer) {
-    const target = path.join(distDir, 'daemon.js');
-    const source = fs.readFileSync(target, 'utf8');
-    // Matched by shape rather than by an exact argument list: the listener's
-    // signature has already changed once during this ticket, and a patch that
-    // silently found nothing would produce a "red" phase that is really a green
-    // build — the worst possible outcome for the section whose whole job is to
-    // show the failure. It throws instead.
-    const marker = /herdrBridge\.setAgentSpawnedListener\(\([^)]*\) => \{/;
-    if (!marker.test(source)) {
-      throw new Error('could not find the channel-startup watcher in the built daemon to remove');
-    }
-    fs.writeFileSync(target, source.replace(marker, (m) => `${m}\n    return;`));
-    say(`  [${label}] patched the copied build so NOTHING answers the dialog`);
-  }
-
-  fs.mkdirSync(home, { recursive: true });
-  for (const name of ['.claude', '.claude.json']) {
-    const target = path.join(realHome, name);
-    if (fs.existsSync(target)) fs.symlinkSync(target, path.join(home, name));
-  }
-  fs.mkdirSync(path.join(home, '.local'), { recursive: true });
-  if (fs.existsSync(path.join(realHome, '.local', 'bin'))) {
-    fs.symlinkSync(path.join(realHome, '.local', 'bin'), path.join(home, '.local', 'bin'));
-  }
-
-  // Credentials COPIED, never symlinked: this run must not be able to write to
-  // the real ones. Nothing here reads or prints their contents.
-  // `agent-cost.json` is the capacity gate's calibration — copying it is giving
-  // a guard its data, not bypassing one (KAN-249's note).
-  const fakeButchrDir = path.join(home, '.local', 'share', 'butchr');
-  fs.mkdirSync(fakeButchrDir, { recursive: true });
-  if (fs.existsSync(BUTCHR_DIR)) {
-    for (const name of fs.readdirSync(BUTCHR_DIR)) {
-      if (name === 'integrations.json' || name === 'agent-cost.json' || name.endsWith('-credential.json')) {
-        fs.copyFileSync(path.join(BUTCHR_DIR, name), path.join(fakeButchrDir, name));
-      }
-    }
-  }
-
-  // herdr reads the REAL ~/.claude.json however isolated this daemon is.
-  const ws = path.join(fakeButchrDir, 'workspaces', TYPE, key.toLowerCase());
-  fs.mkdirSync(ws, { recursive: true });
-  const trustKey = path.normalize(path.resolve(ws));
-  if (editRealClaudeConfig((config) => {
-    if (config.projects?.[trustKey]?.hasTrustDialogAccepted === true) return false;
-    config.projects = { ...config.projects, [trustKey]: { hasTrustDialogAccepted: true } };
-    return true;
-  })) trustAdded.push(trustKey);
-
-  const socketPath = path.join(fakeButchrDir, 'butchr.sock');
-  const daemonLog = path.join(fakeButchrDir, 'daemon.log');
-  const proc = spawn(process.execPath, [path.join(distDir, 'daemon.js')], {
-    env: { ...process.env, HOME: home },
-    stdio: ['ignore', 'pipe', 'pipe']
+  return stageIsolatedDaemon({
+    scratch,
+    label,
+    type: TYPE,
+    key,
+    promptText: PREAMBLE + channelSection(),
+    say,
+    patchDist: removeAnswerer
+      ? (distDir) => {
+          const target = path.join(distDir, 'daemon.js');
+          const source = fs.readFileSync(target, 'utf8');
+          // Matched by shape rather than by an exact argument list: the
+          // listener's signature has already changed once during this ticket,
+          // and a patch that silently found nothing would produce a "red" phase
+          // that is really a green build — the worst possible outcome for the
+          // section whose whole job is to show the failure. It throws instead.
+          const marker = /herdrBridge\.setAgentSpawnedListener\(\([^)]*\) => \{/;
+          if (!marker.test(source)) {
+            throw new Error('could not find the channel-startup watcher in the built daemon to remove');
+          }
+          fs.writeFileSync(target, source.replace(marker, (m) => `${m}\n    return;`));
+          say(`  [${label}] patched the copied build so NOTHING answers the dialog`);
+        }
+      : undefined
   });
-  const stdio = [];
-  proc.stdout.on('data', (c) => stdio.push(c.toString()));
-  proc.stderr.on('data', (c) => stdio.push(c.toString()));
-  daemons.push({ proc, stdio });
-
-  for (let i = 0; i < 120 && !fs.existsSync(socketPath); i += 1) await sleep(250);
-  if (!fs.existsSync(socketPath)) {
-    throw new Error(`[${label}] daemon never claimed ${socketPath}\n${stdio.join('').slice(-1500)}`);
-  }
-  const { call, close } = await connectDaemonRpc(socketPath);
-
-  say(`  [${label}] staged dist   : ${distDir}`);
-  say(`  [${label}] isolated HOME : ${home}`);
-  say(`  [${label}] its socket    : ${socketPath}`);
-  return { label, home, distDir, fakeButchrDir, socketPath, call, close, ws, daemonLog, wireDir, key };
-}
-
-/** Everything the daemon's channel watcher has said so far, in order. */
-function startupLines(side) {
-  try {
-    return fs.readFileSync(side.daemonLog, 'utf8')
-      .split('\n')
-      .filter((l) => l.includes('[ChannelStartup]'));
-  } catch {
-    return [];
-  }
-}
-
-/** The client's own `initialize` result off this agent's wire, if it got that far. */
-function negotiated(side) {
-  try {
-    for (const line of fs.readFileSync(path.join(side.wireDir, 'wire.log'), 'utf8').split('\n')) {
-      if (!line.trim()) continue;
-      const rec = JSON.parse(line);
-      const caps = rec?.frame?.result?.capabilities;
-      if (rec.dir === 'server->client' && caps) {
-        return { up: true, channel: Boolean(caps.experimental?.['claude/channel']), capabilities: caps };
-      }
-    }
-  } catch {}
-  return { up: false, channel: false, capabilities: null };
-}
-
-const PROMPT_READY = /for shortcuts|Bypassing Permissions|bypass permissions/i;
-const DIALOG_ON_PANE = /Loading development channels|I am using this for local development/;
-
-/** Poll until the watcher reports an outcome, or the wait runs out. */
-async function awaitStartupOutcome(side, { attempts = 60, intervalMs = 3000, since = 0 } = {}) {
-  // `since` is the log length before THIS activation. Without it phase 2 reads
-  // phase 1's verdict and reports it as its own — which is exactly what run 2 of
-  // this probe did: it announced the resumed path ready having answered zero
-  // dialogs, because the `ready` line it matched belonged to the fresh path
-  // twenty lines earlier. A probe that reads a stale success is worse than one
-  // that reads nothing.
-  for (let i = 0; i < attempts; i += 1) {
-    const lines = startupLines(side).slice(since);
-    const ready = lines.find((l) => /: ready after \d+ms/.test(l));
-    const gaveUp = lines.find((l) => /GIVING UP/.test(l));
-    if (ready) return { outcome: 'ready', line: ready, lines };
-    if (gaveUp) return { outcome: 'gave-up', line: gaveUp, lines };
-    await sleep(intervalMs);
-  }
-  return { outcome: 'timeout', line: null, lines: startupLines(side).slice(since) };
-}
-
-/**
- * Activate, waiting for a slot rather than taking one.
- *
- * The isolated daemon can see the fleet — herdr is shared — so its capacity gate
- * is doing correct arithmetic about a real machine, and a refusal here is the
- * guard working. **Never `override: true`**, which `bringUpChannelAgent` bans for
- * two reasons that both apply: it pushes a loaded machine past its own guard
- * while other agents are working, and every timing this probe reads would then
- * be a timing off a machine this probe overloaded. Waiting costs minutes.
- *
- * The wait is needed rather than nice: this machine has four cores and routinely
- * runs six task agents, so the binding constraint flips between memory and CPU
- * minute to minute. A one-shot activation reports "the probe failed" for what is
- * really "come back in five minutes".
- */
-async function activateWaitingForRoom(side, key, { budgetMs = 1_200_000 } = {}) {
-  const deadline = Date.now() + budgetMs;
-  let act = await side.call('activate_by_key', { type: TYPE, key, defaultAgent: 'claude' });
-  if (act?.success) return act;
-  say(`  refused: ${String(act?.error ?? '').split('\n')[0]}`);
-  say(`  waiting for a slot rather than overriding — up to ${Math.round(budgetMs / 60000)} minutes…`);
-  while (!act?.success && Date.now() < deadline) {
-    await sleep(30000);
-    act = await side.call('activate_by_key', { type: TYPE, key, defaultAgent: 'claude' });
-    if (!act?.success) {
-      const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-      say(`    still refused (${String(act?.error ?? '').split('\n')[0].slice(0, 100)}…) — ${left}s left`);
-    }
-  }
-  return act;
 }
 
 async function tail(side, key, lines = 120) {
