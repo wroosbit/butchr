@@ -648,7 +648,14 @@ const RULES = [
     // which is the mechanism noticing its own brief has stopped working, and is
     // indistinguishable there from the client having broken. A green run here is
     // never evidence that agents answer.
-    id: 'H-15',
+    //
+    // THIS ENTRY WAS `H-15` ON `main` AND COLLIDED WITH KAN-262'S (KAN-241,
+    // renumbered here to H-17). The second such pair on the trunk in one day —
+    // KAN-262's landed at `2a259d6`, this one at `91b73a3` — and the id stays
+    // with whichever landed first. Two collisions in a day is not bad luck: the
+    // next free number is read off a file that several branches are extending
+    // at once, and each is correct in isolation. Filed as KAN-268.
+    id: 'H-17',
     title: 'the channel liveness probe is named in the brief, with its ask and with declining held open',
     carriedBy: Object.fromEntries(
       PROMPTS.map((f) => [

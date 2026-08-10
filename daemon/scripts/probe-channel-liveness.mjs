@@ -14,7 +14,7 @@
 //      this ticket.
 //   2. **That an agent which has read the brief answers.** KAN-252 added a
 //      paragraph to `prompts/*.md` naming this probe; `verify-operative-rules-
-//      are-carried.mjs` (H-15) can prove the four files *contain* it and can
+//      are-carried.mjs` (H-17) can prove the four files *contain* it and can
 //      never prove a model *acts* on it. KAN-217 measured a session receiving a
 //      channel event perfectly and correctly declining, and KAN-249 then measured
 //      an UNbriefed agent complying — so neither direction is safe to assume.
@@ -164,14 +164,14 @@ function channelSection() {
 // THE BRIEF UNDER TEST MUST ACTUALLY BE IN THE BRIEF. A section that had lost
 // KAN-252's paragraph would produce a phase 1 that tested an unbriefed agent
 // while reporting that it had tested a briefed one — the exact over-claim this
-// epic keeps re-finding. H-15 enforces this in CI; this is the same assertion at
+// epic keeps re-finding. H-17 enforces this in CI; this is the same assertion at
 // the point of use, because a probe that quietly tests something else is worse
 // than a probe that refuses to run.
 const SECTION = channelSection();
 if (!/channel\s*\n?\s*liveness probe/i.test(SECTION)) {
   say('ABORTING: the "Whose voice is this?" section of prompts/task.md does not name the');
   say('channel liveness probe, so these agents would not be briefed about the thing this');
-  say('probe measures. See rule H-15 in verify-operative-rules-are-carried.mjs.');
+  say('probe measures. See rule H-17 in verify-operative-rules-are-carried.mjs.');
   process.exit(1);
 }
 

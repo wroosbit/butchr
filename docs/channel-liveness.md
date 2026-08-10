@@ -148,7 +148,7 @@ decided it to refuse. The paragraph is out of band **because** a message that
 vouches for itself is what an agent should not trust — the brief is what makes the
 probe expected, and the probe never argues for itself.
 
-Rule **H-15** in `verify-operative-rules-are-carried.mjs` keeps all three halves in
+Rule **H-17** in `verify-operative-rules-are-carried.mjs` keeps all three halves in
 all four prompts, and that is a required check. **It is deliberately not in the
 `instructions` string on the MCP server**, unlike H-12's channel brief: every token
 there is paid on every request of every agent forever, this probe runs a handful of
@@ -159,8 +159,8 @@ one, read the other"* does not extend here.
 ## What nothing covers
 
 * **Whether an agent that has read the brief answers.** A question about a model.
-  `probe-channel-liveness.mjs` measures it live; H-15 can only prove the four files
-  say it. A green H-15 is never evidence that agents answer.
+  `probe-channel-liveness.mjs` measures it live; H-17 can only prove the four files
+  say it. A green H-17 is never evidence that agents answer.
 * **Telling a broken dispatcher from a fleet of models that declined.** Nothing
   outside the client can, and no future version of this mechanism will.
 * **A daemon that restarts more often than the interval.** The record is held in
@@ -200,6 +200,6 @@ it.
 | The action that reads the record and forces a run | `daemon/src/daemon.ts`, `channel_liveness` |
 | The row a supervisor reads | `daemon/src/router.ts`, `list_agents_response.channelLiveness` |
 | The brief that makes the probe expected | `prompts/{task,story,epic,confluence}.md` |
-| The rule that keeps the brief | `daemon/scripts/verify-operative-rules-are-carried.mjs`, H-15 |
+| The rule that keeps the brief | `daemon/scripts/verify-operative-rules-are-carried.mjs`, H-17 |
 | Deterministic proof, every outcome, with `--blind` | `daemon/scripts/verify-channel-liveness.mjs` |
 | Live proof against a real model | `daemon/scripts/probe-channel-liveness.mjs` |

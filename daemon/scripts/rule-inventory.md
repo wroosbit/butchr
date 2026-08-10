@@ -28,9 +28,22 @@ earlier. Both were live on the trunk at once. `node --check` passed, the sweep
 passed, `verify-script-sweep` passed, and the PR was reviewed and approved — the
 duplicate is visible in none of them. It was caught by this file's own
 duplicate-id leg, at the moment its branch merged `main` in order to be merged
-itself, and renumbered to `H-16`. Three instances in three days; the first two
-were caught by a person reading, and the third was not caught by a person at
-all. That is the argument for this file, and it is no longer hypothetical.
+itself, and renumbered to `H-16`.
+
+**Then it happened a second time, the same day, while that fix was in review.**
+KAN-252 (`91b73a3`) landed an entry numbered `H-15`, colliding with KAN-262's
+(`2a259d6`); renumbered to `H-17`. Four colliding entries in three incidents.
+The first two were caught by a person reading, and neither of the last two was
+caught by a person at all. That is the argument for this file, and it is no
+longer hypothetical.
+
+**It is also an argument this file cannot answer.** Detecting the collision is
+not preventing it: the next free number is read off a file several branches are
+extending at once, so two authors pick the same one and each is correct alone.
+That is filed as [KAN-268](https://wroosbit.atlassian.net/browse/KAN-268). Until
+it is decided, expect this leg to keep firing, and renumber per the `2a24912`
+precedent — **the id stays with whichever landed first**, and every reference
+outside the entry moves with it.
 
 ## Why it is a *separate* file, which is the whole of the design
 
@@ -100,6 +113,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-14` — KAN-212 — every Story and Task filed carries a parent epic — the epic, never the story
 - `H-15` — KAN-262 — workspace dependencies are linked from the shared store, not installed privately
 - `H-16` — KAN-242 — the brief is a snapshot: the commit it came from, and it does not outrank `origin/main`
+- `H-17` — KAN-252 — the channel liveness probe is named in the brief, with its ask and declining held open
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
 <!-- INVENTORY:END -->
