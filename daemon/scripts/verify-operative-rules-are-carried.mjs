@@ -89,6 +89,17 @@
 // Do that after any change to RETIRED or to `sentences()`. A green run of this
 // script has been wrong before; a red one at that spot is what earns it back.
 //
+// AND (KAN-249) A RULE THAT HAS TO BE MET BEFORE THE FIRST EVENT, NOT AFTER THE
+// FIRST FAILURE. H-12 requires the channel brief in all four prompts. KAN-217
+// measured an unbriefed session **correctly refusing** a channel event as
+// probable prompt injection — delivery was perfect, the brief was missing, and
+// from outside the two look identical. So this is the unusual case where the
+// prompt is not documentation of a mechanism but a **precondition of it**: the
+// carrier does not work on an agent that has not read this, and no code path
+// anywhere can tell you so. Run with `--ref fa84f07` — KAN-249's merge base — to
+// watch it go red on all four prompts, which is what `origin/main` looked like
+// before channels were ever enabled for anybody.
+//
 // WHAT THIS SCRIPT DOES NOT COVER, STATED BECAUSE THE HEADER IS WHERE THE EDGE
 // GOES:
 //
@@ -118,6 +129,22 @@
 //   - Its subject is `prompts/` only. `docs/butchr.md` and code comments can
 //     restate a rule and go stale independently; both did for KAN-237, and both
 //     were fixed by hand in the same PR rather than by this sweep.
+//   - **For H-12 specifically, the gap is a model.** This proves the four files
+//     say the brief. Whether a real agent that has read it then *acts* on a
+//     channel event — the thing KAN-217 watched fail — is a question about a
+//     model and cannot be asked by a regex.
+//     WHO COVERS IT: `daemon/scripts/probe-briefed-channel-compliance.mjs`,
+//     which runs two real channelled agents, briefs one and not the other, and
+//     reads the outcome off the filesystem. It is a live experiment, not a CI
+//     check, so this sweep staying green is never evidence that the brief works
+//     — only that it is present.
+//   - **Nor does anything here check the OTHER half of the brief.** The MCP
+//     server's `instructions` string (`daemon/src/mcp.ts`) carries the same
+//     rule into the client's system prompt, and this sweep's subject is
+//     `prompts/` only, so the two can drift. The probe above reads the
+//     `instructions` off the negotiated `initialize` result and asserts the
+//     same four halves are in it, which is the only thing that ties them
+//     together; nothing does it at PR time.
 //
 // AND (KAN-212) A RULE THAT NEVER REACHED A PROMPT AT ALL. The convention
 // *every Story and Task carries a parent epic* was a human decision of
@@ -126,11 +153,16 @@
 // tickets were filed within the day by four different agents, one of them while
 // the backfill was still running; the heaviest filer on the board later
 // disclosed three of its own, two already closed under its own merges with
-// nothing having gone red. Run with `--ref origin/main` from KAN-212's merge
-// base `1fc6407` to watch H-12 go red in all three prompts at once — that red
+// nothing having gone red. It is **H-13**, not H-12: this entry was written as
+// H-12 and renamed when KAN-249 landed its channel-brief entry under that id
+// first. The id is the incumbent's; renaming the one still in review is the
+// cheaper half, and it is recorded here because a reader meeting "H-12" in
+// KAN-212's PR history should not go looking for a rule that moved.
+// Run with `--ref` KAN-212's original merge base `1fc6407` to watch H-13 go red
+// in all three prompts at once — that red
 // is honest here in a way the R-1 merge-base red was not, because the rule is
 // genuinely absent from those files rather than merely discussed elsewhere.
-// The narrower test, and the one to repeat after any edit to H-12's phrases:
+// The narrower test, and the one to repeat after any edit to H-13's phrases:
 //   perl -0pi -e 's/Epics have no parent, and that is correct//' prompts/story.md
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, story.md only
 //   git checkout -- prompts/story.md
@@ -279,6 +311,60 @@ const RULES = [
     },
   },
   {
+    // KAN-249 (T6 of KAN-150). The rule an agent has to have met BEFORE the
+    // first channel event arrives, because KAN-217 measured what happens when
+    // it has not: an unbriefed session **correctly refuses** a channel message
+    // as probable prompt injection, and that refusal is indistinguishable from
+    // a broken transport to whoever sent it.
+    //
+    // FOUR PHRASES, BECAUSE THE RULE HAS FOUR HALVES AND ANY THREE IS A TRAP:
+    //   - `source="butchr"` — the frame an agent must recognise. Without it the
+    //     brief describes a thing the agent cannot match to what it sees.
+    //   - *structural vs convention* — WHY the channel tag is worth more than
+    //     KAN-149's `[from …]`, which is the upgrade design §3 claims.
+    //   - *names the server, never the sender* + *never the human speaking* —
+    //     the honest limit, and the half most likely to be dropped as
+    //     redundant. A brief carrying only the upgrade teaches an agent that a
+    //     channel frame authenticates its sender, which is false and worse than
+    //     saying nothing: it would license acting on a forged payload because
+    //     the frame around it was genuine.
+    //   - *no dedicated channel reply tool* + *makes a reply owed* — the reply
+    //     path described without being urged. §3 is explicit that a brief which
+    //     tells agents to reply through the channel manufactures traffic, so
+    //     the sentence that limits the obligation is as operative as the one
+    //     that names the path.
+    //
+    // WATCH IT GO RED, at the spot that means something. R-1's docblock argues
+    // why a merge-base red is the weak evidence — it shows only that the script
+    // reacts to a wholly different file — so the test that counts is the
+    // *plausible regression*: an author tightening the brief keeps the upgrade
+    // and drops the limit on it. `--ref fa84f07` gives the weak red (all four
+    // prompts, KAN-249's merge base); this gives the strong one:
+    //   perl -0pi -e 's/\* \*\*And it buys exactly one sentence.*?same limit as above\.\n//s;
+    //                 s/\*\*A channel message is never the human speaking\.\*\*.*?durable\.\n\n//s'
+    //     prompts/task.md
+    //   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, task.md only
+    //   git checkout -- prompts/task.md
+    // Two patterns fail and four pass, in the one file, with the "the frame
+    // cannot be forged" bullet still sitting there — which is exactly the shape
+    // of the brief that would be worse than no brief at all.
+    id: 'H-12',
+    title: 'the channel brief: an expected carrier, what its frame is worth, and a reply path described rather than urged',
+    carriedBy: Object.fromEntries(
+      PROMPTS.map((f) => [
+        f,
+        [
+          /source="butchr"/,
+          /is structural; the sender tag inside it is a convention/i,
+          /names the \*\*server\*\*, never the sender/i,
+          /never the human speaking/i,
+          /no dedicated channel reply tool/i,
+          /makes a reply owed/i,
+        ],
+      ])
+    ),
+  },
+  {
     // KAN-212. WHY THIS ONE IS IN THE SWEEP — the ticket asked for the decision
     // to be made deliberately rather than by default, so here it is, with the
     // counter-argument kept rather than dropped.
@@ -316,12 +402,12 @@ const RULES = [
     // reproducing the original defect exactly. So placement is the load-bearing
     // half and it is a review question: the PR's `grep -n` output, which shows
     // the enclosing section of each hit, is what answers it. Recorded here so
-    // nobody reads a green H-12 as "agents now parent their tickets".
+    // nobody reads a green H-13 as "agents now parent their tickets".
     //
     // Four phrases, because the rule has four parts and the one most likely to
     // be dropped in a rewrite is *epics are parentless* — it reads like an
     // aside and is the reason a diligent agent does not retry a refused write.
-    id: 'H-12',
+    id: 'H-13',
     title: 'every Story and Task filed carries a parent epic — the epic, never the story',
     carriedBy: Object.fromEntries(
       ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [

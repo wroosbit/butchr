@@ -20,6 +20,17 @@ import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport } from './staleness.js';
 import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
 import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
+import {
+  AgentConnectionRegistry,
+  addressFromAnnouncement,
+  describeAddress
+} from './agent-connections.js';
+import {
+  CHANNEL_SWITCH_PATH,
+  channelEmissionEnabled,
+  routeChannelMessage,
+  writeChannelSwitch
+} from './channel.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
@@ -196,6 +207,174 @@ const broadcast = (msg: any) => {
   }
 };
 
+// Which agent is on the other end of each connection (KAN-243). Maintained
+// beside `connections` and never instead of it: `broadcast` still fans out to
+// every client, identified or not, so nothing any existing consumer receives
+// changes. This map only adds the ability to *address* one — KAN-244 is what
+// uses it. See agent-connections.ts for the four decisions behind its shape.
+const agentConnections = new AgentConnectionRegistry();
+
+/**
+ * The two actions that are about the connection itself rather than about the
+ * fleet, answered here instead of in the router.
+ *
+ * They are handled at this layer because the router has no socket: it is
+ * constructed with a `send` closure and deliberately knows nothing about the
+ * transport, whereas both of these are questions about *which socket this is*.
+ * Handling them before dispatch also means `MessageRouter.handle` is reached by
+ * exactly the actions it was reached by before, so its unknown-action branch
+ * cannot start warning about `hello`.
+ *
+ * Returns whether the message was consumed.
+ */
+const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
+  const reply = (body: any) =>
+    writeJsonLine(socket, msg?.id !== undefined ? { ...body, id: msg.id } : body);
+
+  switch (msg?.action) {
+    case 'hello': {
+      const address = addressFromAnnouncement(msg);
+      if (!address) {
+        // Not an error worth closing over. A client with nothing to announce
+        // should not be sending `hello` at all, but the honest answer is that
+        // it stays anonymous — which is a perfectly ordinary way to be.
+        log('hello with no workspace identity; connection stays anonymous');
+        reply({
+          action: 'hello_response',
+          success: false,
+          error: 'hello requires both workspaceType and workspaceKey',
+          identified: false
+        });
+        return true;
+      }
+      const result = agentConnections.register(socket, address);
+      if (!result.ok) {
+        reply({ action: 'hello_response', success: false, error: result.error, identified: false });
+        return true;
+      }
+      const { connection, replaced } = result;
+      log(
+        `Connection ${connection.id} is ${describeAddress(connection.address)}` +
+          (replaced ? ` (was ${describeAddress(replaced.address)} as ${replaced.id})` : '') +
+          ` — ${agentConnections.size} identified of ${connections.size} connected`
+      );
+      reply({
+        action: 'hello_response',
+        success: true,
+        identified: true,
+        connectionId: connection.id,
+        workspaceType: connection.address.type,
+        workspaceKey: connection.address.key
+      });
+      return true;
+    }
+    case 'channel_send': {
+      // THE ADDRESSED SEND (KAN-244, T2). KAN-243 built the identity → connection
+      // map and routed nothing with it; this is what writes down one of those
+      // connections and no others.
+      //
+      // Handled here beside `hello` for the same reason `hello` is: the router
+      // is constructed with a `send` closure and deliberately knows nothing
+      // about the transport, and this action's whole subject is *which socket*.
+      // Keeping it out of the router also means `MessageRouter.handle` is
+      // reached by exactly the actions it was reached by before, so no existing
+      // caller's behaviour moves — `butchr_send_to_agent` still types into a
+      // composer, unchanged and untouched. Routing it over this is T4.
+      //
+      // WHAT THE REPLY CLAIMS, AND WHAT IT REFUSES TO. `success: true` here
+      // means the bytes were written to a named connection. It does NOT mean an
+      // agent read them and does NOT mean a model received them — those are
+      // different facts with different failure modes, and `success: true`
+      // standing in for them is the shape this board has been burned by five
+      // times (design §2). So the reply carries `claim` saying in words what it
+      // is asserting, and the honest negative — no connection for that identity
+      // — is a first-class, sender-visible answer rather than a silent discard
+      // (design §1.3).
+      const address = addressFromAnnouncement(msg);
+      if (!address) {
+        reply({
+          action: 'channel_send_response',
+          success: false,
+          reason: 'no-address',
+          error: 'channel_send requires both workspaceType and workspaceKey'
+        });
+        return true;
+      }
+      // The switch check, the map lookup and the write moved into
+      // `routeChannelMessage` when KAN-247 gave `butchr_send_to_agent` a channel
+      // route: two callers needed all three, and a second copy of the *gate* in
+      // particular would mean a send that routed over a channel the fleet
+      // believes is off. See channel.ts. What stays here is this action's own
+      // reply shape, which KAN-244's proofs read field by field.
+      const outcome = routeChannelMessage({
+        registry: agentConnections,
+        address,
+        content: msg.content,
+        meta: msg.meta
+      });
+      log(
+        `channel_send → ${describeAddress(address)}: ` +
+          (outcome.routed ? `written to ${outcome.connectionId}` : `refused (${outcome.reason})`)
+      );
+      if (!outcome.routed) {
+        reply({
+          action: 'channel_send_response',
+          success: false,
+          reason: outcome.reason,
+          error: outcome.detail,
+          ...(outcome.switchPath ? { switchPath: outcome.switchPath } : {}),
+          claim: 'nothing was written'
+        });
+        return true;
+      }
+      reply({
+        action: 'channel_send_response',
+        success: true,
+        connectionId: outcome.connectionId,
+        workspaceType: outcome.address.type,
+        workspaceKey: outcome.address.key,
+        claim:
+          `the frame was written to ${outcome.connectionId}; this is not a claim that the agent read it, ` +
+          'nor that a model received it'
+      });
+      return true;
+    }
+    case 'channel_switch': {
+      // The kill switch, readable and settable over the socket so it does not
+      // need a shell on the machine. Omit `enabled` to read it. Not an MCP tool
+      // — §1.2 asks for a control that does not touch the tool surface, and
+      // this is a daemon action like `connected_agents` beside it.
+      if (typeof msg?.enabled === 'boolean') {
+        writeChannelSwitch(msg.enabled);
+        log(`channel emission switched ${msg.enabled ? 'ON' : 'OFF'} via channel_switch`);
+      }
+      // Reported by reading it back rather than by echoing what was asked for:
+      // the value that matters is the one the next `channel_send` will read.
+      reply({
+        action: 'channel_switch_response',
+        success: true,
+        enabled: channelEmissionEnabled(),
+        switchPath: CHANNEL_SWITCH_PATH
+      });
+      return true;
+    }
+    case 'connected_agents': {
+      // A diagnostic, and the only window onto this map from outside the
+      // process. It reports the map and routes nothing.
+      reply({
+        action: 'connected_agents_response',
+        success: true,
+        agents: agentConnections.snapshot(),
+        identifiedConnections: agentConnections.size,
+        totalConnections: connections.size
+      });
+      return true;
+    }
+    default:
+      return false;
+  }
+};
+
 // A PTY that dies takes the terminal with it, and the client has no other way
 // to find out: output simply stops. Announcing it is what lets the sidepanel
 // show a disconnected state instead of a frozen last frame.
@@ -228,7 +407,16 @@ const server = net.createServer((socket) => {
       // default, the real machine. Under KAN-226 that is an omitted field
       // rather than an `undefined` placeholder holding a slot open, so nothing
       // here has to be counted and a new option cannot displace an existing one.
-      boardControl: reportBoardControl
+      boardControl: reportBoardControl,
+      // The channel carrier for `butchr_send_to_agent` (KAN-247, T4). This is
+      // the seam that lets the router decide a transport without knowing what a
+      // socket is: the identity map lives here, beside the connections it
+      // indexes, and the router gets a closure over it rather than a reference
+      // to it. `routeChannelMessage` reads the kill switch on every call, so a
+      // channel switched off mid-flight stops the very next send with nothing
+      // restarted — see channel.ts on why the gate is read fresh.
+      channelRoute: (address, content, meta) =>
+        routeChannelMessage({ registry: agentConnections, address, content, meta })
     }
   );
 
@@ -236,6 +424,7 @@ const server = net.createServer((socket) => {
     socket,
     (msg) => {
       try {
+        if (handleConnectionAction(socket, msg)) return;
         router.handle(msg);
       } catch (err: any) {
         log('Handler error:', err);
@@ -252,8 +441,19 @@ const server = net.createServer((socket) => {
   socket.on('error', (err) => log('Client socket error:', err.message));
   socket.on('close', () => {
     connections.delete(socket);
+    // Beside the set's own cleanup, deliberately: a map that outlives the
+    // socket set is the leak this ticket is most likely to ship, and it is
+    // invisible — an entry for a departed agent looks exactly like an entry for
+    // a present one until something addresses it.
+    const released = agentConnections.release(socket);
     router.cleanup();
-    log(`Client disconnected (${connections.size} total)`);
+    log(
+      `Client disconnected (${connections.size} total)` +
+        (released
+          ? ` — ${describeAddress(released.address)} unregistered (${released.id}), ` +
+            `${agentConnections.size} identified remain`
+          : '')
+    );
   });
 });
 

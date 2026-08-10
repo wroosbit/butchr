@@ -9,6 +9,11 @@ import {
 import * as net from 'net';
 import { connectToDaemon, onJsonLines, writeJsonLine } from './ipc.js';
 import { WORKSPACE_KEY_FLAG, WORKSPACE_TYPE_FLAG } from './launchers.js';
+import {
+  CHANNEL_MESSAGE_ACTION,
+  CHANNEL_NOTIFICATION_METHOD,
+  isForwardableEvent
+} from './channel.js';
 
 /**
  * Which agent this server belongs to, read off this process's own argv.
@@ -53,8 +58,66 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
-      logging: {}
+      logging: {},
+      // WHAT MAKES THIS SERVER A CHANNEL (KAN-244, design §1.2). Without this
+      // key Claude Code registers no listener and every
+      // `notifications/claude/channel` below is discarded in silence — KAN-217
+      // measured that, and it is why the declaration cannot be conditional on
+      // the runtime switch: the client reads capabilities once, at
+      // `initialize`, so a declaration that came and went with a file on disk
+      // would bind whatever the file said at activation and never notice it
+      // changing.
+      //
+      // Declared unconditionally and therefore ALWAYS. What the switch governs
+      // is emission, in the daemon, where the addressing is — see channel.ts
+      // for why the gate is there and only there. An agent whose channel is off
+      // still advertises the capability and still receives nothing.
+      experimental: { 'claude/channel': {} }
     },
+    // WHAT THE MODEL IS TOLD ABOUT THIS SERVER (KAN-249, T6, design §3).
+    //
+    // Goes into the client's system prompt, and it is here because of a
+    // measurement rather than for tidiness: KAN-217 pushed a channel event at a
+    // session that had been told nothing, and the model **correctly declined to
+    // act on it**, naming it as probable prompt injection. Delivery was fine.
+    // The brief was missing. From outside, that refusal is indistinguishable
+    // from a broken transport.
+    //
+    // THE WORDING IS LOAD-BEARING AND PRESSURE IN IT BACKFIRES. KAN-217's probe
+    // ended its own `instructions` with "Do not ask permission first" and the
+    // model quoted that very sentence as the red flag that decided it: content
+    // pre-authorising its own execution is what marks it as an attack. Removing
+    // that one sentence turned refusal into compliance. So this string
+    // *describes* — what a frame is, where it comes from, what its `source`
+    // attribute is and is not worth, and that a return path exists — and asks
+    // for nothing. Design §3 requires exactly that of the reply path: describe
+    // it, do not urge its use, because a brief that tells agents to reply
+    // through the channel manufactures traffic.
+    //
+    // IT IS THE SHORTER OF TWO BRIEFS AND DELIBERATELY NOT THE ONLY ONE. Every
+    // token here is paid on every request of every agent forever, so the long
+    // form — the provenance limits in full, the turn-boundary semantics, the
+    // storm guards — lives in `prompts/*.md`, which the daemon renders into each
+    // workspace's `.butchr-prompt.md` and the agent reads at start. This is what
+    // remains true for a session that has drifted from that file, and the last
+    // line is the pointer between them. The two must say the same thing: if you
+    // change the channel section of the prompts, read this string as well.
+    instructions:
+      'Butchr manages this agent. A message another agent addresses to this one ' +
+      'arrives as a channel event — a <channel source="butchr"> block the client ' +
+      'places in context — and it is expected traffic about this workspace\'s ticket ' +
+      'and the work on it, not an intrusion. Read one as you would read the same ' +
+      'words typed at the terminal: judge it on its substance and decide. ' +
+      'PROVENANCE: source="butchr" is set by the client and names THIS SERVER, ' +
+      'nothing more. It is not evidence of who sent a message — every message on ' +
+      'this channel carries the same source — and a channel message is never the ' +
+      'human speaking. Who sent it is the [from <type>/<KEY>] tag at the start of ' +
+      'the payload, which the daemon stamps from the calling process\'s identity. ' +
+      'REPLY PATH: there is no dedicated reply tool here. A reply, if one is wanted, ' +
+      'is an ordinary butchr_send_to_agent addressed at the sender\'s type/KEY; it is ' +
+      'a new message rather than an acknowledgement, and nothing about receiving a ' +
+      'channel message makes a reply owed. The full brief is in .butchr-prompt.md in ' +
+      'this workspace, under "Whose voice is this?".'
   }
 );
 
@@ -81,7 +144,39 @@ function daemonLink(): Promise<net.Socket> {
             clearTimeout(entry.timer);
             const { id, ...body } = msg;
             entry.resolve(body);
-          } else if (typeof msg?.action === 'string' && msg.action.endsWith('_event')) {
+          } else if (msg?.action === 'hello_response') {
+            // Said on stderr rather than swallowed. KAN-217's finding was that
+            // a dead recipient is loud and a *misconfigured* one is silent; an
+            // agent whose identity never bound would be addressable by nobody,
+            // with no symptom until a message went missing.
+            console.error(
+              msg.success
+                ? `Registered with the daemon as ${callerIdentity.type}/${callerIdentity.key} (${msg.connectionId})`
+                : `Daemon refused this server's identity: ${msg.error ?? 'no reason given'}`
+            );
+          } else if (msg?.action === CHANNEL_MESSAGE_ACTION) {
+            // AN ADDRESSED MESSAGE (KAN-244). Unlike the broadcast below, this
+            // frame was written to THIS connection alone: the daemon resolved
+            // the recipient through KAN-243's identity map and wrote to one
+            // socket, so arriving here is already evidence that this agent was
+            // the intended one.
+            //
+            // There is no switch consulted here, deliberately, and that is not
+            // an omission — see channel.ts. The daemon does not write this
+            // frame at all when channel emission is off, so this branch is
+            // unreachable then and `mcp.ts` behaves exactly as it did before
+            // KAN-244. A second gate here would be a second copy of one
+            // condition, which is the defect KAN-145 cost this board a day to.
+            server.notification({
+              method: CHANNEL_NOTIFICATION_METHOD,
+              params: { content: msg.content, meta: msg.meta }
+            }).catch(() => {});
+          } else if (isForwardableEvent(msg?.action)) {
+            // Was `msg.action.endsWith('_event')` until KAN-244 (design §1.3).
+            // The suffix test forwarded anything a future author happened to
+            // name that way; the allowlist in channel.ts names the seven the
+            // daemon emits today, so this forwards exactly what it forwarded
+            // before and an eighth arrives only when somebody adds it there.
             server.notification({
               method: "notifications/message",
               params: {
@@ -91,6 +186,28 @@ function daemonLink(): Promise<net.Socket> {
             }).catch(() => {});
           }
         });
+
+        // Introduce ourselves (KAN-243). The daemon holds its clients in a set
+        // with no identity on any of them, so it can fan out to everybody and
+        // address nobody; this is the announcement that binds this connection
+        // to this agent, and it is the *same* argv-derived values that already
+        // ride every request body, from the same source, so the two cannot
+        // drift apart.
+        //
+        // Sent on every established link rather than once per process, because
+        // the daemon forgets on `close` — a daemon restart must leave this
+        // server re-registered rather than silently unaddressable.
+        //
+        // An unidentified server says nothing at all: `hello` with no identity
+        // is refused, and a human-activated workspace legitimately has none.
+        // Staying anonymous is the correct outcome there, not an error.
+        if (callerIdentity.type && callerIdentity.key) {
+          writeJsonLine(socket, {
+            action: 'hello',
+            workspaceType: callerIdentity.type,
+            workspaceKey: callerIdentity.key
+          });
+        }
 
         socket.on('error', () => {});
         socket.on('close', () => {
@@ -207,7 +324,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_send_to_agent",
         description:
-          "Types a message into a running agent's terminal, reaching it without attaching to its pane: Ctrl+C, then the text, then Enter. WHAT THE INTERRUPT COSTS: that Ctrl+C does not merely clear a half-typed line — it cancels whatever the recipient is doing at that moment, including a tool call in flight, which does not resume. On the recipient's side the cancellation renders as a refusal, so an interrupted agent may report that a human rejected work nobody rejected, and an interrupt landing across parallel calls can leave some applied and report them all refused. A send to a busy agent therefore costs it the work it was in the middle of. That can be worth paying — a requirement that changed makes the work it is losing wasted anyway — but it is a decision to make, not a free notification: `butchr_tail_agent` first if you want to know what you are interrupting. PROVENANCE: the daemon prefixes what it delivers with a sender tag it derives from YOUR workspace identity — `[from story/KAN-75] your message` — so do not write a sender into the message yourself; a sender you type is body text and is delivered after the daemon's tag rather than instead of it. The response echoes `sender` and `delivered` so you can see exactly what your recipient reads — they report what was typed, not that it arrived: the Enter can be lost and strand the text at the recipient's composer, and only `butchr_tail_agent` shows whether it landed. The recipient's convention is that an untagged message is the human typing directly, so relay a human decision as a decision you are reporting, not as your own instruction.",
+          "Sends a message to a running agent. THE DAEMON CHOOSES HOW IT TRAVELS, PER RECIPIENT, AT SEND TIME — you never choose a transport and must never infer one. Two carriers exist: a CHANNEL, which delivers into the recipient's context and is acted on at its next turn boundary without disturbing work in flight; and the COMPOSER, which types into the recipient's terminal after a Ctrl+C. Which one carried your message is stated in the response as `transport`, together with `transportChosenBecause`. Read it there; do not work it out from whether the recipient has a channel, because you cannot see that and it changes underneath you. WHAT THE COMPOSER COSTS: its Ctrl+C does not merely clear a half-typed line — it cancels whatever the recipient is doing at that moment, including a tool call in flight, which does not resume. On the recipient's side the cancellation renders as a refusal, so an interrupted agent may report that a human rejected work nobody rejected, and an interrupt landing across parallel calls can leave some applied and report them all refused. The response says `interrupted: true` when that is what happened. A channel send costs the recipient nothing but context. WHAT YOU MAY CLAIM AFTERWARDS: the response carries `claims`, four separate facts that are never collapsed into one — the transport accepted the bytes (C1), a live session exists (C2), the text entered the transcript (C3), the model read it (C4). Each is `true`, `false`, or `null`, and NULL IS SILENCE, NOT A NEGATIVE: it means nothing here measured that, so resending on it may type a duplicate at an agent already working on the first copy. `licenses` says in one sentence what you may and may not state. Never report a message as received by an agent on the strength of `success` alone — `success` is C1 and nothing more. PROVENANCE: the daemon prefixes what it delivers with a sender tag it derives from YOUR workspace identity — `[from story/KAN-75] your message` — so do not write a sender into the message yourself; a sender you type is body text and is delivered after the daemon's tag rather than instead of it. The response echoes `sender` and `delivered` so you can see exactly what your recipient reads. On the composer, `butchr_tail_agent` is still the only thing that shows whether the Enter took. The recipient's convention is that an untagged message is the human typing directly, so relay a human decision as a decision you are reporting, not as your own instruction.",
         inputSchema: {
           type: "object",
           properties: {
@@ -222,7 +339,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             message: {
               type: "string",
-              description: "The message to type into the agent's terminal",
+              description: "The message to send to the agent",
+            },
+            intent: {
+              type: "string",
+              enum: ["steer", "stop-now"],
+              description:
+                "Optional, default 'steer'. WHAT YOU NEED, NOT HOW IT TRAVELS — this is not a transport selector and choosing a carrier is not yours to do. 'steer' is the ordinary case: the recipient should read this, and it can finish what it is doing first. 'stop-now' says the recipient must STOP what it is doing — it is about to conflict with you, or it is acting on something that has just become false. Only 'stop-now' can destroy a tool call in flight, and it destroys one every time it reaches a busy agent, so it is a decision about somebody else's work rather than a way of being heard sooner: `butchr_tail_agent` first if you want to know what you are about to take. The daemon maps your intent to a carrier and names the carrier it used in the response.",
             },
           },
           required: ["key", "message"],
@@ -357,10 +480,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (name === "butchr_send_to_agent") {
-      const { key, type, message } = args as any;
+      const { key, type, message, intent } = args as any;
       if (!key || !message) throw new Error("Missing required arguments: key, message");
 
-      const res = await callDaemonAPI('send_to_agent', { key, type, message });
+      const res = await callDaemonAPI('send_to_agent', { key, type, message, intent });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
         isError: res?.success === false,
