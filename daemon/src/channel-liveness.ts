@@ -477,17 +477,24 @@ export async function runChannelLivenessProbe(opts: {
 
   const waitStartedAt = world.now();
   let echoed = false;
-  // HOW OFTEN THE INSTRUMENT ACTUALLY WORKED. A pane that becomes unreadable
-  // mid-wait is not worth abandoning the run for — the agent may simply be
-  // redrawing — but a wait in which it was NEVER readable saw nothing, and
-  // calling that a non-answer would blame a model for an agent that went away.
-  // Found by the first live run of this probe: the agent's pane died seconds
-  // after the frame went out, and the run was on course to record a model
-  // non-answer for a terminal that no longer existed.
+  // WHETHER THE INSTRUMENT WAS WORKING, tracked rather than assumed. A pane that
+  // blinks is not worth abandoning a run for — the agent may simply be redrawing
+  // — but a wait spent mostly or finally blind saw nothing, and calling THAT a
+  // non-answer blames a model for an agent that went away.
+  //
+  // Both counters exist because two live runs produced two different shapes of
+  // the same defect. In the first the pane died seconds after the frame went out
+  // and was never readable again. In the second it flickered: 8 of ~48 reads
+  // succeeded, the run recorded a MODEL non-answer, and the pane dump at the end
+  // was empty because the agent had been gone for most of the window.
   let readableReads = 0;
+  let totalReads = 0;
+  let lastReadFailed = false;
   while (world.now() - waitStartedAt < answerWindowMs) {
     await world.sleep(panePollMs);
     const pane = world.readPane(candidate.address);
+    totalReads += 1;
+    lastReadFailed = pane === null;
     if (pane === null) continue;
     readableReads += 1;
     if (paneShowsToken(pane, token)) {
@@ -497,13 +504,22 @@ export async function runChannelLivenessProbe(opts: {
   }
   const waitedMs = world.now() - waitStartedAt;
 
-  if (!echoed && readableReads === 0) {
+  // A NON-ANSWER IS A CLAIM ABOUT A MODEL, so it is only available when the
+  // instrument was working well enough to have supported one. Two conditions,
+  // and the second is the sharper: **the agent has to still have been there at
+  // the end of the window.** If it was not, it cannot be said to have declined —
+  // it could have answered into a pane nobody could read. A blind spot at the
+  // start is survivable, because an answer that arrived then would still be on
+  // the pane when it came back; a blind spot at the end is not.
+  if (!echoed && (readableReads * 2 < totalReads || lastReadFailed)) {
     return done(
       'pane-unreadable',
-      `the frame was delivered to ${who} and its terminal could not be read once in the ` +
-      `${Math.round(waitedMs / 1000)}s that followed, so an answer could not have been seen. ` +
-      `This is NOT a non-answer and is not counted as one: the agent went away — most often a ` +
-      `pane that died or an agent stood down mid-run — and nothing here is evidence about a model`,
+      `the frame was delivered to ${who} and its terminal was readable on only ` +
+      `${readableReads} of ${totalReads} reads across ${Math.round(waitedMs / 1000)}s` +
+      (lastReadFailed ? ', and not on the last one' : '') +
+      `, so an answer could not reliably have been seen. This is NOT a non-answer and is not ` +
+      `counted as one: the agent went away — most often a pane that died or an agent stood down ` +
+      `mid-run — and nothing here is evidence about a model`,
       { ...carried, waitedMs }
     );
   }

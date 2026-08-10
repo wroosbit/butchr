@@ -205,13 +205,21 @@ function world({
   paneReadable = true,
   /** `true` = the pane stops being readable the moment the frame goes out. */
   paneDiesAfterSend = false,
+  /** `n` = the pane is readable for the first `n` reads after the send, then gone. */
+  paneReadsBeforeDeath = null,
   answer = 'echo'
 } = {}) {
   const state = { sent: [], panes: [], clock: 1_770_000_000_000, logs: [], slept: 0 };
   let message = null;
+  let readsAfterSend = 0;
   const pane = () => {
     if (!paneReadable) return null;
+    if (message !== null) readsAfterSend += 1;
     if (paneDiesAfterSend && message !== null) return null;
+    // The FLICKER: readable for a while, then gone for the rest of the window.
+    // This is what the second live run actually did — 8 of ~48 reads succeeded
+    // — and it is the shape that slipped past a "never once readable" guard.
+    if (paneReadsBeforeDeath !== null && readsAfterSend > paneReadsBeforeDeath) return null;
     if (message === null) return paneBefore;
     if (answer === 'frame') return `${paneBefore}\n${message}\n`;
     if (answer === 'echo') {
@@ -324,6 +332,19 @@ const scenarios = [
     outcome: 'pane-unreadable',
     proved: false,
     version: '2.1.226'
+  },
+  {
+    // THE SECOND LIVE RUN, and the reason "never once readable" was not enough.
+    // The pane flickered: it answered a few reads and was gone for the rest, and
+    // the run recorded a MODEL non-answer for an agent that had not been there
+    // to answer. A blind spot at the START is survivable — an answer that
+    // arrived then is still on the pane when it comes back — and a blind spot at
+    // the END is not.
+    label: 'the pane is readable for two reads and then gone for the rest of the window',
+    opts: { paneReadsBeforeDeath: 2, answer: 'silent' },
+    outcome: 'pane-unreadable',
+    proved: false,
+    version: '2.1.226'
   }
 ];
 
@@ -342,12 +363,12 @@ for (const s of scenarios) {
     result.clientVersion === s.version ? '' : `got ${JSON.stringify(result.clientVersion)}`);
   check(typeof result.detail === 'string' && result.detail.length > 40,
     '  …with a sentence a reader can act on', result.detail.slice(0, 110) + '…');
-  if (s.outcome === 'pane-unreadable' && !s.opts.paneDiesAfterSend) {
+  if (s.outcome === 'pane-unreadable' && !s.opts.paneDiesAfterSend && !s.opts.paneReadsBeforeDeath) {
     check(w.state.sent.length === 0,
       '  …and NOTHING was sent at an agent whose answer could not have been seen',
       `${w.state.sent.length} send(s)`);
   }
-  if (s.opts.paneDiesAfterSend) {
+  if (s.opts.paneDiesAfterSend || s.opts.paneReadsBeforeDeath) {
     check(/NOT a non-answer and is not counted as one/i.test(result.detail),
       '  …and says in as many words that it is NOT a non-answer — the agent went away',
       result.detail.slice(0, 120) + '…');
