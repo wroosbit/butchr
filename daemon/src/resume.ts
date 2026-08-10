@@ -150,6 +150,19 @@ function causeSentence(cause: ResumeCause): string {
  * write; the repository and the workspace are the ground truth, not its memory
  * of them.
  *
+ * KAN-242 ADDED THE BRIEF TO THAT LIST OF THINGS THAT MOVED WHILE IT WAS GONE,
+ * AND THIS IS THE SHARPEST PLACE IN THE DAEMON TO SAY IT. An agent on this path
+ * kept its conversation, so it is carrying the `.butchr-prompt.md` it read at
+ * the *start* of that conversation — while the activation that just restored it
+ * re-rendered and rewrote that same file underneath it (router.ts renders on
+ * every `!session` activation; herdr.ts writes it). Both halves are true at
+ * once and neither is visible from the agent's side: the file on disk is
+ * current, the agent's context is not, and its mtime now testifies to the
+ * restart rather than to the agent. `epic/KAN-203` is the worked example — one
+ * conversation since 2026-08-06, three reads of its brief in four days, more
+ * rewrites than reads. This is the one moment the daemon knows both facts, so
+ * it is the one moment it can say so.
+ *
  * It opens with {@link DAEMON_SENDER_TAG} for the reason every injected message
  * does (KAN-149): it arrives by being *typed*, so an untagged one is
  * indistinguishable from the human. This message used to spell the tag
@@ -163,6 +176,7 @@ export function resumeNudge(type: string, key: string, cause: ResumeCause = 'reb
     `${DAEMON_SENDER_TAG} You were interrupted mid-work. ${causeSentence(cause)}`,
     `You have been restored automatically and this conversation is your own history — but your last remembered action may not have finished, and nothing has been done on your behalf since.`,
     `Do not start over. First establish what already exists: check this workspace and, if you have a git worktree here, its status, diff, branch, commits and whether a PR is already open. Re-read ${key} for anything recorded there while you were gone.`,
+    `Your .butchr-prompt.md was rewritten by this restart and you have NOT re-read it — you are still working from the copy you read when you started, which may predate a rule that has since changed. Before you act on a governance rule, run the check in its "This brief is a snapshot" section.`,
     `Then continue the task from wherever that evidence says you actually got to, and say in one line what state you found before you resume work.`
   ].join(' ');
 }
@@ -179,6 +193,18 @@ export function resumeNudge(type: string, key: string, cause: ResumeCause = 'reb
  * It is deliberately not the cold-start prompt. A cold start would have the
  * agent claim the ticket and begin as though nothing had happened, silently
  * redoing — or worse, conflicting with — work already committed and pushed.
+ *
+ * STEP 1 NO LONGER SAYS "YOUR ORIGINAL INSTRUCTIONS" (KAN-242). It did, and
+ * KAN-242 named that sentence as the daemon's own contribution to the defect:
+ * it sent a resumed agent to a named file with a word — *original* — that
+ * frames the copy as authoritative *because* it is the oldest thing available.
+ * On this path the file has in fact just been re-rendered, so it is current as
+ * of this activation; but "current when written" is exactly the property that
+ * fooled `task/KAN-234`, and this agent may run for days after reading it. So
+ * the step now says what the file is (a snapshot), and points at the check that
+ * settles it. The daemon can tell an agent where its instructions are; only the
+ * instructions themselves can tell it how old they are, which is why the
+ * substance of this lives in `prompts/*.md` and not here.
  */
 export function degradedResumePrompt(
   type: string,
@@ -191,7 +217,7 @@ export function degradedResumePrompt(
     `Your prior conversation could not be recovered, so treat everything you would normally remember as lost — but assume work was already done.`,
     ``,
     `Before doing anything else, find out what you already did:`,
-    `1. Read .butchr-prompt.md in this directory for your original instructions.`,
+    `1. Read .butchr-prompt.md in this directory for your instructions. It is a snapshot rendered when you were first activated, not a live copy of the rules — it names the commit it came from and the command that tells you whether anything has changed since. Run that check before you act on any governance rule in it.`,
     `2. Inspect this workspace. If it contains a git worktree, check its branch, status, diff, log, and whether a pull request is already open.`,
     `3. Re-read ${key} — including your own earlier comments on it, which are the only notes your previous self may have left you.`,
     ``,
