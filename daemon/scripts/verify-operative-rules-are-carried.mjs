@@ -162,6 +162,27 @@
 //     same four halves are in it, which is the only thing that ties them
 //     together; nothing does it at PR time.
 //
+// AND (KAN-212) A RULE THAT NEVER REACHED A PROMPT AT ALL. The convention
+// *every Story and Task carries a parent epic* was a human decision of
+// 2026-08-07 that existed only as a backfill of the board — 74 tickets
+// re-parented, and no sentence anywhere an agent reads. Four more unparented
+// tickets were filed within the day by four different agents, one of them while
+// the backfill was still running; the heaviest filer on the board later
+// disclosed three of its own, two already closed under its own merges with
+// nothing having gone red. It is **H-13**, not H-12: this entry was written as
+// H-12 and renamed when KAN-249 landed its channel-brief entry under that id
+// first. The id is the incumbent's; renaming the one still in review is the
+// cheaper half, and it is recorded here because a reader meeting "H-12" in
+// KAN-212's PR history should not go looking for a rule that moved.
+// Run with `--ref` KAN-212's original merge base `1fc6407` to watch H-13 go red
+// in all three prompts at once — that red
+// is honest here in a way the R-1 merge-base red was not, because the rule is
+// genuinely absent from those files rather than merely discussed elsewhere.
+// The narrower test, and the one to repeat after any edit to H-13's phrases:
+//   perl -0pi -e 's/Epics have no parent, and that is correct//' prompts/story.md
+//   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, story.md only
+//   git checkout -- prompts/story.md
+//
 // Usage:
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs [--verbose]
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs --ref origin/main
@@ -355,6 +376,64 @@ const RULES = [
           /never the human speaking/i,
           /no dedicated channel reply tool/i,
           /makes a reply owed/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-212. WHY THIS ONE IS IN THE SWEEP — the ticket asked for the decision
+    // to be made deliberately rather than by default, so here it is, with the
+    // counter-argument kept rather than dropped.
+    //
+    // FOR: it is an operative rule by this script's own test — an agent
+    // satisfies it at the moment it calls `createJiraIssue`, and its failure
+    // mode is a wrong action in the next thirty seconds. The rule went missing
+    // the first time because it existed *only* as a backfill of the board — 74
+    // tickets re-parented and no sentence anywhere an agent reads — and four
+    // more orphans were filed within the day by four different agents, one of
+    // them while the backfill was still running. Since KAN-240 this sweep is a
+    // required check, so a rewrite that drops the rule goes red before review
+    // instead of in it. That is the whole argument, and it stands on its own.
+    //
+    // WHAT THIS PARAGRAPH USED TO ARGUE, AND WHY THE CORRECTION IS KEPT RATHER
+    // THAN SWALLOWED: it said a merge rule *depends* on this one, because
+    // KAN-239's approver lookup had "no third branch" and so a parentless
+    // ticket would name nobody and merge anyway. Both halves were wrong within
+    // the hour. KAN-239 landed a permanent terminating branch — nothing names
+    // an approver → the ticket is mis-filed, say so, do not merge, appoint no
+    // substitute — pinned by H-11; and its primary branch reads the Story off
+    // an issue *link*, never off `parent`, since a task's `parent` is always an
+    // Epic. So a parentless ticket does **not** silently name nobody: its agent
+    // stops. That removes a reason for this entry and not the entry, which is
+    // why the argument above no longer leans on another ticket's rule at all.
+    // Recorded because an argument quietly repaired reads as one that was
+    // always right, and because this docblock survived the same correction
+    // being applied to all three prompts — the audit was scoped to `prompts/`
+    // and this file is not in it. `task/KAN-239` caught it; no check did.
+    //
+    // AGAINST, AND IT IS NOT WEAK: this sweep proves **presence in a file**,
+    // and the whole of KAN-212 is that the convention existed and no agent
+    // *met* it. Presence is the weaker of the two claims, and pasting these
+    // sentences into a section no filer reads would keep this entry green while
+    // reproducing the original defect exactly. So placement is the load-bearing
+    // half and it is a review question: the PR's `grep -n` output, which shows
+    // the enclosing section of each hit, is what answers it. Recorded here so
+    // nobody reads a green H-13 as "agents now parent their tickets".
+    //
+    // Four phrases, because the rule has four parts and the one most likely to
+    // be dropped in a rewrite is *epics are parentless* — it reads like an
+    // aside and is the reason a diligent agent does not retry a refused write.
+    id: 'H-14',
+    title: 'every Story and Task filed carries a parent epic — the epic, never the story',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /carries a parent epic/i,
+          /set (it )?at creation/i,
+          /never the story/i,
+          /[Ee]pics have no parent, and that is correct/,
+          /invisible in its epic's org chart/i,
         ],
       ])
     ),

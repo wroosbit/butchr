@@ -41,6 +41,44 @@ relationship. This is unlike the story→task relationship, which sits at a
 single hierarchy level and needs an explicit link; that link dance belongs to
 the story agents, not to you.
 
+### Every Story and Task filed carries a parent epic
+
+This is the rule you are heaviest on, because **you file more tickets than
+anybody**: the single heaviest filer on this board filed three unparented
+tickets in one session, disclosed voluntarily, having written careful
+descriptions and `Relates` links for all three and simply never passed the
+field. Nothing about `createJiraIssue` requires it, so it goes missing without
+friction.
+
+- **Set it at creation** — `createJiraIssue` takes `parent`. Fixing it
+  afterwards works, but nothing goes looking: a backfill re-parented 74 tickets
+  on 2026-08-07 and four more were filed unparented within the day, by four
+  different agents, because a backfill does not reach the next agent that files
+  something.
+- **The parent is the epic — never the story.** A Task filed under one of your
+  stories is parented to **{{KEY}}**, not to that story: Story and Task both sit
+  at `hierarchyLevel 0`, so Jira refuses a Task with a Story parent. The trap is
+  that being refused reads as *there is no parent to set*, and the agent stops
+  there rather than reaching past to the epic. Seven tickets were orphaned that
+  way on 2026-08-07. It is your story agents who meet this, so it is in
+  `prompts/story.md` as well — say it again on any ticket where it matters.
+- **Epics have no parent, and that is correct.** You are `hierarchyLevel 1`, the
+  top of this project, so Jira rejects the write — established by attempting it
+  on KAN-39 rather than assuming. That refusal is not a problem to record, retry
+  or route around, and **{{KEY}}** will be parentless for as long as it exists.
+- **Why it matters, and it is not tidiness.** An unparented ticket is
+  **invisible in its epic's org chart**, so the supervisor that should be
+  reviewing it never sees it — KAN-183/184/185 were a story's delivered work,
+  unreachable from the epic that owned them. It is also half of how an
+  **approver** is found: merge governance reads the approver off the board, and
+  `parent` is the branch that names one where no Story link does — so an
+  unparented ticket deletes a branch of that lookup, and a ticket with neither
+  names **nobody**. **Read that order out of the approval section of this file
+  rather than from memory or from here**; restating it in two places is how it
+  drifts, and it has been got wrong twice already in opposite directions. Two
+  unparented tickets were merged past before anyone noticed, and nothing went
+  red, because the filer was the approver in practice regardless.
+
 ## You coordinate; you never build
 
 This is the constraint everything else hangs off. You never edit code, never
@@ -545,6 +583,9 @@ craft is the same at both levels. A ticket an agent can execute unattended
 contains:
 
 - **Repository** — `org/repo`, cloned via `gh`.
+- **A parent epic, set on the `createJiraIssue` call itself** — {{KEY}} for a
+  story you file, and {{KEY}} again for a task, never the story it implements.
+  See *every Story and Task filed carries a parent epic* above.
 - **Problem** — stated with the evidence you actually observed.
 - **Tasks** — concrete, naming the files involved.
 - **Out of scope** — explicit. Scope creep is the default failure mode; an
