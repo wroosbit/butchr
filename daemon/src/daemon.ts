@@ -268,31 +268,30 @@ const channelLiveness = new ChannelLivenessProbe({
     // The same reader the launcher, the router and the self-check use.
     emissionEnabled: () => channelEmissionEnabled(),
     candidates: () =>
-      agentConnections
-        .addresses()
-        .filter((address) => {
-          // A degraded agent is excluded because it is ON THE COMPOSER: the gate
-          // would refuse its frame, and asking anyway would spend a run to learn
-          // something `list_agents` already says. This is a reader of the same
-          // verdict `routeChannelMessage` consults, not a second opinion on it.
-          if (channelSelfChecks.degraded(address)) return false;
-          const conn = agentConnections.resolve(address);
-          return conn !== undefined;
-        })
-        .map((address) => {
-          const conn = agentConnections.resolve(address);
-          const report = channelSelfChecks.get(address);
-          return {
-            address,
-            connectionId: conn?.id ?? '(unknown)',
-            // Carried from the startup self-check rather than re-derived. The
-            // version pin is one fact and this is not a second source of it —
-            // `null` here means "unchecked", which is what the row says too.
-            clientName: report?.clientName ?? null,
-            clientVersion: report?.clientVersion ?? null,
-            clientVersionVerified: report?.clientVersionVerified ?? null
-          };
-        }),
+      agentConnections.addresses().flatMap((address) => {
+        // A degraded agent is excluded because it is ON THE COMPOSER: the gate
+        // would refuse its frame, and asking anyway would spend a run to learn
+        // something `list_agents` already says. This is a reader of the same
+        // verdict `routeChannelMessage` consults, not a second opinion on it.
+        if (channelSelfChecks.degraded(address)) return [];
+        // `addresses()` only returns agents that resolve, so this cannot be
+        // undefined — it is asked anyway because the connection ID is what a
+        // reader matches this run against in the daemon log, and inventing one
+        // would be worse than dropping the candidate.
+        const conn = agentConnections.resolve(address);
+        if (!conn) return [];
+        const report = channelSelfChecks.get(address);
+        return [{
+          address,
+          connectionId: conn.id,
+          // Carried from the startup self-check rather than re-derived. The
+          // version pin is one fact and this is not a second source of it —
+          // `null` here means "unchecked", which is what the row says too.
+          clientName: report?.clientName ?? null,
+          clientVersion: report?.clientVersion ?? null,
+          clientVersionVerified: report?.clientVersionVerified ?? null
+        }];
+      }),
     // `recent-unwrapped`, through the same reader `butchr_tail_agent` uses, so
     // what this matches against is what a human would see if they looked.
     readPane: (address) => herdrBridge.tailAgent(address.key, address.type, 200).text ?? null,

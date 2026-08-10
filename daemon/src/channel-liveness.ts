@@ -544,7 +544,16 @@ export interface ChannelLivenessState {
   drought: boolean;
   /** Every run this daemon has made. */
   runs: number;
-  recent: ChannelLivenessResult[];
+  /**
+   * The last few runs, compacted.
+   *
+   * Deliberately NOT whole {@link ChannelLivenessResult}s. This rides on
+   * `list_agents`, which the Agents page polls every two seconds, and ten
+   * results carry ten paragraph-length `detail` strings — several kilobytes on
+   * every poll to say what a shape already says. The two runs a reader acts on,
+   * {@link lastProof} and {@link lastRun}, are carried in full.
+   */
+  recent: { outcome: ChannelLivenessOutcome; address: AgentAddress | null; startedAt: string }[];
   intervalMs: number;
   /** One sentence for a reader who reads nothing else. */
   detail: string;
@@ -606,7 +615,11 @@ export class ChannelLivenessRecord {
       unrunSinceProof: this.unrun,
       drought,
       runs: this.total,
-      recent: [...this.runsList],
+      recent: this.runsList.map((r) => ({
+        outcome: r.outcome,
+        address: r.address,
+        startedAt: r.startedAt
+      })),
       intervalMs: this.intervalMs,
       detail: this.describe(drought)
     };
