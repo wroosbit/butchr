@@ -236,6 +236,7 @@ export async function superviseChannelStartup(opts: {
   let dialogOnScreen = false;
   let atPrompt = false;
   let sawConnection = false;
+  let sawDialog = false;
 
   const done = (
     outcome: ChannelStartupOutcome,
@@ -270,6 +271,7 @@ export async function superviseChannelStartup(opts: {
       paneFailures += 1;
     } else if (DEV_CHANNELS_DIALOG_PATTERN.test(pane)) {
       dialogOnScreen = true;
+      sawDialog = true;
       if (dialogsAnswered >= MAX_DIALOG_ANSWERS) {
         if (!capReached) {
           capReached = true;
@@ -373,11 +375,33 @@ export async function superviseChannelStartup(opts: {
     return done('no-prompt', null, detail);
   }
 
+  // A DIALOG SEEN AT ANY POINT, AND NOTHING EVER CONNECTED, IS THE BRICK — even
+  // when the last frame was blank, which is the ordinary way it looks.
+  // `recent-unwrapped` reports what has RECENTLY SCROLLED, and a full-screen
+  // dialog paints once and then sits there producing no further output, so the
+  // pane reads EMPTY within a minute of the dialog appearing. Measured by
+  // `probe-channel-launch.mjs` phase 3 on 2026-08-10: the dialog was on the tail
+  // at t+30s and the tail was empty at t+60s and t+90s with the agent still
+  // wedged behind it. Reporting that as a plain `no-connection` would send an
+  // operator looking for a channel fault when what is actually there is a
+  // full-screen box nobody pressed Enter at.
+  if (sawDialog && !sawConnection) {
+    const detail =
+      `a development-channels dialog was raised and nothing ever connected in the ` +
+      `${waited}ms since spawn (${dialogsAnswered} answered). The pane may read EMPTY now — ` +
+      `a dialog paints once and then produces no further output, so an agent wedged behind ` +
+      `one goes quiet rather than showing you the box. THE AGENT HAS NOT REACHED ITS PROMPT.`;
+    world.log(`[ChannelStartup] ${who}: GIVING UP — ${detail}`);
+    logRevert(world.log, who);
+    return done('dialog-unanswered', null, detail);
+  }
+
   const detail =
     `no MCP server registered for this agent within ${waited}ms of spawn ` +
-    `(${dialogsAnswered} dialog(s) answered, pane readable, at a prompt: ${atPrompt}). The ` +
-    `session may be up with no channel behind it: an addressed send to this agent will answer ` +
-    `'no-connection', and a channel event fired at it now would be lost in silence.`;
+    `(${dialogsAnswered} dialog(s) answered, pane readable, at a prompt: ${atPrompt}, ` +
+    `no dialog ever seen). The session may be up with no channel behind it: an addressed ` +
+    `send to this agent will answer 'no-connection', and a channel event fired at it now ` +
+    `would be lost in silence.`;
   world.log(`[ChannelStartup] ${who}: GIVING UP — ${detail}`);
   logRevert(world.log, who);
   return done('no-connection', null, detail);

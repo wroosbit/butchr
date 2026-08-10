@@ -259,8 +259,20 @@ grep ChannelStartup ~/.local/share/butchr/daemon.log
 
 The symptom without the log — because this is what somebody will actually
 notice first — is **an agent that activated successfully and then never said
-anything.** `butchr_tail_agent` on it shows a full-screen box titled
-`WARNING: Loading development channels`. That is the whole diagnosis; the fix is
+anything.**
+
+**And `butchr_tail_agent` on it will very likely show you NOTHING AT ALL, which
+is the part that will waste your time if nobody tells you.** The tail reports
+what has recently *scrolled*; a full-screen dialog paints once and then produces
+no further output, so the box is in the tail for perhaps a minute and the pane
+reads empty after that. Measured in `probe-channel-launch.mjs` phase 3: the
+dialog was on the tail at t+30s and gone from it at t+60s and t+90s, with the
+agent still wedged behind it the whole time.
+
+So: **an empty tail on a channel-enabled agent that never spoke is the symptom**,
+not evidence that nothing is wrong. The log is what distinguishes it, and the
+watcher reports `dialog-unanswered` for this shape rather than `no-connection`
+precisely so the log does not send you looking for a channel fault. The fix is
 the switch above and a re-activation.
 
 **The revert instruction is also printed into the log beside the failure**, by

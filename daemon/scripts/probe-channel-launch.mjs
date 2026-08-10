@@ -685,18 +685,54 @@ try {
     say('    rendering a full-screen dialog. `verified` has always meant "a runtime exists"');
     say('    (KAN-58), and this is the case where that is true and useless.');
 
-    // Long enough that "it is just slow" is not an available explanation: the
-    // green path above reaches its prompt in well under a minute.
-    for (const wait of [30, 60, 90]) {
-      await sleep(30000);
+    // SAMPLED EVERY FIVE SECONDS FROM THE SPAWN, not at leisurely checkpoints,
+    // and this interval was paid for. An earlier version first looked at t+30s
+    // and on one run found the pane already EMPTY: `herdr agent read
+    // --source recent-unwrapped` reports what has recently SCROLLED, and a
+    // full-screen dialog paints once and then emits nothing, so the box is
+    // visible for well under a minute and the agent stays wedged behind it long
+    // after it has stopped being visible. The daemon's own watcher polls every
+    // three seconds and catches it every time; a probe sampling twenty times
+    // slower does not, and would have reported "no dialog was ever raised" about
+    // an agent that was at that moment sitting on one.
+    //
+    // So: every frame is kept, the verdict asks whether a dialog was seen at ANY
+    // of them, and the first frame that showed one is printed as the evidence.
+    let everStuck = false;
+    let firstDialogAt = null;
+    let dialogFrame = '';
+    let lastNonEmpty = '';
+    const timeline = [];
+    for (let i = 1; i <= 24; i += 1) {
+      await sleep(5000);
+      const at = i * 5;
       const t = await tail(side, RED_KEY);
+      if (t.trim()) lastNonEmpty = t;
+      const stuck = DIALOG_ON_PANE.test(t);
+      const prompt = PROMPT_READY.test(t);
+      if (stuck && firstDialogAt === null) {
+        firstDialogAt = at;
+        dialogFrame = t;
+      }
+      everStuck = everStuck || stuck;
+      timeline.push(`t+${String(at).padStart(3)}s  dialog=${yn(stuck)} prompt=${yn(prompt)}` +
+        `${t.trim() ? '' : '  (pane reads EMPTY)'}`);
+    }
+    say('');
+    say('  sampled every 5s for two minutes:');
+    for (const line of timeline) say(`    ${line}`);
+    say('');
+    say(`  a dialog was seen on the pane at any point : ${yn(everStuck)}` +
+        `${firstDialogAt !== null ? `  (first at t+${firstDialogAt}s)` : ''}`);
+    say(`  the agent EVER reached its prompt          : ` +
+        `${yn(timeline.some((l) => /prompt=YES/.test(l)))}`);
+    if (dialogFrame) {
       say('');
-      say(`  --- t+${wait}s ---`);
-      say(`  a dialog is on the pane      : ${yn(DIALOG_ON_PANE.test(t))}`);
-      say(`  the agent reached its prompt : ${yn(PROMPT_READY.test(t))}`);
+      say('  the dialog, as it was on the pane:');
+      for (const l of dialogFrame.split('\n').slice(-22)) say(`    | ${l}`);
     }
 
-    const t = await tail(side, RED_KEY);
+    const t = dialogFrame || lastNonEmpty || (await tail(side, RED_KEY));
     const conn = await side.call('connected_agents');
     const lines = startupLines(side);
     say('');
@@ -706,12 +742,15 @@ try {
     say('    after the dialog clears. An addressed frame at this agent would answer');
     say('    `no-connection`, and a channel event fired at it would be lost in silence.');
     say('');
-    say('  the pane, in full:');
-    for (const l of t.split('\n').slice(-40)) say(`    | ${l}`);
+    say('  and this is what an operator sees on that pane a minute later:');
+    const now = await tail(side, RED_KEY);
+    for (const l of (now.trim() ? now : '(nothing — the pane is silent)').split('\n').slice(-12)) {
+      say(`    | ${l}`);
+    }
 
     green.phase3 = {
-      stuck: DIALOG_ON_PANE.test(t),
-      reachedPrompt: PROMPT_READY.test(t),
+      stuck: everStuck,
+      reachedPrompt: timeline.some((l) => /prompt=YES/.test(l)),
       mapped: (conn?.agents ?? []).length > 0,
       watcherLines: lines.length
     };
@@ -746,7 +785,7 @@ try {
         `prompt=${yn(p2.reachedPrompt)}`);
   }
   if (p3) {
-    say(`AC3  with nothing answering: still on the dialog=${yn(p3.stuck)}, ` +
+    say(`AC3  with nothing answering: a dialog was seen on the pane=${yn(p3.stuck)}, ` +
         `reached its prompt=${yn(p3.reachedPrompt)}, any MCP server connected=${yn(p3.mapped)}`);
   }
 

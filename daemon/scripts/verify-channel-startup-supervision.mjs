@@ -3,8 +3,8 @@
 //
 // WHAT FAILURE THIS WOULD CATCH: a channel-enabled activation reporting itself
 // ready while the agent is still sitting on an unanswered full-screen dialog and
-// will never reach its prompt. There are three separate ways to arrive there and
-// this exercises all three, because each fails silently in production:
+// will never reach its prompt. There are five separate ways to arrive there and
+// this exercises all of them, because each fails silently in production:
 //
 //   1. **A stale connection read as readiness.** A re-activated agent's PREVIOUS
 //      MCP server is still in KAN-243's identity map when the new pane spawns —
@@ -33,6 +33,13 @@
 //      defect survived every section here except the one that was written after a
 //      live run found it, which is why the header of `probe-channel-launch.mjs`
 //      says what it says about deterministic harnesses agreeing with the bug.
+//   5. **The brick misreported because the pane went blank — SECTION 7b, also
+//      measured rather than imagined.** `recent-unwrapped` reports what has
+//      RECENTLY SCROLLED, and a full-screen dialog paints once and then emits
+//      nothing, so a pane wedged behind one reads EMPTY within a minute. Deciding
+//      the outcome on the last frame would score that agent as a plain
+//      `no-connection` and send an operator hunting a channel fault instead of a
+//      box nobody pressed Enter at.
 //
 // ---------------------------------------------------------------------------
 // WHAT THIS SCRIPT SUPPLIES ITSELF, AND WHO COVERS THE REST
@@ -126,26 +133,41 @@ const check = (ok, label, detail = '') => {
 const ADDRESS = { type: 'task', key: 'KAN-9999' };
 const SPAWNED_AT = 1_700_000_000_000;
 
-// The real dialog, verbatim from a real pane: this is the frame KAN-217's probe
-// matched at `daemon/scripts/lib/channel-probe.mjs`, wrapped the way herdr's
-// `recent-unwrapped` source hands it back.
+// THE REAL DIALOG, VERBATIM off a real wedged pane — captured by
+// `probe-channel-launch.mjs --only=3` on 2026-08-10 against Claude Code 2.1.226,
+// read back through the same `herdr agent read --source recent-unwrapped` the
+// watcher uses. Not a hand-drawn approximation: an earlier version of this file
+// invented a boxed frame that looked plausible and was not what the client
+// prints, which is exactly the kind of self-supplied input that makes a
+// deterministic proof agree with a bug.
 const DIALOG_FRAME = [
-  '╭─ WARNING: Loading development channels ─────────────────────────────────────╮',
-  '│ --dangerously-load-development-channels is for local channel development    │',
-  '│ only. Do not use this option to run channels you have downloaded off the    │',
-  '│ internet.                                                                   │',
-  '│ Please use --channels to run a list of approved channels.                   │',
-  '│ Channels: server:butchr                                                     │',
-  '│ ❯ I am using this for local development                                     │',
-  '│   Exit                                                                      │',
-  '╰─────────────────────────────────────────────────────────────────────────────╯'
+  '────────────────────────────────────────────────────────────────────────────────',
+  '  WARNING: Loading development channels',
+  '',
+  '  --dangerously-load-development-channels is for local channel development',
+  '  only. Do not use this option to run channels you have downloaded off the',
+  '  internet.',
+  '',
+  '  Please use --channels to run a list of approved channels.',
+  '',
+  '  Channels: server:butchr',
+  '',
+  '  ❯ 1. I am using this for local development',
+  '    2. Exit',
+  '',
+  '  Enter to confirm · Esc to cancel'
 ].join('\n');
 
+// A REAL session at its prompt, likewise verbatim — the tail of a channel-enabled
+// agent that came up clean in phase 1 of the same probe run.
 const PROMPT_FRAME = [
-  '╭─────────────────────────────────────────────────────────────────────────────╮',
-  '│ > Try "how do I log an error?"                                              │',
-  '╰─────────────────────────────────────────────────────────────────────────────╯',
-  '  ? for shortcuts                              Bypassing Permissions'
+  ' ▎ Channels (experimental) messages from server:butchr inject directly in this',
+  ' ▎ session · restart without --dangerously-load-development-channels to stop',
+  '',
+  '────────────────────────────────────────────────────────────────────────────────',
+  '❯ ',
+  '────────────────────────────────────────────────────────────────────────────────',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents'
 ].join('\n');
 
 /**
@@ -369,6 +391,40 @@ say('');
 }
 
 rmSync(scratch, { recursive: true, force: true });
+
+say('');
+say('== 7b. the brick as it ACTUALLY looks: a dialog, and then a blank pane ==');
+say('');
+{
+  // `herdr agent read --source recent-unwrapped` reports what has recently
+  // scrolled. A full-screen dialog paints once and then emits nothing, so a pane
+  // wedged behind one reads EMPTY within a minute — measured by
+  // `probe-channel-launch.mjs` phase 3 on 2026-08-10, where the dialog was on the
+  // tail at t+30s and gone from it at t+60s with the agent still stuck.
+  //
+  // If the outcome were decided on the LAST frame, that agent would be reported
+  // as a plain `no-connection` and an operator would go looking for a channel
+  // fault instead of a box nobody pressed Enter at.
+  const { result, lines } = await run({
+    pane: (s) => (s.reads < 3 ? DIALOG_FRAME : ''),
+    connection: () => null,
+    enterThrows: true
+  });
+  check(
+    result.outcome === 'dialog-unanswered',
+    `a dialog seen early and a blank pane later is still 'dialog-unanswered'`,
+    `got '${result.outcome}'`
+  );
+  check(
+    /may read EMPTY now/.test(result.detail),
+    'and the detail warns the reader that the pane will look empty',
+    result.detail
+  );
+  check(
+    lines.some((l) => /REVERT — turn channels off/.test(l)),
+    'the REVERT instruction is logged for this shape too'
+  );
+}
 
 say('');
 say('== 8. THE REGRESSION: a connection that appears and then dies ==');
