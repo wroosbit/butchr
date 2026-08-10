@@ -100,6 +100,22 @@
 // watch it go red on all four prompts, which is what `origin/main` looked like
 // before channels were ever enabled for anybody.
 //
+// AND (KAN-250) A RULE WHOSE SUBJECT IS OVER-CLAIMING, WHICH IS WHY IT IS HERE
+// AT ALL. H-13 requires the storm guards to be carried **per carrier** in all
+// four prompts: KAN-219 measured that *a send is a preemption* — the premise
+// three of the four rested on — is true of the composer and false of the
+// channel, so *"never send two in a row"* was **narrowed rather than deleted**.
+// The rule it now teaches is that nobody has measured a burst on either
+// carrier, and the way that rule dies is not deletion: it is a later editor
+// keeping the carrier table, which looks like the content, and dropping the
+// limits hung off it. Every check on this repository would stay green.
+//
+// This entry was NOT in KAN-250's acceptance criteria. `story/KAN-150` found
+// the hole while approving — it ran this sweep at the merge base expecting red,
+// got green, and worked out why — and left the call to the author rather than
+// adding a criterion at review time. It landed in the same PR because a
+// follow-up nobody staffs is how an unpoliced rule stays unpoliced.
+//
 // WHAT THIS SCRIPT DOES NOT COVER, STATED BECAUSE THE HEADER IS WHERE THE EDGE
 // GOES:
 //
@@ -407,7 +423,7 @@ const RULES = [
     // Four phrases, because the rule has four parts and the one most likely to
     // be dropped in a rewrite is *epics are parentless* — it reads like an
     // aside and is the reason a diligent agent does not retry a refused write.
-    id: 'H-13',
+    id: 'H-14',
     title: 'every Story and Task filed carries a parent epic — the epic, never the story',
     carriedBy: Object.fromEntries(
       ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
@@ -418,6 +434,81 @@ const RULES = [
           /never the story/i,
           /[Ee]pics have no parent, and that is correct/,
           /invisible in its epic's org chart/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-250 (T7 of KAN-150). The storm guards, re-derived per carrier after
+    // KAN-219 measured that *a send is a preemption* — the premise three of
+    // them rested on — is true of the composer and false of the channel.
+    //
+    // WHY THIS ONE IS POLICED HARDER THAN ITS SIZE SUGGESTS: its subject IS
+    // over-claiming. Every other entry here guards a rule about how to work;
+    // this one guards a rule about **not writing a sentence that claims more
+    // than its mechanism covers**, in the file that teaches agents to avoid
+    // exactly that. The failure mode is not deletion — it is a later editor
+    // tidying the section, keeping the carrier table because the table looks
+    // like the content, and dropping the limits hung off it. That leaves a
+    // prompt which reads as "the channel is the safe carrier" while nobody has
+    // ever measured a burst on either. It degrades toward looking finished,
+    // which is why a reviewer would pass it.
+    //
+    // NINE PATTERNS, BECAUSE ANY EIGHT IS A TRAP. Each names a half the rule
+    // cannot ship without:
+    //   - the carrier heading — without it the guards read as one-size-fits-all
+    //     again, which is the state KAN-250 found them in.
+    //   - `narrowed, not deleted` — the disposition. Catches the editor who
+    //     resolves the tension by deleting the rule instead.
+    //   - **the burst sentence** — the load-bearing one. Strip it and the table
+    //     alone reads as a safety claim about the channel column.
+    //   - KAN-219's limit, quoted — the *evidence* for the narrowing. Without
+    //     it the narrowing is an assertion, and the next author has nothing to
+    //     re-derive it from.
+    //   - `you never select one and never infer one` — what makes the narrowing
+    //     unusable as a licence: a sender cannot opt into the cheap carrier, so
+    //     it must decide as though every send were a composer send. Drop this
+    //     and the channel column becomes actionable advice, which it is not.
+    //   - the three uncovered cases, **matched individually** — dropping one of
+    //     three is the plausible tidy-up, and a single pattern over the section
+    //     heading would not see it.
+    //   - `capability rather than a hazard` — §5.1 case 5 stated positively.
+    //     The design says a migration that retired the composer would have
+    //     removed the fleet's only stop-now signal "without noticing"; this is
+    //     the sentence that keeps anyone from noticing too late.
+    //
+    // WATCH IT GO RED AT THE SPOT THAT MEANS SOMETHING. R-1's docblock argues
+    // why a merge-base red is weak evidence — it shows only that the script
+    // reacts to a wholly different file — so the test that counts is the
+    // plausible regression above, which keeps the table and strips the limits:
+    //   perl -0pi -e 's/\*\*Nothing written here says a burst is safe.*\z//s' prompts/task.md
+    //   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, task.md only
+    //   git checkout -- prompts/task.md
+    // Four patterns fail and four pass, in the one file, with the carrier table
+    // still sitting there — the shape that is worse than not doing the work.
+    //
+    // WHAT THIS ENTRY CANNOT CHECK, AND IT IS NOT THE USUAL CAVEAT: it holds
+    // the sentence *"nobody has measured a burst"* in place, and it has no way
+    // to know whether that is still true. **If a burst is ever measured, a
+    // green run here is evidence that the disclaimer is present, never that it
+    // is honest** — and the pattern would then be actively demanding a sentence
+    // that has become false. Whoever runs that measurement updates this entry
+    // in the same PR; nothing mechanical will remind them.
+    id: 'H-13',
+    title: 'the storm guards, per carrier: "never two in a row" narrowed rather than deleted, and no claim of burst safety',
+    carriedBy: Object.fromEntries(
+      PROMPTS.map((f) => [
+        f,
+        [
+          /Storm guards — narrowed to their carrier, never relaxed/i,
+          /narrowed, not deleted/i,
+          /Nothing written here says a burst is safe, on either carrier/i,
+          /one event in one window, not a storm/i,
+          /you never select one and never infer one/i,
+          /An interrupted `Edit`/,
+          /An in-flight MCP call/,
+          /Whether a disturbed agent recovers/,
+          /capability rather than a hazard/i,
         ],
       ])
     ),
