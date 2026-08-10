@@ -213,6 +213,30 @@ export class AgentConnectionRegistry {
     return this.bySocket.get(socket);
   }
 
+  /**
+   * Every agent with at least one live connection, in the announced spelling.
+   *
+   * Deliberately NOT {@link snapshot}, which renders keys for a human reader —
+   * `kan-252` off a pane name comes back as `KAN-252` there, and a caller that
+   * fed that back into {@link resolve} would be relying on `canonical` to undo a
+   * presentation decision. This is the addressing view: what came in on `hello`,
+   * which is what an addressed write needs. KAN-252's scheduled probe is its
+   * caller, and it needs to *choose* a recipient rather than be handed one.
+   */
+  public addresses(): AgentAddress[] {
+    const out: AgentAddress[] = [];
+    for (const [, slot] of this.byAddress) {
+      if (slot.length === 0) continue;
+      // The one `resolve` would write to, so an address here is one that can be
+      // written to right now rather than one that was connected at some point.
+      const current = this.resolve(slot[0].address);
+      if (current) out.push({ ...current.address });
+    }
+    return out.sort((a, b) =>
+      `${a.type}/${a.key}`.toLowerCase().localeCompare(`${b.type}/${b.key}`.toLowerCase())
+    );
+  }
+
   /** How many identified connections are held, across all addresses. */
   public get size(): number {
     return this.bySocket.size;

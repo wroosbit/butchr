@@ -514,6 +514,72 @@ const RULES = [
     ),
   },
   {
+    // KAN-252. THE RULE THIS ENTRY EXISTS TO STOP GOING MISSING is not the
+    // paragraph — it is the *expectation* the paragraph sets, and the mechanism
+    // that depends on it is invisible from the prompt.
+    //
+    // The scheduled channel liveness probe (`daemon/src/channel-liveness.ts`) is
+    // the only thing in the fleet that reaches leg 5 of the channel loop, and it
+    // reaches it by asking a model to print a token. Every agent's brief already
+    // says that `[butchr daemon]` messages are notifications expecting no reply
+    // — correctly — so without this paragraph the probe asks for something the
+    // brief has told the agent not to give, and every run comes back a
+    // non-answer. The mechanism would go on running, logging honestly, and
+    // learning nothing, with every check in this repository green. That is
+    // precisely the shape of defect this sweep exists for: prose is a
+    // *precondition* of a mechanism and the mechanism cannot tell you it is
+    // missing.
+    //
+    // THE THREE PATTERNS ARE THE THREE PARTS, and dropping any one of them is a
+    // different failure:
+    //   * the probe is NAMED — an agent that cannot tell this message from an
+    //     unexpected one is back to judging it cold, which is KAN-217's refusal;
+    //   * what it ASKS FOR — a paragraph that names the probe and not the ask
+    //     leaves the agent knowing something arrives and not what to do;
+    //   * that DECLINING IS NOT A FAULT — the half most likely to be cut as an
+    //     aside, and the one that keeps this from being an obligation. Without
+    //     it the brief manufactures pressure to comply, which is exactly what
+    //     `docs/channel-briefing.md` establishes backfires: KAN-217's model
+    //     quoted the pre-authorising sentence as the red flag that decided it.
+    //
+    // NOT IN THE `instructions` STRING, deliberately, and that asymmetry is the
+    // one thing this entry cannot enforce. Every token of `instructions` is paid
+    // on every request of every agent forever, and this probe runs a handful of
+    // times a day; a session that has drifted from its brief and declines is
+    // reported as a non-answer, which is the designed-for outcome rather than a
+    // wrong one. So H-12's "if you change one, read the other" does not extend
+    // here — recorded so nobody reads the gap as an oversight.
+    //
+    // WATCH IT GO RED AT THE SPOT THAT MEANS SOMETHING — delete the half an
+    // editor would call redundant, not the whole section:
+    //   perl -0pi -e 's/\*\*Declining is recorded as a non-answer.*?expected\.\n//s' prompts/task.md
+    //   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, task.md only
+    //   git checkout -- prompts/task.md
+    // One pattern fails and two pass, in the one file, with the probe still
+    // named and still described — which is the version of this brief that turns
+    // a described probe into an obligation.
+    //
+    // WHAT IT CANNOT CHECK: whether an agent that has read it then answers. That
+    // is a question about a model. WHO COVERS IT:
+    // `daemon/scripts/probe-channel-liveness.mjs`, a live experiment rather than
+    // a CI check, and the drought counter on the running daemon's own record —
+    // which is the mechanism noticing its own brief has stopped working, and is
+    // indistinguishable there from the client having broken. A green run here is
+    // never evidence that agents answer.
+    id: 'H-15',
+    title: 'the channel liveness probe is named in the brief, with its ask and with declining held open',
+    carriedBy: Object.fromEntries(
+      PROMPTS.map((f) => [
+        f,
+        [
+          /channel\s*\n?\s*liveness probe/i,
+          /two halves of a token/i,
+          /recorded as a non-answer and not as a fault/i,
+        ],
+      ])
+    ),
+  },
+  {
     // The half of KAN-237 that is specific to the agent who now presses the
     // button: dozens of tickets predate the change and were deliberately not
     // mass-edited, so a task agent will meet the old rule on its own ticket and
