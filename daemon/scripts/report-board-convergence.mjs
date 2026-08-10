@@ -42,9 +42,18 @@ const SOCKET_PATH = path.join(os.homedir(), '.local', 'share', 'butchr', 'butchr
 
 const { JiraIssueTypeService } = await import(path.join(distDir, 'jira.js'));
 const { CredentialStore } = await import(path.join(distDir, 'credentials.js'));
-const { BOARD_JQL, computeBoardDiff, describeBoardDiff, boardWorkspaceTypes } = await import(
-  path.join(distDir, 'board-reconcile.js')
-);
+const {
+  BOARD_JQL,
+  BOARD_DIAGNOSTIC_JQL,
+  computeBoardDiff,
+  describeBoardDiff,
+  boardWorkspaceTypes,
+  findNearMisses,
+  deriveAccountId,
+  explainAbsence,
+  fleetProjects,
+  projectOf
+} = await import(path.join(distDir, 'board-reconcile.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 
@@ -109,7 +118,10 @@ if (!outcome.ok) {
 
 console.log(`   ${outcome.issues.length} issue(s) returned:\n`);
 for (const issue of outcome.issues) {
-  console.log(`     ${issue.key.padEnd(10)} ${String(issue.issueTypeName).padEnd(8)} ${issue.statusName}`);
+  console.log(
+    `     ${issue.key.padEnd(10)} ${String(issue.issueTypeName).padEnd(8)} ` +
+    `${String(issue.statusName).padEnd(12)} ${issue.assigneeDisplayName ?? '(unassigned)'}`
+  );
 }
 
 rule('2. THE FLEET — the running daemon\'s own census');
@@ -156,3 +168,89 @@ console.log(
       : `a converge cycle would make ${diff.toStart.length + diff.toStop.length} change(s).`
   }`
 );
+
+// -------------------------------------------------- 4. the diagnostic, live --
+//
+// KAN-256's half. `verify-absence-attribution.mjs` constructs the board answers
+// it asserts on — it has to, since you cannot ask the real Atlassian to
+// unassign an epic on cue — so nothing there proves the REAL search returns a
+// real `assignee` in the shape `boardPageFrom` expects. This is that half: both
+// queries, the real credential, the live board.
+
+rule('4. THE DIAGNOSTIC — the same board without the assignee half (KAN-256)');
+
+console.log(`   query: ${BOARD_DIAGNOSTIC_JQL}\n`);
+
+const diagnosticOutcome = await jira.searchBoard(BOARD_DIAGNOSTIC_JQL);
+
+if (!diagnosticOutcome.ok) {
+  console.log(`   the diagnostic query could not be read: ${diagnosticOutcome.error}`);
+  console.log(
+    `\n   → convergence is unaffected — this query never starts or stops anything — but a ` +
+    `stand-down this cycle would report an undetermined reason rather than guessing one.`
+  );
+} else {
+  const diagnostic = diagnosticOutcome.issues;
+  const accountId = deriveAccountId(outcome.issues);
+  const partitioned = new Set(outcome.issues.map((i) => i.key.trim().toUpperCase()));
+
+  console.log(`   ${diagnostic.length} issue(s) In Progress or In Review under ANY assignee:\n`);
+  for (const issue of diagnostic) {
+    const mine = partitioned.has(issue.key.trim().toUpperCase());
+    console.log(
+      `     ${issue.key.padEnd(10)} ${String(issue.statusName).padEnd(12)} ` +
+      `${(issue.assigneeDisplayName ?? '(UNASSIGNED)').padEnd(18)} ${mine ? '' : '← not in the partitioned answer'}`
+    );
+  }
+
+  console.log(
+    `\n   this machine's account, derived from the partitioned answer's own rows: ` +
+    `${accountId ? 'established' : 'NOT established (the partitioned query returned no rows)'}`
+  );
+
+  // The near-miss report — the reason this section exists. A ticket here is one
+  // the reconciler can never start, and it is invisible on every other surface.
+  const projects = fleetProjects(outcome.issues, running);
+  const misses = findNearMisses(diagnostic, projects);
+  const unscoped = findNearMisses(diagnostic, new Set(diagnostic.map((i) => projectOf(i.key))));
+  rule('5. NEAR MISSES — In Progress or In Review with NOBODY assigned');
+  console.log(`   fleet projects (from the board's own rows and the running agents): ` +
+    `${[...projects].sort().join(', ') || '(none)'}`);
+  console.log(
+    `   ${unscoped.length} unassigned account-wide, ${misses.length} of them in this fleet's ` +
+    `projects — the rest are other people's and are not reported.\n`
+  );
+  for (const miss of misses) {
+    console.log(`     ${miss.key.padEnd(10)} ${String(miss.issueTypeName).padEnd(8)} ${miss.statusName}`);
+  }
+  console.log(
+    `\n   → ${
+      misses.length === 0
+        ? 'every ticket in this fleet\'s projects that the board has In Progress or In Review ' +
+          'has somebody in the assignee field, so none of them is invisible to the reconciler ' +
+          'right now.'
+        : `${misses.length} ticket(s) the reconciler CANNOT SEE: it will not start them, and if ` +
+          'an agent for one is running it will be stood down within a cycle. Assign them.'
+    }`
+  );
+  if (unscoped.length > misses.length) {
+    console.log(
+      `\n   (${unscoped.length - misses.length} unassigned ticket(s) outside this fleet's ` +
+      `projects were deliberately not reported: ` +
+      `${unscoped.filter((m) => !misses.includes(m)).map((m) => m.key).join(', ')}. ` +
+      `Unfiltered this line would repeat every 60s forever — see fleetProjects.)`
+    );
+  }
+
+  // And what the loop would say about each stand-down it is contemplating —
+  // the attributed reason, on real data, rather than the old one-size sentence.
+  if (diff.toStop.length) {
+    rule('6. WHY — the reason each stand-down would give, attributed');
+    for (const a of diff.toStop) {
+      const reason = explainAbsence(a.key, diagnostic, accountId);
+      console.log(`\n     ${a.type}/${a.key}`);
+      console.log(`       condition: ${reason.condition}`);
+      console.log(`       says:      ${reason.detail}`);
+    }
+  }
+}
