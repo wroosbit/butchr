@@ -623,6 +623,45 @@ const RULES = [
       ])
     ),
   },
+  {
+    // KAN-262. The disk half of the story KAN-151: every worktree ran its own
+    // `npm install` for an identical lockfile, so 119 workspaces held 119
+    // private copies of the same two trees — 15G, against 296M per workspace of
+    // which twelve kilobytes was the agent's own state.
+    //
+    // WHY THIS NEEDS A CARRIAGE RULE AT ALL, when the mechanism is a script
+    // somebody could just run: the mechanism is only ever reached by an agent
+    // *following the prompt*. Nothing in the daemon installs dependencies —
+    // `spawnSession` creates the workspace directory and stops — so the worktree
+    // and the install are the agent's own doing, out of this file. Delete the
+    // step here and every assertion in
+    // `daemon/scripts/verify-workspace-deps-are-shared.mjs` stays green while
+    // every new workspace silently goes back to a private 296M copy, because
+    // that script links its own fixtures and never observes an agent. This
+    // entry is the half that watches the instruction, and it is why that script
+    // names H-15 in its header as its coverage.
+    //
+    // TASK ONLY, DELIBERATELY. `prompts/story.md` tells a story agent to read
+    // the shared clone directly and that it needs "no worktree of your own";
+    // `prompts/epic.md` carries no repository setup. Requiring the step in
+    // either would be requiring an instruction its reader can never act on —
+    // and would be "fixed" by pasting an install step into a prompt whose agent
+    // must not install anything.
+    //
+    // Three phrases, because the rule has three halves and shipping the first
+    // alone teaches a step without the two facts that make it safe to follow:
+    // run it *instead of* `npm install`, deletion is cheap, and an in-place
+    // edit is refused rather than silently shared.
+    id: 'H-15',
+    title: 'workspace dependencies are linked from the shared store, not installed privately',
+    carriedBy: {
+      'prompts/task.md': [
+        /link-workspace-deps\.mjs/,
+        /Run it instead of `npm install`, not after it/i,
+        /read-only/i,
+      ],
+    },
+  },
 ];
 
 /**

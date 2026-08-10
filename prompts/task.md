@@ -63,6 +63,15 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
   git -C ~/code/<org>/<repo> worktree add "$PWD/<repo>" -b butchr/{{KEY}} origin/main
   ```
   If the worktree or branch already exists (you are resuming this task), reuse it instead of recreating it.
+- **Link your dependencies from the shared store — do not `npm install` a private copy.** From inside the worktree:
+  ```bash
+  node daemon/scripts/link-workspace-deps.mjs
+  ```
+  It runs `npm ci` **once per lockfile per machine** into a store outside every workspace, then hard-links that tree into yours. It is idempotent, it is safe to run concurrently with other agents, and it leaves a `node_modules` you already have alone.
+
+  **Run it instead of `npm install`, not after it** — an `npm install` first is what makes the private copy this step exists to avoid. Measured 2026-08-10: a linked worktree costs **7.5 MB** where a private install costs **296 MB**, and takes **0.7 s** where the install takes ~17 s. That is the difference between 119 workspaces costing 15G and costing one copy. If you genuinely need a dependency the lockfile does not carry, install it and say so on your ticket — that workspace stops sharing, which is a cost worth naming rather than hiding.
+
+  **The tree is hard links, so the files in your workspace *are* the files in the store.** Deleting your `node_modules` is safe and frees almost nothing. Editing a file inside it in place is not: the store makes its files read-only so that such a write fails with `EACCES` rather than silently changing every other agent's copy. If you hit that error, you are about to patch a dependency — copy it out of `node_modules` first rather than `chmod`-ing your way through.
 
 ### 3. Task Execution & Resolution
 - Change directory into the worktree (`<workspace>/<repo>`).
