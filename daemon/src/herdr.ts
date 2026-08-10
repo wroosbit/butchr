@@ -285,8 +285,13 @@ export function workspaceDirFor(type: string, key: string): string {
  * `path.relative` rather than a `startsWith` prefix test: the latter says yes
  * to `/…/workspaces-old` for root `/…/workspaces`, and both paths must
  * already be real (symlinks resolved) for either test to mean anything.
+ *
+ * Exported because `reclaim.ts` deletes inside the same tree under the same
+ * rule (KAN-259). It is shared rather than copied so the two cannot drift: a
+ * second definition of "may Butchr delete this" is a second thing to get
+ * wrong, and only one of them would be the one anybody audits.
  */
-function isStrictlyInside(root: string, target: string): boolean {
+export function isStrictlyInside(root: string, target: string): boolean {
   const rel = path.relative(root, target);
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
