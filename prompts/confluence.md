@@ -41,11 +41,12 @@ you followed, so the next reader is not left resolving it again.
 
 **A recent timestamp on this file is not evidence about you.** Every activation
 re-renders it, so an ordinary daemon restart rewrites it underneath a running
-agent that will never re-read it: `epic/KAN-203` has held one conversation since
-2026-08-06 and read its brief three times in four days, while the file beneath
-it was rewritten more often than that. The commit named above is what *you*
-actually read. Its mtime is what the last restart did, and the two are not the
-same fact — do not check the second and conclude anything about the first.
+agent that will never re-read it. `epic/KAN-203` read its brief **once** — line
+11 of a conversation that is now four thousand lines and four days long — and
+has not read it since, while the file beneath it has been rewritten by every
+restart in those four days. The commit named above is what *you* actually read.
+Its mtime is what the last restart did. The two are not the same fact, so do not
+check the second and conclude anything about the first.
 
 ## The job: work the page, and leave it truer than you found it
 

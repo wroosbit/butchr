@@ -13,13 +13,16 @@ import * as path from 'path';
  * superseded rule, with no signal that anything moved.
  *
  * MEASURED, NOT ARGUED. `epic/KAN-203` has held one conversation since
- * 2026-08-06T20:29Z. It read its brief at 20:29 that day and did not read it
- * again until 2026-08-08T19:27Z — and merge governance changed underneath it at
- * 2026-08-08 10:57 (`efde3cb`). Its `.butchr-prompt.md` has since been rewritten
- * twice by ordinary daemon restarts, most recently at 05:17 on 2026-08-10, and
- * the agent has not read either rewrite. **The file on disk is fresh and the
- * agent's context is not**, which is why "rewrite the file in place" was
- * rejected as the fix: it is already what happens, and it does not work.
+ * 2026-08-06T20:29Z. It read its brief **once**, at line 11 of what is now a
+ * 4035-line transcript, and has not read it since — while merge governance
+ * changed underneath it at 2026-08-08 10:57 (`efde3cb`) and its
+ * `.butchr-prompt.md` was re-rendered and rewritten by every daemon restart in
+ * those four days, most recently at 05:17 on 2026-08-10. (Its transcript
+ * mentions the file four more times; every one is a `stat` or a Jira call from
+ * the investigation that produced KAN-242, not a re-read.) **The file on disk is
+ * fresh and the agent's context is not**, which is why "rewrite the file in
+ * place" was rejected as the fix: it is already what happens, and it does not
+ * work.
  *
  * What is missing is not a fresher file — it is any way for an agent to find
  * out. That is what this module adds: one block, rendered at activation, naming

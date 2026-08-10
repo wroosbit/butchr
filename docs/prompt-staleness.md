@@ -33,18 +33,21 @@ read like a dated decision; it reads like a standing rule.
 
 ### Rewriting the file does not fix it, and this is not an argument
 
-`epic/KAN-203` has held **one conversation since 2026-08-06T20:29Z**. Reads of
-`.butchr-prompt.md` in that conversation, from its own transcript:
+`epic/KAN-203` has held **one conversation since 2026-08-06T20:29Z**. Every
+mention of `.butchr-prompt.md` in that 4035-line transcript, classified by tool:
 
 ```
-2026-08-06T20:29:32Z   line   11
-2026-08-08T19:27:58Z   line 3209
-2026-08-10T02:27:12Z   line 3865
+line    11  2026-08-06T20:29:32Z  Read     .../epic/kan-203/.butchr-prompt.md
+line  3209  2026-08-08T19:27:58Z  Bash     stat -c '%y  %n' …        <- investigating staleness
+line  3215  2026-08-08T19:28:51Z  createJiraIssue                    <- filing KAN-242
+line  3865  2026-08-10T02:27:12Z  Bash     git fetch origin -q; …    <- investigating again
+line  3869  2026-08-10T02:27:47Z  addCommentToJiraIssue
 ```
 
-Three reads in four days. Meanwhile the file was re-rendered and rewritten by
-every ordinary daemon restart — most recently at 05:17 on 2026-08-10, which the
-agent has not read. So:
+**One read, at line 11 of 4035, on day one of four.** The other four are the
+investigation that produced this ticket, not re-reads. Meanwhile the file was
+re-rendered and rewritten by every ordinary daemon restart in those four days —
+most recently at 05:17 on 2026-08-10, which the agent has not read. So:
 
 > **The copy on disk is fresh and the agent's context is stale, at the same
 > time.** `stat` on the workspace reports the restart, not the agent.

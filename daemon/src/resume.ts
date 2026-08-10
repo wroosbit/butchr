@@ -159,9 +159,9 @@ function causeSentence(cause: ResumeCause): string {
  * once and neither is visible from the agent's side: the file on disk is
  * current, the agent's context is not, and its mtime now testifies to the
  * restart rather than to the agent. `epic/KAN-203` is the worked example — one
- * conversation since 2026-08-06, three reads of its brief in four days, more
- * rewrites than reads. This is the one moment the daemon knows both facts, so
- * it is the one moment it can say so.
+ * conversation since 2026-08-06, exactly one read of its brief (line 11 of
+ * 4035), and a rewrite on every restart since. This is the one moment the
+ * daemon knows both facts, so it is the one moment it can say so.
  *
  * It opens with {@link DAEMON_SENDER_TAG} for the reason every injected message
  * does (KAN-149): it arrives by being *typed*, so an untagged one is
