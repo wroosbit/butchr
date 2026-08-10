@@ -281,9 +281,44 @@ async function stageDaemon(label, { key, removeAnswerer = false }) {
   });
 }
 
+/**
+ * The pane as text, or `null` when it could not be read at all.
+ *
+ * THIS USED TO RETURN `res?.text ?? ''`, AND THAT ONE `?? ''` IS HOW THIS PROBE
+ * TAUGHT `channel-startup.ts` A MECHANISM THAT DOES NOT EXIST (KAN-255). A
+ * `tail_agent` that FAILED has no `text`, so it became the empty string and
+ * phase 3 printed `(pane reads EMPTY)` over it — indistinguishable from a pane
+ * with nothing on it. Somebody read that timeline, saw the tail "go empty" a
+ * minute after the dialog appeared, and wrote a time-based drain into a
+ * docblock. There is no drain: the same pane reads byte-identically for as long
+ * as you care to sample it. The probe was reporting its own blind spot.
+ *
+ * So a failed read is `null` and says which it was, and every caller has to
+ * decide what to do about it rather than being handed a plausible empty string.
+ */
 async function tail(side, key, lines = 120) {
   const res = await side.call('tail_agent', { key, type: TYPE, lines });
-  return res?.text ?? '';
+  if (res?.success !== true || typeof res.text !== 'string') return null;
+  return res.text;
+}
+
+/**
+ * A pane reading, with the three states kept apart for anything that prints.
+ *
+ * `text` is safe to match and split. `note` is what goes next to a verdict so a
+ * reader is never left to guess which of the three produced it — and in
+ * particular is never shown `(pane reads EMPTY)` over a read that did not
+ * happen, which is the mistake this whole ticket is about.
+ */
+function reading(text) {
+  if (text === null) {
+    return { readable: false, text: '', note: '  (THE PANE COULD NOT BE READ — unknown, not empty)' };
+  }
+  return {
+    readable: true,
+    text,
+    note: text.trim() ? '' : '  (the pane is genuinely EMPTY — every source was asked)'
+  };
 }
 
 let verdict = { ranToVerdict: false };
@@ -330,7 +365,9 @@ try {
       for (const l of outcome.lines) say(`    | ${l.trim()}`);
 
       const dialogs = outcome.lines.filter((l) => /development-channels dialog #/.test(l)).length;
-      const paneText = await tail(side, GREEN_KEY);
+      const pane = reading(await tail(side, GREEN_KEY));
+      const paneText = pane.text;
+      if (!pane.readable) say(`  ${pane.note.trim()} — the pane lines below are unknown, not false.`);
       const conn = await side.call('connected_agents');
       const neg = negotiated(side);
 
@@ -391,7 +428,7 @@ try {
         let echoed = false;
         for (let i = 0; i < 24 && !echoed; i += 1) {
           await sleep(5000);
-          const t = await tail(side, GREEN_KEY, 160);
+          const t = (await tail(side, GREEN_KEY, 160)) ?? '';
           // The nonce is in this script and in the message, never on the agent's
           // disk — so it cannot appear on that pane except by having arrived.
           echoed = t.replace(/\s/g, '').includes(NONCE);
@@ -405,9 +442,9 @@ try {
           say('  the readiness claim above, which rests on the daemon\'s own map.');
         }
         green.phase1.echoed = echoed;
-        const t = await tail(side, GREEN_KEY, 60);
-        say('  the last of the pane:');
-        for (const l of t.split('\n').slice(-20)) say(`    | ${l}`);
+        const last = reading(await tail(side, GREEN_KEY, 60));
+        say(`  the last of the pane:${last.note}`);
+        for (const l of last.text.split('\n').slice(-20)) say(`    | ${l}`);
       }
     }
 
@@ -432,7 +469,9 @@ try {
       for (const l of fresh) say(`    | ${l.trim()}`);
 
       const dialogs = fresh.filter((l) => /development-channels dialog #/.test(l)).length;
-      const paneText = await tail(side, GREEN_KEY);
+      const pane = reading(await tail(side, GREEN_KEY));
+      const paneText = pane.text;
+      if (!pane.readable) say(`  ${pane.note.trim()} — the pane lines below are unknown, not false.`);
       say('');
       say(`  blocking dialogs on the resumed path : ${dialogs}   (one invocation, one dialog)`);
       say(`  the watcher reported ready           : ${yn(outcome.outcome === 'ready')}`);
@@ -504,7 +543,8 @@ try {
     for (let i = 1; i <= 24; i += 1) {
       await sleep(5000);
       const at = i * 5;
-      const t = await tail(side, RED_KEY);
+      const frame = reading(await tail(side, RED_KEY));
+      const t = frame.text;
       if (t.trim()) lastNonEmpty = t;
       const stuck = DIALOG_ON_PANE.test(t);
       const prompt = PROMPT_READY.test(t);
@@ -514,7 +554,7 @@ try {
       }
       everStuck = everStuck || stuck;
       timeline.push(`t+${String(at).padStart(3)}s  dialog=${yn(stuck)} prompt=${yn(prompt)}` +
-        `${t.trim() ? '' : '  (pane reads EMPTY)'}`);
+        frame.note);
     }
     say('');
     say('  sampled every 5s for two minutes:');
@@ -530,7 +570,7 @@ try {
       for (const l of dialogFrame.split('\n').slice(-22)) say(`    | ${l}`);
     }
 
-    const t = dialogFrame || lastNonEmpty || (await tail(side, RED_KEY));
+    const t = dialogFrame || lastNonEmpty || ((await tail(side, RED_KEY)) ?? '');
     const conn = await side.call('connected_agents');
     const lines = startupLines(side);
     say('');
@@ -541,8 +581,11 @@ try {
     say('    `no-connection`, and a channel event fired at it would be lost in silence.');
     say('');
     say('  and this is what an operator sees on that pane a minute later:');
-    const now = await tail(side, RED_KEY);
-    for (const l of (now.trim() ? now : '(nothing — the pane is silent)').split('\n').slice(-12)) {
+    const now = reading(await tail(side, RED_KEY));
+    const shown = now.readable
+      ? (now.text.trim() ? now.text : '(nothing — every source was asked and the pane is empty)')
+      : '(THE PANE COULD NOT BE READ — this says nothing about what is on it)';
+    for (const l of shown.split('\n').slice(-12)) {
       say(`    | ${l}`);
     }
 

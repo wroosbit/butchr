@@ -6,7 +6,8 @@ import type {
   HerdrAgentRecord,
   HerdrAgentStatus,
   HerdrSession,
-  SessionEndedEvent
+  SessionEndedEvent,
+  TailSource
 } from './herdr.js';
 
 /**
@@ -166,11 +167,28 @@ export interface AgentRuntime {
 
   // -- talking to an agent --------------------------------------------------
 
+  /**
+   * The tail of an agent's terminal.
+   *
+   * **`success: true` with `text: ''` is a claim about the AGENT; `success:
+   * false` is a claim about the READ.** Implementations must ask every read
+   * source before reporting an empty pane — herdr answers `""` for a live pane
+   * that has text on it (see `TAIL_SOURCES` in herdr.ts) — and a source that
+   * FAILED is not a source that said empty. `source` names which one answered,
+   * and is `null` exactly when every source was asked and every one was empty.
+   */
   tailAgent(
     key: string,
     type?: string,
     lines?: number
-  ): { success: boolean; text?: string; truncated?: boolean; error?: string };
+  ): {
+    success: boolean;
+    text?: string;
+    truncated?: boolean;
+    source?: TailSource | null;
+    sourcesTried?: TailSource[];
+    error?: string;
+  };
 
   /**
    * Press one key at an agent's pane. Throws when the agent, the pane or the
