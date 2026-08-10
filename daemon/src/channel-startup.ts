@@ -375,22 +375,53 @@ export async function superviseChannelStartup(opts: {
     return done('no-prompt', null, detail);
   }
 
-  // A DIALOG SEEN AT ANY POINT, AND NOTHING EVER CONNECTED, IS THE BRICK — even
-  // when the last frame was blank, which is the ordinary way it looks.
-  // `recent-unwrapped` reports what has RECENTLY SCROLLED, and a full-screen
-  // dialog paints once and then sits there producing no further output, so the
-  // pane reads EMPTY within a minute of the dialog appearing. Measured by
-  // `probe-channel-launch.mjs` phase 3 on 2026-08-10: the dialog was on the tail
-  // at t+30s and the tail was empty at t+60s and t+90s with the agent still
-  // wedged behind it. Reporting that as a plain `no-connection` would send an
-  // operator looking for a channel fault when what is actually there is a
-  // full-screen box nobody pressed Enter at.
+  // A DIALOG SEEN AT ANY POINT, AND NOTHING EVER CONNECTED, IS THE BRICK. The
+  // verdict is `sawDialog && !sawConnection` — a memory of the whole run, not a
+  // reading of the last frame — so it holds whatever the final pane read
+  // happens to say. That independence is the point of the paragraph below.
+  //
+  // THE JUSTIFICATION THAT USED TO BE HERE WAS FALSE, AND IT IS WORTH KNOWING
+  // WHY IT SURVIVED REVIEW (KAN-255). It said `recent-unwrapped` "reports what
+  // has RECENTLY SCROLLED", that a dialog paints once and then emits nothing,
+  // and that the pane therefore "reads EMPTY within a minute of the dialog
+  // appearing" — citing `probe-channel-launch.mjs` phase 3 at t+60s and t+90s.
+  // The observation was real. The mechanism was invented, and all three of its
+  // claims are refuted by measurement on this machine (herdr 0.6.4):
+  //
+  //   * THERE IS NO TIME DEPENDENCE, in either direction. A live pane holding
+  //     an unanswered full-screen dialog was read every 10s for 100s at
+  //     --lines 1, 5, 10, 20, 22, 23, 40, 120 and 200. Every column was
+  //     BYTE-IDENTICAL at every sample. Nothing drains.
+  //   * WHAT DECIDES AN EMPTY READ IS GEOMETRY. `recent`/`recent-unwrapped
+  //     --lines N` window the last N ROWS OF THE GRID; rows below the cursor
+  //     are blank, so a pane whose content sits in the top C rows of an R-row
+  //     screen answers "" for every N <= R - C. Predicted and hit exactly: a
+  //     23-row pane with 3 rows of content answered "" at every N from 1 to 20
+  //     and returned text at N = 21.
+  //   * SO A DIALOG PANE DOES NOT READ EMPTY AT THE SIZE WE ASK FOR. A
+  //     full-screen dialog FILLS the screen, which is the C that makes R - C
+  //     small: the wedged pane above answered "" only at --lines 1 and had 607
+  //     characters at --lines 120. `readPane` asks for 140. The state this
+  //     comment described as "the ordinary way it looks" is one this reader
+  //     cannot reach.
+  //
+  // The probe's own instrument is how the wrong mechanism got written down:
+  // `probe-channel-launch.mjs` returned `res?.text ?? ''` from `tail_agent`, so
+  // a read that FAILED printed as `(pane reads EMPTY)` exactly like a pane with
+  // nothing on it. Its "empty at t+60s" was therefore never evidence about a
+  // pane. That conflation is the same defect `tailAgent` had, one layer up, and
+  // both are fixed in KAN-255 — see TAIL_SOURCES in herdr.ts.
+  //
+  // WHAT IS KEPT is the reason this branch is not folded into `no-connection`:
+  // it sends an operator somewhere different. A full-screen box nobody pressed
+  // Enter at is not a channel fault, and saying `no-connection` about one costs
+  // whoever reads the log the whole distance between those two.
   if (sawDialog && !sawConnection) {
     const detail =
       `a development-channels dialog was raised and nothing ever connected in the ` +
-      `${waited}ms since spawn (${dialogsAnswered} answered). The pane may read EMPTY now — ` +
-      `a dialog paints once and then produces no further output, so an agent wedged behind ` +
-      `one goes quiet rather than showing you the box. THE AGENT HAS NOT REACHED ITS PROMPT.`;
+      `${waited}ms since spawn (${dialogsAnswered} answered). THE AGENT HAS NOT REACHED ITS ` +
+      `PROMPT: this is a full-screen box waiting on an Enter, not a channel fault, so read ` +
+      `the pane before looking at the daemon.`;
     world.log(`[ChannelStartup] ${who}: GIVING UP — ${detail}`);
     logRevert(world.log, who);
     return done('dialog-unanswered', null, detail);
