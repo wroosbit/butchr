@@ -114,14 +114,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # KAN-241. The sweep's baseline leg asserts that no rule entry present at
+      # `origin/main` has vanished from this branch — the one leg that survives
+      # a merge conflict resolved carelessly in *both* the sweep and its
+      # inventory, because history is not a file you resolve. The default
+      # checkout is shallow and has no `origin/main`, so the leg would have
+      # nothing to read and would report itself SKIPPED.
+      #
+      # One commit is all it needs: the leg reads a single blob out of main's
+      # tree. `--depth=1` rather than `fetch-depth: 0` on the checkout keeps
+      # this to one extra object fetch instead of the whole history, which
+      # matters for a check that runs on every PR.
+      - name: Fetch the baseline ref the vanished-id leg reads
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       # No dependency install, for the reason above: the script imports only
       # node builtins. Keeping it dependency-free is what keeps it un-flaky.
+      #
+      # `--require-baseline` turns an unreadable baseline into a failure instead
+      # of a printed skip. Do not drop it to make a red go away: the skip path
+      # exists for local runs in a clone without a remote, and a required check
+      # that silently skips its strongest leg is precisely the defect KAN-241
+      # was filed for.
       - name: Verify every operative rule is carried by a prompt
-        run: node daemon/scripts/verify-operative-rules-are-carried.mjs --verbose
+        run: node daemon/scripts/verify-operative-rules-are-carried.mjs --verbose --require-baseline
 
   extension-build:
     name: extension-build
