@@ -18,6 +18,26 @@ established that it cannot: Claude Code drops server-initiated
 than toward it (`docs/mcp-notification-delivery.md`). **Typing is the mechanism
 indefinitely**, so it is worth marking.
 
+> **CORRECTED 2026-08-09 (KAN-249). The sentence above is no longer true, and
+> the conclusion drawn from it still is.** *"Typing is the mechanism
+> indefinitely"* was right when written and was overturned within days:
+> KAN-167's finding is about `notifications/message`, and KAN-217 found a
+> **different** path — `notifications/claude/channel` — that does reach the
+> model. Since KAN-247 there are **two carriers**, the daemon chooses between
+> them per recipient, and a channel frame arrives as
+> `<channel source="butchr">…</channel>` rather than as typed text.
+>
+> **Nothing below is retracted.** The tag is still a convention, still stamped
+> from the caller's process identity rather than the message body, and still
+> rides *inside* the payload on both carriers — so every limit this page states
+> holds unchanged. What the channel adds is an outer frame the payload cannot
+> forge, and it authenticates **the carrier, not the sender**: `source` names
+> the server, one per agent, so it says nothing about who sent a message and a
+> channel message is never the human speaking.
+> See [`channel-briefing.md`](channel-briefing.md) for what agents are told, and
+> [`channel-messaging-design.md`](channel-messaging-design.md) §3 for why the
+> two coexist rather than one replacing the other.
+
 ## What was already true before this change
 
 Established by reading the code at the merge base, not assumed:

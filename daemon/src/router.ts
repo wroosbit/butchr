@@ -29,6 +29,22 @@ import {
 import { ResumeCause } from './resume.js';
 import { nudgeResumedAgent } from './nudge.js';
 import { senderTagFor, withSenderTag } from './provenance.js';
+import type { ChannelRouteOutcome } from './channel.js';
+import { licenceFor, sealClaims } from './message-claims.js';
+
+/**
+ * What a sender needs, which is not the same as how it travels (KAN-247).
+ *
+ * `steer` is the ordinary case: a message the recipient should read. `stop-now`
+ * says the recipient must stop what it is doing — design §5.1's fifth case,
+ * measured in §4 as something only the composer's interrupt can deliver.
+ *
+ * **This is a requirement, not a carrier.** The daemon maps it to a transport
+ * and names the transport in its response; a sender that reads `stop-now` as
+ * "the composer" has re-derived the thing §5.1 says it must never derive, and
+ * will be wrong the moment the mapping changes.
+ */
+export type SendIntent = 'steer' | 'stop-now';
 import {
   PreemptionCandidate,
   addressOf,
@@ -667,6 +683,27 @@ export interface MessageRouterOptions {
    * in it.
    */
   boardControl?: (agents: AddressableAgent[]) => BoardControlReport;
+  /**
+   * The channel carrier for `send_to_agent` (KAN-247, T4 of KAN-150).
+   *
+   * Injected rather than reached for, because the router deliberately knows
+   * nothing about the transport: it is constructed with a `send` closure and
+   * has no socket, while the identity map KAN-243 built lives in `daemon.ts`
+   * beside the connections it indexes. This closure is the seam between them,
+   * and it is the same shape as `boardControl` above for the same reason.
+   *
+   * **Absence is off, and it is honest rather than incidental.** A daemon that
+   * passes none — every proof that constructs a bare router, and any future
+   * embedding without a socket set — routes every send over the composer,
+   * exactly as it did before this ticket, and the response says `composer` with
+   * a reason naming the absence. There is no default channel to fall into,
+   * which is what keeps "the daemon decides" from meaning "the router guesses".
+   */
+  channelRoute?: (
+    address: { type: string; key: string },
+    content: string,
+    meta?: unknown
+  ) => ChannelRouteOutcome;
 }
 
 /**
@@ -691,7 +728,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'agentRegistry',
   'launchdarkly',
   'capacitySource',
-  'boardControl'
+  'boardControl',
+  'channelRoute'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -721,6 +759,8 @@ export class MessageRouter {
   private readonly capacitySource: (running: number, supervisors: number) => Capacity;
   /** See {@link MessageRouterOptions.boardControl}. */
   private readonly boardControl?: (agents: AddressableAgent[]) => BoardControlReport;
+  /** See {@link MessageRouterOptions.channelRoute}. */
+  private readonly channelRoute?: MessageRouterOptions['channelRoute'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -753,6 +793,7 @@ export class MessageRouter {
     this.launchdarkly = opts.launchdarkly;
     this.capacitySource = opts.capacitySource ?? readCapacity;
     this.boardControl = opts.boardControl;
+    this.channelRoute = opts.channelRoute;
   }
 
   /**
@@ -2023,7 +2064,7 @@ export class MessageRouter {
    * human's own typing.
    */
   private handleSendToAgent(data: any, respond: Respond) {
-    const { key, type, message } = data;
+    const { key, type, message, intent } = data;
     const fail = (error: string) =>
       respond({ action: 'send_to_agent_response', success: false, error });
 
@@ -2036,9 +2077,127 @@ export class MessageRouter {
       fail('Missing or invalid message');
       return;
     }
+    const want: SendIntent = intent === undefined ? 'steer' : intent;
+    if (want !== 'steer' && want !== 'stop-now') {
+      fail(`Invalid intent '${String(intent)}': expected 'steer' or 'stop-now'`);
+      return;
+    }
 
     const tag = senderTagFor({ type: data?.workspaceType, key: data?.workspaceKey });
     const tagged = withSenderTag(tag, message);
+
+    // ONE ADDRESS, BOTH CARRIERS. Resolved before the transport is chosen, so a
+    // bare key cannot mean one agent over the channel and another over the
+    // composer — see `HerdrBridge.resolveAddress` for why that would be the
+    // worst way for a transport to become visible. A key that resolves to
+    // nothing is unaddressable on either carrier and fails here, exactly as it
+    // failed before this ticket.
+    let address: { type: string; key: string };
+    try {
+      address = this.herdrBridge.resolveAddress(key, type);
+    } catch (e: any) {
+      fail(e?.message ?? String(e));
+      return;
+    }
+
+    // THE ROUTING DECISION, MADE HERE AND NOWHERE ELSE (design §5.1).
+    //
+    // AC 4 of KAN-150 is "no partial migration", and §5.1 is explicit that it is
+    // satisfied "not by having one mechanism, but by removing the guess": an
+    // agent never chooses its transport and never infers it. Every input to this
+    // decision is something only the daemon knows — whether emission is switched
+    // on, and whether this recipient holds a live connection — and none of it is
+    // reachable from a sender.
+    //
+    // `intent` is NOT a transport selector, and the distinction is the one thing
+    // in this handler worth reading twice. A sender says what it *needs*; the
+    // daemon says what carries it. `stop-now` is a requirement about the
+    // recipient's current work, and §4 measured that only one carrier can meet
+    // it: a channel event is acted on at the turn boundary and therefore cannot
+    // stop an agent now, while the composer's Ctrl+C kills the call outright.
+    // §5.1 lists that as the fifth retained composer case and calls it "a genuine
+    // capability, not a concession" — so a router that always preferred the
+    // channel would quietly delete the fleet's only stop-now signal, which is
+    // precisely the loss §5.1 says we would otherwise take "without noticing".
+    //
+    // The sender still never names a carrier, never learns which one exists for
+    // its recipient, and reads the transport off the response rather than
+    // deriving it. That is §5.1's rule intact.
+    const channelOutcome =
+      want === 'stop-now'
+        ? null
+        : this.channelRoute?.(address, tagged, {
+            sender: tag,
+            workspaceType: address.type,
+            workspaceKey: address.key
+          }) ?? null;
+
+    if (channelOutcome?.routed) {
+      // C1 is the write to that connection; C2 is that the identity map held a
+      // live one to write to. C3 and C4 are not this carrier's to make, and
+      // `sealClaims` refuses them rather than trusting this call site — see
+      // message-claims.ts.
+      const claims = sealClaims(
+        'channel',
+        {
+          transportAccepted: true,
+          sessionPresent: true,
+          enteredTranscript: 'not-measured',
+          modelRead: 'not-measured'
+        },
+        {
+          transportAccepted:
+            `the frame was written to connection ${channelOutcome.connectionId}`,
+          sessionPresent:
+            `KAN-243's identity map resolved a live connection (${channelOutcome.connectionId}) for ` +
+            `${address.type}/${address.key}`,
+          enteredTranscript: '',
+          modelRead: ''
+        }
+      );
+      respond({
+        action: 'send_to_agent_response',
+        // `success` is C1 and says so in `claims`. Kept because `mcp.ts` flags a
+        // tool error on it and older readers key off it; it is no longer the
+        // only thing a caller has, which was the whole defect.
+        success: true,
+        key,
+        type: address.type,
+        transport: 'channel',
+        transportChosenBecause:
+          `a live channel connection (${channelOutcome.connectionId}) is registered for ` +
+          `${address.type}/${address.key}, and this send is a steer rather than a stop-now`,
+        connectionId: channelOutcome.connectionId,
+        intent: want,
+        claims,
+        licenses: licenceFor('channel', claims),
+        // The recipient's turn was NOT cancelled — §4 measured a channel event
+        // waiting for the turn boundary. Said explicitly because it is the one
+        // behavioural difference a caller most needs and cannot see.
+        interrupted: false,
+        sender: tag,
+        delivered: tagged
+      });
+      return;
+    }
+
+    // THE COMPOSER, and why it was chosen. §5.1 asks for a closed set of cases
+    // rather than a vague fallback, so the reason is assembled from the actual
+    // decision rather than described in general terms.
+    const composerBecause =
+      want === 'stop-now'
+        ? 'this send asked to stop the recipient now, and only the composer interrupt can do that — ' +
+          'a channel event waits for the turn boundary (design §4, §5.1 case 5)'
+        : !this.channelRoute
+          ? 'this daemon has no channel carrier wired in, so the composer is the only carrier'
+          : channelOutcome?.reason === 'channel-disabled'
+            ? 'channel emission is switched off fleet-wide, so nothing was written to any connection' +
+              (channelOutcome.switchPath ? ` (switch: ${channelOutcome.switchPath})` : '')
+            : channelOutcome?.reason === 'no-connection'
+              ? `no live channel connection is registered for ${address.type}/${address.key}`
+              : channelOutcome?.reason === 'socket-closed'
+                ? "the recipient's channel connection closed before the frame could be written"
+                : 'no channel route was available';
 
     this.herdrBridge.sendToAgent(key, tagged, type).then(
       // `sender` and `delivered` go back to the caller so it can see what its
@@ -2046,13 +2205,60 @@ export class MessageRouter {
       // no way to notice that the daemon thinks it is somebody else — and the
       // agent-facing tool description promises the tag, so the response is
       // where that promise is either kept or visibly broken.
-      (result) => respond({
-        action: 'send_to_agent_response',
-        key,
-        ...result,
-        sender: tag,
-        delivered: tagged
-      }),
+      (result) => {
+        // C3 IS THE INTERESTING ONE, AND IT IS SILENCE RATHER THAN A NEGATIVE.
+        //
+        // `HerdrBridge.sendToAgent` answers whether the keystrokes were typed —
+        // Ctrl+C, text, Enter — which is C1. Whether the text was *submitted*
+        // is C3, and only `deliverToAgent` establishes that, by reading the pane
+        // above the composer marker (nudge.ts). This handler deliberately does
+        // not call it: confirmation costs a 20s wait and, on failure, a SECOND
+        // Ctrl+C at an agent that has already lost one turn.
+        //
+        // That trade-off is a decision, so it is recorded as `not-measured`
+        // rather than resolved into a boolean. This is the exact spot where the
+        // old `success: true` was read as delivery — KAN-150's defect 1 — and
+        // the fix is not a better verb, it is the admission that nothing here
+        // looked.
+        const claims = sealClaims(
+          'composer',
+          {
+            transportAccepted: result.success === true,
+            sessionPresent: result.success === true,
+            enteredTranscript: 'not-measured',
+            modelRead: 'not-measured'
+          },
+          {
+            transportAccepted: result.success
+              ? "herdr accepted the keystrokes for the recipient's pane"
+              : `herdr refused the send: ${result.error ?? 'no reason given'}`,
+            sessionPresent: result.success
+              ? 'herdr resolved a live pane for this address and typed into it'
+              : `herdr could not reach a pane for ${address.type}/${address.key}`,
+            enteredTranscript:
+              'nothing here read the pane. `butchr_tail_agent` is what shows whether the Enter took; ' +
+              'the Enter can be lost and strand the text at the composer (nudge.ts, KAN-79)',
+            modelRead: ''
+          }
+        );
+        respond({
+          action: 'send_to_agent_response',
+          ...result,
+          key,
+          type: address.type,
+          transport: 'composer',
+          transportChosenBecause: composerBecause,
+          intent: want,
+          claims,
+          licenses: licenceFor('composer', claims),
+          // The cost, stated as a fact rather than left in the tool description.
+          // A composer send opens with a Ctrl+C, so on this carrier the
+          // recipient's turn — and any tool call in it — is gone.
+          interrupted: result.success === true,
+          sender: tag,
+          delivered: tagged
+        });
+      },
       (err) => fail(err?.message ?? String(err))
     );
   }
