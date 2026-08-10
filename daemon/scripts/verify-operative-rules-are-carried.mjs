@@ -10,8 +10,15 @@
 // "polling loop below" that no section below defined, while its Cadence section
 // read as a prohibition against polling. Run with `--ref 39cd158` — KAN-186's
 // merge base, pinned so the recipe keeps working after it lands — to watch this
-// script go red on exactly that: 23 failures, including all four prompts
-// missing every word of H-3 and H-4.
+// script go red on exactly that, with all four prompts missing every word of
+// H-3 and H-4.
+//
+// (This used to quote "23 failures". The count is not a fact about `39cd158` —
+// it is a fact about how many entries this file had on the day it was written,
+// and it rises every time a rule is added: it was 60 by 2026-08-10. KAN-241
+// replaced the number with the claim it was standing in for. A recipe that
+// quotes a count invites a reader to treat a different count as a broken
+// recipe, and the same rot is why the two counts below went too.)
 //
 // AND (KAN-237) THE SAME DEFECT WITH THE SIGN FLIPPED: a rule that has been
 // *superseded* still sitting in the prompts, which is worse than a missing one,
@@ -43,11 +50,18 @@
 // `origin/main` still teaches the retired clause verbatim in all three prompts,
 // so at the time KAN-239 was written:
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs --ref origin/main
-// goes red on exactly the sentences this entry exists to catch — 10 failures:
-// seven R-2 hits across `prompts/{epic,story,task}.md`, plus H-10 missing from
-// all three. Once KAN-239 lands, `origin/main`
-// moves and that recipe goes green; pin it to KAN-239's merge base, `efde3cb`,
-// to keep reproducing it.
+// goes red on exactly the sentences this entry exists to catch — R-2 firing
+// unmarked across `prompts/{epic,story,task}.md`, plus H-10 missing from all
+// three. Once KAN-239 lands, `origin/main` moves and that recipe goes green;
+// pin it to KAN-239's merge base, `efde3cb`, to keep reproducing it.
+//
+// (Two counts have been taken out of this paragraph, and the second is the
+// instructive one. "10 failures" was a total, and totals rise with the
+// inventory — it is 26 as of 2026-08-10. But "seven R-2 hits" looked stable and
+// was not: R-2 has gained patterns since, so the same unchanged commit now
+// yields 11. A count is a claim about *this file* wearing the costume of a
+// claim about the ref. H-10's "all three" survives because it counts prompts,
+// which is what the entry is actually about.)
 //
 // R-2 FENCES WORDINGS, NOT THE CONCEPT — AND THAT LIMIT HAS ALREADY LET ONE
 // THROUGH, SO DO NOT READ A GREEN R-2 AS "NO PROMPT MISDIRECTS APPROVAL".
@@ -169,23 +183,91 @@
 // tickets were filed within the day by four different agents, one of them while
 // the backfill was still running; the heaviest filer on the board later
 // disclosed three of its own, two already closed under its own merges with
-// nothing having gone red. It is **H-13**, not H-12: this entry was written as
-// H-12 and renamed when KAN-249 landed its channel-brief entry under that id
-// first. The id is the incumbent's; renaming the one still in review is the
-// cheaper half, and it is recorded here because a reader meeting "H-12" in
-// KAN-212's PR history should not go looking for a rule that moved.
-// Run with `--ref` KAN-212's original merge base `1fc6407` to watch H-13 go red
+// nothing having gone red. It is **H-14**, and it has now been renumbered
+// twice: written as H-12, moved to H-13 when KAN-249 landed its channel-brief
+// entry under that id first, and moved again to H-14 at `2a24912` when KAN-250's
+// storm guards turned out to be on `main` under H-13 already. Each time the id
+// went to the incumbent and the one still in review moved, which is the cheaper
+// half. Recorded because a reader meeting "H-12" or "H-13" in KAN-212's PR
+// history should not go looking for a rule that moved.
+//
+// **AND BECAUSE THE SECOND RENUMBER IS ITSELF AN INSTANCE OF THIS TICKET'S
+// DEFECT** (KAN-241): `2a24912` changed the `id:` field and left this docblock
+// and the two sentences below still saying H-13. The rule was carried, the
+// entry was present, every check was green, and the prose beside it named an id
+// that no longer existed. Presence is mechanical; agreement between an entry
+// and the paragraph explaining it is not, and nothing checks it.
+//
+// Run with `--ref` KAN-212's original merge base `1fc6407` to watch H-14 go red
 // in all three prompts at once — that red
 // is honest here in a way the R-1 merge-base red was not, because the rule is
 // genuinely absent from those files rather than merely discussed elsewhere.
-// The narrower test, and the one to repeat after any edit to H-13's phrases:
+// The narrower test, and the one to repeat after any edit to H-14's phrases:
 //   perl -0pi -e 's/Epics have no parent, and that is correct//' prompts/story.md
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, story.md only
 //   git checkout -- prompts/story.md
 //
+// AND (KAN-241) THE HOLE THIS SCRIPT HAS IN *ITSELF*, WHICH IS A DIFFERENT KIND
+// OF GAP FROM ALL OF THE ABOVE. Every entry above guards a rule in `prompts/`.
+// The entries themselves were guarded by nothing — and **the entries are the
+// checking**, so a dropped one removes the assertion that would have noticed it
+// was dropped, and the sweep passes *harder* afterwards. Within an hour of this
+// becoming a required check (KAN-240, `ff6d068`) it reported success over three
+// separate defects in the files it guards, and on 2026-08-08 `epic/KAN-39` hit
+// the merge hazard for real: a conflict in the `RULES` region between KAN-212's
+// parent-epic entry and KAN-250's storm guards, **both numbered `H-13`**. It
+// resolved by keeping both and renumbering (`2a24912`). Taking either side would
+// have dropped a live rule with `node --check`, this sweep and every other check
+// staying green; the collision was caught by a person grepping on a hunch.
+// Section 5 below is the answer, `rule-inventory.md` is its declared half, and
+// `verify-rule-inventory-catches-dropped-entry.mjs` stages a real conflict and
+// watches the pre-KAN-241 sweep go green over it before this one goes red.
+//
+// KAN-241's SECOND QUESTION — CAN "CARRIED SOMEWHERE" BE NARROWED TO "CARRIED
+// WHERE THE RULE BELONGS"? DECISION: NO, AND THE MEASUREMENT IS WHY.
+//
+// The weakness is real: H-10 was green on KAN-239's PR #100 (`61355c0`) while
+// `prompts/epic.md:510` still read *"the parent story's agent, or the parent
+// epic's"* in the ticket-writing checklist, because H-10's phrases were carried
+// in the merge-governance section and this sweep only asks whether a file
+// carries them *somewhere*.
+//
+//   1. **Section-scoping the phrases is not tractable, measured rather than
+//      asserted.** Of the 36 rule×file pairs on this commit, 5 have no single
+//      section at any heading depth containing all of a rule's phrases, and 1
+//      has none even at `##` depth: H-13 in `prompts/epic.md`, where seven
+//      phrases sit under *## The coordination model* and two — `you never
+//      select one and never infer one`, `capability rather than a hazard` — sit
+//      under *## Steering running agents*. That spread is **correct**: epic.md
+//      discusses carrier selection where an epic steers agents. So the check
+//      would go red on a correct file today, on the entry whose whole subject
+//      is over-claiming, and the fix would be a growing exception list.
+//   2. **And it would not have caught the instance anyway**, which is the part
+//      that settles it. At `61355c0` H-10's epic.md phrases are at lines 64–73
+//      and the contradicting sentence is at line 510. A section-scoped H-10 is
+//      satisfied at 64–73 and never looks at 510. Section-scoping asks *are the
+//      phrases together*; the defect was *another passage says the opposite*.
+//      They are different questions and only the second one was ever the bug.
+//
+// WHAT WOULD HAVE CAUGHT IT IS A `RETIRED` ENTRY, AND IT IS NOT FREE — TESTED,
+// NOT GUESSED. A pattern for the superseded wording, `/parent story'?s\*{0,2}
+// agent/i`, run through this file's own `sentences()` and `RETIREMENT_MARKERS`:
+// at `61355c0` it fires **unmarked** on `prompts/epic.md:510` — the instance —
+// while the correct quotation at line 81 is waved through. But on this commit
+// it also fires unmarked on `prompts/task.md:58`, a **correct** sentence that
+// retires the wording in words no marker lists: *"Its successor was wrong too,
+// in the opposite direction."* So the obstacle is not the pattern; it is that
+// `RETIREMENT_MARKERS` is itself a closed wording fence with exactly the limit
+// R-2's docblock describes. Adding the entry means either widening that list or
+// rewording that sentence, and **adding to `RULES`/`RETIRED` is out of KAN-241's
+// scope** — it belongs to whichever ticket changes the rule. Filed as KAN-254
+// (`Relates` to KAN-241) with this measurement, so the finding is not lost.
+//
 // Usage:
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs [--verbose]
 //   node daemon/scripts/verify-operative-rules-are-carried.mjs --ref origin/main
+//   node daemon/scripts/verify-operative-rules-are-carried.mjs --require-baseline
+//   node daemon/scripts/verify-operative-rules-are-carried.mjs --baseline <ref>
 //
 // `--ref` reads the prompts out of a git ref instead of the working tree, which
 // is how the pre-fix red is reproduced without checking anything out.
@@ -927,6 +1009,200 @@ for (const retired of RETIRED) {
   }
   console.log('');
 }
+
+// ------------------------------------------- 5. the inventory itself is whole
+//
+// KAN-241. Everything above asks whether `prompts/` carries each entry. Nothing
+// above asks whether the entries are all still here — and **the entries are the
+// checking**, so a dropped one removes the assertion that would have noticed it
+// was dropped. The sweep then passes *harder*: one fewer assertion to satisfy.
+//
+// Three legs, because each catches a case the other two do not. They are listed
+// with what each cannot see, since that is the half a reader would otherwise
+// assume:
+//
+//   - **Declared vs present**, against `rule-inventory.md`. Catches a drop
+//     whenever that file merged cleanly — a conflict confined to the `RULES`
+//     region does not touch it. Blind to a resolution that hits both files and
+//     takes the same side in each.
+//   - **Unique ids.** Catches the 2026-08-08 collision directly: two entries
+//     independently numbered `H-13` (KAN-212's and KAN-250's), resolved by hand
+//     at `2a24912` after a person grepped for it on a hunch. A count would not
+//     have seen it — two entries named `H-13` count as two.
+//   - **The baseline leg**, against the script at `origin/main`. Catches an id
+//     that existed on the trunk and has vanished, and it is the only leg with
+//     nothing to hand-maintain, so it survives the both-files case the first
+//     leg does not. Blind to a drop between two branches where the lost entry
+//     had never reached the trunk — which the first leg does see.
+//
+// WHAT NONE OF THEM SEES, STATED BECAUSE THE LIST LOOKS COMPLETE: an entry
+// whose id survives while its *patterns* are gutted. A merge resolution that
+// keeps `id: 'H-13'` and takes one side's nine regexes passes all three legs.
+// Only the emptiest form of that — an entry with no patterns or no files at all
+// — is checked below. WHO COVERS THE REST: nobody mechanical. It is the
+// reviewer reading the diff of the `RULES` array.
+//
+// The baseline leg is the one that can be absent rather than false: a shallow
+// clone has no `origin/main`. It says so loudly and, under `--require-baseline`
+// (which CI passes), a baseline it cannot read is a failure rather than a skip.
+// A required check that silently skips its own strongest leg is the defect this
+// whole ticket is about.
+
+console.log(`Inventory integrity\n${'-'.repeat(60)}`);
+
+const INVENTORY_FILE = 'daemon/scripts/rule-inventory.md';
+const SELF_FILE = 'daemon/scripts/verify-operative-rules-are-carried.mjs';
+const ID_IN_SOURCE = /id:\s*'([HR]-\d+)'/g;
+
+const baselineIndex = process.argv.indexOf('--baseline');
+const baseline = baselineIndex === -1 ? 'origin/main' : process.argv[baselineIndex + 1];
+const requireBaseline = process.argv.includes('--require-baseline');
+
+/** The ids the sweep actually defines right now, in declaration order. */
+const present = [...RULES.map((r) => r.id), ...RETIRED.map((r) => r.id)];
+
+/** Pull one marker-delimited block out of the inventory; `null` if absent. */
+function block(text, name) {
+  const m = new RegExp(`<!-- ${name}:BEGIN -->([\\s\\S]*?)<!-- ${name}:END -->`).exec(text);
+  return m ? m[1] : null;
+}
+
+/** Every `- \`H-1\` — KAN-186 — title` line in a block. */
+function idsIn(blockText) {
+  return [...blockText.matchAll(/^\s*-\s*`([HR]-\d+)`/gm)].map((m) => m[1]);
+}
+
+let declared = null;
+let removed = [];
+try {
+  const raw = fs.readFileSync(path.join(repoRoot, INVENTORY_FILE), 'utf8');
+  const inv = block(raw, 'INVENTORY');
+  const rem = block(raw, 'REMOVED');
+  if (inv === null || rem === null) {
+    failures += 1;
+    console.log(`  ✗ ${INVENTORY_FILE} — missing an INVENTORY or REMOVED marker block`);
+  } else {
+    declared = idsIn(inv);
+    removed = idsIn(rem);
+    if (!declared.length) {
+      failures += 1;
+      console.log(`  ✗ ${INVENTORY_FILE} — declares no ids; an empty inventory asserts nothing`);
+      declared = null;
+    }
+  }
+} catch (err) {
+  failures += 1;
+  console.log(`  ✗ ${INVENTORY_FILE} — could not be read: ${err.message}`);
+  console.log('      This file is what makes a dropped entry visible, so an unreadable one is');
+  console.log('      a failure of this sweep and never a skip.');
+}
+
+/** Ids appearing more than once in a list. */
+const duplicates = (ids) => [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
+
+for (const id of duplicates(present)) {
+  failures += 1;
+  console.log(`  ✗ two entries in ${SELF_FILE} both claim id "${id}"`);
+  console.log('      That is the 2026-08-08 collision (`2a24912`): two independently written');
+  console.log('      rules given the same number. Renumber the one not yet on `main` — and');
+  console.log('      check you have not just dropped one of them instead.');
+}
+
+if (declared) {
+  for (const id of duplicates(declared)) {
+    failures += 1;
+    console.log(`  ✗ ${INVENTORY_FILE} declares "${id}" twice`);
+  }
+  for (const id of declared.filter((id) => !present.includes(id))) {
+    failures += 1;
+    console.log(`  ✗ "${id}" is declared in ${INVENTORY_FILE} and no longer exists in the sweep`);
+    console.log('      A DROPPED ENTRY IS THE CASE THIS LEG EXISTS FOR — most often a merge');
+    console.log('      conflict in the RULES array resolved by taking one side. Restore the');
+    console.log('      entry. Deleting the inventory line silences the alarm and keeps the');
+    console.log('      hole; if the rule is genuinely retired, move it to "Removed from the');
+    console.log('      inventory" with a reason instead.');
+  }
+  for (const id of present.filter((id) => !declared.includes(id))) {
+    failures += 1;
+    console.log(`  ✗ "${id}" exists in the sweep and is not declared in ${INVENTORY_FILE}`);
+    console.log('      Add a line for it. An inventory that lags the sweep cannot be trusted');
+    console.log('      to notice the next thing that goes missing from it.');
+  }
+  for (const id of removed.filter((id) => present.includes(id))) {
+    failures += 1;
+    console.log(`  ✗ "${id}" is listed as removed from the inventory and is still in the sweep`);
+  }
+  if (!duplicates(present).length && !declared.filter((id) => !present.includes(id)).length &&
+      !present.filter((id) => !declared.includes(id)).length) {
+    console.log(`  ✓ ${present.length} entries, ids unique, inventory and sweep agree`);
+  }
+}
+
+// The emptiest husk: an entry that survived a merge as a shell with nothing in
+// it. This is deliberately not a pattern *count* — counts change legitimately
+// every time somebody tightens a rule, and a check that has to be edited on
+// every honest change is one that gets edited on the dishonest ones too.
+for (const rule of RULES) {
+  const carried = Object.entries(rule.carriedBy ?? {});
+  if (!carried.length) {
+    failures += 1;
+    console.log(`  ✗ ${rule.id} names no file that must carry it — an entry that asserts nothing`);
+  }
+  for (const [file, patterns] of carried) {
+    if (!patterns?.length) {
+      failures += 1;
+      console.log(`  ✗ ${rule.id} lists ${file} with no phrases — an entry that asserts nothing`);
+    }
+  }
+}
+for (const retired of RETIRED) {
+  if (!retired.patterns?.length) {
+    failures += 1;
+    console.log(`  ✗ ${retired.id} has no patterns — a retirement that forbids nothing`);
+  }
+}
+
+// The baseline leg. Reads ids straight out of the script's source at the ref, so
+// it needs no inventory file to have existed there — which is what lets it run
+// on the commit that introduces this section, and on every commit before it.
+let baselineSource = null;
+try {
+  baselineSource = execFileSync('git', ['show', `${baseline}:${SELF_FILE}`], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+} catch {
+  baselineSource = null;
+}
+
+if (baselineSource === null) {
+  if (requireBaseline) {
+    failures += 1;
+    console.log(`  ✗ baseline "${baseline}" could not be read, and --require-baseline was given`);
+    console.log('      In CI this means the checkout is shallow. Fetch enough history for the');
+    console.log('      baseline to resolve — do not drop the flag, which would leave the leg');
+    console.log('      silently skipped and the job green over exactly the defect it guards.');
+  } else {
+    console.log(`  ⚠ baseline "${baseline}" not readable — vanished-id leg SKIPPED, not passed`);
+    console.log('      (pass --require-baseline to make this a failure, as CI does)');
+  }
+} else {
+  const baselineIds = [...new Set([...baselineSource.matchAll(ID_IN_SOURCE)].map((m) => m[1]))];
+  const vanished = baselineIds.filter((id) => !present.includes(id) && !removed.includes(id));
+  if (vanished.length) {
+    for (const id of vanished) {
+      failures += 1;
+      console.log(`  ✗ "${id}" is in the sweep at ${baseline} and is gone from the working tree`);
+      console.log('      An entry that reached the trunk has disappeared. If a merge dropped it,');
+      console.log('      restore it; if it was retired on purpose, say so under "Removed from');
+      console.log(`      the inventory" in ${INVENTORY_FILE} and give the reason.`);
+    }
+  } else {
+    console.log(`  ✓ all ${baselineIds.length} ids present at ${baseline} are still here`);
+  }
+}
+console.log('');
 
 // ----------------------------------------------------------------- verdict
 
