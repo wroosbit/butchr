@@ -10,6 +10,14 @@
 // reads. In `--clean` mode it catches the opposite failure: a daemon that
 // reports staleness on an install that is not stale.
 //
+// The startup-log leg waits for the line rather than reading once (KAN-251).
+// What that wait covers is the daemon's buffered write stream reaching disk —
+// nothing more. It does not make the log leg independent of the other two: all
+// three read the same daemon process in the same run, so a defect in
+// `getStalenessReport` itself fails all three together and none of them
+// corroborates the others. `verify-staleness-check.mjs` is what exercises the
+// report's own arithmetic, against clones damaged one way at a time.
+//
 // A genuine daemon process is started against a genuine, deliberately stale
 // checkout. Isolation is by $HOME: BUTCHR_DIR and the socket path are both
 // derived from os.homedir(), so a temp HOME gives this daemon its own socket
@@ -49,8 +57,12 @@ const argv = process.argv.slice(2);
 const dumpIdx = argv.indexOf('--dump');
 const dumpPath = dumpIdx === -1 ? null : argv[dumpIdx + 1];
 const clean = argv.includes('--clean');
+// `dumpIdx + 1` is the file after `--dump`. When there is no `--dump` at all,
+// dumpIdx is -1 and that expression is 0 — which silently dropped the *first*
+// positional, so `repoToClone` was ignored on every run that did not also pass
+// `--dump` and the clone source was always the build's own repo root (KAN-251).
 const positional = argv.filter(
-  (a, i) => i !== dumpIdx && i !== dumpIdx + 1 && !a.startsWith('--')
+  (a, i) => !a.startsWith('--') && (dumpIdx === -1 || (i !== dumpIdx && i !== dumpIdx + 1))
 );
 const sourceRepo = positional[0] ?? path.resolve(daemonDir, '..');
 
@@ -156,17 +168,74 @@ if (!existsSync(socketPath)) {
 console.log('\n' + '='.repeat(78));
 console.log('1. what the daemon logged at startup (its own daemon.log)');
 console.log('='.repeat(78));
-const logLines = readFileSync(logPath, 'utf8')
-  .split('\n')
-  .filter((l) => /staleness|STALE|OK  |fix:|note:|\?   |-   /.test(l));
-console.log(logLines.join('\n'));
 
+// The daemon logs through `fs.createWriteStream` (daemon.ts), so a line is
+// stamped when `log()` is called and reaches the file when the stream's buffer
+// flushes. The socket appearing says nothing about that flush having happened:
+// reading here the moment the socket showed up reported "no staleness line in
+// daemon.log at all" on a daemon whose log, on disk after the run, held the
+// line with a timestamp *earlier* than the read (KAN-251 — 3 of 14 runs of the
+// unmodified build). Poll for it instead, exactly as the socket is polled
+// above, and judge only once the wait has expired. The wait is on the log's
+// *arrival*, never on its content: what is asserted below is unchanged, so a
+// daemon that never logs staleness still fails — 10 seconds later than before.
+const LOG_WAIT_MS = 10_000;
+
+const readStalenessLog = () => {
+  try {
+    return readFileSync(logPath, 'utf8')
+      .split('\n')
+      .filter((l) => /staleness|STALE|OK  |fix:|note:|\?   |-   /.test(l));
+  } catch {
+    return [];
+  }
+};
+
+// The two assertions below, as a predicate. Waiting on *these* rather than on
+// "the file is non-empty" is what keeps `--clean` honest: a clean run must see
+// `nothing stale`, and stopping at the first staleness line would let it read a
+// half-written report and judge it.
+const settled = (text) =>
+  /staleness:/.test(text) &&
+  (expectStale
+    ? /STALE local checkout/.test(text) && expectedHeadline.test(text)
+    : /staleness: nothing stale/.test(text));
+
+// The first read is taken separately and reported, because it is exactly what
+// the pre-KAN-251 script did: it is the one-shot read at socket-appearance.
+// Keeping it visible means a run that hits the race says so in its own output
+// rather than passing silently — the race is intermittent, and a fix for an
+// intermittent fault that leaves no trace when it fires cannot be confirmed by
+// anyone who did not already believe it.
+const waitStartedAt = Date.now();
+let logLines = readStalenessLog();
+const atSocketAppearance = settled(logLines.join('\n'));
+while (!settled(logLines.join('\n')) && Date.now() - waitStartedAt < LOG_WAIT_MS) {
+  await sleep(50);
+  logLines = readStalenessLog();
+}
+const waitedMs = Date.now() - waitStartedAt;
 const logText = logLines.join('\n');
+
+console.log(logText);
+console.log(
+  '\n  ' +
+    (atSocketAppearance
+      ? `(the log had already flushed when the socket appeared — waited ${waitedMs}ms)`
+      : settled(logText)
+        ? `(RACE OBSERVED: nothing this leg could judge was in daemon.log when the socket ` +
+          `appeared; it arrived ${waitedMs}ms later. The one-shot read this leg used before ` +
+          `KAN-251 would have called the daemon silent here.)`
+        : `(waited the full ${waitedMs}ms and the daemon never logged what this run expects — ` +
+          `not a flush delay, a daemon that did not say it)`)
+);
 console.log('');
 check(
   'the daemon says something about staleness in its own log at startup',
   /staleness:/.test(logText),
-  logLines.length ? `${logLines.length} matching line(s)` : 'no staleness line in daemon.log at all'
+  logLines.length
+    ? `${logLines.length} matching line(s) after ${waitedMs}ms`
+    : `no staleness line in daemon.log after waiting ${waitedMs}ms for one`
 );
 check(
   expectStale
