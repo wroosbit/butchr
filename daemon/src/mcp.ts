@@ -14,6 +14,10 @@ import {
   CHANNEL_NOTIFICATION_METHOD,
   isForwardableEvent
 } from './channel.js';
+import {
+  CHANNEL_SELFCHECK_ACTION,
+  CHANNEL_SELFCHECK_RESULT_ACTION
+} from './channel-selfcheck.js';
 
 /**
  * Which agent this server belongs to, read off this process's own argv.
@@ -129,6 +133,127 @@ let connectingDaemon: Promise<net.Socket> | null = null;
 const pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
 let nextRequestId = 0;
 
+/**
+ * The ONE place a `notifications/claude/channel` frame is emitted.
+ *
+ * Two callers now — an addressed message from the daemon (KAN-244) and the
+ * startup self-check (KAN-248) — and they must be the same emission or the
+ * check is testing something the fleet does not use. That is the KAN-145 shape
+ * exactly: a self-check with its own copy of the emit path would go green
+ * against a copy nobody's messages travel on. One function, called twice.
+ */
+function emitChannelFrame(content: unknown, meta: unknown): Promise<void> {
+  return server.notification({
+    method: CHANNEL_NOTIFICATION_METHOD,
+    params: { content, meta }
+  });
+}
+
+/**
+ * How long the client gets to answer the ping behind the channel frame.
+ *
+ * Shorter than the daemon's own wait for this whole answer (20s), so a client
+ * that has stopped reading is reported by this end as `client-unresponsive` —
+ * the specific cause — rather than by the daemon's end as a generic `no-answer`.
+ * The two failures send a reader to different places and the timeouts are
+ * ordered so the more specific one wins.
+ */
+const SELFCHECK_PING_TIMEOUT_MS = 10_000;
+
+/**
+ * Do the self-check's agent-side leg and report what happened, whatever happens.
+ *
+ * **Reports rather than asserts.** Nothing here decides an outcome — the daemon
+ * does, in channel-selfcheck.ts, from these facts. This end is deliberately dumb
+ * so that the decision procedure has one implementation and is testable without
+ * a client.
+ */
+async function answerSelfCheck(socket: net.Socket, msg: any): Promise<void> {
+  const startedAt = Date.now();
+  const nonce = typeof msg?.nonce === 'string' ? msg.nonce : '';
+  const client = server.getClientVersion();
+  const capabilities = server.getClientCapabilities();
+
+  let emitted = false;
+  let emitError: string | null = null;
+  try {
+    await emitChannelFrame(
+      // THE CONTENT IS ADDRESSED TO WHOEVER READS IT, because it may well be
+      // read. If the client does place this in the model's context — which is
+      // the thing being tested and cannot be observed from here — then an agent
+      // meets it seconds after bring-up, and a bare nonce would read as an
+      // intrusion at the exact moment it has least context to judge one. It says
+      // what it is, asks for nothing, and needs no reply.
+      `[butchr] startup channel self-check ${nonce} — this frame exists to prove that the ` +
+      `channel loop works for this agent at bring-up. No action is required and no reply is ` +
+      `expected. If you are reading this, the channel is delivering into your context.`,
+      { selfCheck: true, nonce }
+    );
+    emitted = true;
+  } catch (e: any) {
+    emitError = e?.message ?? String(e);
+  }
+
+  // THE PING IS THE EVIDENCE, AND ITS ORDER IS THE WHOLE MECHANISM. stdio is an
+  // ordered stream, so a client can only produce this response after consuming
+  // everything ahead of it — including the notification written a moment ago.
+  // An MCP `ping` is part of the base protocol and needs no declared capability,
+  // so this does not depend on anything the preview may move.
+  let pingAnswered = false;
+  let pingError: string | null = null;
+  if (emitted) {
+    let timer: NodeJS.Timeout | undefined;
+    // THE PING'S OWN REJECTION IS HANDLED BEFORE THE RACE, not by it. The SDK
+    // gives a request its own 60s timeout, so on a client that never answers
+    // this promise rejects long after the race has been decided by the shorter
+    // deadline below — with no handler left on it, which in this process is an
+    // unhandled rejection inside the agent's own MCP server. Attaching a `catch`
+    // here marks it handled whichever way the race goes.
+    const ping = server.ping();
+    ping.catch(() => {});
+    try {
+      await Promise.race([
+        ping,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`the client did not answer an MCP ping within ${SELFCHECK_PING_TIMEOUT_MS}ms`)),
+            SELFCHECK_PING_TIMEOUT_MS
+          );
+        })
+      ]);
+      pingAnswered = true;
+    } catch (e: any) {
+      pingError = e?.message ?? String(e);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  writeJsonLine(socket, {
+    action: CHANNEL_SELFCHECK_RESULT_ACTION,
+    nonce,
+    emitted,
+    emitError,
+    pingAnswered,
+    pingError,
+    // STRAIGHT OFF THE CLIENT'S OWN `initialize`, which is the only report of the
+    // client version that describes THIS agent's client. `claude --version` on
+    // the machine answers a different question — what is on PATH now — and an
+    // agent started before an upgrade would be described by somebody else's
+    // binary. Measured, not assumed: Claude Code 2.1.226 sends
+    // `clientInfo: {name: "claude-code", version: "2.1.226", …}`.
+    clientName: client?.name ?? null,
+    clientVersion: client?.version ?? null,
+    // A tripwire rather than a decision input. Nothing here branches on it: the
+    // client declares `roots` and `elicitation` and says nothing about channels,
+    // identically with and without the channels flag. It is recorded so that a
+    // client which one day DOES declare something channel-shaped shows up in the
+    // daemon log the day it happens rather than the day something breaks.
+    clientCapabilities: capabilities ? Object.keys(capabilities).sort() : null,
+    agentElapsedMs: Date.now() - startedAt
+  });
+}
+
 function daemonLink(): Promise<net.Socket> {
   if (daemonSocket) return Promise.resolve(daemonSocket);
   if (!connectingDaemon) {
@@ -167,10 +292,18 @@ function daemonLink(): Promise<net.Socket> {
             // unreachable then and `mcp.ts` behaves exactly as it did before
             // KAN-244. A second gate here would be a second copy of one
             // condition, which is the defect KAN-145 cost this board a day to.
-            server.notification({
-              method: CHANNEL_NOTIFICATION_METHOD,
-              params: { content: msg.content, meta: msg.meta }
-            }).catch(() => {});
+            emitChannelFrame(msg.content, msg.meta).catch(() => {});
+          } else if (msg?.action === CHANNEL_SELFCHECK_ACTION) {
+            // THE STARTUP SELF-CHECK'S AGENT-SIDE LEG (KAN-248, T5).
+            //
+            // This process is the only code in the fleet that can see the
+            // client, so it is the only place two of the three facts the check
+            // needs exist: whether the notification reached the client, and what
+            // version the client says it is. Both are answered by doing the real
+            // thing and reporting what happened — see channel-selfcheck.ts for
+            // why an ordinary MCP `ping` ordered behind the notification is what
+            // turns an unacknowledgeable frame into evidence the client read it.
+            void answerSelfCheck(socket, msg);
           } else if (isForwardableEvent(msg?.action)) {
             // Was `msg.action.endsWith('_event')` until KAN-244 (design §1.3).
             // The suffix test forwarded anything a future author happened to
@@ -398,7 +531,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_list_agents",
         description:
-          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down. ALSO CHECK preemptedAgents: agents deliberately stood down to free capacity for higher-priority work, listed until they are put back. Their work was interrupted rather than finished, so their tickets must NOT be left In Progress — move each back to To Do with a comment naming what took its slot. Re-activating one resumes the conversation it was stopped in. standbyAgents is NOT a problem to fix: agents somebody switched off on purpose whose workspace is still on disk, listed so they can be started again (butchr_activate_agent with their type and key, and their recorded defaultAgent so they come back as what they were). standbyTotal is the unclipped count when more exist than are listed.",
+          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down. ALSO CHECK preemptedAgents: agents deliberately stood down to free capacity for higher-priority work, listed until they are put back. Their work was interrupted rather than finished, so their tickets must NOT be left In Progress — move each back to To Do with a comment naming what took its slot. Re-activating one resumes the conversation it was stopped in. standbyAgents is NOT a problem to fix: agents somebody switched off on purpose whose workspace is still on disk, listed so they can be started again (butchr_activate_agent with their type and key, and their recorded defaultAgent so they come back as what they were). standbyTotal is the unclipped count when more exist than are listed. ALSO CHECK each agent's `channel`: what its startup channel self-check found, and the carrier its messages will actually take. `transport: 'composer'` means that agent's channel loop did not prove out at bring-up, so a message to it will interrupt whatever it is doing — an agent silently on the composer while you believe it is on channels is exactly what this field exists to prevent. `outcome: 'unverified-client'` means the loop works but the Claude Code version it is running is one nobody has measured channel delivery on; channels are a research preview and the contract can move, so treat delivery to that agent as unproven and say so if you rely on it. `outcome: 'unchecked'` is NOT a fault: nobody has checked, usually because the agent outlived a daemon restart, and its messages still route over the channel. `clientVersion` is the client's own report of itself and is what pins any of this to a version. An absent `channel` field means this daemon cannot answer, which is different from every value it could carry.",
         inputSchema: {
           type: "object",
           properties: {},

@@ -352,6 +352,42 @@ export class HerdrBridge implements AgentRuntime {
   }
 
   /**
+   * Called once per pane this bridge actually spawns, so somebody who knows what
+   * a channel is can watch the agent through its startup (KAN-246).
+   *
+   * A hook rather than a direct call because the thing it has to wait for lives
+   * in the daemon and not here: readiness is a connection appearing in KAN-243's
+   * identity map, and this class knows about panes and processes and nothing at
+   * all about sockets. daemon.ts owns the map and installs the closure over it —
+   * the same seam the router's `channelRoute` uses, for the same reason.
+   *
+   * Absent by default, and every non-daemon caller of HerdrBridge (the verify
+   * scripts among them) leaves it absent, which is why a spawn with no hook
+   * installed must behave exactly as it did before this existed.
+   *
+   * **The command string is passed because it is the only honest answer to "is
+   * this a channel-enabled spawn?"** The listener could read the channel switch
+   * itself — the launcher read it a few lines earlier to decide — but those are
+   * two reads of a file that anything may rewrite between them, and the
+   * dangerous direction is not hypothetical: a switch turned off in that window
+   * gives a `claude` launched WITH the flag and nothing watching for the dialog
+   * it raises, which is precisely the wedged agent this whole ticket exists to
+   * prevent. Handing over what was actually spawned makes the question decidable
+   * from the thing itself rather than from a second look at the world.
+   */
+  private agentSpawnedListener?: (
+    session: HerdrSession,
+    spawnedAt: number,
+    command: string
+  ) => void;
+
+  public setAgentSpawnedListener(
+    listener: (session: HerdrSession, spawnedAt: number, command: string) => void
+  ): void {
+    this.agentSpawnedListener = listener;
+  }
+
+  /**
    * A session of ours that is currently attached to this agent's terminal.
    *
    * herdr allows exactly one terminal attach per terminal, so this is the
@@ -802,12 +838,64 @@ export class HerdrBridge implements AgentRuntime {
         // hard stop for one with nobody at the keyboard. It is set on every
         // spawn, not only on resumes: the launcher tries `--continue` first
         // every time, so any re-activation can meet that modal.
+        //
+        // `spawnedAt` is read BEFORE the spawn and handed to the channel-startup
+        // watcher below, which uses it to tell this session's MCP server
+        // connection from the previous one's. Taken here rather than after the
+        // call because `herdr agent start` returns once the pane exists — the
+        // agent's own boot, and therefore its server's registration, happens
+        // after that return, so a timestamp read afterwards would still be
+        // before every connection that matters while being needlessly later
+        // than the only one it has to exclude.
+        //
+        // Composed once and kept, rather than called inline in the argv below:
+        // the listener needs the very string that was spawned, and
+        // `launcher.command()` reads the channel switch off disk on every call,
+        // so calling it twice could hand the watcher a different command from the
+        // one running in the pane.
+        const spawnedAt = Date.now();
+        const command = launcher.command(fallbackPrompt);
         this.startAgentInOwnTab(agentName, session.workDir, [
           'env',
           `PATH=${process.env.PATH}`,
           ...Object.entries(RESUME_ENV).map(([name, value]) => `${name}=${value}`),
-          'bash', '-c', launcher.command(fallbackPrompt)
+          'bash', '-c', command
         ]);
+
+        // A pane we just started, and the only branch that reaches here. The
+        // attach path below is deliberately excluded: an agent that already
+        // existed did not run a launcher, so there is no startup dialog of ours
+        // in front of it and nothing to answer.
+        //
+        // NOT AWAITED, AND THAT IS THE UNCOMFORTABLE HALF OF THIS DESIGN. initPty
+        // is synchronous from resolveLauncher to the spawn on purpose (no await
+        // for another activation to interleave into), and the caller's caller is
+        // an `activate` whose MCP client gives it 30 seconds — while a fresh
+        // workspace has to answer two full-screen dialogs, fail a `--continue`,
+        // boot a second `claude` and spawn an MCP server. Blocking the response
+        // on all of that would trade a wedged agent for a timed-out activation
+        // and tell the caller less. So the activation still answers on herdr's
+        // own evidence, and this watches afterwards and says what it saw.
+        //
+        // WHAT THAT COSTS, SAID RATHER THAN LEFT TO BE FOUND: `activate` can
+        // answer `success: true, verified: true` for an agent that is sitting on
+        // an unanswered dialog and will never reach its prompt. `verified` has
+        // always meant "a live runtime is behind the pane" (KAN-58) and a
+        // `claude` rendering a dialog is exactly that, so this is not a new lie —
+        // but it is a new way for the old one to matter, and the daemon log is
+        // where the truth lands. See channel-startup.ts.
+        //
+        // Its own try/catch because it sits inside the spawn's: a listener that
+        // threw would otherwise be diagnosed as a failed `herdr agent start` and
+        // terminate a session whose agent is running perfectly well.
+        try {
+          this.agentSpawnedListener?.(session, spawnedAt, command);
+        } catch (e: any) {
+          console.error(
+            `[HerdrBridge] Agent-spawned listener for ${agentName} threw; the agent is ` +
+            `unaffected: ${e?.message ?? String(e)}`
+          );
+        }
       } catch (e: any) {
         if ((e as HerdrCliError)?.herdrCode === AGENT_NAME_TAKEN) {
           // Someone created it between our check and our start. Attach to it.
@@ -1332,6 +1420,28 @@ export class HerdrBridge implements AgentRuntime {
       console.error(`[HerdrBridge] Failed to tail agent for key '${key}':`, error);
       return { success: false, error };
     }
+  }
+
+  /**
+   * Press one key at an agent's pane. Throws with herdr's own message when the
+   * agent, the pane or herdr itself is not there.
+   *
+   * **This is not a small cousin of {@link sendToAgent} and must not grow into
+   * one.** That method opens with a Ctrl+C, which cancels the recipient's turn
+   * and abandons any tool call in flight; this sends exactly the key it is given
+   * and nothing else. Its one caller (KAN-246) sends `Enter` at a full-screen
+   * startup dialog that is blocking the session's own boot — there is no turn to
+   * cancel, because the agent has not started one. A caller wanting to *say*
+   * something to a running agent wants `sendToAgent` and its cost, or the
+   * channel; not this.
+   */
+  public pressPaneKey(key: string, type: string | undefined, keyName: string): void {
+    const agentName = this.agentNameForAddress(key, type);
+    const paneId = this.runHerdr(['agent', 'get', agentName])?.result?.agent?.pane_id;
+    if (typeof paneId !== 'string' || !paneId) {
+      throw new Error(`Agent '${agentName}' has no pane to send keys to`);
+    }
+    this.runHerdr(['pane', 'send-keys', paneId, keyName]);
   }
 
   /**

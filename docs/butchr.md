@@ -712,14 +712,26 @@ extra: the ticket comment the agent already posts is its durable inbox, and
 starting an agent in order to inform it would be staffing work as a side effect
 of a notification.
 
-**Storm guards, stated the same way in all three prompts.** Notify on meaningful
+**Storm guards, stated the same way in all four prompts.** Notify on meaningful
 transitions only (To Do ↔ In Progress, → In Review, → Done) and not on edits,
 comments or assignment; never notify the agent whose action caused the event;
 a nudge you receive must never itself generate nudges — react by reading tickets
 and acting, not by re-broadcasting; and never send two nudges in a row to the
-same agent, because the second kills its session. The first three bound the
-fan-out of a single event; the last is the pre-existing interrupt rule, kept
-adjacent because this convention is what makes an agent likely to break it.
+same agent. The first three bound the fan-out of a single event; the last is the
+pre-existing interrupt rule, kept adjacent because this convention is what makes
+an agent likely to break it.
+
+**Since KAN-250 the four are stated per carrier, and the fourth's *reason* is
+what moved** (2026-08-09). *"The second kills its session"* is a fact about the
+Ctrl+C, and KAN-219 measured it true of the composer and **false of the
+channel** — so the guards are not wrong, they are carrier-specific. **The rule
+was narrowed rather than deleted**, on two grounds the prompts state and this
+document repeats because they are the easy ones to lose: the guard is about
+**storms**, and KAN-219 measured *one* event in *one* window on *one* tool
+(`Bash`); and **a sender never chooses its carrier**, so it cannot know before
+sending which column applies. Nothing in the prompts says a burst is safe on
+either carrier, and three things remain unmeasured by anything — an interrupted
+`Edit`, an in-flight MCP call, and whether a disturbed agent recovers.
 
 **And the prompts now price the first nudge, not only the second** (KAN-156).
 "Interrupts once" was read as "interrupts harmlessly": one Ctrl+C cancels the
