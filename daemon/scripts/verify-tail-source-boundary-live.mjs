@@ -238,8 +238,16 @@ try {
   // full-screen frame therefore drains to empty within a minute. Both halves
   // are refuted here: nothing drains, and a frame that FILLS the screen leaves
   // no blank rows for any --lines to window.
+  // THE FRAME IS PAINTED BY A PROCESS THAT THEN SLEEPS, AND THE `sleep` IS THE
+  // WHOLE POINT rather than a delay. Without it the shell returns to its prompt
+  // and the prompt is a live thing: it repaints on its own schedule, the last
+  // grid row goes blank, and `--lines 1` correctly follows it. A run of this
+  // section found 0 of 9 intervals comparable for exactly that reason and
+  // refused to report a vacuous pass. Holding the shell inside `sleep` removes
+  // the class — and it makes the pane a closer analogue of what is under test:
+  // something that paints once and then sits there producing no further output.
   const frameRowCount = Math.max(R - 1, 1);
-  run(`clear; seq 1 ${frameRowCount} | awk '{print "KAN255-FULLSCREEN-FRAME-ROW-" $1}'`);
+  run(`clear; seq 1 ${frameRowCount} | awk '{print "KAN255-FULLSCREEN-FRAME-ROW-" $1}'; sleep 600`);
   const frame = await settledVisible(
     (f) => f.split('\n').filter((l) => l.includes('KAN255-FULLSCREEN-FRAME-ROW')).length >= frameRowCount - 2
   );
