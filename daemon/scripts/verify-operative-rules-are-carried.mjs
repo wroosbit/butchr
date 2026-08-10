@@ -518,11 +518,110 @@ const RULES = [
     // button: dozens of tickets predate the change and were deliberately not
     // mass-edited, so a task agent will meet the old rule on its own ticket and
     // has to be told which wins.
+    // KAN-242 added the third pattern, and it is a limit rather than a
+    // restatement. *"The prompt wins"* is true of a stale ticket and false of a
+    // stale prompt, and this bullet is where an agent meets the sentence — so
+    // the bullet is where the limit has to sit, not only in the snapshot
+    // section above it. Without it the two rules read as agreeing while
+    // pointing opposite ways: H-9 says trust this file, H-14 says this file is
+    // the copy nobody refreshes. They are reconciled by the scope of the
+    // comparison — a *ticket*, never the repository — and that clause is the
+    // reconciliation.
     id: 'H-9',
-    title: "an older ticket's standing rules are stale; the prompt wins",
+    title: "an older ticket's standing rules are stale; the prompt wins over the ticket, and not over `origin/main`",
     carriedBy: {
-      'prompts/task.md': [/when the two disagree, the prompt wins/i, /you merge after approval/i],
+      'prompts/task.md': [
+        /when the two disagree, the prompt wins/i,
+        /you merge after approval/i,
+        /a comparison against a ticket, never against the repository/i,
+      ],
     },
+  },
+  {
+    // KAN-242. The rule about the file the rules are written in — and the only
+    // entry here whose subject is this sweep's own blind spot. Every other rule
+    // is kept honest by `prompts/*.md` being read; this one exists because
+    // being *present in the file* and being *in the agent's head* came apart.
+    //
+    // A brief is rendered at activation (router.ts, inside `if (!session)`) and
+    // written once (herdr.ts). Nothing refreshes it while the agent lives, and
+    // — the half that makes refreshing it useless — nothing makes the agent
+    // re-read it if something does. `task/KAN-234` sat In Review for two and a
+    // half hours obeying a merge rule superseded 81 minutes earlier. It was not
+    // disobeying its prompt; it was obeying it exactly.
+    //
+    // WHY THIS IS POLICED AT ALL, GIVEN THE FIX IS PROSE. Because the fix *is*
+    // prose: there is no mechanism to break, so there is nothing that goes red
+    // when it is removed. Deleting this section restores the two-hour defect in
+    // full and every other check in this repository stays green — including,
+    // before this entry existed, the sweep whose entire job is keeping the
+    // prompts honest.
+    //
+    // SIX PATTERNS, AND THE SECOND IS THE ONE THAT MATTERS. `{{PROMPT_PROVENANCE}}`
+    // is what the daemon substitutes the commit and the two-command check into
+    // (`PROVENANCE_VARIABLE`, daemon/src/prompt.ts). Strip *only* that line and
+    // the section still reads perfectly — the story, the trigger, the authority
+    // ordering, all intact — while "run that check" now names no check and no
+    // commit. That is this epic's recurring defect wearing its best costume: an
+    // artifact whose sentence claims more than its mechanism covers, degrading
+    // toward looking finished. A reviewer skimming for the argument would pass
+    // it.
+    //
+    // The other four are each a half the rule cannot ship without:
+    //   - the heading — without it there is no section to point `resume.ts` at.
+    //   - `nothing refreshes it while you run` — the fact. Everything else here
+    //     is advice hanging off it.
+    //   - the trigger, quoted in full. "Check sometimes" is not actionable, and
+    //     an agent that reads it as "check on every action" will stop working;
+    //     the sentence names the exact moment, which is what makes the cost two
+    //     commands rather than a habit.
+    //   - `It does **not** extend to` + `origin/main` — the correction to *"this
+    //     file wins"*. THIS IS THE COMPOUNDING FACTOR AND IT IS WHY THE TICKET
+    //     WAS URGENT: without it the prompt still directs an agent to trust the
+    //     one copy nobody refreshes over a ticket that may well be newer, and
+    //     the mitigation for stale tickets goes on pointing at the stale thing.
+    //     H-9 is the bullet it corrects; the two entries have to move together.
+    //   - `not evidence about you` — the mtime trap, and the aside a tidier
+    //     drops first. Every activation re-renders this file, so a restart
+    //     rewrites it under a running agent that will never re-read it: the
+    //     disk copy is fresh, the context is stale, and `stat` reports the
+    //     restart. Drop this sentence and the next post-mortem re-runs
+    //     KAN-242's own `stat` recipe and concludes the fleet is fine.
+    //
+    // WATCH IT GO RED AT THE SPOT THAT MEANS SOMETHING. R-1's docblock argues
+    // why a merge-base red is the weak evidence — it shows only that the script
+    // reacts to a wholly different file. The strong red is the plausible
+    // regression: an editor keeps the whole argument and drops the mechanism.
+    //   perl -0pi -e 's/^\{\{PROMPT_PROVENANCE\}\}\n\n//m' prompts/task.md
+    //   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, task.md only
+    //   git checkout -- prompts/task.md
+    // One pattern fails and five pass, in one file, with the section still
+    // sitting there reading as though the job were done.
+    //
+    // WHAT THIS ENTRY CANNOT CHECK, and it is the same gap H-12 has: it proves
+    // the four files carry the section. Whether an agent that has read it then
+    // *runs the check and follows the newer rule* is a question about a model
+    // and cannot be asked by a regex. WHO COVERS IT:
+    // `daemon/scripts/probe-stale-rule-compliance.mjs`, which activates two
+    // real agents, moves a governance rule under both after they were briefed,
+    // and reads which rule each obeyed off the filesystem. It is a live
+    // experiment, not a CI check, so a green run here is never evidence that
+    // the section works — only that it is present.
+    id: 'H-14',
+    title: 'the brief is a snapshot: the commit it came from, when to re-check, and that it does not outrank `origin/main`',
+    carriedBy: Object.fromEntries(
+      PROMPTS.map((f) => [
+        f,
+        [
+          /^## This brief is a snapshot, and it can be out of date$/m,
+          /\{\{\s*PROMPT_PROVENANCE\s*\}\}/,
+          /nothing refreshes it while\s+you run/i,
+          /at the moment a rule in this file is about to decide what you\s+do/i,
+          /It does \*\*not\*\* extend\s+to `origin\/main`/i,
+          /not evidence about you/i,
+        ],
+      ])
+    ),
   },
 ];
 
