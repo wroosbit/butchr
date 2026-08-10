@@ -158,8 +158,15 @@ const arg = (name, fallback) => {
   const hit = argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.slice(name.length + 3) : fallback;
 };
-// KAN-242's merge base — pinned so the pre-fix red keeps reproducing after this
-// lands, exactly as R-1's docblock pins KAN-186's.
+// A commit on `main` from before this ticket, pinned so the CONTROL arm keeps
+// reproducing after this lands — the reason R-1's docblock pins KAN-186's.
+//
+// It is NOT "the merge base" and must not be described as one: this branch was
+// cut at `21a6e14` and later merged `3578774`, so the merge base moved while the
+// work was in flight and would move again. What actually makes a ref usable here
+// is one property — its `prompts/task.md` must not already carry the snapshot
+// section — and the run ASSERTS that below rather than trusting this constant.
+// Any pre-KAN-242 commit works; `--base` takes one.
 const BASE_REF = arg('base', '21a6e14');
 const SWAP = argv.includes('--swap');
 const KEEP = argv.includes('--keep');
