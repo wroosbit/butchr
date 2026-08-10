@@ -757,10 +757,26 @@ if (!hasPsi) {
     // relieve a condition a stand-down cannot relieve.
     (live.response?.preemptable ?? null) === null;
 
-  if (roomy) {
+  // WHICH BRANCH IS DECIDED BY THE REFUSAL, NOT BY THE PROBE ABOVE.
+  //
+  // The poll loop's `roomy` is a reading taken up to ~20 seconds before the
+  // activation — and this section then spends some of those seconds *inducing*
+  // a stall, which costs CPU. On 2026-08-09 that raced: the probe saw room for
+  // 4, the induced load and the fleet together pushed `cpuBusyCores` to 3.46 by
+  // the time the activation ran, the CPU term was legitimately 0, the tie rule
+  // correctly named `cpu` — and this script called it a product failure.
+  //
+  // Nothing was wrong with the product; the verdict was reading a stale number.
+  // So the branch is chosen from `headroomBeforeStall` **on the response that
+  // came back**, which is by construction the capacity the refusal was actually
+  // computed from. A race is then not possible: there is no second reading to
+  // disagree with. `roomy` is kept only to improve the odds of landing in the
+  // strong branch, never to decide that it did.
+  const hadRoom = (cap?.headroomBeforeStall ?? 0) > 0;
+  if (hadRoom) {
     console.log(
-      `\n  the counting terms had room (${roomy.probe.headroomBeforeStall}) when this ran, so the\n` +
-      '  attribution is exercised too: `stall` must be what the refusal names.'
+      `\n  the counting terms had room (${cap.headroomBeforeStall}) in the capacity this refusal was\n` +
+      '  computed from, so the attribution is exercised too: `stall` must be what it names.'
     );
     verdict(
       common && cap?.headroomBoundBy === 'stall',
@@ -780,14 +796,24 @@ if (!hasPsi) {
     // Loud on purpose. A conditional assertion that quietly downgrades itself
     // is how a proof comes to mean less than its name, so the weaker branch
     // says what it did not test and who does.
+    // Two very different situations reach here, and saying the wrong one would
+    // be its own small dishonesty: either the activation was refused on a
+    // machine whose counting terms were already exhausted (ordinary, and the
+    // attribution simply is not exercisable), or it was not refused at all
+    // (which is the failure this section exists to catch, and there is no
+    // capacity payload to quote).
     console.log(
-      `\n  NOTE: this machine's counting terms were already at 0 for the whole 90s window\n` +
-      `  (${observed.probe.cpuBusyCores.toFixed(2)} of ${observed.facts.cores} cores in use, bound by ` +
-      `${observed.probe.headroomBoundBy}), so the tie rule correctly\n` +
-      '  names cpu rather than stall and THE ATTRIBUTION WAS NOT EXERCISED HERE. What is\n' +
-      '  still checked below is the part a fixture cannot cover: the real reading reaching\n' +
-      '  the router and firing the veto, and no victim being offered. Section 4 covers the\n' +
-      '  attribution on machines with room. Re-run when the fleet is quieter for the full check.'
+      cap
+        ? `\n  NOTE: the counting terms were at 0 in the capacity this refusal was computed from\n` +
+          `  (${cap.cpuBusyCores} of ${observed.facts.cores} cores in use, bound by ` +
+          `${cap.headroomBoundBy}), so the tie rule correctly names cpu\n` +
+          '  rather than stall and THE ATTRIBUTION WAS NOT EXERCISED HERE. What is still\n' +
+          '  checked below is the part a fixture cannot cover: the real reading reaching the\n' +
+          '  router and firing the veto, and no victim being offered. Section 4 covers the\n' +
+          '  attribution on machines with room. Re-run when the fleet is quieter for the full check.'
+        : '\n  NOTE: no capacity payload came back at all — this activation was NOT refused.\n' +
+          '  That is not the cpu-bound case; it is the gate failing to close on a machine\n' +
+          '  this script had just measured as stalled.'
     );
     verdict(
       common,
