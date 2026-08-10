@@ -320,8 +320,10 @@ you are waiting on.
 
 Requirement changes go into the affected **ticket** first, then a short
 `butchr_send_to_agent` nudge tells the working agent to re-read it. The nudge is
-a pointer; the ticket is the payload — and it interrupts once: never send two
-in a row, the second kills the session.
+a pointer; the ticket is the payload — and **on the composer** it interrupts
+once: never send two in a row, the second kills the session. That carrier
+qualifier is new and it narrows nothing you may do — the rule below still binds
+every send.
 
 **Interrupting once is not interrupting harmlessly.** That one Ctrl+C cancels
 the recipient's turn, and **a tool call in flight is killed and does not
@@ -331,6 +333,16 @@ work aimed at a requirement that has changed is already wasted; what is not
 worth it is a nudge sent because sending felt free. It never was. So send when
 the ticket changed, and let the agents you did not need to interrupt read it in
 their own time.
+
+**Which carrier that costs is not yours to choose, so budget for the
+expensive one.** Since KAN-247 (`fa84f07`) the daemon picks per recipient —
+composer or channel — and **names the transport in its response**; you never
+select one and never infer one. A channel event costs the recipient no in-flight
+work (KAN-219, `335900e`), but you do not know you got one until the send has
+already happened. **So decide as though every nudge were a Ctrl+C**, and read
+the response to learn what it actually was. The one carrier you can determine is
+the destructive one, by asking for it: `intent: 'stop-now'` always takes the
+composer, and that is a capability — see the storm guards below.
 
 **A `success: true` from `send_to_agent` means typed-and-submit-attempted, not
 delivered.** The submit can lose the Enter, leaving the message unsent in the
@@ -472,10 +484,13 @@ keeping: **a channel message cannot stop you now.** That is why
 `intent: 'stop-now'` still takes the composer and its interrupt; the fleet's
 only stop-now signal is the one that costs its recipient the work in flight.
 
-**This does not relax the storm guards below.** Those are about what a *send*
-costs, re-deriving them per carrier is
-[KAN-250](https://wroosbit.atlassian.net/browse/KAN-250)'s work, and until it
-lands they hold exactly as written.
+**This does not relax the storm guards below — it is why they are now written
+per carrier.** Everything above is about what *arriving* costs you; the guards
+are about what *sending* costs somebody else, and the two came apart the moment
+there were two carriers. [KAN-250](https://wroosbit.atlassian.net/browse/KAN-250)
+re-derived them against the measurement rather than deleting them, and the one
+thing to carry down there is that **you never know which carrier your send will
+take**.
 
 **The path back exists, and nothing here asks you to use it.** There is **no
 dedicated channel reply tool** on Butchr's server. If you want to answer, you
@@ -544,7 +559,13 @@ assuming. The poller also falls from 60s to 300s between polls when Jira
 asks to be left alone, and a daemon that is not running polls nothing:
 `grep jira-poll ~/.local/share/butchr/daemon.log` is how you know. And a minute
 is too long when someone is about to act on something that has just become
-false — but that is a steer, not an announcement.
+false — but that is a steer, not an announcement. **That last case is the one
+thing only the composer can do, and it is a capability rather than a hazard**: a
+channel event waits for the recipient's turn boundary and therefore *cannot*
+stop it now, so the interrupt is the fleet's only stop-now signal. Ask for it
+with `intent: 'stop-now'`, which always takes the composer, and expect it to
+destroy the tool call they were running — that is the outcome you are asking
+for.
 
 **Do not tail to check whether the poller delivered.** At the moment you
 transition, the next poll is up to 60 seconds away; the notice is not on the
@@ -555,19 +576,67 @@ discipline as *When the story changes* above, and it carries the same costs:
 are about to destroy. Every name you add to that list is an agent you are
 stopping.
 
-### Storm guards
+### Storm guards — narrowed to their carrier, never relaxed
 
 Notification without these turns one transition into a cascade. They are rules,
-not guidance:
+not guidance. **What changed is their justification, not their force.** Three of
+the four rested on one premise — *a send is a preemption* — and KAN-219
+(`335900e`) measured that premise **true of the composer and false of the
+channel**. A premise that fails on one path does not delete a rule; it makes the
+rule carrier-specific, which is what follows.
 
-- **Notify on meaningful transitions only** — To Do ↔ In Progress, → In Review,
-  → Done. Not on edits, comments, or assignment.
-- **Never notify the agent whose action caused the event.** If you transitioned
-  because your supervisor told you to, the supervisor already knows.
-- **A nudge you receive must never itself generate nudges.** React by reading
-  tickets and acting, not by re-broadcasting.
-- **Never send two nudges in a row to the same agent** — the second kills its
-  session, and the first already cost it its in-flight work.
+**And you cannot pick the cheap path, so the guards bind you before you know
+which column you are in.** The daemon chooses the carrier per recipient at send
+time and **names it in the response** (KAN-247, `fa84f07`); you never select one
+and never infer one. **So decide as though every send were a composer send**,
+and read the response to learn what it actually cost. This matters more to you
+than to a task agent, because closing out a story is the moment you have a list
+of agents to tell.
+
+| Guard | Composer path | Channel path |
+| --- | --- | --- |
+| **Meaningful transitions only** — To Do ↔ In Progress, → In Review, → Done; never on edits, comments or assignment | **unchanged** — every send destroys the work the recipient had in flight | **the cost changes rather than vanishes**: destroyed work becomes consumed context, which is not free. The rule stands as written, because you cannot know before sending which column applies. |
+| **Never notify the agent whose action caused the event** | unchanged — it already knows, and the interrupt is pure loss | **stays** — it already knows, so the message is noise on either carrier |
+| **A nudge you receive must never itself generate nudges** | unchanged | **stays** — a cascade of turn-boundary events is still a cascade |
+| **Never send two in a row to the same agent** | **unchanged, and now measured** — the second kills the session and the first already cost it the work in flight | **narrowed, not deleted** — see directly below |
+
+**On "never two in a row": the stated reason is gone on the channel path and the
+rule is not.** *"The second kills its session"* is a fact about the Ctrl+C, and
+KAN-219 measured it **false for channels** — a channel event fired inside a real
+tool call, the call ran to completion 3/3 with its result reaching the model
+intact, and the event was acted on afterwards at the turn boundary. But the
+guard was never only about the kill: **it is about storms**, and KAN-219 states
+the limit of its own evidence — *"what is measured here is one event in one
+window, not a storm."* **One non-disturbing event licenses no claim about ten
+arriving together.** So, on the channel path: two events in a row do not destroy
+work, and what a burst does to a session's context is unmeasured. Send the
+second because it says something the first did not — never because you think the
+carrier is cheap.
+
+**Nothing written here says a burst is safe, on either carrier.** If you find
+yourself reasoning that it must be, you are acting on a sentence nobody wrote.
+
+#### What nobody has measured — named, because the table above looks complete
+
+KAN-219 is one client, one model, one machine, and **one in-flight tool call:
+`Bash`, the friendly case** — its side effects are files the probe chose, so
+half-application is literal and readable off the disk. Uncovered by that finding
+and by everything since:
+
+* **An interrupted `Edit`.** Whether a half-applied edit leaves a file in the
+  state a half-run `Bash` left the disk in is untested.
+* **An in-flight MCP call.** Untested — and it is what your task agents are
+  inside for most of their Jira and GitHub work.
+* **Whether a disturbed agent recovers.** Not covered at all. KAN-219 measured
+  the damage and never the recovery, and the disturbed agent's own account is
+  structurally unavailable: six times out of six it reported the command *"did
+  not run"* while `step-1` sat on disk. **Asking a disturbed agent what happened
+  does not recover it**, because that the work half-landed was never in its
+  context — so a handback that says "nothing ran" is not evidence that nothing
+  ran.
+
+**Your sends land on agents doing all three**, so these are not footnotes on
+somebody else's experiment — they are the ordinary case, unmeasured.
 
 ## Your status is a claim about your tasks
 
