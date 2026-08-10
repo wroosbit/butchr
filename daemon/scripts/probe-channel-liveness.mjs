@@ -308,7 +308,7 @@ async function bringUp(side, key, { attempts = 3 } = {}) {
  * MODEL non-answer for a terminal that no longer existed. That run is why
  * `pane-unreadable` now covers the mid-wait case at all.
  */
-async function fireProbeUntilObserved(side, { budgetMs, attempts = 3 }) {
+async function fireProbeUntilObserved(side, key, { budgetMs, attempts = 3 }) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const state = await fireProbe(side, { budgetMs });
     const outcome = state.lastRun?.outcome;
@@ -318,7 +318,19 @@ async function fireProbeUntilObserved(side, { budgetMs, attempts = 3 }) {
     say('  failing rather than a model answering, so this run says nothing either way:');
     say(`    | ${state.lastRun?.detail}`);
     if (attempt === attempts) return state;
-    say('  Trying again. (A `no-answer` would NOT be retried — that is a real result.)');
+    // BOTH OF THOSE OUTCOMES MEAN THE AGENT WENT AWAY, so re-firing at the same
+    // dead pane would spend another whole answer window learning the same
+    // nothing. Stand it down and bring it back first. Observed twice on this
+    // machine: herdr's pane dies within a minute of the agent reaching its
+    // prompt when the box is at 4.00/4 cores (KAN-24).
+    say('  Standing the agent down and bringing it back before asking again.');
+    say('  (A `no-answer` would NOT be retried — that is a real result about a model.)');
+    await side.call('deactivate_by_key', { type: TYPE, key });
+    await sleep(3000);
+    await side.call('reset_by_key', { type: TYPE, key });
+    await sleep(3000);
+    const { startup } = await bringUp(side, key);
+    say(`  back up: T3's watcher says ${startup.outcome}`);
     await sleep(5000);
   }
   throw new Error('unreachable');
@@ -374,7 +386,7 @@ try {
     say('  token, the message, the recipient, the frame, the pane read and the verdict — is');
     say('  the daemon\'s. This script supplies none of it.');
     const startedAt = Date.now();
-    const state = await fireProbeUntilObserved(side, { budgetMs: WINDOW_MS + 120_000 });
+    const state = await fireProbeUntilObserved(side, ANSWER_KEY, { budgetMs: WINDOW_MS + 120_000 });
     const took = Date.now() - startedAt;
     const last = state.lastRun;
 
@@ -450,7 +462,7 @@ try {
     const before = await awaitSelfCheck(side, SILENT_KEY, { newerThan: readyAt - 60_000 });
     say(`  its startup self-check: ${before.channel?.outcome} → transport ${before.channel?.transport}`);
 
-    const state = await fireProbeUntilObserved(side, { budgetMs: WINDOW_MS + 120_000 });
+    const state = await fireProbeUntilObserved(side, SILENT_KEY, { budgetMs: WINDOW_MS + 120_000 });
     const last = state.lastRun;
     const after = await channelRow(side, SILENT_KEY);
 
