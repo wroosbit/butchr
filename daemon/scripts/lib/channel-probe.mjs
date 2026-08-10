@@ -380,6 +380,155 @@ export function primeSession(tmuxName) {
 }
 
 /**
+ * Ask a question down the composer and read the answer off the agent's own pane.
+ *
+ * EXTRACTED FROM `probe-channel-delivery.mjs`'s CP4b BY KAN-244, NOT REWRITTEN,
+ * for the reason the whole of this module exists: KAN-244 asks the same question
+ * of TWO agents and compares the answers, so the alternative was a second copy
+ * of a reader whose correctness was won the hard way. Both of the defects below
+ * were found by watching this detector rather than trusting it, and neither is
+ * obvious enough to survive being reimplemented from memory:
+ *
+ *   1. THE QUESTION IS ECHOED ON THE PANE, and it contains the sentinel — it
+ *      literally says `reply with exactly: NOTHING ARRIVED`. Searching the whole
+ *      region matched the QUESTION, so the loop exited on the first poll and
+ *      scored the answer before the model had given one. The recorded "answer"
+ *      was the agent still thinking. A NO that means "we matched our own prompt"
+ *      is worse than no reading at all.
+ *   2. THE PANE WRAPS. Both the sentinel and the nonce can be split across
+ *      lines, so a naive `includes` misses text that is plainly there.
+ *
+ * So: find the question by its tag, cut the echoed question off at its final
+ * sentence, compare with whitespace collapsed, and match the nonce with
+ * whitespace removed entirely.
+ *
+ * `answered: false` means THE WINDOW CLOSED WITH NO ANSWER, which is not the
+ * same fact as the model not having the nonce and must never be reported as it.
+ *
+ * @param send  fires the question at the agent's composer; awaited once
+ * @param tail  reads the agent's recent pane text
+ */
+export async function askAndReadAnswer({ send, question, ...read }) {
+  await send(question);
+  return readAnswerFromPane(read);
+}
+
+/**
+ * The reading half of {@link askAndReadAnswer}, without the asking.
+ *
+ * Split out by KAN-244, which asks TWO agents and must not wait out the first
+ * one's whole window before the second is even asked: the second agent's answer
+ * is the negative half of its proof, and "asked the same question" is a weaker
+ * claim the further apart the two questions are. So both are sent, then both are
+ * polled concurrently, and this is the half that polls.
+ */
+export async function readAnswerFromPane({
+  tail,
+  qtag,
+  nonce,
+  attempts = 40,
+  intervalMs = 5000,
+  questionEnd = 'Do not call any tool.',
+  sentinel = /NOTHING ARRIVED/
+}) {
+  let answer = '';
+  let answered = false;
+  let quoted = false;
+  for (let i = 0; i < attempts; i += 1) {
+    await sleep(intervalMs);
+    const t = await tail(200);
+    const at = t.lastIndexOf(qtag);
+    if (at === -1) continue;
+    const region = t.slice(at + qtag.length);
+    const flat = region.replace(/\s+/g, ' ');
+    const qe = flat.lastIndexOf(questionEnd);
+    const afterQuestion = qe === -1 ? flat : flat.slice(qe + questionEnd.length);
+    answer = afterQuestion.trim();
+    quoted = nonce ? afterQuestion.replace(/\s/g, '').includes(nonce) : false;
+    if (quoted || sentinel.test(afterQuestion)) { answered = true; break; }
+  }
+  return { answered, quoted, answer };
+}
+
+/**
+ * Put an EXISTING server in a workspace `.mcp.json` behind the tee.
+ *
+ * KAN-217's probe teed a channel server it wrote itself. KAN-244's channel is on
+ * the product's own `butchr` server, which the daemon writes and this must not
+ * replace — so the entry is wrapped rather than rewritten: the command and args
+ * the daemon produced are carried through verbatim, identity flags and all, with
+ * the tee spliced in front of them. What that buys is CP2 per agent, off the
+ * wire: `notifications/claude/channel` frames that left THIS agent's server, and
+ * the absence of any on the other's, observed rather than inferred.
+ */
+export function teeExistingServer(ws, dir, serverName, extraEnv = {}) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'tee.mjs'), TEE);
+  for (const f of ['wire.log', 'stderr.log']) fs.writeFileSync(path.join(dir, f), '');
+
+  const p = path.join(ws, '.mcp.json');
+  const config = JSON.parse(fs.readFileSync(p, 'utf8'));
+  const existing = config.mcpServers?.[serverName];
+  if (!existing) return { ok: false, error: `no server named ${serverName} in ${p}` };
+  if (String(existing.args?.[0] ?? '').endsWith('tee.mjs')) return { ok: true, alreadyTeed: true, wrapped: existing };
+
+  config.mcpServers[serverName] = {
+    command: process.execPath,
+    args: [path.join(dir, 'tee.mjs'), existing.command, ...(existing.args ?? [])],
+    env: {
+      ...(existing.env ?? {}),
+      PROBE_WIRE_LOG: path.join(dir, 'wire.log'),
+      PROBE_STDERR: path.join(dir, 'stderr.log'),
+      // `extraEnv` exists for ONE case and it is not a convenience (KAN-249).
+      // The MCP server is spawned by the CLIENT, which herdr spawned, so it
+      // inherits HERDR'S environment — including the real `HOME`. `ipc.ts`
+      // resolves the daemon socket from `os.homedir()`, so an agent driven by a
+      // daemon under a relocated `$HOME` still connects to the FLEET'S socket
+      // and registers its `hello` there. The isolated daemon's identity map
+      // stays empty and it can address nobody. Passing `HOME` here is what puts
+      // the server on the same socket as the daemon that activated it.
+      ...extraEnv
+    }
+  };
+  fs.writeFileSync(p, JSON.stringify(config, null, 2));
+  return { ok: true, wrapped: existing, teed: config.mcpServers[serverName] };
+}
+
+/** Every frame the tee saw in either direction, parsed. */
+export function wireFrames(dir) {
+  const p = path.join(dir, 'wire.log');
+  if (!fs.existsSync(p)) return [];
+  return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+}
+
+/**
+ * Wait until the CLIENT has spawned the teed server and negotiated with it, and
+ * report what capabilities it agreed to.
+ *
+ * A stronger readiness signal than the pane, and deliberately so: KAN-217's
+ * defect 3 is that the pane can look ready seconds before a listener exists, and
+ * its warning that the `Channels (experimental)` banner is printed even over a
+ * crashed server. An `initialize` RESULT on this agent's own wire carrying
+ * `experimental['claude/channel']` is the client saying it has this server, and
+ * that it is a channel — which is the precondition every reading after it rests
+ * on.
+ */
+export async function awaitChannelNegotiated(dir, { attempts = 60, intervalMs = 2000 } = {}) {
+  for (let i = 0; i < attempts; i += 1) {
+    for (const rec of wireFrames(dir)) {
+      const caps = rec?.frame?.result?.capabilities;
+      if (rec.dir === 'server->client' && caps) {
+        return { up: true, channel: Boolean(caps.experimental?.['claude/channel']), capabilities: caps };
+      }
+    }
+    await sleep(intervalMs);
+  }
+  return { up: false, channel: false, capabilities: null };
+}
+
+/**
  * Reap channel servers spawned for a configuration.
  *
  * `claude -p` does not always take its MCP subprocesses down with it: an
@@ -451,9 +600,16 @@ export function postTo(port, body) {
 /**
  * An ordinary RPC client on the daemon's Unix socket — the same socket the
  * product's own MCP server speaks, addressed the same way.
+ *
+ * `socketPath` defaults to the FLEET's socket, which is what KAN-217's and
+ * KAN-244's probes have always used. KAN-249 passes an isolated daemon's socket
+ * instead: a daemon started under a relocated `$HOME` claims its own socket and
+ * its own workspace root, so a probe can drive a build the fleet's daemon is not
+ * running without restarting anything anybody else is using. The parameter is
+ * defaulted rather than required so no existing caller changes behaviour.
  */
-export async function connectDaemonRpc() {
-  const rpc = net.connect(SOCKET_PATH);
+export async function connectDaemonRpc(socketPath = SOCKET_PATH) {
+  const rpc = net.connect(socketPath);
   rpc.on('error', () => {});
   await new Promise((r) => rpc.once('connect', r));
   const pending = new Map();
@@ -551,6 +707,20 @@ export async function bringUpChannelAgent({
   settleMs = 25_000,
   readyPattern = /PROBE READY|bypass permissions|for shortcuts/,
   serverName = 'butchrprobe',
+  /**
+   * Which server carries the channel.
+   *
+   *   'probe' — DEFAULT, and what KAN-217/KAN-219 have always done: a channel
+   *             server this harness writes, merged in beside the daemon's own.
+   *   'core'  — KAN-244: the product's `butchr` server itself, wrapped in the
+   *             tee so its wire can be read. Nothing extra is installed, so what
+   *             is under test is the shipped server rather than a stand-in.
+   *
+   * The default is 'probe' deliberately: changing what the existing callers do
+   * while adding a mode for a new one would be a behaviour change smuggled in
+   * under a parameter.
+   */
+  channelServer = 'probe',
   // How long to keep waiting when the daemon refuses for want of capacity.
   // DEFAULT ZERO — one attempt, which is what `probe-channel-delivery.mjs` did
   // before this was extracted, and changing that silently would have been a
@@ -560,10 +730,33 @@ export async function bringUpChannelAgent({
   // here twice over: it pushes a machine past its own guard while other agents
   // are working, and every timing a probe reads is a timing off a loaded
   // machine. Waiting costs minutes; overriding costs the measurement.
-  activationRetryMs = 0
+  activationRetryMs = 0,
+  /**
+   * Where the daemon being driven keeps its workspaces, and where its own
+   * product code lives.
+   *
+   * Both default to the FLEET's, which is what KAN-217 and KAN-244 use. KAN-249
+   * drives a daemon started under a relocated `$HOME`, whose workspace root and
+   * `dist` are elsewhere — so these are read from the caller rather than from
+   * this module's constants. **They must agree**: `launchersJs` has to be the
+   * `launchers.js` of the same build as the daemon that wrote the `.mcp.json`
+   * being read out of `butchrDir`, or `configureClaudeSettings` is run from one
+   * build against a workspace laid down by another. The caller passes both from
+   * one staged dist, which is what keeps them in step.
+   */
+  butchrDir = BUTCHR_DIR,
+  launchersJs = LAUNCHERS_JS,
+  /**
+   * Extra environment for the agent's own MCP server entry in `.mcp.json`.
+   *
+   * `channelServer: 'core'` only. Empty by default, so no existing caller
+   * changes. KAN-249 passes `{ HOME }` — see the note in `teeExistingServer`
+   * for why nothing else puts an isolated daemon's agent on its own socket.
+   */
+  serverEnv = {}
 }) {
   const agentName = `butchr-${type}-${key.toLowerCase()}`;
-  const ws = path.join(BUTCHR_DIR, 'workspaces', type, key.toLowerCase());
+  const ws = path.join(butchrDir, 'workspaces', type, key.toLowerCase());
 
   say('activating a real agent through the daemon (defaultAgent: shell — see note 3)…');
   let act = await call('activate_by_key', { type, key, defaultAgent: 'shell' });
@@ -597,15 +790,34 @@ export async function bringUpChannelAgent({
   const coreArgs = daemonMcp.mcpServers?.butchr?.args ?? [];
   say(`  core butchr server identity flags: ${coreArgs.slice(1).join(' ') || '(none)'}`);
 
-  fs.writeFileSync(path.join(ws, '.butchr-prompt.md'), brief);
+  // A caller that passes no brief keeps THE ONE THE DAEMON JUST WROTE, rendered
+  // by the product from `<repoRoot>/prompts/<type>.md`. KAN-217 and KAN-244 both
+  // overwrite it, because their scratch keys have no Jira ticket and the real
+  // task brief would send the agent looking for one; KAN-249 instead stages its
+  // own `prompts/task.md` into the repo root the daemon under test resolves
+  // against, so the product writes the brief and nothing here has to. Skipping
+  // rather than defaulting keeps that distinction visible at the call site.
+  if (brief != null) fs.writeFileSync(path.join(ws, '.butchr-prompt.md'), brief);
 
-  // Merge the probe channel in beside the daemon's own servers.
-  const { name, definition } = makeChannelWorkspace(chanDir, { mode: 'daemon', nonce });
-  writeMcpJson(ws, { [name]: definition });
+  if (channelServer === 'core') {
+    // KAN-244: the channel is on the PRODUCT'S OWN server, so there is no
+    // probe server to merge in — the entry the daemon already wrote is wrapped
+    // in the tee instead, and the flag below names that same server.
+    const teed = teeExistingServer(ws, chanDir, serverName, serverEnv);
+    if (!teed.ok) {
+      say(`  BLOCKED: ${teed.error}`);
+      return { ok: false, activated: true, reason: teed.error };
+    }
+    say(`  teed the product's own '${serverName}' server: ${teed.wrapped.command} ${(teed.wrapped.args ?? []).join(' ')}`);
+  } else {
+    // Merge the probe channel in beside the daemon's own servers.
+    const { name, definition } = makeChannelWorkspace(chanDir, { mode: 'daemon', nonce });
+    writeMcpJson(ws, { [name]: definition });
+  }
 
   // The two setup steps the `shell` launcher skips, run from THE PRODUCT'S OWN
   // code so this cannot drift from what a claude activation does.
-  const launchers = await import(`file://${LAUNCHERS_JS}`);
+  const launchers = await import(`file://${launchersJs}`);
   launchers.configureClaudeSettings(ws);
   const trust = launchers.trustClaudeWorkspace(ws);
   say(`  product configureClaudeSettings + trustClaudeWorkspace: ${trust.ok ? 'ok' : 'FAILED — ' + trust.error}`);
@@ -679,9 +891,20 @@ export async function bringUpChannelAgent({
 
   // The channel server is spawned only after the dialog clears, so the pane can
   // look ready before the listener exists. Measured on configuration F.
-  const chanUp = await awaitServerUp(chanDir, { needsPort: false });
-  say(`  our channel server connected to the daemon socket (trigger live): ${yn(chanUp.up)}`);
-  if (!chanUp.up) say(`    server stderr: ${serverStderr(chanDir) || '(empty)'}`);
+  let chanUp;
+  let negotiated = null;
+  if (channelServer === 'core') {
+    negotiated = await awaitChannelNegotiated(chanDir);
+    chanUp = { up: negotiated.up };
+    say(`  the client spawned and negotiated with '${serverName}': ${yn(negotiated.up)}`);
+    say(`  it agreed experimental['claude/channel'] with this server: ${yn(negotiated.channel)}`);
+    if (negotiated.capabilities) say(`    capabilities: ${JSON.stringify(negotiated.capabilities)}`);
+    if (!negotiated.up) say(`    server stderr: ${serverStderr(chanDir) || '(empty)'}`);
+  } else {
+    chanUp = await awaitServerUp(chanDir, { needsPort: false });
+    say(`  our channel server connected to the daemon socket (trigger live): ${yn(chanUp.up)}`);
+    if (!chanUp.up) say(`    server stderr: ${serverStderr(chanDir) || '(empty)'}`);
+  }
   await sleep(settleMs);
 
   return {
@@ -690,6 +913,7 @@ export async function bringUpChannelAgent({
     agentName, ws, paneId, sendText, sendKey, tail,
     dialogs, notice, ready,
     chanUp: chanUp.up,
+    negotiated,
     daemonServers, coreArgs,
     shipped, withChannels
   };
