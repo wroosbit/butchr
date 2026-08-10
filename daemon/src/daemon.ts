@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { HerdrBridge } from './herdr.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
@@ -14,7 +15,7 @@ import {
   createLaunchDarklyIntegration
 } from './integrations/launchdarkly.js';
 import { createAtlassianIntegration } from './integrations/atlassian-integration.js';
-import { coreMcpServerDefinitions } from './launchers.js';
+import { coreMcpServerDefinitions, DEV_CHANNELS_FLAG } from './launchers.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport } from './staleness.js';
@@ -31,6 +32,17 @@ import {
   routeChannelMessage,
   writeChannelSwitch
 } from './channel.js';
+import {
+  freshConnectionFrom,
+  superviseChannelStartup
+} from './channel-startup.js';
+import {
+  CHANNEL_SELFCHECK_ACTION,
+  CHANNEL_SELFCHECK_RESULT_ACTION,
+  ChannelSelfCheckAckRegistry,
+  ChannelSelfCheckStore,
+  runChannelSelfCheck
+} from './channel-selfcheck.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { JiraPoller } from './jira-poll.js';
@@ -164,7 +176,7 @@ log(
     Object.keys({ ...registry.mcpServerDefinitions(), ...coreMcpServerDefinitions() }).join(', ')
 );
 const promptLoader = new PromptLoader(repoRoot);
-const herdrBridge = new HerdrBridge();
+const herdrBridge: AgentRuntime = new HerdrBridge();
 
 // The one piece of state that outlives the machine. Everything else here —
 // the session map, herdr's panes, the extension's view — dies in a power cut,
@@ -213,6 +225,27 @@ const broadcast = (msg: any) => {
 // changes. This map only adds the ability to *address* one — KAN-244 is what
 // uses it. See agent-connections.ts for the four decisions behind its shape.
 const agentConnections = new AgentConnectionRegistry();
+
+/**
+ * Each agent's startup channel self-check verdict (KAN-248, T5).
+ *
+ * Beside the identity map because it describes entries in it: a verdict is about
+ * one connection, and is dropped when that connection goes (see the socket
+ * `close` below). Read in two places and written in one — the watcher wiring
+ * further down is the only writer, `routeChannelMessage` and `list_agents` are
+ * the readers.
+ */
+const channelSelfChecks = new ChannelSelfCheckStore();
+
+/**
+ * Self-check answers this daemon is still waiting for, by nonce.
+ *
+ * Armed before the probe frame is written and resolved by the
+ * `channel_selfcheck_result` case below, which is why the ack cannot arrive
+ * before anybody is listening for it — the round trip is sub-millisecond on a
+ * loopback socket.
+ */
+const selfCheckAcks = new ChannelSelfCheckAckRegistry();
 
 /**
  * The two actions that are about the connection itself rather than about the
@@ -310,7 +343,8 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         registry: agentConnections,
         address,
         content: msg.content,
-        meta: msg.meta
+        meta: msg.meta,
+        selfCheck: channelSelfChecks
       });
       log(
         `channel_send → ${describeAddress(address)}: ` +
@@ -358,6 +392,21 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
       });
       return true;
     }
+    case CHANNEL_SELFCHECK_RESULT_ACTION: {
+      // An agent's report of its own end of the startup loop (KAN-248, T5).
+      //
+      // Handled beside `hello` rather than in the router because it is an answer
+      // to something this layer asked, and because it must NOT be replied to:
+      // answering an answer would put a frame on the wire the agent's `mcp.js`
+      // has no branch for.
+      //
+      // An unknown nonce is dropped in silence and that is correct rather than
+      // lax — it is what a late answer looks like after the check has already
+      // timed out and reported, and resolving one then would overwrite a verdict
+      // with a stale reading of a client that has since gone.
+      selfCheckAcks.deliver(msg);
+      return true;
+    }
     case 'connected_agents': {
       // A diagnostic, and the only window onto this map from outside the
       // process. It reports the map and routes nothing.
@@ -378,6 +427,93 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
 // A PTY that dies takes the terminal with it, and the client has no other way
 // to find out: output simply stops. Announcing it is what lets the sidepanel
 // show a disconnected state instead of a frozen last frame.
+// Watch every pane the bridge spawns through the channel dialog and on to a
+// connected MCP server (KAN-246). Installed here because readiness is defined in
+// terms of `agentConnections` — the map an addressed frame is routed through —
+// and the bridge has no view of it; the same seam, and the same reason, as the
+// router's `channelRoute` below.
+//
+// THE SWITCH IS NOT RE-READ HERE, DELIBERATELY. The launcher read it moments ago
+// to decide whether to pass the flag, and asking the same question of the same
+// file a second time admits an answer that disagrees with what is now running in
+// the pane — a switch turned off in that window would leave a `claude` launched
+// WITH the flag and nothing watching the dialog it raises, which is the wedged
+// agent this ticket exists to prevent. So the test is on the command string that
+// was actually spawned. One fact, read from the thing itself.
+herdrBridge.setAgentSpawnedListener((session, spawnedAt, command) => {
+  if (!command.includes(DEV_CHANNELS_FLAG)) return;
+
+  const address = { type: session.type, key: session.key };
+  // THIS AGENT IS BEING RE-SPAWNED, SO WHATEVER WAS KNOWN ABOUT ITS CHANNEL IS
+  // NO LONGER KNOWN (KAN-248). Dropped before the new check rather than
+  // overwritten after it: a verdict that never held a connection is released by
+  // nothing, so without this an agent that failed its check once carried that
+  // verdict — with its old timestamp — across every restart until a new check
+  // finished. Found by `probe-channel-selfcheck.mjs` reading a previous
+  // attempt's row and believing it.
+  channelSelfChecks.forget(address);
+  void superviseChannelStartup({
+    address,
+    spawnedAt,
+    world: {
+      // `recent-unwrapped`, via the same reader `butchr_tail_agent` uses, so
+      // what this matches against is what a human would see if they looked.
+      readPane: () => herdrBridge.tailAgent(session.key, session.type, 140).text ?? null,
+      pressEnter: () => herdrBridge.pressPaneKey(session.key, session.type, 'Enter'),
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      freshConnection: freshConnectionFrom(agentConnections, address),
+      log: (message) => log(message)
+    }
+  }).then(async (startup) => {
+    // THE STARTUP SELF-CHECK (KAN-248, T5), CHAINED ONTO T3 RATHER THAN RACING
+    // IT. Readiness is the precondition for the check to mean anything: design
+    // §6.2 says the fix for the startup race is ordering rather than buffering —
+    // *"do not send until the agent's own readiness is observed"* — and firing a
+    // probe frame at a pane that has not got a listener yet would manufacture
+    // the exact failure this check exists to detect.
+    //
+    // IT ADDS NOTHING TO ACTIVATION LATENCY, and that is structural rather than
+    // measured: the whole chain hangs off `void`, downstream of a listener the
+    // activation does not await, so no caller is waiting on any of it. What it
+    // costs is one socket round trip per channel-enabled activation, off the
+    // critical path. The window between readiness and the verdict is that same
+    // round trip, and during it the agent has no record and therefore routes —
+    // see channel-selfcheck.ts on why unchecked is not failed.
+    const report = await runChannelSelfCheck({
+      address,
+      startupOutcome: startup.outcome,
+      world: {
+        // The same reader the launcher and `routeChannelMessage` use, called
+        // rather than copied.
+        emissionEnabled: () => channelEmissionEnabled(),
+        resolveConnection: () => {
+          const conn = agentConnections.resolve(address);
+          return conn ? { id: conn.id } : null;
+        },
+        expectAck: (nonce, timeoutMs) => selfCheckAcks.expect(nonce, timeoutMs),
+        writeProbe: (nonce) => {
+          const conn = agentConnections.resolve(address);
+          return conn
+            ? writeJsonLine(conn.socket, { action: CHANNEL_SELFCHECK_ACTION, nonce })
+            : false;
+        },
+        now: () => Date.now(),
+        log: (message) => log(message)
+      }
+    });
+    channelSelfChecks.record(address, report);
+  }).catch((err) => {
+    // `superviseChannelStartup` and `runChannelSelfCheck` both promise not to
+    // throw, and this is caught anyway because an unhandled rejection here would
+    // take the daemon down and the fleet with it, over a watcher. The chain is
+    // covered as a whole rather than one `.catch` per link: an agent that ends up
+    // with no verdict is `unchecked`, which is a state the fleet already has to
+    // handle honestly, so there is nothing to recover here beyond saying so.
+    log(`[ChannelStartup] ${describeAddress(address)}: watcher failed unexpectedly:`, err);
+  });
+});
+
 herdrBridge.setSessionEndedListener((event) => {
   log(
     `Session ended: ${event.sessionId} (${event.type}/${event.key}) ` +
@@ -415,8 +551,23 @@ const server = net.createServer((socket) => {
       // to it. `routeChannelMessage` reads the kill switch on every call, so a
       // channel switched off mid-flight stops the very next send with nothing
       // restarted — see channel.ts on why the gate is read fresh.
+      //
+      // `selfCheck` is KAN-248's verdicts, and passing them here is what makes
+      // "fall back to the composer" a behaviour rather than a row in a listing:
+      // a degraded agent's sends are refused by the gate and land on the
+      // composer, with `transportChosenBecause` naming the failed check.
       channelRoute: (address, content, meta) =>
-        routeChannelMessage({ registry: agentConnections, address, content, meta })
+        routeChannelMessage({
+          registry: agentConnections,
+          address,
+          content,
+          meta,
+          selfCheck: channelSelfChecks
+        }),
+      // What each agent's startup self-check found, for `list_agents` (KAN-248).
+      // A reader rather than the store, for the same reason `channelRoute` is a
+      // closure: the router does not learn what a connection is.
+      channelSelfCheck: (address) => channelSelfChecks.get(address) ?? null
     }
   );
 
@@ -446,12 +597,21 @@ const server = net.createServer((socket) => {
     // invisible — an entry for a departed agent looks exactly like an entry for
     // a present one until something addresses it.
     const released = agentConnections.release(socket);
+    // And the verdict about that connection goes with it (KAN-248). Matched on
+    // connection id inside the store, so an agent that reconnected before this
+    // close fired keeps its NEW verdict — the unordered-close bug
+    // agent-connections.ts decision 3 makes unrepresentable, not reintroduced
+    // one map over.
+    const forgotten = released
+      ? channelSelfChecks.releaseConnection(released.address, released.id)
+      : false;
     router.cleanup();
     log(
       `Client disconnected (${connections.size} total)` +
         (released
           ? ` — ${describeAddress(released.address)} unregistered (${released.id}), ` +
-            `${agentConnections.size} identified remain`
+            `${agentConnections.size} identified remain` +
+            (forgotten ? '; its channel self-check verdict is dropped with it' : '')
           : '')
     );
   });

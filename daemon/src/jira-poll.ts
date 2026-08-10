@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { BUTCHR_DIR, ensureButchrDir } from './ipc.js';
-import { HerdrBridge, agentNameFor } from './herdr.js';
+import { agentNameFor } from './herdr.js';
+import type { AgentRuntime } from './agent-runtime.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { JiraIssueSnapshot, JiraSnapshotOutcome } from './jira.js';
 import { deliverToAgent } from './nudge.js';
@@ -477,7 +478,7 @@ function maxCommentId(ids: string[]): string {
 export interface JiraPollerOptions {
   /** The Jira read. Narrowed to one method so a proof can stub it in a line. */
   jira: { pollIssue(key: string): Promise<JiraSnapshotOutcome> };
-  herdrBridge: HerdrBridge;
+  herdrBridge: AgentRuntime;
   /**
    * The running fleet, from the same census `sweepForMissingAgents` uses. A
    * function rather than a value because the fleet changes between ticks.

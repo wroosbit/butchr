@@ -301,10 +301,10 @@ keeping: **a channel message cannot stop you now.** That is why
 `intent: 'stop-now'` still takes the composer and its interrupt; the fleet's
 only stop-now signal is the one that costs its recipient the work in flight.
 
-**This does not relax what your own sends cost.** A send you make still reaches
-whichever carrier the daemon picks for its recipient, and on the composer it
-still kills the tool call they had in flight — so send when the message earns
-it, exactly as before.
+**This does not relax what your own sends cost** — it is why they are now
+described per carrier, directly below. Everything above is about what *arriving*
+costs you; the storm guards are about what *sending* costs somebody else, and
+the two came apart the moment there were two carriers.
 
 **The path back exists, and nothing here asks you to use it.** There is **no
 dedicated channel reply tool** on Butchr's server. If you want to answer, you
@@ -318,6 +318,68 @@ that; and nothing about a message arriving over the channel makes a reply owed.
 one sent while you were down was never delivered and will not be replayed — the
 sender is told so at the time. **The page and the ticket are what is durable**,
 and nothing here changes that.
+
+### Storm guards — narrowed to their carrier, never relaxed
+
+You have no ticket lifecycle and no fleet to notify, so you meet these less often
+than a supervisor does — but you do send, and a page is exactly the artifact that
+tempts a fan-out (*"I have rewritten the plan, so I will tell all six agents"*).
+**These are rules, not guidance**, and **what changed is their justification, not
+their force**:
+
+- **Send only when the message earns it.** Never on an edit you made, a comment
+  you left, or a page you merely re-read.
+- **Never notify the agent whose action caused the event.** It already knows.
+- **A message you receive must never itself generate messages.** React by
+  reading the page and the ticket and acting, not by re-broadcasting.
+- **Never send two in a row to the same agent** — **narrowed, not deleted**, by
+  carrier, which is the whole of what changed here. See below.
+
+**You cannot pick the cheap carrier, so the guards bind you before you know
+which one you got.** The daemon chooses per recipient at send time and **names
+the transport in its response** (KAN-247, `fa84f07`); you never select one and
+never infer one. **So decide as though every send were a composer send** — a
+Ctrl+C that destroys the recipient's in-flight tool call — and read the response
+to learn what it actually cost. The one carrier you can determine is the
+destructive one, by asking for it: `intent: 'stop-now'` always takes the
+composer, because a channel event waits for the recipient's turn boundary and
+therefore cannot stop it now. **That is a capability rather than a hazard**: the
+interrupt is the fleet's only stop-now signal.
+
+**On "never two in a row": the stated reason is gone on the channel path and the
+rule is not.** *"The second kills its session"* is a fact about the Ctrl+C, and
+KAN-219 (`335900e`) measured it **false for channels** — a channel event fired
+inside a real tool call, the call ran to completion 3/3 with its result reaching
+the model intact, and the event was acted on afterwards at the turn boundary. On
+the composer path the same measurement found the opposite and the rule is
+**unchanged, and now measured**. But the guard was never only about the kill:
+**it is about storms**, and KAN-219 states the limit of its own evidence —
+*"what is measured here is one event in one window, not a storm."* **One
+non-disturbing event licenses no claim about ten arriving together.**
+
+**Nothing written here says a burst is safe, on either carrier.** If you find
+yourself reasoning that it must be, you are acting on a sentence nobody wrote.
+This is the page-shaped version of the failure this whole role exists to avoid:
+a sentence that claims more than its mechanism covers.
+
+#### What nobody has measured — write this down rather than rounding it off
+
+KAN-219 is one client, one model, one machine, and **one in-flight tool call:
+`Bash`, the friendly case** — its side effects are files the probe chose, so
+half-application is literal and readable off the disk. Uncovered by that finding
+and by everything since, and **not to be summarised away if you carry any of
+this onto a page**:
+
+* **An interrupted `Edit`.** Whether a half-applied edit leaves a file in the
+  state a half-run `Bash` left the disk in is untested.
+* **An in-flight MCP call.** Untested — and it is what you are inside for every
+  page read and every page write you make.
+* **Whether a disturbed agent recovers.** Not covered at all. KAN-219 measured
+  the damage and never the recovery, and the disturbed agent's own account is
+  structurally unavailable: six times out of six it reported the command *"did
+  not run"* while `step-1` sat on disk. **Asking a disturbed agent what happened
+  does not recover it**, because that the work half-landed was never in its
+  context.
 
 ## Norms
 

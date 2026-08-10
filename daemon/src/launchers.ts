@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { McpServerDefinitions } from './integrations/integration.js';
+import { channelEmissionEnabled, CHANNEL_SWITCH_PATH } from './channel.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -431,6 +432,98 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * The Claude Code flag that loads a channel server nobody has allowlisted.
+ *
+ * During the research preview `--channels` accepts only Anthropic-allowlisted
+ * plugins, so a channel Butchr writes needs this one instead. The name is the
+ * warning: it is the second dangerous flag on a command line that already
+ * carries `--permission-mode bypassPermissions`, and what it buys is a path by
+ * which content enters the model's context of a session that does not stop to
+ * ask before acting.
+ *
+ * **That is not a new exposure and this comment must not be read as claiming
+ * one.** The composer path already types arbitrary text into a bypassing agent,
+ * and anything that can reach the daemon's Unix socket could already do it —
+ * KAN-149 names the socket as the trust boundary, and it is a filesystem
+ * permission rather than a credential check. What changes is how *quiet* the
+ * path is: a composer injection leaves a line in the pane a human can scroll
+ * back to, and a channel event leaves nothing on screen at all.
+ */
+export const DEV_CHANNELS_FLAG = '--dangerously-load-development-channels';
+
+/**
+ * The flags every `claude` invocation carries, channels aside.
+ *
+ * `--permission-mode` backs up the settings file on the `--continue` path,
+ * where a resumed session could otherwise carry a stale mode forward.
+ */
+const CLAUDE_BASE_FLAGS = '--permission-mode bypassPermissions';
+
+/**
+ * The channel flags for a spawn happening *now*, or `''` for none.
+ *
+ * ONE SWITCH, READ FRESH, AND IT IS KAN-244'S (KAN-246, T3 of KAN-150)
+ *
+ * The launcher does not get a switch of its own. `channelEmissionEnabled()` is
+ * the same file, the same reader and the same fail-closed semantics the daemon's
+ * addressed-send path consults, and channel.ts argues at length why a second
+ * copy of one condition is worse than one copy — KAN-145's defect was a fact
+ * with two implementations, and the copy nobody exercised was the wrong one.
+ * Here that argument is sharper than it was there: two switches would give the
+ * fleet a state in which agents launch with a channel that the router will not
+ * write to, and a state in which the router writes frames at agents that have no
+ * channel to receive them. Neither reports anything.
+ *
+ * **What one switch cannot do, said plainly because the shape of it will bite
+ * somebody.** A launch decision is taken once, at spawn; an emission decision is
+ * taken per message. So flipping the switch **on** does nothing for agents that
+ * are already running — they were spawned without the flag and stay without it
+ * until they are restarted — while the daemon will now happily resolve them in
+ * KAN-243's identity map and write frames their client discards in silence.
+ * Flipping it **off** is the safe direction and is immediate for emission, which
+ * is what a kill switch is for. Whoever turns this on for the fleet must restart
+ * the fleet to mean it; whoever turns it off need restart nothing.
+ *
+ * @see docs/channel-messaging-design.md §1.4
+ */
+export function developmentChannelFlags(): string {
+  return channelEmissionEnabled() ? `${DEV_CHANNELS_FLAG} server:${CORE_MCP_SERVER}` : '';
+}
+
+/** Where the switch above lives, re-exported so callers need not know two modules. */
+export { CHANNEL_SWITCH_PATH };
+
+/**
+ * Build the `claude` launch command — the ONLY place it is built.
+ *
+ * THE `||` IS LOAD-BEARING AND MEASURED, AND THIS DOES NOT RESTRUCTURE IT.
+ * `claude --continue` in a directory with no history exits 1 with "No
+ * conversation found to continue", so the fallback is reached exactly when there
+ * is nothing to restore — which is what makes it the right place to put the
+ * degraded resume prompt. (`claude -p` would run one headless turn and exit,
+ * leaving a dead pane, which is why this is an interactive session at all.)
+ *
+ * WHY A TEMPLATE AND NOT A SPLICE, WHICH IS THE OBVIOUS ALTERNATIVE (KAN-246).
+ * KAN-217's probe added the channels flag by string-replacing `claude
+ * --permission-mode` in the shipped command, and that harness proved the hazard
+ * on itself: an earlier version stamped only the first arm, so a fresh workspace
+ * fell through the `||` into an arm with no flag and started a session with no
+ * channel — a *half-flagged* command line, which is worse than an unflagged one
+ * because it works on the resumed path and fails on the cold one. Composing both
+ * arms from a single `flags` string makes that state unrepresentable rather than
+ * merely tested against: there is no edit to this function that puts the flag on
+ * one arm and not the other.
+ *
+ * With `channelFlags` empty this returns the byte-identical string it returned
+ * before channels existed, which is the claim `verify-channel-launch-flag.mjs`
+ * asserts against a frozen literal.
+ */
+function claudeCommand(promptCommand: string, channelFlags: string): string {
+  const flags = channelFlags ? `${channelFlags} ${CLAUDE_BASE_FLAGS}` : CLAUDE_BASE_FLAGS;
+  return `claude ${flags} --continue || claude ${flags} ${shellQuote(promptCommand)}`;
+}
+
 export interface AgentLauncher {
   /**
    * Shell command run inside the herdr pane (via bash -c).
@@ -495,19 +588,21 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
   },
   claude: {
     // Interactive session: resume if a conversation exists, else start one
-    // seeded with the bootstrap prompt. (`claude -p` would run one headless
-    // turn and exit, leaving a dead pane.)
-    // --permission-mode backs up the settings file on the --continue path,
-    // where a resumed session could otherwise carry a stale mode forward.
+    // seeded with the bootstrap prompt. Both arms, the `||` between them and
+    // the reason it is there live in claudeCommand above.
     //
-    // The `||` is load-bearing and was measured: `claude --continue` in a
-    // directory with no history exits 1 with "No conversation found to
-    // continue", so the fallback is reached exactly when there is nothing to
-    // restore — which is what makes it the right place to put the degraded
-    // resume prompt.
+    // THE CHANNEL FLAGS ARE READ AT SPAWN TIME, NOT AT MODULE LOAD (KAN-246).
+    // The daemon is long-lived and auto-spawned, so a value captured when this
+    // module was first imported would be whatever the switch said whenever some
+    // client happened to start the daemon — stale in exactly the case that
+    // matters, which is the argument channel.ts makes for reading the file
+    // fresh and board-control.ts makes for reading its mode per cycle.
+    //
+    // With the switch off — the shipped state, which KAN-246 does not change —
+    // `developmentChannelFlags()` is `''` and this is the command Butchr has
+    // always spawned, byte for byte.
     command: (promptCommand = PROMPT_CMD) =>
-      `claude --permission-mode bypassPermissions --continue || ` +
-      `claude --permission-mode bypassPermissions ${shellQuote(promptCommand)}`,
+      claudeCommand(promptCommand, developmentChannelFlags()),
     setup: (workDir) => {
       configureClaudeSettings(workDir);
       const trust = trustClaudeWorkspace(workDir);
