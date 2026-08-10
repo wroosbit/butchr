@@ -271,6 +271,26 @@
 //
 // `--ref` reads the prompts out of a git ref instead of the working tree, which
 // is how the pre-fix red is reproduced without checking anything out.
+//
+// **`--ref` SWAPS THE PROMPT FILES, NOT THE ENTRY TABLE, SO A GREEN `--ref
+// origin/main` IS NOT A STATEMENT ABOUT `origin/main`.** The `RULES` and
+// `RETIRED` arrays always come from the running copy of this script, and
+// section 5 always reads the working tree; only the `prompts/*.md` under test
+// move. So `--ref origin/main` answers *"do the trunk's prompts satisfy the
+// entries I have here"*, never *"is the trunk's own entry table sound".*
+//
+// That distinction is not pedantic — it was live on 2026-08-10. `origin/main`
+// at `91b73a3` carried **two** duplicate id pairs (`H-14`, `H-15`), its own
+// sweep exited 0 over both, and `--ref origin/main` from the branch that fixes
+// them also exited 0. Nothing about either green touched the collision.
+//
+// **And a collision is a property of a merge result, not of either parent**,
+// which is why no single-ref check could have caught these: each branch was
+// internally consistent and correct in isolation, and the duplicate came into
+// existence only when both had landed. The duplicate-id leg in section 5 runs
+// against the merged working tree for exactly that reason — it is the only
+// place the defect exists. KAN-268 asks whether the id can be made
+// collision-proof rather than collision-detected.
 
 import fs from 'fs';
 import path from 'path';
