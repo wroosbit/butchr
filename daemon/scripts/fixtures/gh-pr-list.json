@@ -1,0 +1,788 @@
+[
+  {
+    "comments": [],
+    "headRefName": "butchr/KAN-284",
+    "headRefOid": "5a7d0ee2e69c292df678922ff14635e54e805c8e",
+    "isDraft": false,
+    "mergeStateStatus": "BEHIND",
+    "mergedAt": null,
+    "number": 135,
+    "reviewDecision": "",
+    "state": "OPEN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:23:35Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537643099/job/93932476826",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:23:23Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:24:11Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537694912/job/93932649734",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:24:03Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:23:39Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537643139/job/93932476735",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T21:23:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:23:33Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537643139/job/93932476849",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T21:23:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:23:32Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537643139/job/93932476691",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T21:23:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:23:29Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537643139/job/93932476723",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T21:23:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:28:28Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537643139/job/93932476638",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T21:23:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:23:41Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537643139/job/93932476698",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T21:23:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "approval-recorded",
+        "startedAt": "2026-08-11T21:24:10Z",
+        "state": "FAILURE",
+        "targetUrl": "https://github.com/wroosbit/butchr/actions/runs/31537694912"
+      }
+    ],
+    "title": "KAN-284: one guardian, poked by the daemon's clock, shown on the board",
+    "url": "https://github.com/wroosbit/butchr/pull/135"
+  },
+  {
+    "comments": [
+      {
+        "id": "IC_kwDOTns2S88AAAABOXdY9g",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T21:31:09Z",
+        "body": "<body elided for size; only the id is read>"
+      }
+    ],
+    "headRefName": "butchr/KAN-298",
+    "headRefOid": "5be5096df4901f759c3f0b45345483bef51edb4e",
+    "isDraft": false,
+    "mergeStateStatus": "UNKNOWN",
+    "mergedAt": "2026-08-11T21:32:53Z",
+    "number": 134,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:27:05Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537918532/job/93933375852",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:26:53Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:27:09Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537918433/job/93933375008",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T21:26:52Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:27:03Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537918433/job/93933375058",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T21:26:52Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:27:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537918433/job/93933375028",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T21:26:53Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:27:02Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537918433/job/93933375115",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T21:26:52Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:28Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537918433/job/93933375090",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T21:26:58Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:27:10Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31537918433/job/93933375029",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T21:26:53Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "approval-recorded",
+        "startedAt": "2026-08-11T21:33:09Z",
+        "state": "SUCCESS",
+        "targetUrl": "https://github.com/wroosbit/butchr/actions/runs/31538399831"
+      }
+    ],
+    "title": "KAN-298: mirror LaunchDarkly's ten read tools behind the daemon's credential — and no writes, with the reason",
+    "url": "https://github.com/wroosbit/butchr/pull/134"
+  },
+  {
+    "comments": [
+      {
+        "id": "IC_kwDOTns2S88AAAABOXa4hQ",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T21:26:37Z",
+        "body": "<body elided for size; only the id is read>"
+      }
+    ],
+    "headRefName": "butchr/KAN-309",
+    "headRefOid": "4669e26d7c5a86e636e8ab5c662da0dfac5a3697",
+    "isDraft": false,
+    "mergeStateStatus": "BEHIND",
+    "mergedAt": null,
+    "number": 133,
+    "reviewDecision": "",
+    "state": "OPEN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:42Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538283969/job/93934558103",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:31:29Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:45Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538285323/job/93934562529",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:31:31Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:52Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538283930/job/93934558018",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T21:31:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:40Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538283930/job/93934557977",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T21:31:29Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:48Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538283930/job/93934557982",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T21:31:35Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:39Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538283930/job/93934558109",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T21:31:29Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538283930/job/93934558195",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T21:31:30Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:31:45Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31538283930/job/93934558102",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T21:31:29Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "approval-recorded",
+        "startedAt": "2026-08-11T21:31:42Z",
+        "state": "FAILURE",
+        "targetUrl": "https://github.com/wroosbit/butchr/actions/runs/31538285323"
+      }
+    ],
+    "title": "KAN-309: two proofs that the machine decided, and the size of the population they came from",
+    "url": "https://github.com/wroosbit/butchr/pull/133"
+  },
+  {
+    "comments": [
+      {
+        "id": "IC_kwDOTns2S88AAAABOXLEDg",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T20:59:24Z",
+        "body": "<body elided for size; only the id is read>"
+      },
+      {
+        "id": "IC_kwDOTns2S88AAAABOXPhlw",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T21:06:51Z",
+        "body": "<body elided for size; only the id is read>"
+      },
+      {
+        "id": "IC_kwDOTns2S88AAAABOXTdkg",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T21:13:36Z",
+        "body": "<body elided for size; only the id is read>"
+      }
+    ],
+    "headRefName": "butchr/KAN-306",
+    "headRefOid": "7e5259a84920d97bded6478d5e33f5bc9eb59d4b",
+    "isDraft": false,
+    "mergeStateStatus": "UNKNOWN",
+    "mergedAt": "2026-08-11T21:17:37Z",
+    "number": 132,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:07:07Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536078383/job/93928172095",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:06:56Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:10:56Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536632096/job/93929167844",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:10:41Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:15:52Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536635509/job/93930450933",
+        "name": "approval-gate",
+        "startedAt": "2026-08-11T21:15:43Z",
+        "status": "COMPLETED",
+        "workflowName": "Approval"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:04:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536078346/job/93927379327",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T21:03:57Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:04:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536078346/job/93927379249",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T21:03:56Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:04:15Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536078346/job/93927379287",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T21:03:56Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:04:05Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536078346/job/93927379358",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T21:03:57Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:08:52Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536078346/job/93927379272",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T21:03:57Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T21:04:15Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31536078346/job/93927379279",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T21:03:58Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "approval-recorded",
+        "startedAt": "2026-08-11T21:17:52Z",
+        "state": "SUCCESS",
+        "targetUrl": "https://github.com/wroosbit/butchr/actions/runs/31537196991"
+      }
+    ],
+    "title": "KAN-306: make the sixty proofs gate, and make an approval a thing a machine can read",
+    "url": "https://github.com/wroosbit/butchr/pull/132"
+  },
+  {
+    "comments": [
+      {
+        "id": "IC_kwDOTns2S88AAAABOXJODQ",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T20:56:17Z",
+        "body": "<body elided for size; only the id is read>"
+      }
+    ],
+    "headRefName": "butchr/KAN-306-gate-demo",
+    "headRefOid": "18aec533f049171b0929baa9c15f5f97342ed955",
+    "isDraft": true,
+    "mergeStateStatus": "BEHIND",
+    "mergedAt": null,
+    "number": 131,
+    "reviewDecision": "",
+    "state": "CLOSED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:43:47Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31534360492/job/93921801785",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T20:43:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:43:35Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31534360492/job/93921801612",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T20:43:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:43:36Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31534360492/job/93921801772",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T20:43:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:43:31Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31534360492/job/93921801644",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T20:43:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:48:00Z",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31534360492/job/93921801663",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T20:43:23Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:43:43Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31534360492/job/93921801729",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T20:43:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "DO NOT MERGE — KAN-306 gate demonstration (verify-runnable-set red)",
+    "url": "https://github.com/wroosbit/butchr/pull/131"
+  },
+  {
+    "comments": [
+      {
+        "id": "IC_kwDOTns2S88AAAABOW_kyA",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T20:40:13Z",
+        "body": "<body elided for size; only the id is read>"
+      }
+    ],
+    "headRefName": "butchr/KAN-301",
+    "headRefOid": "4a27d065286976e6c859e222bd6f5e22250233ff",
+    "isDraft": false,
+    "mergeStateStatus": "UNKNOWN",
+    "mergedAt": "2026-08-11T20:41:17Z",
+    "number": 130,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:31:27Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31533336848/job/93918412675",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T20:31:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:31:23Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31533336848/job/93918412748",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T20:31:11Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:31:18Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31533336848/job/93918412712",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T20:31:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:31:15Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31533336848/job/93918412719",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T20:31:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:35:56Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31533336848/job/93918412765",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T20:31:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:31:22Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31533336848/job/93918412818",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T20:31:05Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "KAN-301: the daemon's two notification producers ride the channel — the resume nudge and stop-now still type, by name",
+    "url": "https://github.com/wroosbit/butchr/pull/130"
+  },
+  {
+    "comments": [],
+    "headRefName": "butchr/KAN-295-ci-main",
+    "headRefOid": "07388f50e0ed10d62f44ea852bfbbb81fe64b126",
+    "isDraft": false,
+    "mergeStateStatus": "UNKNOWN",
+    "mergedAt": "2026-08-11T19:54:19Z",
+    "number": 129,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T19:44:47Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31529371241/job/93905414736",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T19:44:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T19:44:38Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31529371241/job/93905414649",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T19:44:29Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T19:44:41Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31529371241/job/93905414765",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T19:44:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T19:44:40Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31529371241/job/93905414638",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T19:44:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T19:49:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31529371241/job/93905414699",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T19:44:31Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T19:44:49Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31529371241/job/93905414695",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T19:44:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "KAN-295: fix verify-runnable-set on push to main (main is red)",
+    "url": "https://github.com/wroosbit/butchr/pull/129"
+  },
+  {
+    "comments": [
+      {
+        "id": "IC_kwDOTns2S88AAAABOWagOQ",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T19:42:43Z",
+        "body": "<body elided for size; only the id is read>"
+      },
+      {
+        "id": "IC_kwDOTns2S88AAAABOWtVgA",
+        "author": {
+          "login": "brooswit"
+        },
+        "createdAt": "2026-08-11T20:11:56Z",
+        "body": "<body elided for size; only the id is read>"
+      }
+    ],
+    "headRefName": "butchr/KAN-294",
+    "headRefOid": "1abbf5095302fe9c76d83299507cfffbefb16422",
+    "isDraft": false,
+    "mergeStateStatus": "UNKNOWN",
+    "mergedAt": "2026-08-11T20:17:33Z",
+    "number": 128,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:02:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31530838132/job/93910201631",
+        "name": "daemon-typecheck",
+        "startedAt": "2026-08-11T20:01:48Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:01:57Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31530838132/job/93910201753",
+        "name": "verify-script-sweep",
+        "startedAt": "2026-08-11T20:01:48Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:02:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31530838132/job/93910201702",
+        "name": "operative-rule-carriage",
+        "startedAt": "2026-08-11T20:01:48Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:01:58Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31530838132/job/93910201853",
+        "name": "ci-partition",
+        "startedAt": "2026-08-11T20:01:48Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:06:35Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31530838132/job/93910201751",
+        "name": "verify-runnable-set",
+        "startedAt": "2026-08-11T20:01:48Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-11T20:02:09Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/wroosbit/butchr/actions/runs/31530838132/job/93910201788",
+        "name": "extension-build",
+        "startedAt": "2026-08-11T20:01:54Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "KAN-294: re-pin CrabCast to 8d7348f, and carry the spawn's channel verdict as a verdict",
+    "url": "https://github.com/wroosbit/butchr/pull/128"
+  }
+]

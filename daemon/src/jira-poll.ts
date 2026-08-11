@@ -138,6 +138,24 @@ export interface IssueMemory {
   maxCommentId: string;
   /** ISO 8601. Only used to expire rows; never compared for events. */
   seenAt: string;
+  /**
+   * The board parent last seen, and the issues linked to this one.
+   *
+   * Neither is compared for events — this module reads both straight off the
+   * snapshot it already has, every tick, and has no use for the previous value.
+   * They are recorded for a *second reader*: `pr-watch.ts` needs the same
+   * `parent` and `linked` relations to work out who a pull request's news
+   * concerns, and making it ask Jira for facts this poller read forty seconds
+   * ago would double the fleet's Jira load to learn nothing new — and would let
+   * the two modules hold different answers to the same question in the window
+   * between their ticks (KAN-304).
+   *
+   * Optional because a state file written before KAN-304 has neither, and a
+   * poller that treated their absence as an error would refuse to start on
+   * exactly the upgrade this ships in.
+   */
+  parentKey?: string | null;
+  linkedKeys?: string[];
 }
 
 /** A running agent, as the poller needs to see one. */
@@ -380,7 +398,11 @@ export class JiraPollState {
       this.issues.set(key.toUpperCase(), {
         status: typeof value.status === 'string' ? value.status : null,
         maxCommentId: typeof value.maxCommentId === 'string' ? value.maxCommentId : '0',
-        seenAt: typeof value.seenAt === 'string' ? value.seenAt : new Date(this.now()).toISOString()
+        seenAt: typeof value.seenAt === 'string' ? value.seenAt : new Date(this.now()).toISOString(),
+        parentKey: typeof value.parentKey === 'string' ? value.parentKey : null,
+        linkedKeys: Array.isArray(value.linkedKeys)
+          ? value.linkedKeys.filter((linked: any) => typeof linked === 'string')
+          : []
       });
     }
   }
@@ -396,6 +418,30 @@ export class JiraPollState {
   /** Every row, for a proof that wants to read the memory back. */
   public entries(): Array<[string, IssueMemory]> {
     return [...this.issues.entries()];
+  }
+
+  /**
+   * What this poller last saw about an issue, for a second reader (KAN-304).
+   *
+   * Narrowed to the three facts the PR watcher needs — status, board parent,
+   * links — rather than handing out {@link IssueMemory}, whose other fields are
+   * this module's change-detection bookkeeping and mean nothing outside it.
+   * `null` for an issue never polled, which is honestly different from an issue
+   * polled and found to have no parent.
+   *
+   * A read, never a write: nothing outside this file may move the baseline that
+   * decides whether an event has been announced.
+   */
+  public factsFor(
+    key: string
+  ): { status: string | null; parentKey: string | null; linkedKeys: string[] } | null {
+    const memory = this.issues.get(key.toUpperCase());
+    if (!memory) return null;
+    return {
+      status: memory.status,
+      parentKey: memory.parentKey ?? null,
+      linkedKeys: memory.linkedKeys ?? []
+    };
   }
 
   /** Whether {@link load} has run. A save before a load would erase the file. */
@@ -784,7 +830,13 @@ export class JiraPoller {
     const highest = maxCommentId(snapshot.commentIds);
 
     if (!seen) {
-      this.state.set(key, { status: snapshot.statusName, maxCommentId: highest, seenAt });
+      this.state.set(key, {
+        status: snapshot.statusName,
+        maxCommentId: highest,
+        seenAt,
+        parentKey: snapshot.parentKey ?? null,
+        linkedKeys: snapshot.linkedKeys
+      });
       this.opts.log(
         `[jira-poll] ${key}: first sight — recording status \`${snapshot.statusName ?? 'unknown'}\` ` +
         `and ${snapshot.commentIds.length} existing comment(s) without notifying anyone.`
@@ -813,7 +865,9 @@ export class JiraPoller {
     this.state.set(key, {
       status: snapshot.statusName ?? seen.status,
       maxCommentId: compareCommentIds(highest, seen.maxCommentId) > 0 ? highest : seen.maxCommentId,
-      seenAt
+      seenAt,
+      parentKey: snapshot.parentKey ?? null,
+      linkedKeys: snapshot.linkedKeys
     });
 
     return events;
