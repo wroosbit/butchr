@@ -909,6 +909,31 @@ const RULES = [
     // reviewer prompts as emphatically as in `task.md` because both recorded
     // incidents happened to a reviewer at the moment of approving, not to an
     // author at the moment of proving.
+    // THREE MORE PATTERNS, ADDED AT `epic/KAN-39`'s REVIEW OF #136, and they
+    // are the rule's own defect turned into assertions. As first written the
+    // rule said a proof after a failed build is a verdict about the old build,
+    // *whatever it prints* — which is true of a proof that imports from `dist`
+    // and FALSE of one that reads source as text. That is this epic's signature
+    // defect (a sentence claiming more than its mechanism covers) committed by
+    // the rule about not committing it, and it was found by applying the rule
+    // to a real PR and watching it give the wrong answer: at review of #137 a
+    // failed build would have sent a valid red from a text-reading proof
+    // (`verify-notifications-never-type.mjs`) into the bin.
+    //
+    //   - `reads source as text` — the qualifier. Without it the rule imposes a
+    //     re-run on every static proof in the tree, and the cost of THAT error
+    //     is invisible, because discarding good evidence looks like caution.
+    //   - `--static-only` — the MIXED case, which is the one that fails toward
+    //     false confidence rather than away from it. 17 of 81 scripts under
+    //     `daemon/scripts` both import `dist` and read `src`; after a failed
+    //     build their overall exit code is a blend of a real verdict and a
+    //     stale one. An agent that has the qualifier and not this reads the
+    //     blend as static and trusts it.
+    //   - `PIPESTATUS` — the trapdoor. The rule tells you to confirm the build
+    //     exited 0, and the obvious idiom (`npm run build | tail -5`) reports
+    //     `tail`'s status instead. Measured twice on this board in one day, and
+    //     once by this ticket's own implementer. An instruction whose standard
+    //     idiom silently defeats it is not an instruction.
     id: 'H-19',
     title: 'a proof run after a failed build — or over a stale `dist` — is a verdict about the old build',
     carriedBy: Object.fromEntries(
@@ -919,6 +944,9 @@ const RULES = [
           /both outcomes mislead/i,
           /is not older than `src`/i,
           /the compiler did/i,
+          /reads source as text/i,
+          /--static-only/,
+          /PIPESTATUS/,
         ],
       ])
     ),

@@ -224,6 +224,28 @@ proof ran over a `dist` that **13 source files were newer than** and printed
 operations. Nothing in that output could have said so. It was caught on file
 mtimes and nothing else, which is the only thing that would have caught it.
 
+**But the rule binds on a proof that imports from `dist`, so check which kind you
+ran before you discard a verdict.** A proof that reads source as text is
+unaffected by a failed build — **it read what you wrote** — so its verdict is
+about the mutation, and discarding it wastes a good red. One grep settles it:
+does the script import from `../dist/`, or `readFileSync` from `src`? **The trap
+is the third case, and it fails toward false confidence: 17 of the 81 scripts
+under `daemon/scripts` do both.** `verify-notifications-never-type.mjs` reads
+`daemon/src/*.ts` as text *and* imports from `dist`, which is why it carries
+`--static-only`. After a failed build its overall exit code is a **blend** — the
+static sections tested the mutation, the `dist` sections silently tested
+yesterday's build — so read the section, never the exit code. Both incidents
+above were `dist`-importing, so the rule catches them as written; the qualifier
+exists to stop the **opposite** error, discarding good evidence out of caution.
+
+**And confirm the exit code by a route that actually reports it.**
+`npm run build | tail -5` yields `tail`'s exit status, not the compiler's, so a
+failed build reads as `0`. **Do not pipe the build**, or read `${PIPESTATUS[0]}`
+rather than `$?`. `BUILD_EXIT=0` has been reported here for a build that had just
+failed, by exactly that route, twice in one day. **A rule that says "check the
+exit code" while the obvious idiom reports the wrong one is a rule with a
+trapdoor in it**, so the route is part of the rule.
+
 **Prefer the type to the assertion where the choice exists**, and say so when you
 review. An assertion can be deleted by a later author and the build still
 passes; **an unrepresentable state cannot be introduced at all.** The same day
