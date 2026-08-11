@@ -272,6 +272,7 @@ the whole lesson of 2026-08-10.
 | --- | --- | --- |
 | `verify-atlassian-proxy-scope.mjs` | off by default; the grant is three GETs under one scope; no agent-supplied path can escape its parameter; the gate is in the daemon | that the daemon consults any of it — it is pure, and imports the module directly |
 | `verify-atlassian-proxy-failure-is-loud.mjs` | a real `mcp.ts` over real MCP stdio, against a real daemon: a call returns data, the same call with the credential revoked returns a loud attributed refusal with no body, and with the switch unset nothing is offered and nothing reaches the network | that **Atlassian** accepts these paths — the far end is a stub in-process, and the credential is fabricated by the script. The real-Atlassian evidence for these exact paths is the running poller, which has used them on a 60-second timer since 2026-08-04 |
+| `probe-atlassian-proxy-agent-call.mjs` | that a **model** — a real Claude Code session with no Atlassian MCP server at all — finds the tool from its description, calls it, and can read the result | anything the verify script covers. It is a `probe-` because it spends tokens and its verdict depends on a model choosing to call a tool; neither belongs in a proof meant to be cheap to re-run |
 
 Both were made to go red before being trusted; the failing runs are in the pull
 request. Passing `sweep-verify-exit-paths.mjs` is necessary and not sufficient,
