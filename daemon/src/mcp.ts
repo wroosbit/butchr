@@ -855,7 +855,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // it listed minutes ago, and the daemon — which owns the gate — is where
     // that call is decided. Forwarding an operation the daemon has since
     // switched off produces its refusal, which is the honest answer.
-    if (ldOperationByTool(name)) {
+    //
+    // THE PREFIX MATCH IS DELIBERATE AND IS NOT A WIDENING. Any `launchdarkly_`
+    // name is forwarded, including the ten this proxy does not have — which are
+    // exactly LaunchDarkly's ten write tools. It grants nothing: the daemon
+    // refuses every name it does not find, and no request is made. What it buys
+    // is the *sentence*. Without it, `launchdarkly_delete_feature_flag` fell
+    // through to this server's generic handler and came back as
+    // `MCP error -32601: Unknown tool`, which is a correct refusal that tells
+    // the caller nothing — so an agent reasonably concludes it guessed the
+    // spelling wrong and tries four more variants. The daemon's refusal instead
+    // says the omission is deliberate and why, which is the difference between a
+    // dead end and an answer. Found by
+    // `verify-launchdarkly-proxy-failure-is-loud.mjs` §3, which is the only
+    // reason it is not still true.
+    if (ldOperationByTool(name) || name.startsWith('launchdarkly_')) {
       const res = await callDaemonAPI('launchdarkly_proxy_call', { tool: name, args: args ?? {} });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
