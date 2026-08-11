@@ -106,9 +106,17 @@ function reclaimLogLines(daemonLog) {
   } catch { return []; }
 }
 
+// `tail_agent_response` carries the pane in `text` — see handleTailAgent, which
+// spreads `herdrBridge.tailAgent()`'s `{ success, text, truncated }` into it. An
+// earlier revision of this probe read `output`, found undefined, and fell back to
+// a 400-character `JSON.stringify` that cut the pane off before the line it was
+// waiting for. It hung for six minutes against an agent that was sitting at its
+// prompt the whole time — which is worth a comment, because a probe that waits
+// forever looks exactly like the product being broken.
 async function tail(call, lines = 60) {
   const t = await call('tail_agent', { type: TYPE, key: KEY, lines });
-  return t?.output ?? t?.tail ?? JSON.stringify(t).slice(0, 400);
+  if (typeof t?.text === 'string') return t.text;
+  return `[no pane text: ${JSON.stringify(t).slice(0, 300)}]`;
 }
 
 async function awaitPane(call, pattern, { attempts = 90, intervalMs = 4000 } = {}) {
@@ -152,15 +160,21 @@ try {
   if (!ready) throw new Error('the agent never reached its prompt');
   pass('the agent reached its prompt');
 
+  // The answer marker and the nonce never appear TOGETHER in anything this
+  // probe types, and that is load-bearing. An earlier revision waited for
+  // `REMEMBERED <nonce>` while its own question contained that exact string, so
+  // the pattern matched the echo of the question on the pane and the check
+  // passed without the agent having said anything at all. `HOLDING=<word>` is
+  // what gets typed; `HOLDING=heron-…` can only have come from the agent.
   await side.call('send_to_agent', {
     type: TYPE,
     key: KEY,
     message:
       `Please remember this word exactly: ${NONCE}. ` +
-      `Reply with just: REMEMBERED ${NONCE}`
+      `Then reply in this exact form and nothing else: HOLDING=<word>`
   });
-  const remembered = await awaitPane(side.call, new RegExp(`REMEMBERED ${NONCE}`));
-  if (remembered) pass(`the agent is holding the nonce: REMEMBERED ${NONCE}`);
+  const remembered = await awaitPane(side.call, new RegExp(`HOLDING=${NONCE}`));
+  if (remembered) pass(`the agent answered, so it is holding the nonce: HOLDING=${NONCE}`);
   else fail('the agent never acknowledged the nonce — the resume proof has nothing to restore');
 
   rule('2. giving it a worktree with dependencies, the way a task agent has one');
@@ -287,10 +301,20 @@ try {
     try { return await rpc.call('list_agents', {}); } finally { rpc.close(); }
   })();
   say(`  REAL fleet (${fleetAfter.agents?.length ?? 0} agents): ${(fleetAfter.agents ?? []).map(nameOf).join(', ')}`);
-  if ((fleetAfter.agents ?? []).length === (fleetBefore.agents ?? []).length) {
-    pass('the real fleet is the same size either side');
+  // Minus the probe itself, which is a real herdr pane and is SUPPOSED to leave
+  // the census — it is the agent being stood down. An earlier revision compared
+  // the raw counts and reported the probe working as a failure.
+  const others = (list) => (list.agents ?? [])
+    .map(nameOf)
+    .filter((n) => n.toLowerCase() !== `${TYPE}/${KEY}`.toLowerCase())
+    .sort();
+  if (JSON.stringify(others(fleetAfter)) === JSON.stringify(others(fleetBefore))) {
+    pass(`every other agent in the real fleet is still there: ${others(fleetAfter).join(', ')}`);
   } else {
-    fail('the real fleet changed across the stand-down');
+    fail(`the rest of the fleet changed: ${others(fleetBefore).join(', ')} → ${others(fleetAfter).join(', ')}`);
+  }
+  if (!others(fleetAfter).some((n) => n.toLowerCase() === `${TYPE}/${KEY}`.toLowerCase())) {
+    pass('and the probe itself is gone from it, as a stood-down agent should be');
   }
 
   rule('6. AC1 — bring it back, and ask it what it was holding');
@@ -315,14 +339,19 @@ try {
   await side.call('send_to_agent', {
     type: TYPE,
     key: KEY,
-    message: 'What was the word I asked you to remember? Reply with just: RECALLED <word>'
+    message:
+      'What was the word I asked you to remember? ' +
+      'Reply in this exact form and nothing else: ANSWER=<word>'
   });
-  const recalled = await awaitPane(side.call, /RECALLED /);
+  // Same rule as above: the question types `ANSWER=<word>`, so only the agent
+  // can put `ANSWER=` and the nonce on the pane together. Waiting for a bare
+  // `ANSWER=` would match the question the instant it was typed.
+  const recalled = await awaitPane(side.call, new RegExp(`ANSWER=${NONCE}`));
   say('\n  its answer:');
-  say((recalled ?? '(nothing)').split('\n').slice(-14).map((l) => `    | ${l}`).join('\n'));
+  say((recalled ?? await tail(side.call, 30)).split('\n').slice(-16).map((l) => `    | ${l}`).join('\n'));
 
-  if (recalled && new RegExp(`RECALLED ${NONCE}`).test(recalled)) {
-    pass(`AC1: it resumed the conversation it was stopped in — RECALLED ${NONCE}`);
+  if (recalled) {
+    pass(`AC1: it resumed the conversation it was stopped in — ANSWER=${NONCE}`);
   } else {
     fail('AC1: the agent could not recall the nonce — it started fresh rather than resuming');
   }
