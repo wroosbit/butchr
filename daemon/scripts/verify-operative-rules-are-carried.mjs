@@ -692,6 +692,35 @@ const RULES = [
     ),
   },
   {
+    // KAN-306. Two halves, and the sweep insists on both in every prompt
+    // because carrying either one alone produces a false belief:
+    //
+    //   - The MARKER, without which the rule is unusable. An approver that does
+    //     not know the grammar posts prose, the gate stays red, and the task
+    //     agent is blocked by a check nobody can satisfy.
+    //   - The FORGERY LIMIT, without which the rule is over-trusted. This epic's
+    //     defect has a shape — *an artifact whose sentence claims more than its
+    //     mechanism covers* — and "approval is now enforced" is exactly that
+    //     sentence. It is enforced against omission and staleness and against
+    //     nothing else, because every agent is the same GitHub user.
+    //
+    // The second is the one that will get dropped by a future editor tidying
+    // for length, which is precisely why it is inventoried rather than trusted
+    // to survive on its own.
+    id: 'H-18',
+    title: 'the approval marker: head-pinned, signed, required — and blind to forgery by construction',
+    //
+    // Three prompts and not `PROMPTS`: a `confluence` workspace writes pages,
+    // opens no pull request and approves nobody's, so requiring the marker
+    // there would be inventorying a rule its reader can never act on.
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [/BUTCHR-APPROVAL:/, /BUTCHR-APPROVER:/, /approval-recorded/, /forgery/i],
+      ])
+    ),
+  },
+  {
     // The half of KAN-237 that is specific to the agent who now presses the
     // button: dozens of tickets predate the change and were deliberately not
     // mass-edited, so a task agent will meet the old rule on its own ticket and
@@ -880,7 +909,14 @@ const RULES = [
     // (`epic/KAN-203`'s correction, 2026-08-11); and that a delivered poke is
     // not evidence the sweep was right, which is the limit the recipient has to
     // hold as much as the board does.
-    id: 'H-18',
+    // RENUMBERED FROM H-18 TO H-19 ON 2026-08-11, and the collision is the point
+    // rather than an inconvenience. KAN-306 landed its own `H-18` on `origin/main`
+    // while this branch was in flight, which is the fifth such collision and
+    // exactly what `rule-inventory.md` exists to catch — KAN-268 is the ticket
+    // for the fact that detecting it is not preventing it, since the next free
+    // number is read off a file several branches are extending at once and each
+    // author is correct alone. KAN-306 landed first and keeps the number.
+    id: 'H-19',
     title: 'the guardian poke is expected, is additional, and proves only that it was delivered',
     carriedBy: {
       'prompts/epic.md': [
