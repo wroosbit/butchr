@@ -63,6 +63,8 @@ import { SupervisionNotifier } from './nudge.js';
 import { PendingNotifications, channelNotifier } from './notify.js';
 import { DAEMON_SENDER_TAG, senderTagFor } from './provenance.js';
 import { JiraPoller } from './jira-poll.js';
+import { PrWatcher } from './pr-watch.js';
+import { GhCliGitHubReader } from './github.js';
 import { BoardMode, BoardReconciler } from './board-reconcile.js';
 import { AddressableAgent, BoardControlReport, boardControlReport } from './board-control.js';
 import { CommentAuthorship } from './comment-authorship.js';
@@ -1008,7 +1010,13 @@ const server = net.createServer((socket) => {
       // which was never told is distinguishable from one that was told and had
       // nothing to do. A reader, so that a listing cannot flush or abandon
       // anything by accident.
-      pendingNotifications: () => pendingNotifications.report()
+      pendingNotifications: () => pendingNotifications.report(),
+      // KAN-304. Whether the PR watcher can currently see GitHub, and since
+      // when. A reader, like the two above, so that a listing cannot start or
+      // perturb a watch by accident — and present so that "we have not been
+      // able to look since 11:04" is answerable with the MCP tool rather than
+      // only by someone who thinks to tail a log.
+      prWatch: () => prWatcher.healthReport()
     }
   );
 
@@ -1321,6 +1329,48 @@ const jiraPoller = new JiraPoller({
   supervisorFor: (agentName) => daemonRouter.supervisorFor(agentName),
   // KAN-301. Same channel-only carrier as the supervision notifier above; see
   // its wiring for why there is one route rather than two.
+  deliver: notifyAgent,
+  log
+});
+
+/**
+ * The third thing the fleet cannot see for itself: its own pull requests
+ * (KAN-304).
+ *
+ * The poller above watches what a ticket *says*. This watches what a ticket
+ * *produces* — and nothing did, which is why three pull requests merged on
+ * 2026-08-11 and left their tickets reading In Review, and why an agent was
+ * found hand-rolling a `gh pr view --json comments` loop in bash because no
+ * watcher existed to do it.
+ *
+ * Same fleet census, same durable parentage, same delivery primitive, and
+ * deliberately the same four relations — `own`, `supervisor`, `parent`,
+ * `linked` — resolved off the facts `jiraPoller` has already read. `issueFacts`
+ * is that reuse: the watcher makes **no Jira request of its own**, so watching
+ * pull requests costs Jira nothing and costs GitHub one `gh pr list` per
+ * repository per minute.
+ *
+ * `deliver: notifyAgent` is the hard condition this ticket was gated on. A PR
+ * watcher on the composer would have been a fourth interrupting caller the day
+ * after the human asked for the practice to end, and its Ctrl+C would have
+ * landed on the agent working the very pull request being announced.
+ */
+const prWatcher = new PrWatcher({
+  github: new GhCliGitHubReader({ log }),
+  herdrBridge,
+  liveAgents: () =>
+    daemonRouter
+      .surveyFleet()
+      .agents.filter((agent) => agent.type)
+      .map((agent) => ({
+        agentName: agent.agentName,
+        type: agent.type as string,
+        key: daemonRouter.recordedKeyFor(agent.agentName) ?? agent.key
+      })),
+  issueFacts: (key) => jiraPoller.pollState().factsFor(key),
+  supervisorFor: (agentName) => daemonRouter.supervisorFor(agentName),
+  // KAN-301. The same channel-only carrier as the other two producers; there is
+  // one route rather than three, and no argument here can make it a pane write.
   deliver: notifyAgent,
   log
 });
@@ -1795,6 +1845,12 @@ function onListen() {
   // running on a fixed interval — it has to be able to slow down when Jira
   // says so. Its first tick is one interval away by design; see start().
   jiraPoller.start();
+
+  // Schedules its own next tick for the same reason the poller does — it has to
+  // be able to slow down when GitHub says so — and its first look is one
+  // interval away for the same reason too: the fleet is still being restored,
+  // and the repositories it watches are discovered from live agents' checkouts.
+  prWatcher.start();
 
   // Schedules its own next cycle for the same reason the poller does, and its
   // first cycle is one interval away for a sharper one: the restoration above
