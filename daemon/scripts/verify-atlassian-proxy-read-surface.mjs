@@ -12,6 +12,13 @@
 // argument; a scope quietly widening; a transform reaching for the credential;
 // and the switch falling toward on.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process, and reads `atlassian-proxy.ts` and `router.ts` off the checkout;
+// no live daemon, no herdr, no credential, no peer, no terminal, no network.
+// The half that needs real Atlassian is deliberately not here — it is
+// `probe-atlassian-proxy-read-surface.mjs`, which is a `probe-` precisely
+// because CI cannot run it.
+//
 // ── WHY THE REFUSALS NEED A POSITIVE CONTROL ────────────────────────────────
 //
 // Most of this file asserts that something is REFUSED, and a refusal is what a
