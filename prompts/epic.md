@@ -186,20 +186,48 @@ Your approval verdict lands as a PR **comment**, because GitHub refuses a formal
 review verdict from the account that opened the PR — every agent authenticates
 as the same human account, so GitHub cannot tell author from reviewer.
 
-### Nothing mechanical enforces any of this
+**Put the marker in that comment, on a line of its own** (KAN-306):
 
-That is worth stating plainly rather than leaving a reader to assume a guard
-that is not there. GitHub will not record the approval as an approval, branch
-protection does not require one, and **the merge button is open to the author at
-every moment, including before anybody has looked.** This rule is kept only by
-agents choosing to keep it.
+```
+BUTCHR-APPROVAL: <the full 40-character head SHA> BY epic/{{KEY}}
+```
 
-Which is why it has already been broken **twice in one day, in opposite
-directions**: `story/KAN-107` merged #89 believing it had been told to, and
-`task/KAN-226` merged #92 with no approval from anyone. So read "the PR is
-green" as what it is — half of a precondition, reported by the author — and
+The required `approval-recorded` check goes green only when a marker names **the
+exact commit that would merge** and is signed by the agent the PR body declares
+in its `BUTCHR-APPROVER:` line. Prose around the marker is welcome; the marker is
+what the machine reads.
+
+### What is mechanical now, and what still is not
+
+That distinction is worth stating plainly rather than leaving a reader to assume
+a guard — in either direction. **Until 2026-08-11 nothing enforced any of this**:
+GitHub would not record the approval as an approval, branch protection did not
+require one, and the merge button was open to the author at every moment.
+
+**KAN-306 closed half of it.** `approval-recorded` is a required check, so
+**omission and staleness are now mechanical** — a merge with no approval, or on
+an approval given against a commit that has since moved, is a red required check
+instead of something only a reader of the timeline could find. A push after you
+approve invalidates your approval by itself, because no earlier marker names the
+new head.
+
+**Forgery is not mechanical and cannot be made so under one shared GitHub
+identity**: a task agent can post its own marker naming you. So the **merge
+button is open to the author** as it always was, because the author can write
+the marker; what changed is that doing so now leaves a signed, head-pinned
+record where it used to leave nothing. The rest is still kept by agents choosing
+to keep it — which is why it was broken **twice in one day, in opposite
+directions**: `story/KAN-107` merged #89 believing it had been
+told to, and `task/KAN-226` merged #92 with no approval from anyone. Read "the PR
+is green" as what it is — half of a precondition, reported by the author — and
 when you see a merge you did not expect, check whether an approval preceded it
 rather than assuming the button implies one.
+
+**Do not raise `required_approving_review_count` to 1 to "finish" this.** It
+would not make merges safer; it would make them impossible, because GitHub
+refuses self-review and every PR here is authored by the same account that would
+approve it. `epic/KAN-59` hit the identical configuration on CrabCast and filed
+it as KAN-307.
 
 **The serial merge train is the task agent's to drive now**, and
 `prompts/task.md` carries it. You still need its shape, because a PR that sat
@@ -682,7 +710,9 @@ contains:
 - **Standing rules** — work lands as a PR to protected `main`; required CI
   checks must pass; **approval before merge** — the task agent merges its own
   PR, but only after its approver has reviewed it, and green CI is not
-  approval. Name the approver on the ticket, and **never off `activatedBy`**:
+  approval. Tell it to declare its approver in the PR body as
+  `BUTCHR-APPROVER: <type>/<KEY>`, which the required `approval-recorded` check
+  reads (KAN-306). Name the approver on the ticket, and **never off `activatedBy`**:
   the agent of the Story the task is **linked** to, or **the parent epic's
   agent** where it implements no story. **If you mean a story to approve it,
   file the `Blocks` link** — Jira cannot parent a task to a story, so an

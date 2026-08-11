@@ -3,6 +3,7 @@ import type { AgentRuntime } from './agent-runtime.js';
 import { renderedKey } from './keys.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { ResumeCause, resumeNudge } from './resume.js';
+import { NotifyFn, refuseWithoutCarrier } from './notify.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
 
 /**
@@ -99,6 +100,34 @@ export interface NudgeResult {
  * framing) and it is already working. Never throws — every caller is either a
  * boot-time sweep or a fire-and-forget from a request handler that has already
  * answered.
+ *
+ * ---------------------------------------------------------------------------
+ * THIS IS A DECLARED COMPOSER CALLER, AND IT IS THE ONE THE CHANNEL CANNOT TAKE
+ * ---------------------------------------------------------------------------
+ *
+ * KAN-301 dropped pane insertion for *notifications*. This is not one, and the
+ * distinction is mechanical rather than a matter of degree: **a channel event is
+ * acted on at the recipient's next turn boundary, and this recipient has no next
+ * turn.** That is the entire premise of the function — KAN-21 established that a
+ * restored Claude Code conversation comes back at an empty prompt and waits
+ * indefinitely, and on the day it was filed two agents sat like that until a
+ * human retyped their instructions. Sending this over the channel would put a
+ * frame into a context nothing will ever read, and the agent would idle forever
+ * while the daemon's log said it had been told.
+ *
+ * **What makes the composer safe here — and only here — is that the interrupt
+ * cannot land on work.** The cost of a Ctrl+C is the turn it cancels, and
+ * `waitForAgentReady` above has just established, by reading the pane, that this
+ * agent is sitting at a prompt with no turn to cancel. That is a much stronger
+ * position than any other caller is in: `butchr_tail_agent`'s own contract warns
+ * that a failed read must not be read as an idle agent, and every notification
+ * path was guessing. This one waits for positive evidence and declines to type
+ * when it does not get it.
+ *
+ * So the practice is dropped as a *default* and as a *fallback*, which is what
+ * the ticket asked for, and retained for the single case where it is the only
+ * mechanism that works and where it costs nothing.
+ * `verify-notifications-never-type.mjs` holds the allowlist this is on.
  */
 export async function nudgeResumedAgent(opts: {
   herdrBridge: AgentRuntime;
@@ -283,6 +312,29 @@ export interface DeliveryResult {
  * stops a *third* interrupt, not as evidence that the first two were free.
  *
  * Never throws. Every caller is a timer or a fire-and-forget handler.
+ *
+ * ---------------------------------------------------------------------------
+ * NOTHING IN `daemon/src` CALLS THIS ANY MORE (KAN-301)
+ * ---------------------------------------------------------------------------
+ *
+ * It was the delivery primitive for both notification producers — the Jira
+ * poller and the {@link SupervisionNotifier} below — and that is exactly what
+ * KAN-301 removed. Both now take a {@link NotifyFn} that rides the channel and
+ * refuses rather than interrupting; neither imports this.
+ *
+ * **It is kept rather than deleted, and the reason is not sentiment.** Seven
+ * `verify-*` scripts inject it into those same seams *on purpose*: the composer
+ * is the only carrier whose delivery can be read back off a pane, so a proof
+ * about which recipients get told, and what the message says, is far stronger
+ * when it can confirm the words arrived than when it can only confirm a frame
+ * was written. Those proofs test the poller's routing, not its carrier, and
+ * deleting this would cost the fleet its only C3-establishing observation for no
+ * gain — the property KAN-301 wants is *"production never reaches for it"*, and
+ * that is a static property of `daemon/src` rather than of this file's
+ * existence. `verify-notifications-never-type.mjs` is what asserts it.
+ *
+ * So: if you are wiring a new daemon-side path that tells an agent something,
+ * this is not it. See `notify.ts`.
  */
 export async function deliverToAgent(opts: {
   herdrBridge: AgentRuntime;
@@ -545,8 +597,21 @@ export class SupervisionNotifier {
        */
       recordedKeyFor?: (agentName: string) => string | undefined;
       log: (...args: any[]) => void;
-      /** Swapped out only by the proof, which has no pane to confirm against. */
-      deliver?: typeof deliverToAgent;
+      /**
+       * How a supervision notice actually travels (KAN-301).
+       *
+       * Channel-only in production, and its DEFAULT is a refusal rather than a
+       * pane write — see {@link refuseWithoutCarrier}. Until KAN-301 this
+       * defaulted to {@link deliverToAgent}, so telling a supervisor that one of
+       * its agents had gone `blocked` cancelled whatever that supervisor was
+       * doing, which for an agent that is *supervising* is usually a tool call.
+       *
+       * Still swappable, and a proof that swaps it for {@link deliverToAgent} is
+       * deliberately choosing the composer so it can read delivery off a pane.
+       * Nothing in `daemon/src` may do that;
+       * `verify-notifications-never-type.mjs` asserts it statically.
+       */
+      deliver?: NotifyFn;
     }
   ) {}
 
@@ -695,7 +760,7 @@ export class SupervisionNotifier {
   /** Deliver one change, or say why it was dropped. `null` means delivered. */
   private async notify(change: AgentStateChange, running: Set<string>): Promise<string | null> {
     const { log, herdrBridge, supervisorFor } = this.opts;
-    const deliver = this.opts.deliver ?? deliverToAgent;
+    const deliver = this.opts.deliver ?? refuseWithoutCarrier;
     const subject = `${change.type}/${change.key} → ${change.to}`;
 
     const supervisor = supervisorFor(change.agentName);

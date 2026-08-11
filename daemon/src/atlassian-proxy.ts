@@ -64,15 +64,58 @@ import { JIRA_KEY } from './keys.js';
  * ticket** — see {@link refuseWriteOutsideCaller}, which is where the argument
  * for it, and the honest statement of what it is *not*, are written down.
  *
+ * ## WHAT KAN-292 ADDED: THE REST OF THE READS, AND TWO THINGS IT COULD NOT DO
+ *
+ * The table below went from four operations to twenty-two — eighteen reads,
+ * covering every remaining Jira, Confluence and account read the official
+ * Atlassian MCP server offers. Two of them are not what their names suggest,
+ * and the header is where that is recorded rather than the ticket, because the
+ * ticket is not what the next reader has open:
+ *
+ * **`atlassian_search` is not Rovo Search and cannot be.** The official
+ * `search` tool is Rovo, and every Rovo endpoint refuses this daemon's
+ * credential — `/gateway/api/rovo/search/v1/query`,
+ * `/gateway/api/rovo/v1/search` and `/gateway/api/search/v1` all answer 404 to
+ * a classic API token, measured 2026-08-11. That is not a missing scope, it is
+ * the wrong kind of credential: Rovo is OAuth/app-scoped. So this operation
+ * asks each product its own text query and returns both answers side by side.
+ * It answers the question the tool exists for and **it does not rank across
+ * products**, which is stated in its description and again in its own payload.
+ *
+ * **`getAccessibleAtlassianResources` has the same shape of problem** — its
+ * real endpoint, `/oauth/token/accessible-resources`, is OAuth-only and answers
+ * 401. It is answerable anyway, and honestly: the daemon holds one credential
+ * bound to one site, so one site is the whole truthful answer, and
+ * `/_edge/tenant_info` supplies its cloudId.
+ *
+ * **Confluence is new surface for this daemon**, which made one question worth
+ * answering by call rather than assumption: the credential does reach
+ * Confluence — all eight reads returned 200 against real content, including
+ * three design docs of 51 KB, 19 KB and 64 KB read through this proxy. It
+ * reaches it because a **classic** API token carries the account's own
+ * permissions across every product on the site rather than a list of OAuth
+ * scopes. The `read:confluence-*` scopes named in the table are therefore what
+ * these operations would need *if* the credential were ever swapped for a
+ * scoped one; they are an honest enumeration, not a record of grants anybody
+ * made.
+ *
+ * **So the reads themselves are the evidence for the scope, and they are better
+ * evidence than a scope listing would be** — `epic/KAN-39`'s framing at review
+ * of #127, recorded here rather than left in a ticket comment. A listing states
+ * what a credential is *said* to hold; a 200 against a real page is the scope
+ * actually exercised. That distinction is the same one this module makes about
+ * tool presence a few paragraphs down, and it fails the same way: what looks
+ * fine is the *declaration*, and only a call establishes the other thing.
+ *
  * ## Off by default, and read per call rather than once
  *
  * {@link selectedProxyMode} returns `'off'` for an unset variable, for an empty
- * one, and for anything it does not recognise. The only input that enables
- * anything is the exact string `jira-read`. No truthiness test, no prefix
- * match, no `1` — the discipline `runtime-switch.ts` established for KAN-278,
- * and for its stated reason: falling back to off costs nothing, while falling
- * back to on because somebody typed `jira_read` widens what an entire fleet can
- * do on the strength of a misspelling.
+ * one, and for anything it does not recognise. The only inputs that enable
+ * anything are the exact strings in {@link PROXY_MODES}. No truthiness test, no
+ * prefix match, no `1` — the discipline `runtime-switch.ts` established for
+ * KAN-278, and for its stated reason: falling back to off costs nothing, while
+ * falling back to on because somebody typed `jira_read` widens what an entire
+ * fleet can do on the strength of a misspelling.
  *
  * It differs from `runtime-switch.ts` in **when** it is read, and the
  * difference is deliberate. A runtime is read once at boot because it owns live
@@ -108,6 +151,16 @@ import { JIRA_KEY } from './keys.js';
  * path, a URL or a REST fragment: one would make the granted scope unbounded in
  * a way no reviewer could read off this file, and "the scope actually granted,
  * enumerated field by field" is a KAN-272 acceptance criterion.
+ *
+ * **KAN-292 is where that was most likely to be lost, and it held.** Two of the
+ * tools it adds look from outside like they want a caller-supplied endpoint.
+ * Neither gets one. `atlassian_search` takes prose, which goes into a query
+ * parameter exactly as `jql` has since KAN-272. `atlassian_fetch_resource`
+ * takes an **ARI**, which is the one input here that could reasonably have been
+ * a destination — and is not: an ARI is a five-field grammar, every field is
+ * matched against a closed set, and the cloudId inside it is parsed and then
+ * **discarded**, because honouring it would let an agent name a site. See
+ * {@link parseAri}, which carries the argument in full.
  * {@link grantedScopes} and {@link operationsFor} exist so that enumeration is
  * derived from the table below rather than restated in prose beside it.
  */
@@ -122,13 +175,34 @@ import { JIRA_KEY } from './keys.js';
  * per widening is what makes granting them one at a time the path of least
  * resistance rather than an act of discipline.
  */
-export type ProxyMode = 'off' | 'jira-read' | 'jira-write';
+export type ProxyMode = 'off' | 'jira-read' | 'confluence-read' | 'jira-write';
+
+/**
+ * Which Atlassian product an operation's path belongs to (KAN-292).
+ *
+ * It exists because **the host differs per product and nothing else does**. A
+ * Jira path is served from `/ex/jira/{cloudId}` at the gateway; a Confluence
+ * path from `/ex/confluence/{cloudId}`; and both from the bare site host, where
+ * Confluence's own `/wiki` prefix already distinguishes them. So `product`
+ * selects a base and grants nothing: it cannot widen a path, because the path
+ * is still built by {@link ProxyOperation.build} from validated arguments.
+ *
+ * `site` is the odd one and is deliberately not a product at all — it is the
+ * site host with no gateway leg, for `/_edge/tenant_info`, the one endpoint
+ * here that is unauthenticated site metadata rather than a product API.
+ */
+export type ProxyProduct = 'jira' | 'confluence' | 'site';
 
 /** The environment variable that selects a mode. */
 export const PROXY_ENV_VAR = 'BUTCHR_ATLASSIAN_PROXY';
 
 /** Every mode this daemon knows, for the message an unrecognised value gets. */
-export const PROXY_MODES: readonly ProxyMode[] = ['off', 'jira-read', 'jira-write'];
+export const PROXY_MODES: readonly ProxyMode[] = [
+  'off',
+  'jira-read',
+  'confluence-read',
+  'jira-write'
+];
 
 /**
  * The modes a selected mode turns on — a ladder, not a set of alternatives.
@@ -150,6 +224,22 @@ export const PROXY_MODES: readonly ProxyMode[] = ['off', 'jira-read', 'jira-writ
  * **Adding a rung is the act of widening**, and it is meant to be conspicuous:
  * a new mode goes at the top, names its own scope, and shows up in
  * {@link grantedScopes} without anybody remembering to write it down.
+ *
+ * ## KAN-292 INSERTED A RUNG IN THE MIDDLE, AND THAT HAS ONE CONSEQUENCE WORTH
+ * ## SAYING OUT LOUD
+ *
+ * `confluence-read` sits between the two rungs that existed, so **`jira-write`
+ * now enables the Confluence reads as well**. That is a widening of an existing
+ * mode and it is not a side effect nobody noticed — it is the ladder property
+ * being kept rather than quietly abandoned. A rung that the rung above it did
+ * *not* contain would make "one string, one rung, and the rung above contains
+ * the rung below" false, and the value of that sentence is that an operator can
+ * read the whole grant off one word. The alternative — a `jira-write` that
+ * skips Confluence — would mean the grant was no longer a chain and had to be
+ * read off a table instead, which is the property this design exists to avoid.
+ *
+ * It costs the operator nothing they had not already accepted: `jira-write`
+ * already grants every read in `jira-read`, and Confluence reads are reads.
  */
 export function enabledModes(mode: ProxyMode): Exclude<ProxyMode, 'off'>[] {
   switch (mode) {
@@ -157,8 +247,10 @@ export function enabledModes(mode: ProxyMode): Exclude<ProxyMode, 'off'>[] {
       return [];
     case 'jira-read':
       return ['jira-read'];
+    case 'confluence-read':
+      return ['jira-read', 'confluence-read'];
     case 'jira-write':
-      return ['jira-read', 'jira-write'];
+      return ['jira-read', 'confluence-read', 'jira-write'];
   }
 }
 
@@ -175,7 +267,30 @@ export function enabledModes(mode: ProxyMode): Exclude<ProxyMode, 'off'>[] {
  * JSON object's clothes. A GET operation returns no `body` and the transport
  * sends none.
  */
-export type BuildResult = { path: string; body?: unknown } | { error: string };
+export type BuildResult =
+  | { path: string; product?: ProxyProduct; body?: unknown }
+  | { requests: ProxyRequest[] }
+  | { error: string };
+
+/**
+ * One concrete request an operation has decided to make.
+ *
+ * Nearly every operation makes exactly one and returns the `{ path }` shape
+ * above; this exists for the operation that cannot (`atlassian_search`, which
+ * has to ask two products the same question because the credential cannot reach
+ * the one API that would have answered both — see its own docblock).
+ *
+ * **A fan-out is still a fixed grant.** The number of requests and the product
+ * of each are decided by the table, not by the caller: there is no argument
+ * that adds a request, removes one, or redirects one at a different product.
+ * What an agent supplies is what it always supplies — validated values that get
+ * percent-encoded into a path this file wrote.
+ */
+export interface ProxyRequest {
+  product: ProxyProduct;
+  path: string;
+  body?: unknown;
+}
 
 export interface ProxyOperation {
   /** The tool name as agents see it. */
@@ -183,13 +298,39 @@ export interface ProxyOperation {
   /** The mode that enables it. Never `off`. */
   mode: Exclude<ProxyMode, 'off'>;
   /**
+   * Every product this operation can reach — the enumeration a reader wants
+   * when asking "what can this mode touch", and the default {@link build} gets
+   * when it returns a bare `{ path }`.
+   *
+   * A list rather than a single value because two operations genuinely span
+   * products: `atlassian_search` asks both, and `atlassian_fetch_resource`
+   * asks whichever one the ARI it was given names. **An operation is tagged
+   * into the mode matching the WIDEST product it can reach**, never the
+   * narrowest — so `atlassian_fetch_resource` needs `confluence-read` even to
+   * fetch a Jira issue. That is the safe direction and it is deliberate: the
+   * alternative is a second gate deciding per call whether the resolved product
+   * is enabled, and a second copy of one condition is the copy that drifts.
+   */
+  products: readonly ProxyProduct[];
+  /**
    * The Atlassian scope this operation needs.
    *
    * Recorded per operation rather than per mode because that is the granularity
    * a reviewer has to check: "this mode needs read:jira-work" is a claim about
    * a set, and the way a set quietly acquires a wider scope is one member.
+   *
+   * **A list, since KAN-292, and an empty one is a real answer.** Two
+   * operations reach both products and genuinely need a scope from each, and
+   * one (`atlassian_get_accessible_resources`) reads unauthenticated site
+   * metadata and needs none at all. The first version of that operation wrote
+   * its two scopes as one space-joined string, which type-checked, read
+   * correctly, and silently defeated {@link grantedScopes} — a compound string
+   * cannot deduplicate against the same scopes declared singly elsewhere, so
+   * the enumeration grew an entry instead of reusing one. That is the exact
+   * failure this field exists to make impossible, wearing the field's own
+   * clothes.
    */
-  scope: string;
+  scope: string | readonly string[];
   /**
    * The HTTP method.
    *
@@ -228,6 +369,41 @@ export interface ProxyOperation {
    * memory.
    */
   writesTo?(args: Record<string, any>): string | null;
+  /**
+   * Reshape what Atlassian returned before the agent sees it, or combine the
+   * answers of a fan-out into one (KAN-292).
+   *
+   * **Absent on all but two operations, and it should stay that way.** A proxy
+   * that rewrites what the upstream said is a proxy whose output nobody can
+   * check against the API's own documentation, and every transform is a place
+   * for a field to go missing exactly as silently as KAN-183's dropped list
+   * item. The two that have one cannot avoid it:
+   *
+   *  - `atlassian_search` has two responses and must return one thing.
+   *  - `atlassian_get_accessible_resources` reads a bare `{cloudId}` and has to
+   *    pair it with the site the daemon is configured against, which is not in
+   *    any response body because it is not something Atlassian was asked.
+   *
+   * `context` carries the non-secret facts about the credential — never the
+   * credential. See {@link ProxyTransformContext}.
+   */
+  transform?(bodies: unknown[], context: ProxyTransformContext): unknown;
+}
+
+/**
+ * The non-secret facts a {@link ProxyOperation.transform} may use.
+ *
+ * Deliberately only these two. A transform that wanted the token would be
+ * asking to put it in a response body, which is the one direction a credential
+ * must never travel — *credentials stop at the daemon* is one of KAN-39's
+ * invariants and this type is where that is enforced by shape rather than by
+ * care.
+ */
+export interface ProxyTransformContext {
+  /** The site the daemon's credential is configured against. */
+  siteUrl?: string;
+  /** The account email. Non-secret; the token half of Basic auth is not here. */
+  email?: string;
 }
 
 /** How many issues one proxied search may ask for. */
@@ -317,6 +493,188 @@ function transitionId(args: Record<string, any>): { id: string } | { error: stri
   return { id: raw };
 }
 
+/** How many rows one proxied Confluence or directory listing may ask for. */
+export const PROXY_LIST_MAX_RESULTS = 50;
+
+/**
+ * A numeric Atlassian id — a Confluence page, space or comment — or the reason
+ * this one is not.
+ *
+ * Digits only, for the reason {@link TRANSITION_ID} gives: the value is
+ * concatenated into a path, so the thing that must be impossible is a value
+ * carrying a `/`, a `?` or a `#` out of its segment. Percent-encoding already
+ * makes that impossible; this is the belt to that pair of braces, and it is
+ * also what turns a mistyped id into a sentence rather than a 404.
+ *
+ * Kept as a **string**, never coerced through `Number`: Confluence ids are
+ * routinely larger than `Number.MAX_SAFE_INTEGER` and a round trip through a
+ * double silently changes the last digits of one.
+ */
+const ATLASSIAN_ID = /^[0-9]{1,20}$/;
+
+function numericId(
+  args: Record<string, any>,
+  field: string,
+  what: string
+): { id: string } | { error: string } {
+  const raw =
+    typeof args?.[field] === 'string' || typeof args?.[field] === 'number'
+      ? String(args[field]).trim()
+      : '';
+  if (!raw) return { error: `${field} is required — the numeric id of ${what}.` };
+  if (!ATLASSIAN_ID.test(raw)) {
+    return {
+      error:
+        `"${raw.slice(0, 40)}" is not ${what} id. Expected digits, e.g. "163933". This proxy ` +
+        'builds its own REST paths from validated arguments and never takes a path, so a ' +
+        'numeric id is the only thing that can name one here.'
+    };
+  }
+  return { id: raw };
+}
+
+/**
+ * A Jira project key, or the reason this one is not.
+ *
+ * Jira's own rule: a letter, then letters, digits or underscores. Same
+ * containment argument as every other validator here — it is a path segment.
+ */
+const PROJECT_KEY = /^[A-Za-z][A-Za-z0-9_]{0,49}$/;
+
+function projectKey(args: Record<string, any>): { key: string } | { error: string } {
+  const raw = typeof args?.projectKey === 'string' ? args.projectKey.trim() : '';
+  if (!raw) return { error: 'projectKey is required, e.g. "KAN".' };
+  if (!PROJECT_KEY.test(raw)) {
+    return {
+      error:
+        `"${raw.slice(0, 40)}" is not a Jira project key. Expected a letter followed by ` +
+        'letters, digits or underscores, e.g. "KAN".'
+    };
+  }
+  return { key: raw.toUpperCase() };
+}
+
+/**
+ * A free-text query — for CQL, for JQL, or for the federated search.
+ *
+ * **This is the one input that is not pattern-matched, and that is correct
+ * rather than an oversight.** A query is prose: any character can legitimately
+ * appear in one, so a character class would refuse valid searches without
+ * bounding anything. What bounds it is where it goes — `encodeURIComponent`
+ * into a single query parameter, which no character can escape — and a length
+ * cap, which is what stops one agent turning a query into a denial of service.
+ * `jql` above has been taking exactly this treatment since KAN-272.
+ */
+function freeText(
+  args: Record<string, any>,
+  field: string,
+  example: string,
+  limit = 2000
+): { value: string } | { error: string } {
+  const raw = typeof args?.[field] === 'string' ? args[field].trim() : '';
+  if (!raw) return { error: `${field} is required, e.g. ${example}` };
+  if (raw.length > limit) {
+    return { error: `${field} is ${raw.length} characters; the proxy accepts up to ${limit}.` };
+  }
+  return { value: raw };
+}
+
+/** A bounded `limit`, clamped rather than refused. See `maxResults` on search. */
+function listLimit(args: Record<string, any>, field = 'limit'): number {
+  const asked = Number(args?.[field]);
+  return Number.isFinite(asked) && asked >= 1
+    ? Math.min(Math.floor(asked), PROXY_LIST_MAX_RESULTS)
+    : PROXY_LIST_MAX_RESULTS;
+}
+
+/**
+ * An Atlassian Resource Identifier, parsed into the two things that name a
+ * resource — or the reason this one is not an ARI.
+ *
+ * ## WHY THIS IS NOT THE HOLE IT LOOKS LIKE
+ *
+ * KAN-292's ticket names `fetch` as the operation most likely to open one,
+ * because the official tool takes an opaque `id` and returns "a Jira issue or
+ * Confluence page". An opaque identifier that selects an endpoint is *exactly*
+ * the shape of a caller-supplied path, and if an ARI were a URL this operation
+ * would not exist.
+ *
+ * **It is not a URL. It is a five-field grammar** —
+ * `ari:cloud:{product}:{cloudId}:{type}/{id}` — and every field is matched
+ * against a closed set before anything is built:
+ *
+ *  - `product` must be exactly `jira` or `confluence`. Nothing else routes.
+ *  - `type` must be exactly `issue` or `page`, and it must agree with the
+ *    product: `jira`+`issue`, `confluence`+`page`. A `jira:page` is refused.
+ *  - `id` is digits, or — for Jira only — an issue key, both already validated
+ *    by the rules above.
+ *  - `cloudId` is **ignored entirely**, which is the part worth reading twice.
+ *    The daemon has exactly one credential bound to exactly one site, so the
+ *    only site it can reach is its own; honouring a cloudId from an argument
+ *    would be inventing a capability the credential does not have, and reading
+ *    it as a *routing* instruction would be letting an agent name a host. It is
+ *    parsed so the ARI validates, then discarded.
+ *
+ * What comes out is a product and an id, and the operation builds the same
+ * fixed path it would have built had the agent passed them separately. The ARI
+ * is an input format, not a destination.
+ */
+const ARI = /^ari:cloud:([a-z]+):([^:]*):([a-z-]+)\/(.+)$/;
+
+export function parseAri(
+  raw: unknown
+): { product: 'jira' | 'confluence'; type: 'issue' | 'page'; id: string } | { error: string } {
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!value) {
+    return {
+      error:
+        'id is required — an Atlassian Resource Identifier, e.g. ' +
+        '"ari:cloud:jira:{cloudId}:issue/10301" or "ari:cloud:confluence:{cloudId}:page/163933".'
+    };
+  }
+  const m = ARI.exec(value);
+  if (!m) {
+    return {
+      error:
+        `"${value.slice(0, 60)}" is not an ARI. Expected ari:cloud:{product}:{cloudId}:{type}/{id} ` +
+        '— e.g. "ari:cloud:jira:{cloudId}:issue/10301". This proxy never takes a URL or a REST ' +
+        'path, so an ARI is the only opaque-looking thing it accepts, and it is parsed rather ' +
+        'than forwarded.'
+    };
+  }
+  const [, product, , type, id] = m;
+
+  if (product === 'jira' && type === 'issue') {
+    // An ARI names an issue by its numeric id, but agents have a key far more
+    // often than an id and both address the same endpoint. Accept either, and
+    // validate each by its own existing rule rather than inventing a third.
+    const trimmed = id.trim();
+    if (ATLASSIAN_ID.test(trimmed)) return { product: 'jira', type: 'issue', id: trimmed };
+    if (JIRA_KEY.test(trimmed.toUpperCase())) {
+      return { product: 'jira', type: 'issue', id: trimmed.toUpperCase() };
+    }
+    return {
+      error:
+        `"${trimmed.slice(0, 40)}" is not a Jira issue id or key. Expected digits (e.g. "10301") ` +
+        'or a key (e.g. "KAN-292").'
+    };
+  }
+
+  if (product === 'confluence' && type === 'page') {
+    const trimmed = id.trim();
+    if (ATLASSIAN_ID.test(trimmed)) return { product: 'confluence', type: 'page', id: trimmed };
+    return { error: `"${trimmed.slice(0, 40)}" is not a Confluence page id. Expected digits.` };
+  }
+
+  return {
+    error:
+      `This proxy fetches a Jira issue or a Confluence page and nothing else, so ` +
+      `"${product}:${type}" is refused. Use ari:cloud:jira:{cloudId}:issue/{idOrKey} or ` +
+      'ari:cloud:confluence:{cloudId}:page/{id}. The product and the type have to agree — a ' +
+      'jira:page names nothing.'
+  };
+}
+
 /**
  * The operations this daemon proxies. **This table is the granted scope.**
  *
@@ -342,6 +700,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
   {
     tool: 'atlassian_get_issue',
     mode: 'jira-read',
+    products: ['jira'],
     scope: 'read:jira-work',
     method: 'GET',
     pathShape: '/rest/api/3/issue/{issueKey}?fields={fields}',
@@ -379,6 +738,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
   {
     tool: 'atlassian_search_issues',
     mode: 'jira-read',
+    products: ['jira'],
     scope: 'read:jira-work',
     method: 'GET',
     pathShape: '/rest/api/3/search/jql?jql={jql}&fields={fields}&maxResults={maxResults}',
@@ -432,6 +792,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
   {
     tool: 'atlassian_get_transitions',
     mode: 'jira-read',
+    products: ['jira'],
     scope: 'read:jira-work',
     method: 'GET',
     pathShape: '/rest/api/3/issue/{issueKey}/transitions',
@@ -457,6 +818,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
   {
     tool: 'atlassian_transition_issue',
     mode: 'jira-write',
+    products: ['jira'],
     scope: 'write:jira-work',
     method: 'POST',
     pathShape: '/rest/api/3/issue/{issueKey}/transitions',
@@ -508,6 +870,666 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       const key = issueKey(args);
       return 'error' in key ? null : key.key;
     }
+  },
+
+  // ── KAN-292: the rest of the read surface ────────────────────────────────
+  //
+  // Eighteen operations, and the count is deliberate: KAN-288 enumerates the
+  // official server's tools and KAN-292's ticket subtracts the three above, but
+  // BOTH arrived at their totals by mislabelling a list they had written
+  // correctly. The live tool list has 31 tools, not 30 (KAN-288's Confluence
+  // group is labelled 11 and lists 12), and this slice is 18 reads, not 17
+  // (KAN-292's Jira group is labelled 5 and lists 6). Counted off the live list
+  // as the ticket instructs, and cross-checked: 31 − 10 writes = 21 reads,
+  // minus the 3 above = 18.
+  //
+  // All of them are GETs. `jira-read` keeps the shape it had — every operation
+  // in it is still a read — and gains six Jira operations; `confluence-read` is
+  // the new rung.
+  //
+  // ONE SCOPE IS GENUINELY NEW BEYOND CONFLUENCE, AND IT IS NOT THE ONE ANYBODY
+  // WOULD PREDICT. `atlassian_get_user_info` and `atlassian_lookup_account_id`
+  // read the *user directory*, which is `read:jira-user` and not
+  // `read:jira-work`. So `jira-read` now names two scopes where it named one.
+  // With the classic API token this daemon actually holds that costs nothing —
+  // a classic token carries the account's own permissions rather than OAuth
+  // scopes, and both were verified by real call — but the enumeration is what a
+  // reviewer reads, and an enumeration that quietly rounds a second scope into
+  // the first is the exact defect `grantedScopes` exists to prevent.
+
+  {
+    tool: 'atlassian_get_issue_link_types',
+    mode: 'jira-read',
+    products: ['jira'],
+    scope: 'read:jira-work',
+    method: 'GET',
+    pathShape: '/rest/api/3/issueLinkType',
+    description:
+      'List the Jira issue link types on this site (Blocks, Relates, Duplicate, Clones) with ' +
+      'their inward and outward names, through the Butchr daemon\'s own credential. This is ' +
+      'what tells you that "blocks" is spelled `Blocks` here and which end of it is which ' +
+      'before you create a link. Takes no arguments — it describes the site, not an issue. ' +
+      'A failure is loud: an expired or revoked credential produces an error naming the ' +
+      'endpoint that refused it, never an empty list that reads like a site with no link types.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    build() {
+      return { path: '/rest/api/3/issueLinkType' };
+    }
+  },
+  {
+    tool: 'atlassian_get_issue_remote_links',
+    mode: 'jira-read',
+    products: ['jira'],
+    scope: 'read:jira-work',
+    method: 'GET',
+    pathShape: '/rest/api/3/issue/{issueKey}/remotelink',
+    description:
+      "Read the remote links on one Jira issue — links out to things that are not Jira issues, " +
+      'such as a pull request or a Confluence page — through the Butchr daemon\'s own ' +
+      'credential. NOTE THAT AN ISSUE WITH NO REMOTE LINKS ANSWERS WITH AN EMPTY ARRAY, and ' +
+      'that is a real answer rather than a failure; a failure carries an error and a status. ' +
+      'For links between Jira issues, read `issuelinks` with atlassian_get_issue instead.',
+    inputSchema: {
+      type: 'object',
+      properties: { issueKey: { type: 'string', description: 'The issue key, e.g. "KAN-292".' } },
+      required: ['issueKey']
+    },
+    build(args) {
+      const key = issueKey(args);
+      if ('error' in key) return key;
+      return { path: `/rest/api/3/issue/${encodeURIComponent(key.key)}/remotelink` };
+    }
+  },
+  {
+    tool: 'atlassian_get_project_issue_types',
+    mode: 'jira-read',
+    products: ['jira'],
+    scope: 'read:jira-work',
+    method: 'GET',
+    pathShape: '/rest/api/3/issue/createmeta/{projectKey}/issuetypes',
+    description:
+      'List the issue types you can create in one Jira project, with their ids and hierarchy ' +
+      "levels, through the Butchr daemon's own credential. THE HIERARCHY LEVEL IS THE USEFUL " +
+      'PART: it is what tells you that Story and Task both sit at level 0 on this board and ' +
+      'that a Task therefore cannot be parented to a Story, which is the trap that has ' +
+      'orphaned tickets here before. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectKey: { type: 'string', description: 'The project key, e.g. "KAN".' } },
+      required: ['projectKey']
+    },
+    build(args) {
+      const key = projectKey(args);
+      if ('error' in key) return key;
+      return { path: `/rest/api/3/issue/createmeta/${encodeURIComponent(key.key)}/issuetypes` };
+    }
+  },
+  {
+    tool: 'atlassian_get_issue_type_fields',
+    mode: 'jira-read',
+    products: ['jira'],
+    scope: 'read:jira-work',
+    method: 'GET',
+    pathShape: '/rest/api/3/issue/createmeta/{projectKey}/issuetypes/{issueTypeId}',
+    description:
+      'List the fields available when creating one issue type in one Jira project — which are ' +
+      'required, which are optional, and what each will accept — through the Butchr daemon\'s ' +
+      'own credential. This is what to read before filing a ticket that must carry a parent, ' +
+      'rather than discovering at write time that the field was rejected. Get the issue type ' +
+      'id from atlassian_get_project_issue_types. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectKey: { type: 'string', description: 'The project key, e.g. "KAN".' },
+        issueTypeId: {
+          type: 'string',
+          description: 'The numeric issue type id, e.g. "10007". Read it with atlassian_get_project_issue_types.'
+        }
+      },
+      required: ['projectKey', 'issueTypeId']
+    },
+    build(args) {
+      const key = projectKey(args);
+      if ('error' in key) return key;
+      const id = numericId(args, 'issueTypeId', 'a Jira issue type');
+      if ('error' in id) return id;
+      return {
+        path:
+          `/rest/api/3/issue/createmeta/${encodeURIComponent(key.key)}` +
+          `/issuetypes/${encodeURIComponent(id.id)}`
+      };
+    }
+  },
+  {
+    tool: 'atlassian_get_visible_projects',
+    mode: 'jira-read',
+    products: ['jira'],
+    scope: 'read:jira-work',
+    method: 'GET',
+    pathShape: '/rest/api/3/project/search?maxResults={limit}',
+    description:
+      "List the Jira projects the daemon's credential can see, through that credential. NOTE " +
+      'THAT "VISIBLE" MEANS VISIBLE TO THE DAEMON, NOT TO YOU: every agent shares one ' +
+      'credential here, so this answers what that account can reach and not what your own ' +
+      `Atlassian session could. Bounded at ${PROXY_LIST_MAX_RESULTS} results. A failure is ` +
+      'loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: []
+    },
+    build(args) {
+      return { path: `/rest/api/3/project/search?maxResults=${listLimit(args)}` };
+    }
+  },
+  {
+    tool: 'atlassian_lookup_account_id',
+    mode: 'jira-read',
+    // read:jira-user, not read:jira-work — this reads the user directory rather
+    // than issue data, and it is the second scope `jira-read` has ever needed.
+    // See the block comment above the KAN-292 operations.
+    products: ['jira'],
+    scope: 'read:jira-user',
+    method: 'GET',
+    pathShape: '/rest/api/3/user/search?query={query}&maxResults={limit}',
+    description:
+      'Find Atlassian account ids by name or email, through the Butchr daemon\'s own ' +
+      'credential. An account id is what assignee and reporter fields want; a display name is ' +
+      'not one. THIS READS THE USER DIRECTORY, which is a different scope from reading issues ' +
+      `— see the proxy's scope enumeration. Bounded at ${PROXY_LIST_MAX_RESULTS} results. A ` +
+      'failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'A name or email fragment to search for, e.g. "wroosbit".'
+        },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['query']
+    },
+    build(args) {
+      const q = freeText(args, 'query', '"wroosbit"', 200);
+      if ('error' in q) return q;
+      return {
+        path:
+          `/rest/api/3/user/search?query=${encodeURIComponent(q.value)}` +
+          `&maxResults=${listLimit(args)}`
+      };
+    }
+  },
+
+  // ── Confluence, which is new surface for this daemon ─────────────────────
+  //
+  // Nothing in the daemon read or wrote Confluence before this slice. That made
+  // one question worth answering by call rather than by assumption, and KAN-292
+  // required it: DOES THE CREDENTIAL ACTUALLY REACH CONFLUENCE? It does — all
+  // eight of these returned 200 against real content on 2026-08-11, and the
+  // output is in the PR. The reason is worth knowing rather than filing away:
+  // the daemon holds a **classic** API token, which carries the account's own
+  // permissions across every product on the site rather than a set of OAuth
+  // scopes. So the `read:confluence-*` scopes named below are what these
+  // operations would need *if* the credential were ever swapped for a scoped
+  // token — they are the honest enumeration KAN-292 criterion 3 asks for, and
+  // they are not a claim that anybody granted them one by one.
+  //
+  // Every path here is v2 (`/wiki/api/v2/...`) except the CQL search, which has
+  // no v2 equivalent. Confluence's own `/wiki` prefix is what distinguishes
+  // these from Jira on the site host; at the gateway it is the product base.
+
+  {
+    tool: 'atlassian_get_confluence_spaces',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-space.summary',
+    method: 'GET',
+    pathShape: '/wiki/api/v2/spaces?limit={limit}',
+    description:
+      "List the Confluence spaces the daemon's credential can see, through that credential. " +
+      'Returns each space\'s id, key and name — THE NUMERIC ID IS WHAT THE OTHER CONFLUENCE ' +
+      'TOOLS WANT, not the key, and the two are not interchangeable. As with Jira projects, ' +
+      '"visible" means visible to the daemon\'s shared account. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: []
+    },
+    build(args) {
+      return { path: `/wiki/api/v2/spaces?limit=${listLimit(args)}` };
+    }
+  },
+  {
+    tool: 'atlassian_get_confluence_space_pages',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-content.summary',
+    method: 'GET',
+    pathShape: '/wiki/api/v2/spaces/{spaceId}/pages?limit={limit}',
+    description:
+      'List the pages in one Confluence space, through the Butchr daemon\'s own credential. ' +
+      'Takes the space\'s NUMERIC ID — read it with atlassian_get_confluence_spaces; a space ' +
+      `key is not an id and will be refused. Bounded at ${PROXY_LIST_MAX_RESULTS} pages. ` +
+      'A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spaceId: { type: 'string', description: 'The numeric space id, e.g. "163842".' },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['spaceId']
+    },
+    build(args) {
+      const id = numericId(args, 'spaceId', 'a Confluence space');
+      if ('error' in id) return id;
+      return {
+        path: `/wiki/api/v2/spaces/${encodeURIComponent(id.id)}/pages?limit=${listLimit(args)}`
+      };
+    }
+  },
+  {
+    tool: 'atlassian_get_confluence_page',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-content.all',
+    method: 'GET',
+    pathShape: '/wiki/api/v2/pages/{pageId}?body-format={bodyFormat}',
+    description:
+      "Read one Confluence page through the Butchr daemon's own credential, body included. " +
+      'RETURNS THE BODY IN CONFLUENCE\'S OWN FORMAT AND CONVERTS NOTHING — `storage` is the ' +
+      'XHTML storage format and `atlas_doc_format` is ADF as JSON. This proxy deliberately ' +
+      'does no markdown conversion in either direction: a converter that silently drops a ' +
+      'nested list item is how KAN-183 lost a section, so what you get here is what Confluence ' +
+      'stored. Verifying a page you wrote means reading it back with this and comparing. ' +
+      'A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'The numeric page id, e.g. "163933".' },
+        bodyFormat: {
+          type: 'string',
+          enum: ['storage', 'atlas_doc_format', 'view'],
+          description: 'Optional. storage (XHTML, the default), atlas_doc_format (ADF), or view.'
+        }
+      },
+      required: ['pageId']
+    },
+    build(args) {
+      const id = numericId(args, 'pageId', 'a Confluence page');
+      if ('error' in id) return id;
+      // An enum, matched against a closed list rather than pattern-checked.
+      // Anything unrecognised falls to `storage` rather than being refused: it
+      // is a rendering nicety and refusing a whole page read over one is the
+      // pedantry that gets a proxy worked around (the argument `maxResults`
+      // makes above). Falling to a *fixed member of the list* is what keeps it
+      // from reaching the path.
+      const asked = typeof args?.bodyFormat === 'string' ? args.bodyFormat.trim() : '';
+      const format = ['storage', 'atlas_doc_format', 'view'].includes(asked) ? asked : 'storage';
+      return { path: `/wiki/api/v2/pages/${encodeURIComponent(id.id)}?body-format=${format}` };
+    }
+  },
+  {
+    tool: 'atlassian_get_confluence_page_descendants',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-content.summary',
+    method: 'GET',
+    pathShape: '/wiki/api/v2/pages/{pageId}/descendants?limit={limit}',
+    description:
+      'List everything beneath one Confluence page in the page tree, through the Butchr ' +
+      "daemon's own credential. DESCENDANTS, NOT CHILDREN: this is the whole subtree rather " +
+      'than one level. A page with nothing under it answers with an empty result set, which ' +
+      'is a real answer and not a failure. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'The numeric page id, e.g. "163933".' },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['pageId']
+    },
+    build(args) {
+      const id = numericId(args, 'pageId', 'a Confluence page');
+      if ('error' in id) return id;
+      return {
+        path: `/wiki/api/v2/pages/${encodeURIComponent(id.id)}/descendants?limit=${listLimit(args)}`
+      };
+    }
+  },
+  {
+    tool: 'atlassian_get_confluence_page_footer_comments',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-content.all',
+    method: 'GET',
+    pathShape: '/wiki/api/v2/pages/{pageId}/footer-comments?limit={limit}',
+    description:
+      "Read the footer comments on one Confluence page — the ones at the bottom, not the ones " +
+      'anchored to selected text — through the Butchr daemon\'s own credential. For the ' +
+      'anchored kind use atlassian_get_confluence_page_inline_comments. A page with no ' +
+      'comments answers with an empty result set, which is a real answer. A failure is loud, ' +
+      'as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'The numeric page id, e.g. "163933".' },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['pageId']
+    },
+    build(args) {
+      const id = numericId(args, 'pageId', 'a Confluence page');
+      if ('error' in id) return id;
+      return {
+        path:
+          `/wiki/api/v2/pages/${encodeURIComponent(id.id)}/footer-comments?limit=${listLimit(args)}`
+      };
+    }
+  },
+  {
+    tool: 'atlassian_get_confluence_page_inline_comments',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-content.all',
+    method: 'GET',
+    pathShape: '/wiki/api/v2/pages/{pageId}/inline-comments?limit={limit}',
+    description:
+      'Read the inline comments on one Confluence page — the ones anchored to a selection of ' +
+      "text — through the Butchr daemon's own credential. For the ones at the bottom of the " +
+      'page use atlassian_get_confluence_page_footer_comments. A page with none answers with ' +
+      'an empty result set, which is a real answer. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'The numeric page id, e.g. "163933".' },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['pageId']
+    },
+    build(args) {
+      const id = numericId(args, 'pageId', 'a Confluence page');
+      if ('error' in id) return id;
+      return {
+        path:
+          `/wiki/api/v2/pages/${encodeURIComponent(id.id)}/inline-comments?limit=${listLimit(args)}`
+      };
+    }
+  },
+  {
+    tool: 'atlassian_get_confluence_comment_children',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-content.all',
+    method: 'GET',
+    pathShape: '/wiki/api/v2/footer-comments/{commentId}/children?limit={limit}',
+    description:
+      'Read the replies to one Confluence footer comment, through the Butchr daemon\'s own ' +
+      'credential. Takes the comment id, which comes from ' +
+      'atlassian_get_confluence_page_footer_comments. A comment with no replies answers with ' +
+      'an empty result set, which is a real answer. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        commentId: { type: 'string', description: 'The numeric footer comment id.' },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['commentId']
+    },
+    build(args) {
+      const id = numericId(args, 'commentId', 'a Confluence footer comment');
+      if ('error' in id) return id;
+      return {
+        path:
+          `/wiki/api/v2/footer-comments/${encodeURIComponent(id.id)}/children` +
+          `?limit=${listLimit(args)}`
+      };
+    }
+  },
+  {
+    tool: 'atlassian_search_confluence_cql',
+    mode: 'confluence-read',
+    products: ['confluence'],
+    scope: 'read:confluence-content.summary',
+    method: 'GET',
+    pathShape: '/wiki/rest/api/search?cql={cql}&limit={limit}',
+    description:
+      "Run a CQL search against Confluence through the Butchr daemon's own credential — the " +
+      'Confluence counterpart of atlassian_search_issues. Use this when you know CQL; use ' +
+      'atlassian_search for a plain-text question across both products. THIS IS THE ONE ' +
+      'CONFLUENCE PATH HERE THAT IS NOT v2, because CQL search has no v2 equivalent. Bounded ' +
+      `at ${PROXY_LIST_MAX_RESULTS} results. A failure is loud, as above.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cql: { type: 'string', description: 'The CQL query, e.g. \'type=page AND text ~ "butchr"\'.' },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS}; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['cql']
+    },
+    build(args) {
+      const cql = freeText(args, 'cql', '\'type=page AND text ~ "butchr"\'');
+      if ('error' in cql) return cql;
+      return {
+        path: `/wiki/rest/api/search?cql=${encodeURIComponent(cql.value)}&limit=${listLimit(args)}`
+      };
+    }
+  },
+
+  // ── Account and cross-product ────────────────────────────────────────────
+
+  {
+    tool: 'atlassian_get_user_info',
+    mode: 'jira-read',
+    // read:jira-user — the user directory again. See the note above.
+    products: ['jira'],
+    scope: 'read:jira-user',
+    method: 'GET',
+    pathShape: '/rest/api/3/myself',
+    description:
+      'Read the Atlassian account the Butchr daemon is authenticating as. THIS IS THE ' +
+      "DAEMON'S ACCOUNT, NOT YOURS, and the difference matters here more than anywhere else " +
+      'in this proxy: every agent on this machine shares one credential, so this answers the ' +
+      'same thing for all of them and it is not evidence about who you are. It is the cheapest ' +
+      "way to establish that the daemon's credential is still alive — a listed tool proves " +
+      'nothing, a 200 here proves the credential works. A failure is loud, as above.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    build() {
+      return { path: '/rest/api/3/myself' };
+    }
+  },
+  {
+    tool: 'atlassian_get_accessible_resources',
+    mode: 'jira-read',
+    products: ['site'],
+    // Nothing. `/_edge/tenant_info` is unauthenticated site metadata — the one
+    // endpoint in this table that needs no scope at all, and saying `none`
+    // rather than rounding it into a neighbouring scope is the point of
+    // enumerating per operation.
+    scope: [],
+    method: 'GET',
+    pathShape: '/_edge/tenant_info',
+    description:
+      'List the Atlassian sites the Butchr daemon can reach. THERE IS ALWAYS EXACTLY ONE, and ' +
+      'that is the honest answer rather than a limitation of this implementation: the daemon ' +
+      'holds one API token bound to one site, so one site is the whole of what it can reach. ' +
+      'Returns that site\'s cloudId and url in the same shape the official tool uses. NOTE ' +
+      'THAT `scopes` IS EMPTY AND THAT IS NOT A BUG — a classic API token carries the ' +
+      "account's own permissions rather than a scope list, so there is no scope list to " +
+      'report and an invented one would be worse than none.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    build() {
+      return { path: '/_edge/tenant_info' };
+    },
+    transform(bodies, context) {
+      const cloudId = (bodies[0] as any)?.cloudId;
+      // The site is the daemon's configured one, which is not in any response
+      // body because Atlassian was never asked for it — that is exactly why
+      // this operation needs a transform at all.
+      return [
+        {
+          id: cloudId ?? null,
+          url: context.siteUrl ?? null,
+          name: context.siteUrl ? new URL(context.siteUrl).hostname : null,
+          scopes: [],
+          avatarUrl: null
+        }
+      ];
+    }
+  },
+  {
+    tool: 'atlassian_fetch_resource',
+    // Tagged at the widest product it can reach — see `ProxyOperation.products`
+    // for why that is the safe direction and why there is no second gate.
+    mode: 'confluence-read',
+    products: ['jira', 'confluence'],
+    scope: ['read:jira-work', 'read:confluence-content.all'],
+    method: 'GET',
+    pathShape: '/rest/api/3/issue/{id} | /wiki/api/v2/pages/{id}?body-format=storage',
+    description:
+      'Fetch one Jira issue or one Confluence page by its ARI — the identifier that comes back ' +
+      'in search results — through the Butchr daemon\'s own credential. THE ARI IS PARSED, ' +
+      'NEVER FORWARDED: only ari:cloud:jira:{cloudId}:issue/{idOrKey} and ' +
+      'ari:cloud:confluence:{cloudId}:page/{id} resolve, the cloudId in it is ignored because ' +
+      'the daemon can only reach its own site, and anything else is refused with a sentence ' +
+      'saying so. If you already have an issue key use atlassian_get_issue and if you have a ' +
+      'page id use atlassian_get_confluence_page; this exists for the case where all you have ' +
+      'is what a search handed you. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description:
+            'The ARI, e.g. "ari:cloud:jira:{cloudId}:issue/10301" or ' +
+            '"ari:cloud:confluence:{cloudId}:page/163933".'
+        }
+      },
+      required: ['id']
+    },
+    build(args) {
+      const ari = parseAri(args?.id);
+      if ('error' in ari) return ari;
+      if (ari.product === 'jira') {
+        return {
+          product: 'jira' as const,
+          path:
+            `/rest/api/3/issue/${encodeURIComponent(ari.id)}` +
+            `?fields=${encodeURIComponent('status,summary,issuetype,assignee,parent,updated,issuelinks')}`
+        };
+      }
+      return {
+        product: 'confluence' as const,
+        path: `/wiki/api/v2/pages/${encodeURIComponent(ari.id)}?body-format=storage`
+      };
+    }
+  },
+  {
+    tool: 'atlassian_search',
+    mode: 'confluence-read',
+    products: ['jira', 'confluence'],
+    scope: ['read:jira-work', 'read:confluence-content.summary'],
+    method: 'GET',
+    pathShape:
+      '/rest/api/3/search/jql?jql=text~{query} + /wiki/rest/api/search?cql=text~{query}',
+    description:
+      'Search Jira and Confluence for a plain-text phrase through the Butchr daemon\'s own ' +
+      'credential, and get both sets of hits back together. Use atlassian_search_issues when ' +
+      'you want to write JQL and atlassian_search_confluence_cql when you want to write CQL; ' +
+      'this is for the case where you just have words. ' +
+      'IMPORTANT — THIS IS NOT ROVO SEARCH, AND IT DOES NOT RANK LIKE IT. The official ' +
+      "`search` tool is Rovo, which this daemon's credential cannot reach at all (a classic " +
+      'API token is refused by every Rovo endpoint — it is the wrong kind of credential, not ' +
+      'a missing scope). What this does instead is ask each product its own text query and ' +
+      'return both answers, so results are ranked within each product and are NOT interleaved ' +
+      'or scored against each other. If relative ranking across products matters to you, this ' +
+      'will not give it to you and nothing available here would. A failure is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The words to search for, e.g. "merge governance".' },
+        limit: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_LIST_MAX_RESULTS} per product; defaults to ${PROXY_LIST_MAX_RESULTS}.`
+        }
+      },
+      required: ['query']
+    },
+    build(args) {
+      const q = freeText(args, 'query', '"merge governance"', 500);
+      if ('error' in q) return q;
+      const limit = listLimit(args);
+      // A quoted phrase in both query languages. The quote characters are ours;
+      // an embedded quote in the caller's text is stripped rather than escaped,
+      // because there is no reading of a stray quote that is worth risking a
+      // query that means something other than it looks like. Both values are
+      // then percent-encoded into a single parameter, which is what actually
+      // contains them — see `freeText` on why prose is not pattern-matched.
+      const phrase = q.value.replace(/["\\]/g, ' ').trim();
+      const jql = `text ~ "${phrase}" ORDER BY updated DESC`;
+      const cql = `text ~ "${phrase}"`;
+      return {
+        requests: [
+          {
+            product: 'jira' as const,
+            path:
+              `/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}` +
+              `&fields=${encodeURIComponent('status,summary,issuetype,updated')}` +
+              `&maxResults=${limit}`
+          },
+          {
+            product: 'confluence' as const,
+            path: `/wiki/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${limit}`
+          }
+        ]
+      };
+    },
+    transform(bodies) {
+      // Two answers in, one object out, each half left in the shape its own API
+      // returned it. Deliberately NOT merged into a single ranked list: there
+      // is no score to merge on, and inventing an ordering would be exactly the
+      // artifact-claiming-more-than-its-mechanism defect this epic keeps
+      // finding. The caller is told which product each hit came from by which
+      // key it is under.
+      const [jira, confluence] = bodies as any[];
+      return {
+        jira: { issues: jira?.issues ?? [] },
+        confluence: { results: confluence?.results ?? [] },
+        note:
+          'Two independent product searches, not Rovo Search. Ranked within each product ' +
+          'and not against each other.'
+      };
+    }
   }
 ];
 
@@ -538,7 +1560,18 @@ export function writeOperationsFor(mode: ProxyMode): ProxyOperation[] {
  * with a wider scope changes this answer without anybody remembering to.
  */
 export function grantedScopes(mode: ProxyMode): string[] {
-  return [...new Set(operationsFor(mode).map((op) => op.scope))].sort();
+  return [...new Set(operationsFor(mode).flatMap((op) => scopesOf(op)))].sort();
+}
+
+/**
+ * The scopes one operation needs, always as a list.
+ *
+ * The single normalisation point for {@link ProxyOperation.scope}'s two shapes,
+ * so that "which scopes does this need" has exactly one answer everywhere — the
+ * report, the enumeration and any check that reads either.
+ */
+export function scopesOf(op: ProxyOperation): string[] {
+  return typeof op.scope === 'string' ? [op.scope] : [...op.scope];
 }
 
 /** Find a proxied operation by tool name, whatever the mode. */
@@ -590,10 +1623,13 @@ export function selectedProxyMode(env: NodeJS.ProcessEnv = process.env): ProxyDe
 export interface ProxyOperationReport {
   tool: string;
   method: 'GET' | 'POST';
+  /** Which products this operation's paths reach. See {@link ProxyProduct}. */
+  products: readonly ProxyProduct[];
   pathShape: string;
   /** Present exactly when the operation sends one. */
   bodyShape?: string;
-  scope: string;
+  /** Always a list here, however the table spelled it. See {@link scopesOf}. */
+  scope: string[];
   /**
    * Whether this operation is restricted to the caller's own ticket. True for
    * every write; false for every read. Reported rather than left to be inferred
@@ -645,9 +1681,10 @@ export function proxyReport(
   const operations = operationsFor(decision.mode).map((op) => ({
     tool: op.tool,
     method: op.method,
+    products: op.products,
     pathShape: op.pathShape,
     ...(op.bodyShape ? { bodyShape: op.bodyShape } : {}),
-    scope: op.scope,
+    scope: scopesOf(op),
     ownTicketOnly: !!op.writesTo
   }));
   const scopes = grantedScopes(decision.mode);
@@ -709,7 +1746,9 @@ export function refuseProxyCall(
       reason: 'proxy-off',
       error:
         `The Butchr daemon's Atlassian proxy is off, so ${tool} is refused. It is off by ` +
-        `default; an operator turns it on by setting ${PROXY_ENV_VAR}=jira-read. Use this ` +
+        `default; an operator turns it on by setting ${PROXY_ENV_VAR} to one of ` +
+        `${PROXY_MODES.filter((m) => m !== 'off').join(' | ')} — each grants strictly more ` +
+        `than the one before it. Use this ` +
         "agent's own Atlassian MCP tools instead — nothing about this refusal stops you " +
         'reaching Jira.'
     };
@@ -733,7 +1772,7 @@ export function refuseProxyCall(
         `${tool} belongs to proxy mode "${op.mode}", and this daemon is serving "${mode}". ` +
         `Set ${PROXY_ENV_VAR}=${op.mode} to enable it — each mode is granted on its own ` +
         'merits and they are deliberately not one block. Note that this one needs a ' +
-        `credential holding ${op.scope}, which a read-only token does not have.`
+        `credential holding ${scopesOf(op).join(' + ') || 'no scope at all'}, which a read-only token may not have.`
     };
   }
 

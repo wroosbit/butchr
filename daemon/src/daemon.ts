@@ -53,6 +53,8 @@ import {
 import { ChannelLivenessProbe } from './channel-liveness.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
+import { PendingNotifications, channelNotifier } from './notify.js';
+import { DAEMON_SENDER_TAG } from './provenance.js';
 import { JiraPoller } from './jira-poll.js';
 import { BoardMode, BoardReconciler } from './board-reconcile.js';
 import { AddressableAgent, BoardControlReport, boardControlReport } from './board-control.js';
@@ -876,7 +878,12 @@ const server = net.createServer((socket) => {
       // reader: it was produced beside the runtime at the one construction
       // site, and passing the value is what makes it impossible for this
       // answer to describe a runtime other than the one in `herdrBridge`.
-      agentRuntimeReport
+      agentRuntimeReport,
+      // KAN-301. What the daemon has failed to tell somebody, so that an agent
+      // which was never told is distinguishable from one that was told and had
+      // nothing to do. A reader, so that a listing cannot flush or abandon
+      // anything by accident.
+      pendingNotifications: () => pendingNotifications.report()
     }
   );
 
@@ -1011,10 +1018,56 @@ const announcedMissing = new Set<string>();
  * hear it, resolved through the supervisor of record the activation recorded.
  * See nudge.ts for which transitions qualify and for the storm guards.
  */
+/**
+ * How the daemon's own news reaches an agent (KAN-301).
+ *
+ * ONE ROUTE, SHARED BY BOTH PRODUCERS, AND NO PANE ANYWHERE IN IT
+ *
+ * The Jira poller and the supervision notifier below are the daemon's two
+ * sources of unsolicited news, and until KAN-301 both delivered it by typing
+ * into the recipient's terminal after a Ctrl+C. That cancelled whatever the
+ * recipient was doing — 1,212 confirmed times since 2026-08-04 — and a cancelled
+ * tool call renders to an agent as a refusal, so the daemon's own plumbing was
+ * manufacturing refusals nobody made. See notify.ts for the full account and for
+ * why holding an undeliverable notice beats both dropping it and interrupting.
+ *
+ * The route is the same `routeChannelMessage` that carries `butchr_send_to_agent`
+ * — deliberately, and it is the KAN-145 argument again: a second implementation
+ * of "which carrier, and is the gate open" is a second thing to keep in step by
+ * hand, and the copy nobody routes on is the one that goes wrong. So the kill
+ * switch, the self-check degradation and the `managed` predicate all apply here
+ * exactly as they apply to a steer.
+ *
+ * `sender` is the daemon's own tag rather than an agent's: these messages are
+ * the daemon speaking for itself, which is what `[butchr daemon]` means in
+ * provenance.ts, and both producers already render it into the message text.
+ */
+const pendingNotifications = new PendingNotifications({ log });
+
+const notificationRoute = (address: { type: string; key: string }, content: string) =>
+  routeChannelMessage({
+    registry: agentConnections,
+    address,
+    content,
+    meta: {
+      sender: DAEMON_SENDER_TAG,
+      workspaceType: address.type,
+      workspaceKey: address.key
+    },
+    selfCheck: channelSelfChecks,
+    managed: isManagedAgent
+  });
+
+const notifyAgent = channelNotifier({
+  route: notificationRoute,
+  pending: pendingNotifications
+});
+
 const supervision = new SupervisionNotifier({
   herdrBridge,
   supervisorFor: (agentName) => daemonRouter.supervisorFor(agentName),
   recordedKeyFor: (agentName) => daemonRouter.recordedKeyFor(agentName),
+  deliver: notifyAgent,
   log
 });
 
@@ -1054,6 +1107,9 @@ const jiraPoller = new JiraPoller({
         key: daemonRouter.recordedKeyFor(agent.agentName) ?? agent.key
       })),
   supervisorFor: (agentName) => daemonRouter.supervisorFor(agentName),
+  // KAN-301. Same channel-only carrier as the supervision notifier above; see
+  // its wiring for why there is one route rather than two.
+  deliver: notifyAgent,
   log
 });
 
@@ -1199,6 +1255,19 @@ function sweepForMissingAgents() {
       key: agent.key
     }))
   });
+
+  // KAN-301. The redelivery leg: anything the channel would not take is held,
+  // and this is the tick that tries it again. On the missing-agent sweep rather
+  // than on a timer of its own because a held notice is waiting for a
+  // registration to come back, KAN-274 measured that happening within seconds,
+  // and 30s is already far tighter than the 15-minute window a notice is worth
+  // delivering in. Synchronous and cheap — `routeChannelMessage` is a map lookup
+  // and a socket write, with no pane to poll and nothing to await.
+  try {
+    pendingNotifications.flush(notificationRoute);
+  } catch (e: any) {
+    log('Held-notification flush failed:', e?.message ?? String(e));
+  }
 
   const names = new Set(missing.map((agent) => agent.agentName));
   for (const name of announcedMissing) {

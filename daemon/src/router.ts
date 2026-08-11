@@ -34,6 +34,7 @@ import { senderTagFor, withSenderTag } from './provenance.js';
 import type { CarrierVerdict, ChannelCarrier, ChannelRouteOutcome } from './channel.js';
 import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
 import type { ChannelLivenessState } from './channel-liveness.js';
+import type { PendingReport } from './notify.js';
 import { licenceFor, sealClaims } from './message-claims.js';
 import {
   operationByTool,
@@ -926,6 +927,26 @@ export interface MessageRouterOptions {
    * is the ordinary case — and the handler says so rather than guessing.
    */
   agentRuntimeReport?: RuntimeSwitchReport;
+
+  /**
+   * Notifications the daemon could not deliver (KAN-301).
+   *
+   * A reader rather than the store, by the same rule as `channelSelfCheck` and
+   * `channelLiveness` above: the router reports what is held and must not be one
+   * keystroke away from being able to hold, flush or abandon anything itself.
+   *
+   * Fleet-level rather than a per-agent row, and that is deliberate. The
+   * interesting case is an agent that is **not** in the listing — one that was
+   * stood down while news for it was still held — and a field hung off each
+   * running agent's row could not express that. It is also the shape of the
+   * question a supervisor asks: *"is there anything Butchr failed to tell
+   * anyone?"*
+   *
+   * Absent when nothing wired it — every `verify-*.mjs` constructing a bare
+   * router is the ordinary case — and never `null`, so "nothing is held" cannot
+   * be confused with "this daemon does not track that".
+   */
+  pendingNotifications?: () => PendingReport;
 }
 
 /**
@@ -955,7 +976,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'channelSelfCheck',
   'channelCarrier',
   'channelLiveness',
-  'agentRuntimeReport'
+  'agentRuntimeReport',
+  'pendingNotifications'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -1017,6 +1039,8 @@ export class MessageRouter {
   private readonly channelLiveness?: MessageRouterOptions['channelLiveness'];
   /** See {@link MessageRouterOptions.agentRuntimeReport}. */
   private readonly agentRuntimeReport?: MessageRouterOptions['agentRuntimeReport'];
+  /** See {@link MessageRouterOptions.pendingNotifications}. */
+  private readonly pendingNotifications?: MessageRouterOptions['pendingNotifications'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -1054,6 +1078,7 @@ export class MessageRouter {
     this.channelCarrier = opts.channelCarrier;
     this.channelLiveness = opts.channelLiveness;
     this.agentRuntimeReport = opts.agentRuntimeReport;
+    this.pendingNotifications = opts.pendingNotifications;
   }
 
   /**
@@ -3223,12 +3248,44 @@ export class MessageRouter {
       return;
     }
 
+    // KAN-292: an operation makes one request or a fan-out the TABLE declared,
+    // and this is where the two are made one shape. Nothing a caller sent
+    // decides how many requests there are or which product each goes to — see
+    // `ProxyRequest` — so what follows is a loop over a list this file did not
+    // choose the length of.
+    const requests =
+      'requests' in built
+        ? built.requests
+        : [
+            {
+              // A bare `{ path }` means the operation's first declared product,
+              // which for everything that predates Confluence is `jira`.
+              product: built.product ?? operation.products[0] ?? 'jira',
+              path: built.path,
+              ...('body' in built ? { body: built.body } : {})
+            }
+          ];
+
     const startedAt = Date.now();
-    const outcome =
-      operation.method === 'GET'
-        ? await this.jira.proxyRead(built.path)
-        : await this.jira.proxyWrite(built.path, 'body' in built ? built.body : undefined);
+    const outcomes = [];
+    for (const request of requests) {
+      const outcome =
+        operation.method === 'GET'
+          ? await this.jira.proxyRead(request.path, request.product)
+          : await this.jira.proxyWrite(request.path, request.body);
+      outcomes.push({ request, outcome });
+      // A fan-out stops at its first failure rather than pressing on. Half an
+      // answer presented as an answer is the failure mode this whole module was
+      // written against, and `atlassian_search`'s two legs are not independent
+      // questions — one of them failing means the result is not what its shape
+      // claims.
+      if (!outcome.ok) break;
+    }
     const elapsed = Date.now() - startedAt;
+    // The last outcome is the failing one when anything failed (the loop broke
+    // there), and otherwise the last success.
+    const outcome = outcomes[outcomes.length - 1].outcome;
+    const auditPath = outcomes.map(({ request }) => request.path).join(' + ');
 
     // THE AUDIT LINE. A path, never a credential — auth travels in a header and
     // `TokenJiraTransport` scrubs every on-the-wire form of the token out of
@@ -3248,9 +3305,10 @@ export class MessageRouter {
     // `verify-atlassian-proxy-write-scope.mjs`; if a later slice adds a write
     // whose body carries user content, this line is one of the places that has
     // to be reconsidered rather than inherited.
-    const bodyForLog = 'body' in built && built.body !== undefined ? ` ${JSON.stringify(built.body)}` : '';
+    const writtenBody = outcomes.find(({ request }) => request.body !== undefined)?.request.body;
+    const bodyForLog = writtenBody !== undefined ? ` ${JSON.stringify(writtenBody)}` : '';
     console.log(
-      `atlassian-proxy: ${caller} → ${tool} ${operation.method} ${built.path}${bodyForLog} → ` +
+      `atlassian-proxy: ${caller} → ${tool} ${operation.method} ${auditPath}${bodyForLog} → ` +
         (outcome.ok
           ? `${outcome.status} (${elapsed}ms)`
           : `FAILED${outcome.status ? ` ${outcome.status}` : ''} (${elapsed}ms) ` +
@@ -3270,17 +3328,57 @@ export class MessageRouter {
       return;
     }
 
+    // KAN-292: two operations reshape what came back before the agent sees it,
+    // and both had to. `transform` is given only non-secret credential facts —
+    // see `ProxyTransformContext`, which cannot carry a token by shape. A
+    // transform that throws is a bug in this daemon rather than in the agent's
+    // request, so it is reported as one instead of being allowed to look like
+    // Atlassian refusing something.
+    let responseBody: unknown = outcome.body;
+    if (operation.transform) {
+      const credential = this.jira.status();
+      // `CredentialStatus` is an open record of `string | boolean`, so the two
+      // fields wanted here are narrowed to strings rather than asserted: a
+      // `siteUrl` that somehow arrived as a boolean should reach the transform
+      // as absent, not as `true`.
+      const asText = (value: unknown) => (typeof value === 'string' ? value : undefined);
+      try {
+        responseBody = operation.transform(
+          // Every outcome here is a success — the loop above breaks on the
+          // first failure and the `!outcome.ok` branch returned before this.
+          outcomes.map(({ outcome: o }) => (o.ok ? o.body : undefined)),
+          { siteUrl: asText(credential.siteUrl), email: asText(credential.email) }
+        );
+      } catch (err: any) {
+        fail(
+          `${tool} reached Atlassian successfully, but the Butchr daemon failed to assemble the ` +
+            `answer: ${err?.message ?? String(err)}. This is a defect in the daemon and not in ` +
+            'your request — nothing about your arguments would change it. The underlying read ' +
+            'did succeed, so the data exists; report this rather than retrying.',
+          { reason: 'transform-failed' }
+        );
+        return;
+      }
+    }
+
     respond({
       action: 'atlassian_proxy_call_response',
       success: true,
       status: outcome.status,
       // Named `body` rather than spread, so a Jira field called `success` or
       // `error` cannot overwrite this envelope's own verdict.
-      body: outcome.body,
+      body: responseBody,
       // What actually happened, for a reader of the transcript who wants to
       // know which credential answered without asking the daemon a second
       // question. Non-secret: a path and a method.
-      via: { tool, method: operation.method, path: built.path, servedBy: 'butchr-daemon' }
+      via: {
+        tool,
+        method: operation.method,
+        path: auditPath,
+        products: requests.map((r) => r.product),
+        ...(operation.transform ? { reshapedByDaemon: true } : {}),
+        servedBy: 'butchr-daemon'
+      }
     });
   }
 
@@ -4104,6 +4202,26 @@ export class MessageRouter {
       // whether each agent's loop was proved as far as its *client*; this says
       // whether anything got past the client into a *model*, which is the leg
       // none of those rows can see.
+      // NEWS THE DAEMON COULD NOT DELIVER (KAN-301), and the one field on this
+      // response that answers a question about *absence*.
+      //
+      // The board's most-repeated failure, in `epic/KAN-39`'s words: "an agent
+      // that did NOT get the news must be distinguishable from one that got it
+      // and had nothing to do." Dropping pane insertion is what made that
+      // question askable — a Ctrl+C always landed, so there was nothing to
+      // report — and it is what makes answering it mandatory rather than nice.
+      //
+      // `pending` is recoverable and retried on every sweep; `abandoned` is
+      // Butchr saying plainly that it gave up and that those agents were never
+      // told. The abandoned count is never reset, because a counter that returns
+      // to zero is the same silence in a tidier costume.
+      //
+      // Omitted rather than nulled when no store is wired, by the same rule as
+      // `boardControl` above: "this daemon holds no notifications" and "this
+      // daemon cannot tell you" are different answers.
+      ...(this.pendingNotifications
+        ? { undeliveredNotifications: this.pendingNotifications() }
+        : {}),
       ...(this.channelLiveness ? { channelLiveness: this.channelLiveness() } : {}),
       ...(staleness ? { staleness } : {}),
       // Omitted rather than nulled when no sweep has run, by the same rule as
