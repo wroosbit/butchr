@@ -1169,6 +1169,12 @@ export class MessageRouter {
    * same rule `sweepWorkspaces` applies to its own `liveWorkDirs`, and it is
    * applied here rather than shared because the two are asking about different
    * things: the sweep asks *which of these many*, this asks *is this one*.
+   *
+   * It reads herdr twice — once for `reachable`, which `surveyAgents` does not
+   * return, and once inside it. That is deliberate and it is not a hot path: a
+   * stand-down happens on human or supervisor time, and the alternative is a
+   * guard that cannot tell "nothing is running" from "nobody answered". Those
+   * two must not be the same answer when the consequence is a delete.
    */
   private liveWorkspaceCheck(workDir: string): string | null {
     const { reachable } = this.herdrBridge.listHerdrAgentsChecked();
