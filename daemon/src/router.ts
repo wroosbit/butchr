@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { JiraIssueTypeService } from './jira.js';
@@ -57,7 +58,7 @@ import {
   selectVictim
 } from './priority.js';
 import { getStalenessReport, StalenessReport } from './staleness.js';
-import { sweepWorkspaces, lastReclaimSummary } from './reclaim.js';
+import { sweepWorkspaces, lastReclaimSummary, reclaimWorkspace, formatBytes } from './reclaim.js';
 import { AddressableAgent, BoardControlReport } from './board-control.js';
 import {
   Capacity,
@@ -69,6 +70,36 @@ import {
 } from './capacity.js';
 
 type Respond = (msg: any) => void;
+
+/**
+ * What a stand-down's reclaim did, as it rides both the `deactivate_response`
+ * and the `agent_deactivated_event`.
+ *
+ * Three statuses, and collapsing any two of them loses the fact a reader needs.
+ * `reclaimed` did something (possibly nothing, if the workspace was already
+ * bare — `paths` says which). `skipped` deliberately did not, and `reason` says
+ * why in the words of the condition that refused. `failed` tried and could not,
+ * and `error` is what went wrong — the stand-down itself still succeeded.
+ *
+ * **`bytes` is allocated size, and since KAN-262 it is easily misread.** These
+ * trees are hard-linked from a shared store, so deleting one reports its full
+ * apparent size while freeing only what nothing else references. A reclaim of
+ * ~0 real bytes is the sharing working. See `reclaim.ts`'s header.
+ */
+export interface StandDownReclaim {
+  status: 'reclaimed' | 'skipped' | 'failed';
+  /** Absolute paths removed. Empty unless `status` is `reclaimed`. */
+  paths: string[];
+  bytes: number;
+  /** One sentence, for a log line or a row in the Agents page. */
+  headline: string;
+  /** Candidates found and deliberately left alone — a symlink, a tracked tree. */
+  skipped?: { path: string; reason: string }[];
+  /** Why nothing was attempted. Present when `status` is `skipped`. */
+  reason?: string;
+  /** What went wrong. Present when `status` is `failed`. */
+  error?: string;
+}
 
 /**
  * What the UI is told about a session. Sessions are never sent over the wire
@@ -1021,6 +1052,150 @@ export class MessageRouter {
       },
       preemption
     );
+  }
+
+  /**
+   * Reclaim a stood-down agent's dependencies, and never at the cost of the
+   * stand-down itself.
+   *
+   * **Why stand-down is the trigger, and not the Jira transition.** The human's
+   * ask was for cleanup to happen by itself rather than when somebody remembers,
+   * and the story's hardest constraint is *never reclaim from a live agent*. A
+   * ticket moving to Done says nothing about whether an agent is still working
+   * in that workspace — KAN-79's poller reads only the issues of agents that
+   * are **live** (`jira-poll.ts`), so Done arrives at precisely the moment the
+   * exclusion would have to refuse. Stand-down is the same moment in practice —
+   * a close-out transitions the ticket and deactivates the agent — and it is the
+   * one at which the safety condition is true **by construction** rather than by
+   * inference.
+   *
+   * **Called after the teardown is confirmed, never before.** Reclaiming
+   * underneath a process that is still running is the failure this whole story
+   * guards, so every call site below sits behind its own `success`.
+   *
+   * Three things it will not do:
+   *
+   *   - **Not on a preemption.** A preemption is an interruption, not a finish:
+   *     the agent is expected back, usually within the hour, and
+   *     `butchr_list_agents` lists it as work owed. Deleting its tree would
+   *     charge an involuntary stand-down a reinstall that a voluntary one is
+   *     choosing to pay. The `preemption` record is what tells the two apart.
+   *   - **Not while anything is still live in that directory.** `terminateSession`
+   *     returning success is our own account of the teardown; this asks herdr,
+   *     through the same `surveyAgents()` census `list_agents` and
+   *     `reclaim_sweep` are built from, so the exclusion and the fleet a
+   *     supervisor is looking at cannot disagree. Fails **closed**: a herdr that
+   *     did not answer establishes nothing, so nothing is deleted.
+   *   - **Not at the expense of the stand-down.** The caller asked for the agent
+   *     to be gone; disk is a side effect. Every failure below is caught,
+   *     logged, and reported — `deactivate` still succeeds.
+   *
+   * The report rides the response *and* the `agent_deactivated_event`, because a
+   * stand-down that silently shrank a workspace is the surprise this epic keeps
+   * deleting. Note `bytes` is honest but easily misread: since KAN-262 these
+   * trees are hard-linked from a shared store, so a reclaim that frees ~nothing
+   * on `df` is the mechanism working rather than failing — `reclaim.ts`'s header
+   * carries the full account.
+   */
+  private reclaimForStandDown(args: {
+    type: string;
+    key: string;
+    workDir?: string;
+    preemption?: PreemptionRecord;
+  }): StandDownReclaim {
+    const { type, key, preemption } = args;
+
+    if (preemption) {
+      return {
+        status: 'skipped',
+        paths: [],
+        bytes: 0,
+        reason: 'this stand-down is a preemption — the agent is expected back, so its workspace is left as it was',
+        headline: 'Nothing reclaimed: preempted agents keep their dependencies'
+      };
+    }
+
+    // The session's own answer first, then what the last activation recorded —
+    // the by-key path can stand down an agent whose session this daemon never
+    // held, and the registry is the only thing that still knows where it lived.
+    const workDir =
+      args.workDir ||
+      this.agentRegistry?.intents().get(agentNameFor(type, key))?.record.workDir ||
+      '';
+
+    if (!workDir) {
+      return {
+        status: 'skipped',
+        paths: [],
+        bytes: 0,
+        reason: 'no workspace directory is recorded for this agent, so there is nothing to reclaim from',
+        headline: 'Nothing reclaimed: no workspace directory on record'
+      };
+    }
+
+    const live = this.liveWorkspaceCheck(workDir);
+    if (live) {
+      return { status: 'skipped', paths: [], bytes: 0, reason: live, headline: `Nothing reclaimed: ${live}` };
+    }
+
+    try {
+      const result = reclaimWorkspace(workDir, { dryRun: false });
+      const paths = result.removed.map((r) => r.path);
+      return {
+        status: 'reclaimed',
+        paths,
+        bytes: result.bytes,
+        ...(result.skipped.length > 0 ? { skipped: result.skipped } : {}),
+        headline:
+          paths.length > 0
+            ? `Reclaimed ${formatBytes(result.bytes)} in ${paths.length} node_modules from ${type}/${key}`
+            : `Nothing left to reclaim in ${type}/${key}`
+      };
+    } catch (e: any) {
+      // The stand-down is what was asked for. This is reported and logged, and
+      // it does not travel any further than this return.
+      const error = `Reclaim after stand-down failed for ${type}/${key}: ${e?.message ?? String(e)}`;
+      console.error('[MessageRouter]', error);
+      return { status: 'failed', paths: [], bytes: 0, error, headline: 'Reclaim failed; the stand-down stands' };
+    }
+  }
+
+  /**
+   * Whether anything is still running in `workDir` — the reason to refuse, or
+   * null when the directory is genuinely nobody's.
+   *
+   * Compared by resolved path, so a symlinked workspace cannot dodge the check
+   * by being spelled differently in the census than it is on disk. That is the
+   * same rule `sweepWorkspaces` applies to its own `liveWorkDirs`, and it is
+   * applied here rather than shared because the two are asking about different
+   * things: the sweep asks *which of these many*, this asks *is this one*.
+   */
+  private liveWorkspaceCheck(workDir: string): string | null {
+    const { reachable } = this.herdrBridge.listHerdrAgentsChecked();
+    if (!reachable) {
+      return 'herdr did not answer, so nothing could be established about what is still running';
+    }
+
+    const { agents, unbackedPanes } = this.surveyAgents();
+    const resolve = (dir: string): string => {
+      try {
+        return fs.realpathSync(dir);
+      } catch {
+        return path.resolve(dir);
+      }
+    };
+
+    const target = resolve(workDir);
+    // Panes with a bare shell behind them count, for `handleReclaimSweep`'s
+    // reason: somebody may be sitting in front of one, mid-`npm install`.
+    const occupants = [...agents.map((a) => a.workDir), ...unbackedPanes.map((p) => p.workDir)];
+
+    for (const dir of occupants) {
+      if (typeof dir !== 'string' || !dir) continue;
+      if (resolve(dir) === target) return 'an agent is still live in this workspace';
+    }
+
+    return null;
   }
 
   /** The staleness report, or undefined when this router has no install context. */
@@ -1997,10 +2172,19 @@ export class MessageRouter {
     const { success, error } = this.herdrBridge.terminateSession(data.sessionId);
     if (session) this.rememberDeactivated(session.type, session.key, session.workDir);
 
+    // Only once the teardown is confirmed. This path carries no `preemption` —
+    // it is the by-session stand-down, and the capacity gate stands its victims
+    // down by key — so a stand-down that arrives here is a voluntary one.
+    const reclaim =
+      success && session
+        ? this.reclaimForStandDown({ type: session.type, key: session.key, workDir: session.workDir })
+        : undefined;
+
     respond({
       action: 'deactivate_response',
       success,
       sessionId: data.sessionId,
+      ...(reclaim ? { reclaim } : {}),
       ...(error ? { error } : {})
     });
   }
@@ -2024,6 +2208,18 @@ export class MessageRouter {
       const { success, error } = this.herdrBridge.terminateSession(session.sessionId);
       this.rememberDeactivated(session.type, session.key, session.workDir, preemption);
 
+      // Behind `success`, for the reason the broadcast below is: reclaiming
+      // underneath an agent whose teardown could not be confirmed is exactly
+      // the failure the live-agent exclusion exists to prevent.
+      const reclaim = success
+        ? this.reclaimForStandDown({
+            type: session.type,
+            key: session.key,
+            workDir: session.workDir,
+            preemption
+          })
+        : undefined;
+
       // Not broadcast when the teardown could not be confirmed: the event is
       // what the Agents page and the sidepanel act on, and announcing an agent
       // deactivated while it may still be running is the same false claim this
@@ -2034,13 +2230,15 @@ export class MessageRouter {
           type: session.type,
           key: session.key,
           sessionId: session.sessionId,
-          ...(preemption ? { preempted: true } : {})
+          ...(preemption ? { preempted: true } : {}),
+          ...(reclaim ? { reclaim } : {})
         });
       }
 
       respond({
         action: 'deactivate_response',
         success,
+        ...(reclaim ? { reclaim } : {}),
         // The address, so a caller that asked about several agents can tell
         // which one this answers for. A fleet list can — the Agents page shows
         // every agent at once, and a bare `success: false` there is a failure
@@ -2092,12 +2290,24 @@ export class MessageRouter {
     const goneAlready =
       !result.success && Boolean(closedType) && this.herdrBridge.listHerdrAgentsChecked().reachable;
 
+    // The agent is gone — either herdr just closed it, or it was already dead
+    // and herdr said so. Both are stand-downs with the teardown confirmed, and
+    // both are workspaces with nothing running in them. The workDir comes off
+    // the registry inside the helper: this path never held a session to read
+    // one from, which is the whole reason `rememberDeactivated` falls back the
+    // same way one line above.
+    const reclaim =
+      (result.success || goneAlready) && closedType
+        ? this.reclaimForStandDown({ type: closedType, key, preemption })
+        : undefined;
+
     if (result.success || goneAlready) {
       this.broadcast({
         action: 'agent_deactivated_event',
         type: closedType,
         key,
-        ...(preemption ? { preempted: true } : {})
+        ...(preemption ? { preempted: true } : {}),
+        ...(reclaim ? { reclaim } : {})
       });
     }
 
@@ -2107,6 +2317,7 @@ export class MessageRouter {
       ...(closedType ? { type: closedType } : {}),
       success: result.success || goneAlready,
       ...(preemption ? { preempted: true } : {}),
+      ...(reclaim ? { reclaim } : {}),
       // "…so it will not be restored" is what this said until KAN-196, and it
       // promised more than the record provides. What a `deactivated` record
       // actually buys is that `AgentRegistry.expected()` omits this agent, so
