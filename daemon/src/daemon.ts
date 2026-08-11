@@ -1225,12 +1225,26 @@ function onListen() {
     .then((result) => {
       const restored = result.outcomes.filter((o) => o.result === 'restored');
       const failed = result.outcomes.filter((o) => o.result === 'failed');
+      // KAN-258: counted and named separately from failures, and named *by
+      // key*, because this is the line an operator reads after a cold boot to
+      // find out why the fleet is smaller than the board. A count alone would
+      // say the machine held back without saying who it held back.
+      const deferred = result.outcomes.filter((o) => o.result === 'deferred');
       const idle = restored.filter((o) => o.resumedConversation && o.nudged === false);
       log(
         `[reconcile] Done: ${result.expected} expected, ` +
         `${restored.length} restored, ` +
         `${result.outcomes.filter((o) => o.result === 'already-running').length} already running, ` +
+        `${deferred.length} deferred for capacity, ` +
         `${failed.length} failed.` +
+        (deferred.length
+          ? ` The machine would not carry ${deferred.length} of them yet, so restoration ` +
+            `converged toward the recorded fleet rather than jumping to it: ` +
+            deferred.map((o) => `${o.type}/${o.key}`).join(', ') +
+            `. They stay recorded as active and are reported under missingAgents; ` +
+            `board-keyed ones are retried by the board reconciler within a cycle. ` +
+            `Nothing was overridden (KAN-258).`
+          : '') +
         (idle.length
           ? ` ${idle.length} restored agent(s) could not be told to carry on and may be idle: ` +
             idle.map((o) => o.agentName).join(', ')

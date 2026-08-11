@@ -309,6 +309,19 @@ function capacityDto(c: Capacity) {
     // anyone measured it.
     agentMemorySource: c.costSource.residentBytes,
     agentCoresSource: c.costSource.cores,
+    // Starts already admitted that no instrument has priced (KAN-258). Sent
+    // whether or not it fired — `count: 0` is the ordinary steady-state answer
+    // — because a caller cannot otherwise tell a machine with no starts in
+    // flight from a build where this term does not exist. That distinction is
+    // the whole of what a reader needs to know this gate is protecting them.
+    unobservedStarts: {
+      count: c.unobservedStarts.count,
+      cores: Math.round(c.unobservedStarts.cores * 100) / 100,
+      memoryMb: Math.round(c.unobservedStarts.bytes / (1024 * 1024)),
+      chargedCores: c.unobservedStarts.cost.cores,
+      chargedMemoryMb: Math.round(c.unobservedStarts.cost.residentBytes / (1024 * 1024)),
+      because: c.unobservedStarts.because
+    },
     // Null in the ordinary case. Set when the per-agent estimate implied more
     // CPU than the machine reported in use, so `headroomByCpu` below divided by
     // `used` rather than by `agentCores` (KAN-204). Both numbers travel, so a
@@ -747,7 +760,17 @@ export interface MessageRouterOptions {
    * describes anything — and being last is precisely what stopped protecting
    * it the moment an eleventh parameter was added.)
    */
-  capacitySource?: (running: number, supervisors: number) => Capacity;
+  capacitySource?: (
+    running: number,
+    supervisors: number,
+    /**
+     * When each still-running agent this router started was started, wall-clock
+     * ms (KAN-258). A proof that injects a two-parameter function still
+     * type-checks and still gets the old behaviour, which is what keeps the
+     * existing scripts working unchanged.
+     */
+    startedAt: readonly number[]
+  ) => Capacity;
   /**
    * The board's grip on the fleet, for the Agents page's Off and On controls
    * (KAN-222). Optional by the same rule as everything above it, and the
@@ -874,7 +897,29 @@ export class MessageRouter {
   /** See {@link MessageRouterOptions.launchdarkly}. */
   private readonly launchdarkly?: LaunchDarklyIntegration;
   /** See {@link MessageRouterOptions.capacitySource}. */
-  private readonly capacitySource: (running: number, supervisors: number) => Capacity;
+  private readonly capacitySource: (
+    running: number,
+    supervisors: number,
+    startedAt: readonly number[]
+  ) => Capacity;
+  /**
+   * When this router started each agent, and whether the fleet census has ever
+   * reported it (KAN-258).
+   *
+   * The capacity gate divides figures that describe *settled* agents, so it
+   * cannot see one it started three seconds ago; this is the record that lets
+   * it charge for them anyway. See capacity.ts's `unobservedStartsAmong` for
+   * which of these end up being charged — the rule lives there, next to the
+   * measurement whose staleness it is about, rather than here.
+   *
+   * `seen` is what makes the pruning exact instead of a race. An entry is
+   * dropped only once the census has reported that agent *and* it has since
+   * gone — never merely because it is absent, which is the state every start
+   * is in for its first moments and is precisely the state this term exists to
+   * charge for. Dropping on absence would have reintroduced the defect through
+   * the cleanup.
+   */
+  private readonly startLedger = new Map<string, { at: number; seen: boolean }>();
   /** See {@link MessageRouterOptions.boardControl}. */
   private readonly boardControl?: (agents: AddressableAgent[]) => BoardControlReport;
   /** See {@link MessageRouterOptions.channelRoute}. */
@@ -1939,6 +1984,11 @@ export class MessageRouter {
       activatedBy: this.supervisorOfRecord(data, { type: config.type, key })
     });
 
+    // Before the broadcast, so the next capacity question — which a listener
+    // may ask the moment it hears this — already charges for this agent
+    // (KAN-258).
+    this.recordStart(agentName);
+
     this.broadcast({
       action: 'agent_activated_event',
       type: config.type,
@@ -2127,6 +2177,9 @@ export class MessageRouter {
       mcpServers: Object.keys(mcpServers),
       activatedBy: this.supervisorOfRecord(data, { type, key })
     });
+
+    // See handleActivate: recorded before the broadcast (KAN-258).
+    this.recordStart(agentName);
 
     this.broadcast({
       action: 'agent_activated_event',
@@ -3627,15 +3680,55 @@ export class MessageRouter {
   private capacityOf(agents: ListedAgent[]): Capacity {
     let fleet = 0;
     let supervisors = 0;
+    const live = new Set<string>();
 
     for (const entry of agents) {
       if (!this.countsAsAgent(entry)) continue;
+      live.add(entry.agentName);
 
       if (isSupervisorType(entry.type)) supervisors++;
       else fleet++;
     }
 
-    return this.capacitySource(fleet, supervisors);
+    // Reconcile the start ledger against the census, in the one order that is
+    // safe: mark first, drop second. See `startLedger` for why absence alone
+    // must never drop an entry.
+    for (const [name, entry] of this.startLedger) {
+      if (live.has(name)) entry.seen = true;
+      else if (entry.seen) this.startLedger.delete(name);
+    }
+    this.boundStartLedger();
+
+    return this.capacitySource(fleet, supervisors, [...this.startLedger.values()].map((e) => e.at));
+  }
+
+  /**
+   * Record that an agent was started, for the capacity gate's starts-in-flight
+   * term (KAN-258). Called on the success path of both activation routes.
+   */
+  private recordStart(agentName: string): void {
+    this.startLedger.set(agentName, { at: Date.now(), seen: false });
+    this.boundStartLedger();
+  }
+
+  /**
+   * A leak guard, and named as one so nobody reads it as policy.
+   *
+   * An entry whose agent never reaches the census — an activation that
+   * succeeded onto a pane that then died — is never marked `seen` and so is
+   * never dropped by the reconciliation above. It stops being *charged* on its
+   * own, because `unobservedStartsAmong` ignores anything older than the
+   * current measurement window; this only stops the map growing without bound
+   * on a daemon that runs for weeks. The oldest go first, which is also the
+   * order in which they stopped mattering.
+   */
+  private boundStartLedger(): void {
+    const LIMIT = 256;
+    if (this.startLedger.size <= LIMIT) return;
+    const oldest = [...this.startLedger.entries()].sort((a, b) => a[1].at - b[1].at);
+    for (const [name] of oldest.slice(0, this.startLedger.size - LIMIT)) {
+      this.startLedger.delete(name);
+    }
   }
 
   /**
