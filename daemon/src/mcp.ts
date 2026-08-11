@@ -666,6 +666,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "butchr_guardian",
+        description:
+          "Reads or changes Butchr's GUARDIAN — the single agent the daemon pokes on a timer to sweep the fleet. THE GUARDIAN IS A POINTER, NOT A SPAWN: it names an agent that already exists and already has its own ticket, the poke is additional to that agent's work, and nothing here starts, reserves or creates anything. Pointing it at an agent that is not running does not bring one up; it makes the next poke report undelivered, which is the intended behaviour and not a gap. WHAT THE RECORD PROVES, AND IT IS LESS THAN IT LOOKS: `state.proves` is the literal 'delivery' and `state.provesDetail` says so in a sentence — this tells you whether the poke reached a live channel connection, NOT whether the fleet is being supervised. A heartbeat proves the loop turns; it says nothing about whether its decisions are right, so do not read a delivered poke as a swept fleet. READ THREE STATES APART: `configured: false` means NO GUARDIAN IS SET and nothing is watching the fleet on a timer; `overdue: true` means pokes are being sent and are not landing, so the guardian is not being asked to sweep; and an ordinary delivered poke means a frame reached a connection and no more. EXACTLY ONE GUARDIAN, ENFORCED: `op: 'set'` is REFUSED when a different agent is already the guardian, and the refusal names the incumbent and when it was set — pass `replace: true` to change it deliberately. Setting it to whoever it already is is idempotent and is not refused. The failure mode of two guardians is two parties each assuming the other swept.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            op: {
+              type: "string",
+              enum: ["get", "set", "clear", "poke"],
+              description:
+                "Optional, default 'get'. 'get' reads the current guardian and the poke record. 'set' names the guardian (requires type and key). 'clear' unsets it, after which nothing is watching the fleet on a timer. 'poke' sends one poke NOW, off the schedule, through the same code path the timer takes — use it to find out whether the guardian is actually reachable rather than waiting for the interval. A poke lands in a real agent's context, so it is not free.",
+            },
+            type: {
+              type: "string",
+              description: "For 'set'. The guardian's workspace type (e.g. 'epic').",
+            },
+            key: {
+              type: "string",
+              description: "For 'set'. The guardian's workspace key (e.g. 'KAN-203').",
+            },
+            replace: {
+              type: "boolean",
+              description:
+                "For 'set'. Change the guardian when a different one is already configured. Without it, a set against an existing guardian is refused and names the incumbent — that refusal is the whole point, because the failure it prevents is a silent replacement leaving two agents each believing they are the guardian. Pass it when you know who the guardian is and are changing it.",
+            },
+            intervalMs: {
+              type: "number",
+              description:
+                "Optional, for 'set'. How often the guardian is poked, in milliseconds; defaults to 30 minutes and is clamped to between 1 minute and 24 hours. Omitting it keeps whatever is already configured rather than resetting it, so changing WHO the guardian is does not silently change HOW OFTEN.",
+            },
+          },
+          required: [],
+        },
+      },
+      {
         name: "butchr_tail_agent",
         description:
           "Reads the recent terminal output of an agent without attaching to it. Use this to find out what an agent is actually doing — or why it stopped — when its reported status alone is not enough. READ THE THREE ANSWERS APART, because two of them look alike and only one is a claim about the agent: `success: true` with text is the pane; `success: true` with `text: \"\"` and `source: null` means EVERY read source was asked and every one was silent, so the pane really is blank; `success: false` means the read did not happen and you know NOTHING about the pane — in particular you must not read it as an idle agent. `source` names which source answered and `sourcesTried` lists what was asked. This matters most before a `stop-now` send: an agent you conclude is idle because a read failed is an agent whose in-flight tool call you are about to destroy.",
@@ -834,6 +869,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const res = await callDaemonAPI('send_to_agent', { key, type, message, intent });
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false,
+      };
+    }
+
+    if (name === "butchr_guardian") {
+      const { op, type, key, replace, intervalMs } = args as any;
+      if (op === 'set' && (!type || !key)) {
+        throw new Error("Missing required arguments for op 'set': type, key");
+      }
+
+      const res = await callDaemonAPI('guardian', { op, type, key, replace, intervalMs });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        // BOTH REFUSALS ARRIVE AS ERRORS, and that is the point rather than
+        // tidiness. A `set` refused because there is already a guardian, and a
+        // `poke` that was not delivered, both answer `success: false` — and an
+        // undelivered poke arriving as ordinary text is exactly the reassurance
+        // AC2 exists to forbid. `success` is the delivery, never the request.
         isError: res?.success === false,
       };
     }

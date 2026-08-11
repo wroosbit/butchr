@@ -50,10 +50,17 @@ import {
   runChannelSelfCheck
 } from './channel-selfcheck.js';
 import { ChannelLivenessProbe } from './channel-liveness.js';
+import {
+  GuardianPoker,
+  readGuardianConfig,
+  writeGuardianConfig,
+  setGuardian,
+  clearGuardian
+} from './guardian.js';
 import { reconcileAgents } from './reconcile.js';
 import { SupervisionNotifier } from './nudge.js';
 import { PendingNotifications, channelNotifier } from './notify.js';
-import { DAEMON_SENDER_TAG } from './provenance.js';
+import { DAEMON_SENDER_TAG, senderTagFor } from './provenance.js';
 import { JiraPoller } from './jira-poll.js';
 import { BoardMode, BoardReconciler } from './board-reconcile.js';
 import { AddressableAgent, BoardControlReport, boardControlReport } from './board-control.js';
@@ -618,6 +625,118 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
       });
       return true;
     }
+    case 'guardian': {
+      // WHO IS WATCHING THE FLEET, AND THE THREE WRITES TO THAT (KAN-284).
+      //
+      // Handled here beside `channel_send` and `channel_liveness` rather than in
+      // the router, for the same reason both of those are: its subject is the
+      // identity map and the connections in it — a poke is a channel write — and
+      // the router deliberately has no socket and knows nothing about either.
+      //
+      // The *read* is also on `list_agents` and on `status_response` for a board
+      // page, through the same `guardianPoker.state()` reader. One state, three
+      // surfaces; none of them derives its own answer, which is the rule
+      // `carrierFor` exists to enforce elsewhere.
+      const op = typeof msg?.op === 'string' ? msg.op : 'get';
+
+      if (op === 'set') {
+        const address = { type: msg?.type, key: msg?.key };
+        const result = setGuardian({
+          address,
+          replace: msg?.replace === true,
+          // WHO SET IT, FROM THE REQUEST RATHER THAN FROM THE BODY. Same
+          // provenance rule as `handleSendToAgent`'s sender tag: the identity
+          // is a statement about the *request*, which the butchr MCP attaches
+          // off its own argv, so a caller cannot write itself down as somebody
+          // else. The options page is unidentified and reads as such.
+          setBy: senderTagFor({ type: msg?.workspaceType, key: msg?.workspaceKey }),
+          intervalMs: typeof msg?.intervalMs === 'number' ? msg.intervalMs : null,
+          now: () => Date.now(),
+          read: () => readGuardianConfig(),
+          write: (config) => writeGuardianConfig(config)
+        });
+        if (!result.ok) {
+          // A REFUSAL, NOT AN ERROR CONDITION. `success: false` with the
+          // condition named — AC4 asks for "a second guardian refused, with the
+          // refusal naming the condition", and the incumbent is the condition.
+          log(`[Guardian] set refused (${result.refusal}): ${result.detail}`);
+          reply({
+            action: 'guardian_response',
+            success: false,
+            op,
+            refusal: result.refusal,
+            error: result.detail,
+            incumbent: result.incumbent,
+            state: guardianPoker.state()
+          });
+          return true;
+        }
+        log(`[Guardian] ${result.detail}`);
+        reply({
+          action: 'guardian_response',
+          success: true,
+          op,
+          config: result.config,
+          replaced: result.replaced,
+          detail: result.detail,
+          state: guardianPoker.state()
+        });
+        return true;
+      }
+
+      if (op === 'clear') {
+        const result = clearGuardian({
+          read: () => readGuardianConfig(),
+          write: (config) => writeGuardianConfig(config)
+        });
+        log(`[Guardian] ${result.detail}`);
+        reply({
+          action: 'guardian_response',
+          success: true,
+          op,
+          cleared: result.cleared,
+          detail: result.detail,
+          state: guardianPoker.state()
+        });
+        return true;
+      }
+
+      if (op === 'poke') {
+        // THE SAME CODE PATH THE TIMER TAKES, which is the only thing that makes
+        // this legitimate: a "poke now" that went round the scheduler would be a
+        // second implementation of the mechanism, and the one nobody runs in
+        // production is the one that stays right (KAN-145). It is how a proof
+        // gets a real delivery in seconds rather than thirty minutes, and how
+        // somebody looking at an overdue guardian asks again by hand.
+        //
+        // Unlike `channel_liveness`, this ANSWERS WITH THE RESULT rather than
+        // starting a run and returning: a poke is a single synchronous channel
+        // write with no answer window to wait through, so there is nothing for a
+        // caller to poll for.
+        const result = guardianPoker.pokeOnce();
+        reply({
+          action: 'guardian_response',
+          // `success` IS THE DELIVERY, and that is AC2 in one line: a poke to an
+          // unregistered agent reports undelivered, not success. Nothing here
+          // swallows KAN-274's refusal or converts it into a queued retry.
+          success: result.delivered,
+          op,
+          result,
+          ...(result.delivered ? {} : { error: result.detail }),
+          state: guardianPoker.state()
+        });
+        return true;
+      }
+
+      reply({
+        action: 'guardian_response',
+        success: true,
+        op: 'get',
+        config: readGuardianConfig(),
+        state: guardianPoker.state()
+      });
+      return true;
+    }
     case 'connected_agents': {
       // A diagnostic, and the only window onto this map from outside the
       // process. It reports the map and routes nothing.
@@ -831,6 +950,12 @@ const server = net.createServer((socket) => {
       // `channelSelfCheck` is a reader: the router does not learn what a
       // connection is, and must not be able to *start* a probe by accident.
       channelLiveness: () => channelLiveness.state(),
+      // A READER, NOT THE POKER (KAN-284). The router reports who the guardian
+      // is and whether its last poke landed; handing it the poker itself would
+      // put "poke the guardian now" one typo away from a listing, and a poke
+      // lands in a real agent's context. Same rule, same reason, as the line
+      // above it.
+      guardian: () => guardianPoker.state(),
       // Which runtime is serving (KAN-278). The report object itself, not a
       // reader: it was produced beside the runtime at the one construction
       // site, and passing the value is what makes it impossible for this
@@ -1046,6 +1171,93 @@ const supervision = new SupervisionNotifier({
  * write to Jira is observable at all. See comment-authorship.ts for why the
  * author field cannot answer this and what the transcript answers instead.
  */
+/**
+ * The guardian's clock (KAN-284).
+ *
+ * The human asked for **one guardian agent, poked every thirty minutes**. The
+ * argument for putting the clock here is measured: `epic/KAN-203` ran the same
+ * supervision on a wakeup it scheduled for itself and it silently failed to fire
+ * twice in one day, while the daemon's timers missed nothing across two capacity
+ * outages, three restarts and a twelve-hour Atlassian blackout.
+ *
+ * **It points at an agent; it never makes one.** The guardian is a setting that
+ * names an agent which already exists and already has its own ticket — the
+ * human, relayed 2026-08-11: *"the guardian agent should pointed to an existing
+ * agent, not a whole new agent."* Nothing in `GuardianWorld` can activate
+ * anything, so a pointer at an agent that is not running produces a loud
+ * `undelivered` rather than a daemon starting something to receive its own poke.
+ *
+ * **The channel and only the channel.** A poke on the composer would Ctrl+C the
+ * guardian every thirty minutes by design — 48 destroyed tool calls a day,
+ * delivered by the mechanism meant to keep the fleet healthy. It shares
+ * `routeChannelMessage` with every other carrier decision for KAN-145's reason,
+ * so the kill switch, the self-check degradation and the `managed` predicate all
+ * apply to a poke exactly as they apply to a steer.
+ *
+ * **It is not wired to `notifyAgent`, and that is deliberate rather than an
+ * oversight.** KAN-301's queue holds an undeliverable notice and retries it,
+ * which is right for news and wrong for a poke: a poke is periodic, so the retry
+ * already exists and is called the schedule, and holding one would convert
+ * `undelivered` — the loudest state this feature has — into `pending`, which
+ * reads as fine. See guardian.ts's header.
+ */
+const guardianPoker = new GuardianPoker({
+  /**
+   * How long after start-up the first poke fires, overridable for a proof.
+   *
+   * **A test affordance, and it is the FIRST delay rather than the interval on
+   * purpose.** The interval is a real setting and belongs in `guardian.json`
+   * where a human can see it; this is the one number that otherwise makes the
+   * schedule unobservable — `probe-guardian-poke-delivery.mjs` §5 is the only
+   * thing that exercises the TIMER rather than `op: 'poke'`, and without this it
+   * would have to wait five minutes to do it, which means in practice nobody
+   * would ever run it. Bounded so that a stray value cannot turn the schedule
+   * into a busy-loop at a real agent's expense.
+   */
+  ...(process.env.BUTCHR_GUARDIAN_FIRST_POKE_MS
+    ? {
+        firstPokeDelayMs: Math.min(
+          10 * 60_000,
+          Math.max(1_000, Number(process.env.BUTCHR_GUARDIAN_FIRST_POKE_MS) || 0)
+        )
+      }
+    : {}),
+  world: {
+    // The same reader the launcher, the router, the self-check and the liveness
+    // probe use. One kill switch, read fresh, on every poke.
+    emissionEnabled: () => channelEmissionEnabled(),
+    // Read from disk per poke rather than captured at boot, so setting a
+    // guardian from the options page takes effect at the next poke instead of
+    // at the next restart — and a restart is the thing that drops every channel
+    // registration in the fleet.
+    readConfig: () => readGuardianConfig(),
+    send: (address, content) => {
+      const outcome = routeChannelMessage({
+        registry: agentConnections,
+        address,
+        content,
+        meta: {
+          sender: DAEMON_SENDER_TAG,
+          workspaceType: address.type,
+          workspaceKey: address.key,
+          guardianPoke: true
+        },
+        selfCheck: channelSelfChecks,
+        // `managed` is what separates a guardian whose registration was dropped
+        // by a restart from one that was never running at all. Both are
+        // `undelivered`; the reason tells a reader which, and they send them to
+        // different places.
+        managed: isManagedAgent
+      });
+      return outcome.routed
+        ? { routed: true, connectionId: outcome.connectionId }
+        : { routed: false, reason: outcome.reason, detail: outcome.detail };
+    },
+    now: () => Date.now(),
+    log: (message) => log(message)
+  }
+});
+
 const commentAuthorship = new CommentAuthorship({ log });
 
 const jiraPoller = new JiraPoller({
@@ -1553,6 +1765,10 @@ function onListen() {
   // at boot would stay dead until the daemon restarted. A run with the switch
   // off costs one file read and records `channel-disabled`.
   channelLiveness.start();
+  // The guardian's clock (KAN-284). Started here with the other schedules; it
+  // does nothing at all until a guardian is configured, and says so once in the
+  // log rather than silently.
+  guardianPoker.start();
 }
 
 const shutdown = () => {
