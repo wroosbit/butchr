@@ -19,12 +19,14 @@ import type {
  *
  * ## Derived from call sites, not from the class
  *
- * The 22 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
+ * The 23 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
  * `nudge.ts`, `reconcile.ts` and `router.ts` actually call. (KAN-223 derived 20
  * from 43 call sites; KAN-246 added `setAgentSpawnedListener` and
- * `pressPaneKey`, both called from `daemon.ts`, by the same rule — a method is
- * on this interface because daemon code calls it.) `HerdrBridge` declares 33
- * methods; the other 11 are implementation and are deliberately absent:
+ * `pressPaneKey`, both called from `daemon.ts`, and KAN-247 added
+ * `resolveAddress` with its caller in `router.ts` — all by the same rule, that
+ * a method is on this interface because daemon code calls it.) `HerdrBridge`
+ * declares 34 methods (25 public, 9 private); the other 11 are implementation
+ * and are deliberately absent:
  *
  * - **9 are private** — `liveAttachFor`, `startAgentInOwnTab`,
  *   `createAgentTab`, `closeTabPlaceholder`, `initPty`, `runHerdr`,
@@ -37,9 +39,17 @@ import type {
  *   from daemon code. Test scaffolding is not the contract.
  * - **`getPtyBuffer`** is public and called from nowhere at all.
  *
- * An interface mirroring all 31 would have copied the implementation instead
+ * An interface mirroring all 34 would have copied the implementation instead
  * of declaring the contract, and would make a second implementation harder
- * rather than easier — so the 11 stay out.
+ * rather than easier — so the 11 stay out. (34 − 11 = 23.)
+ *
+ * **The three counts in this header were all wrong until KAN-278**, which is
+ * worth a sentence because of how they got that way rather than for its own
+ * sake: each was correct when written and none was bumped by the ticket that
+ * added a method. KAN-224 found the drift by enumerating; KAN-278 fixed it
+ * while writing the second implementation. They are derived by
+ * `verify-agent-runtime-seam.mjs` §2 from the interface itself, so the
+ * *relationship* is enforced even when a number in prose is not.
  *
  * ## The PTY group is the exception
  *

@@ -17,6 +17,7 @@ import {
   workspaceDirFor
 } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
+import type { RuntimeSwitchReport } from './runtime-switch.js';
 import { readWorkState } from './work-state.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
 import {
@@ -843,6 +844,22 @@ export interface MessageRouterOptions {
    * is.
    */
   channelLiveness?: () => ChannelLivenessState;
+
+  /**
+   * Which agent runtime is serving this daemon (KAN-278).
+   *
+   * **A value rather than a reader, and that is the point.** A runtime is
+   * chosen once, at boot, because it owns live sessions and live pty
+   * attachments and cannot be swapped under them. A reader would invite a
+   * second read of the environment, and a second read is exactly how a report
+   * comes to describe a mode the daemon is not in. `daemon.ts` passes the
+   * report `createAgentRuntime` returned **alongside the runtime it returned**,
+   * so the object serving and the sentence describing it came out of one call.
+   *
+   * Absent when nothing wired it — a `verify-*.mjs` constructing a bare router
+   * is the ordinary case — and the handler says so rather than guessing.
+   */
+  agentRuntimeReport?: RuntimeSwitchReport;
 }
 
 /**
@@ -870,7 +887,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'boardControl',
   'channelRoute',
   'channelSelfCheck',
-  'channelLiveness'
+  'channelLiveness',
+  'agentRuntimeReport'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -928,6 +946,8 @@ export class MessageRouter {
   private readonly channelSelfCheck?: MessageRouterOptions['channelSelfCheck'];
   /** See {@link MessageRouterOptions.channelLiveness}. */
   private readonly channelLiveness?: MessageRouterOptions['channelLiveness'];
+  /** See {@link MessageRouterOptions.agentRuntimeReport}. */
+  private readonly agentRuntimeReport?: MessageRouterOptions['agentRuntimeReport'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -963,6 +983,7 @@ export class MessageRouter {
     this.channelRoute = opts.channelRoute;
     this.channelSelfCheck = opts.channelSelfCheck;
     this.channelLiveness = opts.channelLiveness;
+    this.agentRuntimeReport = opts.agentRuntimeReport;
   }
 
   /**
@@ -1315,6 +1336,9 @@ export class MessageRouter {
         break;
       case 'list_agents':
         this.handleListAgents(data, respond);
+        break;
+      case 'agent_runtime_report':
+        this.handleAgentRuntimeReport(respond);
         break;
       case 'staleness_check':
         this.handleStalenessCheck(data, respond);
@@ -3350,6 +3374,38 @@ export class MessageRouter {
    * work against this daemon is verifying whatever was last built, and this is
    * how it can find that out before believing its own acceptance proof.
    */
+  /**
+   * Which runtime is serving, for an operator who must never have to guess
+   * (KAN-278 criterion 3).
+   *
+   * The report is not recomputed here. It is the object `createAgentRuntime`
+   * returned beside the runtime it built, carried through unchanged — so this
+   * answer cannot drift from the runtime actually serving, which a second read
+   * of the environment could.
+   *
+   * When nothing wired one, this says so rather than defaulting to a cheerful
+   * `herdr`. A router with no report is a router that was constructed by
+   * something other than `daemon.ts`, and reporting the default there would be
+   * describing a decision nobody took.
+   */
+  private handleAgentRuntimeReport(respond: Respond) {
+    if (!this.agentRuntimeReport) {
+      respond({
+        action: 'agent_runtime_report_response',
+        success: false,
+        error:
+          'This router was constructed without an agent-runtime report, so which runtime is ' +
+          'serving is not something it can answer. Only `daemon.ts` wires one.'
+      });
+      return;
+    }
+    respond({
+      action: 'agent_runtime_report_response',
+      success: true,
+      runtime: this.agentRuntimeReport
+    });
+  }
+
   private handleStalenessCheck(data: any, respond: Respond) {
     const report = this.staleness(data?.force === true);
     if (!report) {

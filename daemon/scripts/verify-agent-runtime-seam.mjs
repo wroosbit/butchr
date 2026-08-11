@@ -159,13 +159,25 @@ write(
     .replace('import {\n  HerdrSession,', 'import {\n  HerdrBridge,\n  HerdrSession,')
     .replace('private herdrBridge: AgentRuntime,', 'private herdrBridge: HerdrBridge,')
 );
-write(
-  daemonFile,
-  pristine.daemon.replace(
-    'const herdrBridge: AgentRuntime = new HerdrBridge();',
-    'const herdrBridge = new HerdrBridge();'
-  )
-);
+// KAN-278 moved the construction behind `createAgentRuntime`, which returns an
+// `AgentRuntime` — so the way to revert the seam in `daemon.ts` is now to go
+// back to constructing the concrete class here rather than to delete a type
+// annotation. Same revert, expressed against the current text. The assertion
+// below is unchanged and still has to hold: with both files reverted,
+// `daemon-typecheck` must go green while the fixture catches it.
+const REVERTED_DAEMON_WIRING =
+  'const herdrBridge = new HerdrBridge();\n' +
+  'const agentRuntimeReport = undefined;';
+const daemonWiring =
+  'const { runtime: herdrBridge, report: agentRuntimeReport } = createAgentRuntime({ log });';
+if (!pristine.daemon.includes(daemonWiring)) {
+  console.error(
+    `setup: daemon.ts no longer contains the wiring line this proof reverts:\n  ${daemonWiring}\n` +
+      'Section 1 would silently test nothing, so it stops instead. Update the line above to match.'
+  );
+  process.exit(1);
+}
+write(daemonFile, pristine.daemon.replace(daemonWiring, REVERTED_DAEMON_WIRING));
 
 const revertedSrc = typecheck('src');
 check(
