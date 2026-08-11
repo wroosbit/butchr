@@ -15,6 +15,10 @@
 //
 // CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
 // in process; no live daemon, no herdr, no credential, no peer, no terminal.
+// Section 3 spawns a real daemon and a real MCP server and is therefore subject
+// to scheduling, so the one observation whose window a fast machine can close —
+// the identity map immediately after a restart — is taken with the agent
+// SIGSTOPped rather than by winning the race for it (KAN-309).
 //
 // It would equally catch the half that made the downgrade invisible from the
 // *sender's* side, which is the part a reader is most likely to think is covered
@@ -758,6 +762,37 @@ if (!up) {
   process.exit(1);
 }
 
+// THE AGENT IS SUSPENDED ACROSS THE RESTART, AND THAT IS WHAT MAKES THE NEXT
+// ASSERTION AN OBSERVATION RATHER THAN A RACE (KAN-309).
+//
+// The two facts this section reports are in tension by construction: that a
+// restart leaves the agent unregistered, and that the agent puts that right by
+// itself within milliseconds. KAN-274 made the second true, which made the
+// window in which the first is observable *very* small — and this script read
+// the identity map after the window rather than inside it, so whether it saw
+// the empty state depended on which of the two won.
+//
+// On 2026-08-11 it lost, on `main`, on a runner where the agent came back in
+// 1 ms. It reported `identity map: [task/kan-9274] — this is the state the
+// defect leaves behind`, which reads as the KAN-274 defect returning. Nothing
+// had regressed: the daemon dropped the registration exactly as it should, said
+// so in its own log (the AC4 checks below saw it and passed), and the agent
+// reconnected before this line could look. A green re-run of the identical SHA
+// is what established that.
+//
+// SIGSTOP holds the agent still while the restart is observed. It suspends the
+// process without closing anything: the socket is still torn down by the kernel
+// when daemon1 dies, and the agent simply has not run the code that notices
+// yet. So the state being asserted is the real one, produced by a real restart —
+// only the moment of reading is taken out of the scheduler's hands. Cleanup
+// kills with SIGKILL, which reaps a stopped process, so an early exit below
+// cannot leave one behind.
+//
+// What this deliberately does NOT weaken: the reconnect is still unassisted and
+// still measured (below), and it is still an agent that has made no tool call.
+// Suspending it delays when it can notice, never whether it notices by itself.
+agent.kill('SIGSTOP');
+
 // THE OPERATIONAL ACTION. Not a simulation of one: the daemon is killed and a
 // new one is started, which is what `systemctl --user restart butchr-daemon`
 // does to every surviving agent's connection.
@@ -766,6 +801,7 @@ await sleep(500);
 
 const daemon2 = startDaemon('second');
 if (!(await waitForSocket(20_000))) {
+  agent.kill('SIGCONT');
   console.error('the second daemon never claimed its socket');
   process.exit(2);
 }
@@ -774,7 +810,8 @@ const afterRestart = registeredKeys(await connectedAgents());
 check(
   'immediately after the restart the new daemon holds NO registration for it',
   !afterRestart.includes('task/kan-9274'),
-  `identity map: [${afterRestart.join(', ') || 'empty'}] — this is the state the defect leaves behind`
+  `identity map: [${afterRestart.join(', ') || 'empty'}] — this is the state the defect leaves behind` +
+    ' (observed with the agent suspended, so it is a reading and not a race)'
 );
 
 // AC 4 — THE RESTART SAYS WHAT IT DROPPED, AND SOMETHING WATCHES IT SAY SO.
@@ -823,6 +860,12 @@ check(
 );
 
 // AND NOW THE WHOLE TICKET: does it come back on its own?
+//
+// Resumed here, and the clock starts here (KAN-309). The figure below is
+// therefore "how long after it could notice", which is the honest baseline and
+// is what it always meant to measure — before the suspension it was timed from
+// a moment the agent may already have been past.
+agent.kill('SIGCONT');
 const startedWaiting = Date.now();
 let backAfterMs = null;
 for (let i = 0; i < 120; i++) {
