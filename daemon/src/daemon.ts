@@ -16,7 +16,11 @@ import {
   createLaunchDarklyIntegration
 } from './integrations/launchdarkly.js';
 import { createAtlassianIntegration } from './integrations/atlassian-integration.js';
-import { coreMcpServerDefinitions, DEV_CHANNELS_FLAG } from './launchers.js';
+// DEV_CHANNELS_FLAG IS DELIBERATELY NOT IMPORTED HERE (KAN-294). This file used
+// to search a spawned command line for it; that consumer is gone, and so is the
+// import, so a re-import is a diff a reviewer sees rather than a line that
+// blends in. `verify-channel-spawn-verdict.mjs` §4 asserts the absence.
+import { coreMcpServerDefinitions } from './launchers.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport } from './staleness.js';
@@ -643,10 +647,28 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
 // file a second time admits an answer that disagrees with what is now running in
 // the pane — a switch turned off in that window would leave a `claude` launched
 // WITH the flag and nothing watching the dialog it raises, which is the wedged
-// agent this ticket exists to prevent. So the test is on the command string that
-// was actually spawned. One fact, read from the thing itself.
-herdrBridge.setAgentSpawnedListener((session, spawnedAt, command) => {
-  if (!command.includes(DEV_CHANNELS_FLAG)) return;
+// agent KAN-246 exists to prevent. So the test is on what the spawn itself
+// decided. One fact, read from the thing itself.
+//
+// AND THE TEST IS THE SPAWN'S VERDICT, NOT A SEARCH OF ITS COMMAND LINE
+// (KAN-294). This read `command.includes(DEV_CHANNELS_FLAG)` until 2026-08-11,
+// which answered the right question by the wrong route: it inferred the decision
+// from a shape only a `claude` command line has. `epic/KAN-59` is explicit that
+// the shape does not generalise — "CrabCast has no DEV_CHANNELS_FLAG equivalent
+// at all. The channel is not a command-line switch here — it is an MCP server
+// entry." Against a spawn like that the sniff does not error, it returns early
+// for every agent, so channel-startup supervision would simply never run and
+// nothing would say so. A verdict cannot be absent by accident in that way.
+//
+// `!== true` RATHER THAN `=== false`, AND THAT IS THE THREE-STATE RULE (KAN-294).
+// `channelEnabled` is `true | false | null` and `null` means NO SPAWN DECIDED —
+// it is not "no channel". Both non-`true` values return here, because both mean
+// "do not supervise a channel startup", but they mean it for different reasons
+// and neither may be rewritten into the other on the way past. Collapsing them
+// with `?? false` would be green on every agent anybody tests with and wrong on
+// exactly the population the third state exists for. See AgentSpawn.
+herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
+  if (spawn.channelEnabled !== true) return;
 
   const address = { type: session.type, key: session.key };
   // THIS AGENT IS BEING RE-SPAWNED, SO WHATEVER WAS KNOWN ABOUT ITS CHANNEL IS

@@ -831,7 +831,9 @@ export async function bringUpChannelAgent({
   // this harness proved it on itself: `--continue` in a fresh workspace exits
   // "No conversation found to continue", which is exactly the case the fallback
   // exists for, so the pane died at a bash prompt having started nothing.
-  const shipped = launchers.AGENT_LAUNCHERS.claude.command();
+  // `.command` off the record: KAN-294 made the launcher return its channel
+  // verdict beside the command line it composed. This harness wants the line.
+  const shipped = launchers.AGENT_LAUNCHERS.claude.command().command;
   const withChannels = shipped.replaceAll(
     'claude --permission-mode',
     `claude --dangerously-load-development-channels server:${serverName} --permission-mode`);

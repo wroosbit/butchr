@@ -14,8 +14,13 @@ human's decision of 2026-08-08, which is not lifted. Claims about their
 behaviour are claims about observations, and
 `daemon/scripts/verify-crabcast-runtime-live.mjs` re-runs them.
 
-- **CrabCast pin:** `7c6d97fff1010f18a3b0afb506e3a28d72873f79`
-- **Butchr commit these line numbers were read at:** the branch of KAN-278.
+- **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` (KAN-294; was
+  `7c6d97f` under KAN-278). Read off `daemon_status.build.commit` of a real
+  daemon built at that commit, not off a notice.
+- **CrabCast read-path contract version:** `3`, read off `daemon_status.contractVersion`
+  at the same build. **It covers `list_agents` and `agent_status` and nothing
+  else** — see *What the contract does not hold* below.
+- **Butchr commit these line numbers were read at:** the branch of KAN-294.
 
 ---
 
@@ -152,15 +157,30 @@ covers this yet**; it is cutover work.
 Posted to KAN-59 as they asked. A contract should describe what a consumer
 *depends on*, not what the producer *happens to emit*.
 
-**`daemon_status_response`** — `build.commit`.
+**`daemon_status_response`** — `build.commit`, and since KAN-294
+**`contractVersion`**. Both are read **once per connection** at the handshake
+and neither is enforced: a mismatch is logged. Once-per-connection is what
+CrabCast's own document asks for — *"read it once and re-read when `bootId`
+moves"* — and a reconnect is when `bootId` may have moved, so the rule is
+satisfied by construction rather than by a timer.
 
 **`list_agents_response`** — `success`; `agents[]`, `foreignPanes[]`; per row:
 `path`, `paneName`, `sessionId`, `status`, `herdrStatus`, `agentRuntime`,
 `state`, `workDir`.
 
 **`configure_response` / `activate_response` / `deactivate_response`** —
-`success`, `error`; and from activate, **`sessionId`** (the handle every pty
-call is addressed by).
+`success`, `error`; from activate, **`sessionId`** (the handle every pty call is
+addressed by) and since KAN-294 **`channelEnabled`**.
+
+**`configure_agent` sends `mcpServers`, an object** — not `mcpConfig`, a JSON
+string, which is what this adapter sent until KAN-294 and which does not exist
+on that verb. It was not rejected: CrabCast answered `success: true` and simply
+did not have the servers, and `agent_status` echoed `config.mcpServers:
+undefined` for every agent configured that way. **So every agent this runtime
+spawned had no MCP servers at all, silently.** The shape is definitions rather
+than names — `{"atlassian": {"command": …, "args": […]}}` — with the literal
+string `"builtin"` reserved for CrabCast's own servers. This adapter never sends
+`"builtin"`: giving a Butchr agent CrabCast's channel is a cutover decision.
 
 **`send_to_agent_response`** — `success`, **`delivered`**, `verdict`, `error`.
 
@@ -179,6 +199,47 @@ Also unread: `capacity`, `provenance`, `configEchoContract`, `pages` and the
 paging handles, `agent_status` (the census covers it), and every refusal field
 including `headroomBoundBy` — refusal text is carried through **verbatim** and
 never parsed, so a new value there cannot break us.
+
+### `channelEnabled` — three states, and the one that is easy to lose
+
+`true` the spawn decided and it is channel-capable; `false` the spawn decided
+and it is not; **`null` no spawn decided this** — no record at the path, or a
+record configured and never activated, or an activation that was refused. It is
+not a way of saying "no channel", and CrabCast say so on the field itself.
+
+Driven on a real daemon at the pin, five ways:
+
+| what was done | surface | value |
+| --- | --- | --- |
+| `configure --mcp crabcast`, then `activate` | `activate_response` | `true` |
+| `configure` with no channel server, then `activate` | `activate_response` | `false` |
+| `configure`, never activated | `agent_status` | `null` |
+| a path nobody configured | `agent_status` | `null` |
+| `activate` refused for capacity | `activate_response` | `null` |
+
+The last row was not planned and is the most useful: a refusal spawned nothing,
+so there is no spawn to be about, and CrabCast answer `null` on the one path
+most likely to have been written as a boolean.
+
+**`list_agents` does not carry the field on any row.** Checked row by row at the
+pin. That matters here more than it would to most consumers, because
+`list_agents` is the *only* thing this runtime polls: the verdict is reachable
+at the spawn (`activate_response`) or by a per-agent `agent_status` round trip,
+and never from the census. So it is recorded at activation and kept, rather than
+refreshed.
+
+### What the contract does not hold
+
+`contractVersion: 3` covers **`list_agents` and `agent_status`**. It does not
+cover `activate_response`, and CrabCast disclosed that themselves — their
+KAN-287 is the ticket to bring it in. **`channelEnabled` is read from
+`activate_response`**, so it can change without moving the version and without
+going red in their CI. Nothing on our side but
+`verify-crabcast-runtime-live.mjs` §4b can notice if it does; that is stated in
+that script's own header rather than left to inference.
+
+The same holds, unmentioned by anybody until KAN-294, for the census: nothing
+promises `list_agents` will *not* grow the field, and nothing promises it will.
 
 ---
 
@@ -207,7 +268,7 @@ Recorded here and on KAN-59 as observations. **None is a change request**, and
 
    **What I actually read was `~/code/wroosbit/crabcast/README.md` — the shared
    clone's working tree, sitting at `59ba420`** — while every behavioural claim
-   in this document came from the pinned worktree at `7c6d97f`. The two
+   in this document came from the pinned worktree at the pin of the day. The two
    disagreed by 23 commits and I did not notice, because the clone is kept
    current with `git fetch` and **never checked out**: our own task prompt tells
    agents not to run `checkout` or `pull` there, precisely because other agents

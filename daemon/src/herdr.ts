@@ -8,7 +8,7 @@ import { resolveLauncher, sleepSync, unusableMcpServers, withWorkspaceIdentity, 
 import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
-import type { AgentRuntime } from './agent-runtime.js';
+import type { AgentRuntime, AgentSpawn } from './agent-runtime.js';
 import {
   RESUME_ENV,
   ResumeCause,
@@ -417,24 +417,31 @@ export class HerdrBridge implements AgentRuntime {
    * scripts among them) leaves it absent, which is why a spawn with no hook
    * installed must behave exactly as it did before this existed.
    *
-   * **The command string is passed because it is the only honest answer to "is
-   * this a channel-enabled spawn?"** The listener could read the channel switch
-   * itself — the launcher read it a few lines earlier to decide — but those are
-   * two reads of a file that anything may rewrite between them, and the
-   * dangerous direction is not hypothetical: a switch turned off in that window
-   * gives a `claude` launched WITH the flag and nothing watching for the dialog
-   * it raises, which is precisely the wedged agent this whole ticket exists to
-   * prevent. Handing over what was actually spawned makes the question decidable
-   * from the thing itself rather than from a second look at the world.
+   * **What is passed is the spawn's own verdict, not a second look at the
+   * world.** The listener could read the channel switch itself — the launcher
+   * read it a few lines earlier to decide — but those are two reads of a file
+   * that anything may rewrite between them, and the dangerous direction is not
+   * hypothetical: a switch turned off in that window gives a `claude` launched
+   * WITH the flag and nothing watching for the dialog it raises, which is
+   * precisely the wedged agent KAN-246 exists to prevent.
+   *
+   * **KAN-294 changed what carries that verdict and not the argument for
+   * carrying one.** It used to be the command string, which the listener
+   * searched for {@link DEV_CHANNELS_FLAG}. The reasoning above is untouched by
+   * the swap — one read, at the composing site, handed over — but the string was
+   * a carrier that only works for a launcher that spells its channel decision as
+   * a flag. `AgentLauncher.command` now returns the decision beside the command
+   * it produced, so `channelEnabled` is what crosses this boundary and the
+   * command line is diagnostic.
    */
   private agentSpawnedListener?: (
     session: HerdrSession,
     spawnedAt: number,
-    command: string
+    spawn: AgentSpawn
   ) => void;
 
   public setAgentSpawnedListener(
-    listener: (session: HerdrSession, spawnedAt: number, command: string) => void
+    listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {
     this.agentSpawnedListener = listener;
   }
@@ -901,12 +908,17 @@ export class HerdrBridge implements AgentRuntime {
         // than the only one it has to exclude.
         //
         // Composed once and kept, rather than called inline in the argv below:
-        // the listener needs the very string that was spawned, and
+        // the listener needs the very spawn that was made, and
         // `launcher.command()` reads the channel switch off disk on every call,
         // so calling it twice could hand the watcher a different command from the
         // one running in the pane.
+        //
+        // `channelEnabled` comes out of THIS call for the same reason, and that
+        // is the whole of KAN-294's half of it: the verdict and the command it
+        // produced are one return value, so there is no edit to this file that
+        // can supervise a channel decision the pane did not make.
         const spawnedAt = Date.now();
-        const command = launcher.command(fallbackPrompt);
+        const { command, channelEnabled } = launcher.command(fallbackPrompt);
         this.startAgentInOwnTab(agentName, session.workDir, [
           'env',
           `PATH=${process.env.PATH}`,
@@ -941,7 +953,7 @@ export class HerdrBridge implements AgentRuntime {
         // threw would otherwise be diagnosed as a failed `herdr agent start` and
         // terminate a session whose agent is running perfectly well.
         try {
-          this.agentSpawnedListener?.(session, spawnedAt, command);
+          this.agentSpawnedListener?.(session, spawnedAt, { channelEnabled, command });
         } catch (e: any) {
           console.error(
             `[HerdrBridge] Agent-spawned listener for ${agentName} threw; the agent is ` +

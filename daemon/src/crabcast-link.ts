@@ -14,7 +14,7 @@ import path from 'path';
  * each read off the running daemon rather than off their source:
  *
  * 1. **The CLI cannot serve the PTY group at all.** `crabcast --help` at
- *    `7c6d97f` lists ten commands — configure, activate, deactivate, forget,
+ *    `8d7348f` lists ten commands — configure, activate, deactivate, forget,
  *    list, status, tail, send, capacity, daemon-status — and none of them is a
  *    pty verb. The socket answers `pty_init`, `pty_input` and `pty_resize`,
  *    which is 3 of `AgentRuntime`'s 23 methods that the CLI simply cannot
@@ -30,10 +30,16 @@ import path from 'path';
  *
  * **What choosing the socket costs us, stated because it is a real trade.** The
  * CLI is the surface CrabCast documents, with documented exit codes and a
- * `--json` mode that promises to print the daemon's answer verbatim. The socket
- * frames are *not yet* published — that is exactly what their KAN-277 is
- * building, and it is In Progress rather than landed. So we are consuming a
- * surface whose contract is still being written. **Pinning is how we pay for
+ * `--json` mode that promises to print the daemon's answer verbatim.
+ *
+ * **That trade got smaller at `8d7348f` and did not go away** (KAN-294). Their
+ * KAN-277 has landed: `docs/read-path-contract.md` now covers the socket's
+ * `list_agents` and `agent_status` field by field and puts a version on the wire
+ * ({@link CRABCAST_CONTRACT_VERSION}). What is still unpublished is everything
+ * else we touch — `activate_response`, `configure_response`, the `pty_*` group
+ * and the `agent.*` broadcasts. So we are no longer consuming an entirely
+ * undocumented surface; we are consuming a partly documented one, and the parts
+ * we lean on hardest are the undocumented parts. **Pinning is how we pay for
  * that**, and it is our safety mechanism regardless of what they promise: see
  * {@link CRABCAST_PIN}.
  *
@@ -50,9 +56,8 @@ import path from 'path';
  * The CrabCast commit this adapter was built and proved against.
  *
  * **Not a version check and deliberately not enforced as one.** CrabCast has
- * decided **no compatibility guarantee below 1.0** (their KAN-277, In Progress
- * at the time of writing, confirmed by reading that ticket rather than by
- * relay). What they offer instead is a *notice* promise — a documented
+ * decided **no compatibility guarantee below 1.0** (their KAN-277, landed at
+ * `fe9ec80`). What they offer instead is a *notice* promise — a documented
  * read-path field will not change without a consumer notice on KAN-39. That
  * promise explicitly does **not** cover: fields not changing, backward
  * compatibility, a deprecation period, or the notice arriving before we have
@@ -64,7 +69,31 @@ import path from 'path';
  * this daemon pressuring their release cadence, which is the one thing KAN-278
  * forbids outright.
  */
-export const CRABCAST_PIN = '7c6d97fff1010f18a3b0afb506e3a28d72873f79';
+export const CRABCAST_PIN = '8d7348fa98201b61642d2454b3a797373361128a';
+
+/**
+ * `daemon_status.contractVersion` this adapter was proved against (KAN-294).
+ *
+ * CrabCast's read-path contract (their KAN-277, `fe9ec80`) puts a version on the
+ * wire and documents `list_agents` and `agent_status` field by field. It was
+ * `3` at {@link CRABCAST_PIN} — read off a real daemon at that build, not off
+ * their notice.
+ *
+ * **Recorded and reported, never enforced**, for the same reason the pin is:
+ * refusing on a version bump would be Butchr pressuring their release cadence.
+ * And it is deliberately not polled — their document says to read it once and
+ * re-read when `bootId` moves, which is what {@link CrabCastLink.handshake}
+ * does, one read per connection.
+ *
+ * **What it does NOT cover, stated because the number looks like it covers
+ * everything.** The contract holds `list_agents` and `agent_status` only.
+ * `activate_response` is outside it — CrabCast disclosed that themselves, and
+ * their KAN-287 is the ticket to close it. So a field we read from
+ * `activate_response` is uncontracted: it can change without moving this
+ * number and without going red in their CI. {@link CrabCastRuntime} reads
+ * `channelEnabled` from exactly there, and says so at its own call site.
+ */
+export const CRABCAST_CONTRACT_VERSION = 3;
 
 /** Where a stock CrabCast puts its socket, per its own README. */
 export function defaultCrabCastSocket(): string {
@@ -158,6 +187,13 @@ export class CrabCastLink {
   /** `daemon_status.build.commit`, once observed. Null until then. */
   private peerCommit: string | null = null;
 
+  /**
+   * `daemon_status.contractVersion`, once observed. Null until then, and null
+   * against a peer too old to publish one — which is a real state rather than a
+   * hypothetical: it did not exist before their `fe9ec80`.
+   */
+  private peerContractVersion: number | null = null;
+
   readonly socketPath: string;
   private readonly requestTimeoutMs: number;
   private readonly reconnectDelayMs: number;
@@ -176,6 +212,10 @@ export class CrabCastLink {
 
   get observedPeerCommit(): string | null {
     return this.peerCommit;
+  }
+
+  get observedContractVersion(): number | null {
+    return this.peerContractVersion;
   }
 
   /**
@@ -271,16 +311,38 @@ export class CrabCastLink {
   /**
    * Read the peer's identity once per connection.
    *
-   * `daemon_status.build.commit` is the only build identifier on the wire at
-   * the pin — CrabCast's own KAN-277 is deciding where a *contract* version
-   * will live, and it has not landed. A mismatch is reported, never enforced
-   * (see {@link CRABCAST_PIN}).
+   * **Two identifiers now, and this is the once-per-connection read their own
+   * document asks for.** `build.commit` is the build; `contractVersion` is the
+   * read-path contract, which landed in their KAN-277 (`fe9ec80`) after this
+   * method was written — the docblock here used to say it "has not landed", and
+   * it has. Their guidance is to read it once and re-read when `bootId` moves
+   * rather than per poll; a reconnect is exactly when `bootId` may have moved,
+   * and this runs once per connection, so that is satisfied by construction
+   * rather than by a timer.
+   *
+   * Both are reported, neither is enforced (see {@link CRABCAST_PIN}).
    */
   private async handshake(): Promise<void> {
     try {
       const status = await this.request({ action: 'daemon_status' });
       const build = status.build as { commit?: string } | undefined;
       this.peerCommit = build?.commit ?? null;
+      // Absent on a peer older than their fe9ec80, and absent is null rather
+      // than 0 — "this daemon publishes no contract version" is not "version
+      // zero", and the difference is the same one channelEnabled makes below.
+      this.peerContractVersion =
+        typeof status.contractVersion === 'number' ? status.contractVersion : null;
+      if (
+        this.peerContractVersion !== null &&
+        this.peerContractVersion !== CRABCAST_CONTRACT_VERSION
+      ) {
+        this.log(
+          `peer publishes read-path contract v${this.peerContractVersion}, this adapter was ` +
+            `proved against v${CRABCAST_CONTRACT_VERSION}. Reporting, not refusing — and note ` +
+            `the contract covers list_agents and agent_status only, so a matching version is ` +
+            `not a statement about activate_response.`
+        );
+      }
       if (this.peerCommit && this.peerCommit !== CRABCAST_PIN) {
         this.log(
           `peer is CrabCast ${this.peerCommit.slice(0, 12)}, this adapter was proved against ` +
@@ -478,6 +540,8 @@ export class CrabCastLink {
     pinnedCommit: string;
     peerCommit: string | null;
     peerMatchesPin: boolean | null;
+    pinnedContractVersion: number;
+    peerContractVersion: number | null;
     attempts: number;
     lastErrno: string | null;
     lastGoodAt: string | null;
@@ -488,6 +552,10 @@ export class CrabCastLink {
       pinnedCommit: CRABCAST_PIN,
       peerCommit: this.peerCommit,
       peerMatchesPin: this.peerCommit === null ? null : this.peerCommit === CRABCAST_PIN,
+      pinnedContractVersion: CRABCAST_CONTRACT_VERSION,
+      // Null when unobserved AND when the peer publishes none. Not folded into
+      // the pinned value: an absent contract version is not a matching one.
+      peerContractVersion: this.peerContractVersion,
       attempts: this.attempts,
       lastErrno: this.lastErrno,
       lastGoodAt: this.lastGoodAt ? this.lastGoodAt.toISOString() : null
