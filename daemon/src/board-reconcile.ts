@@ -1131,6 +1131,30 @@ export class BoardReconciler {
       }
     }
 
+    // One line per cycle naming what the machine held back, and it is the line
+    // KAN-258 asks for by name: *"it must say so in the log — a silent deferral
+    // is indistinguishable from the KAN-256 invisibility defect."*
+    //
+    // The per-agent refusals above already carry the gate's figures, so this
+    // does not repeat them. What it adds is the thing no per-agent line can
+    // say: **how far short of the board this cycle ended up**, in one place, so
+    // a reader who scrolls past ten refusals still meets the total. A cycle
+    // that deferred nothing writes nothing.
+    const deferred = cycle.started.filter(
+      (s) => !s.outcome.success && s.outcome.refusedBy === 'capacity'
+    );
+    if (deferred.length) {
+      const startedOk = cycle.started.filter((s) => s.outcome.success).length;
+      this.opts.log(
+        `[board] converged to ${startedOk} of ${diff.toStart.length} wanted start(s): the ` +
+        `machine would not carry ${deferred.length} of them yet — ` +
+        `${deferred.map((s) => address(s.agent)).join(', ')}. Each stays desired and is ` +
+        `retried next cycle; nothing was queued, preempted or overridden. The board is a ` +
+        `statement of what is wanted, and this loop converges toward it at a rate the ` +
+        `machine survives rather than jumping to it (KAN-258).`
+      );
+    }
+
     return cycle;
   }
 

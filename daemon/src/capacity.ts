@@ -478,6 +478,128 @@ export function boundCoresByObservedCpu(
 }
 
 /**
+ * ---------------------------------------------------------------------------
+ * STARTS THE INSTRUMENTS CANNOT HAVE SEEN YET (KAN-258)
+ * ---------------------------------------------------------------------------
+ *
+ * The gate below is sound per activation and was blind in aggregate, and the
+ * incident it cost was load 29.14 on a 4-core machine at two minutes' uptime,
+ * ending in a hard power-off. Nothing about the arithmetic was wrong. What was
+ * missing is stated here because it is the whole of this term:
+ *
+ *   **Every figure the gate divides describes an agent that has settled, and
+ *   an agent that started three seconds ago has not.**
+ *
+ * Both cost figures are steady-state by construction. {@link
+ * MEASURED_AGENT_COST} is a seed taken over a running fleet; the live figure is
+ * damped over a 60-second window (daemon.ts's cost sampler) and its own header
+ * says so. `cpuBusyCores` is honest and fresh — a /proc/stat window seconds old
+ * — but freshness is not the property that was missing: **an observation taken
+ * now cannot contain an agent that has not finished spawning its node processes
+ * and its MCP servers.** So the reconciler's starts, serial and staggered and
+ * each individually admissible, were each measured against a machine that did
+ * not yet contain the previous ones.
+ *
+ * The board reconciler's stagger is the right instinct and does not fix this.
+ * `epic/KAN-59` put it best on KAN-263: *"a stagger spaces starts; it does not
+ * make the instrument notice them."*
+ *
+ * **What this charges, and why it is the seed rather than a new number.** An
+ * agent admitted since the instruments could have priced it is charged
+ * {@link startingAgentCost} — the larger of the published estimate and the
+ * seed. That is not an invented ramp constant, and deliberately so: this file's
+ * own doctrine is *degrade, never guess*, and the seed is the labelled figure
+ * everything already degrades to when nothing has been measured. A damped
+ * figure of 0.217 core is a measurement of *settled* agents, so charging it to
+ * an agent that is still starting applies a measurement outside the population
+ * it was taken over. The seed is the honest floor, and it is already in the
+ * file.
+ *
+ * **It over-charges, on purpose, and that is the conservative direction.** The
+ * CPU observation may already contain part of a starting agent's cost, so a
+ * start can be paid for twice. A gate that admits one agent too few recovers on
+ * the next cycle; a gate that admits ten too many costs the human their
+ * machine. The derivation says the charge is being made, so it is visible
+ * rather than a mystery in the arithmetic.
+ */
+export type UnobservedReason = 'no-measurement' | 'restored' | 'after-window';
+
+/** Starts already admitted that no instrument has priced. */
+export interface UnobservedStarts {
+  /** How many. Zero is the ordinary steady-state answer. */
+  count: number;
+  /** What each is charged while unobserved — {@link startingAgentCost}. */
+  cost: AgentCost;
+  /** `count × cost.cores`: CPU the observation cannot contain. */
+  cores: number;
+  /** `count × cost.residentBytes`: memory the kernel has not been asked for. */
+  bytes: number;
+  /**
+   * Why these count as unobserved. Reported because the three are genuinely
+   * different situations and a reader who cannot tell them apart cannot judge
+   * the charge:
+   *
+   *   - `no-measurement` — nothing has ever been sampled, so nothing is priced.
+   *   - `restored`       — the figure was carried across a daemon restart, so
+   *                        it was sampled by a process that never saw these
+   *                        agents. **This is the cold-boot case, which is where
+   *                        the incident happened both times.**
+   *   - `after-window`   — a live window exists and these starts happened after
+   *                        it opened.
+   */
+  because: UnobservedReason;
+}
+
+/**
+ * What one *starting* agent is charged: the larger of the published estimate
+ * and the seed, per dimension.
+ *
+ * `Math.max` rather than the seed outright so an operator override or a
+ * measurement above the seed is never undercut by this term — a machine whose
+ * agents really do cost more than the seed must not have that finding thrown
+ * away by the thing that exists to be careful.
+ */
+export function startingAgentCost(cost: AgentCost): AgentCost {
+  return {
+    cores: Math.max(cost.cores, MEASURED_AGENT_COST.cores),
+    residentBytes: Math.max(cost.residentBytes, MEASURED_AGENT_COST.residentBytes)
+  };
+}
+
+/**
+ * How many of `startedAt` the measurement cannot have contained.
+ *
+ * Pure, and drivable from a script with no daemon, no clock and no /proc —
+ * which is what lets a proof exercise the cold-boot case without booting
+ * anything. `startedAt` is wall-clock ms per *currently running* agent this
+ * daemon started; the caller prunes agents that have gone.
+ *
+ * The `restored` branch is the one that matters and it is not a special case
+ * bolted on: a restored figure was sampled by the previous daemon, so by
+ * definition it contains nothing this one has started. Charging all of them is
+ * not conservatism, it is the literal truth about what that figure measured.
+ */
+export function unobservedStartsAmong(
+  startedAt: readonly number[],
+  measured: MeasuredAgentCost | null
+): { count: number; because: UnobservedReason } {
+  if (!measured) return { count: startedAt.length, because: 'no-measurement' };
+  if (measured.provenance === 'restored') {
+    return { count: startedAt.length, because: 'restored' };
+  }
+  // The window's opening edge, not its close: a window from t0 to t1 contains
+  // the full cost only of an agent that existed for all of it, so an agent that
+  // appeared partway through was averaged over a period it was mostly absent
+  // from.
+  const windowOpenedAt = measured.sampledAt - measured.windowSeconds * 1000;
+  let count = 0;
+  for (const at of startedAt) {
+    if (at > windowOpenedAt) count++;
+  }
+  return { count, because: 'after-window' };
+}
+
+/**
  * The herdr server's own appetite. It sat at ~49% of a core with seven agents
  * attached, and it is not an agent, so it comes off the top of the budget
  * before agents are counted.
@@ -661,6 +783,15 @@ export interface Capacity {
    */
   liveCoresBound: CoresBound | null;
   /**
+   * Starts admitted that no instrument has priced yet, and what they were
+   * charged (KAN-258). `count: 0` is the ordinary steady-state answer.
+   *
+   * Never null: a term that is inert must say so rather than vanish, for the
+   * reason KAN-218 gives about the stall veto — a gate that is silent when it
+   * is not protecting you is a gate you will assume is.
+   */
+  unobservedStarts: UnobservedStarts;
+  /**
    * The damped measurement that was consulted, if the sampler had one. Kept
    * even when an override beat it, so a report can say what was ignored.
    */
@@ -748,6 +879,17 @@ export interface CapacityOptions {
   configuredCap?: number | null;
   /** Supervisors observed running. Reported only; it changes no arithmetic. */
   supervisorsRunning?: number;
+  /**
+   * Agents this daemon has started that the instruments cannot have priced
+   * yet, from {@link unobservedStartsAmong} (KAN-258).
+   *
+   * Absent or 0 leaves every term exactly as it was before this option
+   * existed, which is what keeps `computeCapacity` callable from the scripts
+   * and reports that have no ledger to consult.
+   */
+  unobservedStarts?: number;
+  /** Why they are unobserved, for the derivation. Ignored when the count is 0. */
+  unobservedBecause?: UnobservedReason;
   /**
    * BUTCHR_STALL_PERCENT: the stall threshold, overriding
    * {@link STALL_REFUSE_PERCENT}. Above 100 disables the term.
@@ -874,19 +1016,52 @@ export function computeCapacity(
   // Two exemptions, both stated in boundCoresByObservedCpu's contract: an
   // operator override is not overruled by anything, and the load-average
   // fallback is not a measurement and so cannot falsify one.
-  const agentTrees = running + (options.supervisorsRunning ?? 0);
+  // Starts nothing has priced yet (KAN-258). Charged at the seed-or-higher
+  // figure, and charged to the *live* terms only: the static cap describes
+  // hardware and must not move with who happens to be starting, for the same
+  // reason `capByCpu` is deliberately left out of the `liveCoresBound`
+  // correction above.
+  const unobservedCount = Math.max(0, Math.floor(options.unobservedStarts ?? 0));
+  const unobservedCost = startingAgentCost(cost);
+  const unobservedStarts: UnobservedStarts = {
+    count: unobservedCount,
+    cost: unobservedCost,
+    cores: unobservedCount * unobservedCost.cores,
+    bytes: unobservedCount * unobservedCost.residentBytes,
+    because: options.unobservedBecause ?? 'after-window'
+  };
+
+  // Unobserved starts are excluded from the tree count here, and that is the
+  // half of KAN-258 that is easiest to get backwards. `boundCoresByObservedCpu`
+  // asks whether the estimate implies more CPU than the machine reports in use
+  // — a genuine contradiction when every tree in the count is spending. An
+  // agent that has not begun spending makes `implied > busy` **by
+  // construction**, so counting it would manufacture the contradiction and the
+  // term would respond by *lowering* the divisor, i.e. by finding more room the
+  // more agents were mid-start. That is positive feedback pointed at the
+  // failure this ticket is about. Excluding them keeps the comparison between
+  // trees that are actually in `busyCores`, and leaves the divisor at the
+  // larger, published figure — the conservative direction.
+  const agentTrees = Math.max(
+    0,
+    running + (options.supervisorsRunning ?? 0) - unobservedCount
+  );
   const liveCoresBound =
     coreCost.source === 'override' || cpuBusySource !== 'measured'
       ? null
       : boundCoresByObservedCpu(cost.cores, agentTrees, cpuBusyCores);
   const liveCoreCost = liveCoresBound ? liveCoresBound.used : cost.cores;
 
-  const liveCpuBudget = machine.cores - cpuBusyCores - reservedCores;
+  const liveCpuBudget =
+    machine.cores - cpuBusyCores - reservedCores - unobservedStarts.cores;
   const headroomByCpu = Math.max(0, Math.floor(liveCpuBudget / liveCoreCost));
 
   const headroomByMemory = Math.max(
     0,
-    Math.floor(Math.max(0, machine.availableBytes - reservedBytes) / cost.residentBytes)
+    Math.floor(
+      Math.max(0, machine.availableBytes - reservedBytes - unobservedStarts.bytes) /
+        cost.residentBytes
+    )
   );
 
   const headroomBeforeStall = Math.min(headroomByCap, headroomByCpu, headroomByMemory);
@@ -922,6 +1097,7 @@ export function computeCapacity(
     cost,
     costSource,
     liveCoresBound,
+    unobservedStarts,
     measured,
     reservedForHuman: { cores: reservedCores, bytes: reservedBytes },
     cap,
@@ -1225,11 +1401,24 @@ export function getMeasuredAgentCost(): MeasuredAgentCost | null {
  * passed so the report can say so, not so the arithmetic can charge for them —
  * they are never charged at all.
  */
-export function readCapacity(running: number, supervisors = 0): Capacity {
+export function readCapacity(
+  running: number,
+  supervisors = 0,
+  /**
+   * When each still-running agent this daemon started was started, wall-clock
+   * ms. The count that is charged is derived here rather than by the caller, so
+   * the one place that knows which measurement is live is the one place that
+   * decides which starts it cannot have contained (KAN-258).
+   */
+  startedAt: readonly number[] = []
+): Capacity {
+  const unobserved = unobservedStartsAmong(startedAt, liveMeasuredCost);
   return computeCapacity(readMachineFacts(), running, {
     ...optionsFromEnv(),
     measured: liveMeasuredCost,
-    supervisorsRunning: supervisors
+    supervisorsRunning: supervisors,
+    unobservedStarts: unobserved.count,
+    unobservedBecause: unobserved.because
   });
 }
 
@@ -1287,6 +1476,30 @@ export function describeCapacity(c: Capacity): string {
       'instead, which still charges the fleet for every busy core on the machine, yours and ' +
       "herdr's included. The cap above is unaffected and still divides by " +
       `${b.published}`
+    );
+  }
+  // The starts-in-flight charge gets its own line whenever it is non-zero, and
+  // says which of the three situations produced it. Both live terms below
+  // subtract it, so without this line neither of their arithmetic reproduces —
+  // and the derivation's whole promise is that it does.
+  if (c.unobservedStarts.count > 0) {
+    const u = c.unobservedStarts;
+    const why =
+      u.because === 'restored'
+        ? 'the cost figure was carried across a daemon restart, so it was sampled by a ' +
+          'process that never saw these agents — every start since this daemon came up is ' +
+          'unpriced. This is the cold-boot case'
+        : u.because === 'no-measurement'
+          ? 'nothing has been sampled yet, so no start has been priced'
+          : 'they started after the current measurement window opened';
+    lines.push(
+      `starts in flight: ${u.count} agent(s) admitted that no instrument has priced — ${why}. ` +
+      `Charged ${u.cost.cores} core and ${Math.round(u.cost.residentBytes / MIB)} MB each ` +
+      `(the larger of the estimate above and the seed, because a damped figure measures ` +
+      `agents that have settled and these have not), so ${u.cores.toFixed(2)} cores and ` +
+      `${gib(u.bytes)} come off the two live terms below. The cap does not move. This charge ` +
+      `may double-count cost the cpu window has already caught, which is the conservative ` +
+      `direction and is deliberate (KAN-258)`
     );
   }
   if (c.measured) {
@@ -1374,12 +1587,20 @@ export function describeCapacity(c: Capacity): string {
     `headroom: ${c.headroom} more — ` +
     `count allows ${c.headroomByCap} (${c.cap} cap − ${c.running} running), ` +
     `cpu allows ${c.headroomByCpu} ((${m.cores} cores − ${c.cpuBusyCores.toFixed(2)} in use ` +
-    `− ${c.reservedForHuman.cores} reserved) ÷ ` +
+    `− ${c.reservedForHuman.cores} reserved` +
+    (c.unobservedStarts.count > 0
+      ? ` − ${c.unobservedStarts.cores.toFixed(2)} for ${c.unobservedStarts.count} start(s) in flight`
+      : '') +
+    ') ÷ ' +
     (c.liveCoresBound
       ? `${c.liveCoresBound.used.toFixed(3)}, the bounded figure from the contradiction above`
       : `${c.cost.cores}`) + '), ' +
     `memory allows ${c.headroomByMemory} ((${gib(m.availableBytes)} available ` +
-    `− ${gib(c.reservedForHuman.bytes)} reserved) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB)` +
+    `− ${gib(c.reservedForHuman.bytes)} reserved` +
+    (c.unobservedStarts.count > 0
+      ? ` − ${gib(c.unobservedStarts.bytes)} for ${c.unobservedStarts.count} start(s) in flight`
+      : '') +
+    `) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB)` +
     // The veto is arithmetic the reader cannot see in the three terms, so it is
     // spelled out where it acts rather than only on the line above: min(...) of
     // the three would not reproduce `headroom`, and the derivation promises it
@@ -1431,6 +1652,24 @@ export function summarizeCapacity(c: Capacity): string {
  * disclosure, while an MCP caller and the log get the whole thing. Both are
  * built from the same numbers, so they cannot drift into disagreeing.
  */
+/**
+ * The clause a refusal adds when part of what refused it is a start already
+ * admitted but not yet visible to any instrument (KAN-258).
+ *
+ * Empty in the ordinary case, so a refusal on a settled machine reads exactly
+ * as it did before this term existed. Both the CPU and the memory branch use
+ * it, because both terms subtract the charge.
+ */
+function unobservedClause(c: Capacity): string {
+  const u = c.unobservedStarts;
+  if (u.count < 1) return '';
+  return (
+    `; ${u.cores.toFixed(2)} core and ${gib(u.bytes)} of that is ${u.count} agent(s) ` +
+    `already started and not yet spending — they are charged the ${u.cost.cores}-core seed ` +
+    `until an instrument has seen them, so this refusal counts starts in flight`
+  );
+}
+
 export function capacityReason(c: Capacity): string {
   if (c.headroomBoundBy === 'stall') {
     // Every figure the veto compared, in the order it compared them, so the
@@ -1457,13 +1696,19 @@ export function capacityReason(c: Capacity): string {
       `${c.cpuBusyCores.toFixed(2)} of this machine's ${c.machine.cores} cores are already ` +
       `in use${c.cpuBusySource === 'measured' ? '' : ' (estimated from the load average)'}, and ` +
       `${c.reservedForHuman.cores} core${c.reservedForHuman.cores === 1 ? ' is' : 's are'} ` +
-      `held back for you`
+      `held back for you` +
+      // Named in the sentence, not only in the derivation: a refusal whose
+      // figures do not add up without a term the reader cannot see sends them
+      // to check the wrong thing, which is KAN-60's defect. It also has to be
+      // said out loud that some of what refused you has not happened yet.
+      unobservedClause(c)
     );
   }
   if (c.headroomBoundBy === 'memory') {
     return (
-      `only ${gib(c.machine.availableBytes)} of memory is available, and ` +
-      `${gib(c.reservedForHuman.bytes)} of that is held back for you`
+      `only ${gib(c.machine.availableBytes)} of memory is available, ` +
+      `${gib(c.reservedForHuman.bytes)} of that is held back for you` +
+      unobservedClause(c)
     );
   }
   return (
