@@ -69,6 +69,7 @@ import {
   proxyReport,
   refuseProxyCall,
   refuseWriteOutsideCaller,
+  scopesOf,
   selectedProxyMode,
   writeOperationsFor
 } from '../dist/atlassian-proxy.js';
@@ -110,10 +111,39 @@ check(
   PROXY_OPERATIONS.every((op) => op.method === 'GET' || op.method === 'POST'),
   JSON.stringify(PROXY_OPERATIONS.map((op) => [op.tool, op.method]))
 );
+// KAN-292 re-pointed this, and the re-pointing is itself the thing to read.
+//
+// It used to be `['read:jira-work', 'write:jira-work']`. KAN-292 inserts a
+// `confluence-read` rung BELOW `jira-write` on the ladder, and the ladder's
+// defining property is that the rung above contains the rung below — so
+// `jira-write` now enables the Confluence reads too and names their scopes.
+// That is a genuine widening of an existing mode, it was decided deliberately
+// rather than discovered, and `enabledModes` carries the argument for it.
+//
+// **The only thing that matters here is unchanged and is asserted separately
+// below: exactly one write scope, on exactly one mode.** Everything this list
+// gained is a `read:`. An exact comparison is kept rather than softened to "no
+// unexpected write scopes", because the whole point is that a list nobody
+// compares exactly is a list that grows.
 check(
-  'jira-write needs exactly read:jira-work and write:jira-work',
-  JSON.stringify(grantedScopes('jira-write')) === JSON.stringify(['read:jira-work', 'write:jira-work']),
+  'jira-write needs exactly one write scope, plus every read scope the rung below it grants',
+  JSON.stringify(grantedScopes('jira-write')) ===
+    JSON.stringify([
+      'read:confluence-content.all',
+      'read:confluence-content.summary',
+      'read:confluence-space.summary',
+      'read:jira-user',
+      'read:jira-work',
+      'write:jira-work'
+    ]),
   JSON.stringify(grantedScopes('jira-write'))
+);
+check(
+  'and write:jira-work is the ONLY write scope in the entire table',
+  JSON.stringify(
+    [...new Set(PROXY_OPERATIONS.flatMap((op) => scopesOf(op)).filter((s) => /^write:/.test(s)))]
+  ) === JSON.stringify(['write:jira-work']),
+  JSON.stringify(PROXY_OPERATIONS.flatMap((op) => scopesOf(op)).filter((s) => /^write:/.test(s)))
 );
 // The write scope must never appear on a read mode. That would grant an
 // operator who asked for reads a credential able to change things, which is the
@@ -221,12 +251,32 @@ check(
   'the write mode enables nothing even when on: sections 2, 4 and 5 are vacuous and this ' +
     'file is worthless rather than reassuring'
 );
+// KAN-292: the comparison is against `confluence-read` rather than `jira-read`,
+// because that is now the rung directly below `jira-write`. Same assertion —
+// the write mode contains every read of the rung beneath it — pointed at the
+// rung that is actually beneath it. Comparing against `jira-read` would still
+// have passed as an inequality and would have stopped meaning anything.
 check(
-  'jira-write ALSO enables the reads — an agent that can transition can look first',
+  'jira-write ALSO enables every read of the rung below — an agent that can transition can look first',
   operationsFor('jira-write').filter((op) => op.method === 'GET').length ===
-    operationsFor('jira-read').length,
+    operationsFor('confluence-read').length,
   JSON.stringify(operationsFor('jira-write').map((op) => op.tool))
 );
+// And the ladder is a ladder: every rung is a strict superset of the one below,
+// asserted over the whole chain rather than at the one join this ticket touched.
+// This is what would catch a future rung inserted anywhere without the
+// containment being re-established.
+const LADDER = ['jira-read', 'confluence-read', 'jira-write'];
+for (let i = 1; i < LADDER.length; i++) {
+  const below = new Set(operationsFor(LADDER[i - 1]).map((op) => op.tool));
+  const above = new Set(operationsFor(LADDER[i]).map((op) => op.tool));
+  const missing = [...below].filter((tool) => !above.has(tool));
+  check(
+    `${LADDER[i]} contains everything ${LADDER[i - 1]} does`,
+    missing.length === 0 && above.size > below.size,
+    JSON.stringify({ missing, sizes: [below.size, above.size] })
+  );
+}
 check(
   `${THE_WRITE} is permitted under jira-write`,
   refuseProxyCall('jira-write', THE_WRITE) === null,
@@ -527,15 +577,56 @@ check(
   'the policy is consulted after the write has already gone out, which makes its ' +
     '"nothing was sent to Atlassian" sentence false'
 );
+// KAN-292 MOVED THE TEXT THESE TWO MATCH, AND THAT IS WHY THEY ARE WRITTEN OUT
+// AT LENGTH RATHER THAN QUIETLY UPDATED.
+//
+// The handler no longer calls `proxyWrite(built.path, built.body)` directly. It
+// normalises every operation into a list of `requests` — one for almost all of
+// them, two for `atlassian_search`, which has to ask both products — and loops.
+// So the old patterns stopped matching, and the update was made by checking
+// that the PROPERTY still holds and then re-pointing at where it now lives,
+// which is the opposite of the ordinary failure here: a check that stops
+// matching gets relaxed until it passes, and the relaxation is what ships.
+//
+// The property is unchanged and is now asserted in THREE places rather than
+// one, because the new intermediary is somewhere a body could be introduced
+// that did not exist before:
+//
+//   1. the request list is derived from `built` — the operation's own output;
+//   2. the write is sent `request.body`, a member of that list;
+//   3. nothing derived from `data` (the wire) reaches `proxyWrite` at all.
+//
+// Together those say what the single old pattern said: the body Atlassian
+// receives was constructed by the operation table from validated arguments.
+check(
+  'router.ts derives its request list from the operation, never from the request body',
+  /const requests =\s*[\s\S]{0,80}'requests' in built\s*\?\s*built\.requests/.test(routerSrc),
+  'the list of requests is assembled from something other than the operation\'s own build()'
+);
 check(
   'router.ts builds the write body from the operation, never from the request',
-  /proxyWrite\(built\.path/.test(routerSrc) && !/proxyWrite\([^)]*data\./.test(routerSrc),
+  /proxyWrite\(request\.path, request\.body\)/.test(routerSrc) &&
+    !/proxyWrite\([^)]*data\./.test(routerSrc),
   'a body taken off the wire makes the granted scope unbounded'
 );
 check(
+  'no path or body reaching Atlassian is read off the wire',
+  !/proxy(Read|Write)\([^)]*data\./.test(routerSrc),
+  'a path or body taken from `data` is a caller-supplied endpoint by another name'
+);
+check(
   'the audit line records what was written, not only which issue',
-  /bodyForLog/.test(routerSrc) && /\$\{built\.path\}\$\{bodyForLog\}/.test(routerSrc),
+  /bodyForLog/.test(routerSrc) && /\$\{auditPath\}\$\{bodyForLog\}/.test(routerSrc),
   '"KAN-291 was changed" without "changed to what" is not an audit record of a change'
+);
+// And the audit line names every request a fan-out made, not just the last one.
+// A two-request operation that logged one path would under-report what the
+// credential had been used for, which is the one question an audit line exists
+// to answer.
+check(
+  'the audit path covers every request the operation made',
+  /const auditPath = outcomes\.map\(\(\{ request \}\) => request\.path\)\.join/.test(routerSrc),
+  'a fan-out that logs one leg hides the other from the audit record'
 );
 check(
   'mcp.ts still does NOT read the switch itself — one reader, in the daemon',
