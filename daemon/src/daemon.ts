@@ -7,6 +7,7 @@ import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
 import { HerdrBridge } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
+import { createAgentRuntime, type RuntimeSwitchReport } from './runtime-switch.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
@@ -177,7 +178,13 @@ log(
     Object.keys({ ...registry.mcpServerDefinitions(), ...coreMcpServerDefinitions() }).join(', ')
 );
 const promptLoader = new PromptLoader(repoRoot);
-const herdrBridge: AgentRuntime = new HerdrBridge();
+// KAN-278. Still exactly one construction site for the runtime — the property
+// KAN-223 established and `verify-agent-runtime-seam.mjs` protects — but the
+// choice of *which* runtime now lives behind it. `createAgentRuntime` returns
+// `HerdrBridge` unless `BUTCHR_AGENT_RUNTIME=crabcast` says otherwise, and it
+// returns the report describing what it chose from the same call, so the two
+// cannot disagree. In the default case nothing here opens a CrabCast socket.
+const { runtime: herdrBridge, report: agentRuntimeReport } = createAgentRuntime({ log });
 
 // The one piece of state that outlives the machine. Everything else here —
 // the session map, herdr's panes, the extension's view — dies in a power cut,
@@ -714,7 +721,12 @@ const server = net.createServer((socket) => {
       // makes. A reader rather than the probe itself, for the same reason
       // `channelSelfCheck` is a reader: the router does not learn what a
       // connection is, and must not be able to *start* a probe by accident.
-      channelLiveness: () => channelLiveness.state()
+      channelLiveness: () => channelLiveness.state(),
+      // Which runtime is serving (KAN-278). The report object itself, not a
+      // reader: it was produced beside the runtime at the one construction
+      // site, and passing the value is what makes it impossible for this
+      // answer to describe a runtime other than the one in `herdrBridge`.
+      agentRuntimeReport
     }
   );
 
@@ -811,7 +823,8 @@ const daemonRouter = new MessageRouter(
     install: { repoRoot, daemonStartedAt },
     agentRegistry,
     launchdarkly,
-    boardControl: reportBoardControl
+    boardControl: reportBoardControl,
+    agentRuntimeReport
   }
 );
 
