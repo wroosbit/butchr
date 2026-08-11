@@ -16,7 +16,7 @@
  *
  * This is not a CrabCast client and must not grow into one (KAN-223 scope).
  */
-import type { AgentRuntime } from '../src/agent-runtime.js';
+import type { AgentRuntime, AgentSpawn } from '../src/agent-runtime.js';
 import type {
   AgentPresence,
   HerdrAgentDescription,
@@ -49,8 +49,14 @@ class StubRuntime implements AgentRuntime {
 
   // KAN-246. A runtime that spawns no pane of its own simply never fires this,
   // which is why the daemon treats it as a notification rather than a promise.
+  //
+  // KAN-294 changed the third argument from the spawned command line to the
+  // spawn's own record, `AgentSpawn`. The point of this fixture is that the
+  // change is felt HERE and not only at `HerdrBridge`: a second runtime that
+  // cannot produce a command line can still produce a verdict, which is the
+  // whole reason the argument moved.
   setAgentSpawnedListener(
-    _listener: (session: HerdrSession, spawnedAt: number, command: string) => void
+    _listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {}
 
   spawnSession(

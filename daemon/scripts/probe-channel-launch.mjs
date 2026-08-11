@@ -342,7 +342,7 @@ try {
     const composed = execFileSync(
       process.execPath,
       ['-e', `import(${JSON.stringify(`file://${path.join(side.distDir, 'launchers.js')}`)})` +
-        `.then((m) => process.stdout.write(m.AGENT_LAUNCHERS.claude.command()))`],
+        `.then((m) => process.stdout.write(m.AGENT_LAUNCHERS.claude.command().command))`],
       { encoding: 'utf8', env: { ...process.env, HOME: side.home } }
     );
     say('');

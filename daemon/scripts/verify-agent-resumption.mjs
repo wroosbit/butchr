@@ -299,20 +299,20 @@ check('the nudge frames the interruption and forbids starting over', () => {
 section('4. The launcher carries the resume framing into the pane');
 
 check('the claude launcher still tries --continue first', () => {
-  const command = AGENT_LAUNCHERS.claude.command();
+  const { command } = AGENT_LAUNCHERS.claude.command();
   assert.ok(command.startsWith('claude --permission-mode bypassPermissions --continue ||'), command);
 });
 
 check('a degraded prompt reaches the fallback, correctly quoted', () => {
   const prompt = degradedResumePrompt('task', 'KAN-21');
-  const command = AGENT_LAUNCHERS.claude.command(prompt);
+  const { command } = AGENT_LAUNCHERS.claude.command(prompt);
   assert.ok(command.includes("'"), 'the prompt must be single-quoted for bash');
   const quoted = command.slice(command.indexOf('||') + 2);
   assert.ok(quoted.includes('NO memory'), 'the degraded framing did not reach the fallback');
 });
 
 check('a prompt containing a single quote cannot break out of the quoting', () => {
-  const command = AGENT_LAUNCHERS.claude.command(`don't; rm -rf /`);
+  const { command } = AGENT_LAUNCHERS.claude.command(`don't; rm -rf /`);
   // Everything after the fallback's flags must be one quoted word; the escape
   // sequence for an embedded quote is close-escape-reopen.
   assert.ok(command.includes(`'don'\\''t; rm -rf /'`), command);

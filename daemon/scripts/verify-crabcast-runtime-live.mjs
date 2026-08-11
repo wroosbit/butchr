@@ -45,6 +45,15 @@
 //     All four are `absent` or `different-shaped` on purpose; the switch script
 //     asserts they refuse honestly, and asserting them here would be asserting
 //     the same thing twice.
+//   - **A `channelEnabled: true` spawn, and the `null` state.** Section 4b
+//     asserts the field arrives and that it is `false`, which is what a spawn
+//     this adapter makes is entitled to be — nothing here asks CrabCast for its
+//     own builtin channel server, because that is a cutover decision (KAN-294
+//     item 5). So the `true` and `null` states are exercised only against the
+//     staged wire in `verify-channel-spawn-verdict.mjs` §3, and against a real
+//     peer by hand: the three states were driven on a live daemon at the pin and
+//     the transcript is on the KAN-294 pull request. **No script owns the live
+//     `true` case**, and that is the honest edge of this one.
 //
 // ── RUNNING IT ─────────────────────────────────────────────────────────────
 //
@@ -293,6 +302,52 @@ check(
   'CrabCast reports the keystrokes delivered',
   sent.success === true,
   JSON.stringify(sent)
+);
+
+// ── 4b. the spawn's channel verdict ARRIVED, from a spawn nobody staged ────
+rule("4b. channelEnabled — CrabCast's own answer about the spawn we just made");
+
+// THIS IS THE SECTION THAT COVERS THE GAP KAN-145 LEFT BETWEEN TWO HONEST
+// SCRIPTS. `verify-channel-spawn-verdict.mjs` §3 proves the adapter keeps the
+// three states without flattening them — by answering `activate_response` with
+// a value IT CHOSE. It is therefore structurally incapable of noticing that
+// CrabCast stopped sending the field, renamed it, or moved it to another frame.
+// Nothing but a real peer can notice that, so this is where it is asserted.
+//
+// The field is read off the adapter's own record rather than off a raw frame,
+// deliberately: what has to be true is that the value survived the wire AND the
+// adapter's read into the place a caller would look.
+const verdict = runtime.channelEnabledFor(session.sessionId);
+check(
+  'the field ARRIVED: a real activate_response carried a real boolean',
+  verdict === true || verdict === false,
+  `channelEnabledFor returned ${JSON.stringify(verdict)} — \`null\` here means CrabCast sent ` +
+    `no recognisable channelEnabled on activate_response, which is the change this section ` +
+    `exists to catch. That surface is OUTSIDE their read-path contract (their KAN-287 is the ` +
+    `ticket to bring it in), so it can move without their CI going red.`
+);
+check(
+  'and it is `false` — this spawn asked for no CrabCast builtin, so no channel',
+  verdict === false,
+  `got ${JSON.stringify(verdict)}. A \`true\` here would mean an agent Butchr spawned was ` +
+    `given CrabCast's own channel server, which nothing in KAN-294 does and which would be a ` +
+    `cutover decision rather than an adapter one.`
+);
+console.log(
+  `   channelEnabled  : ${JSON.stringify(verdict)}  (tally across this runtime's sessions: ` +
+    `${JSON.stringify(runtime.describe().channelEnabled)})`
+);
+
+// The contract version, read once per connection at the handshake rather than
+// polled — which is what CrabCast's own document asks for.
+const contract = runtime.describe().link;
+check(
+  `the peer publishes read-path contract v${contract.pinnedContractVersion}, as pinned`,
+  contract.peerContractVersion === contract.pinnedContractVersion,
+  JSON.stringify({
+    peer: contract.peerContractVersion,
+    pinned: contract.pinnedContractVersion
+  })
 );
 
 // ── 5. teardown reaches the session-ended listener ─────────────────────────

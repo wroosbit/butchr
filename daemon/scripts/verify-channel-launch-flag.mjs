@@ -144,7 +144,7 @@ function commandWithSwitch(enabled) {
     [
       '-e',
       `import(${JSON.stringify(launchers)}).then((m) => ` +
-        `process.stdout.write(m.AGENT_LAUNCHERS.claude.command()))`
+        `process.stdout.write(m.AGENT_LAUNCHERS.claude.command().command))`
     ],
     { encoding: 'utf8', env: { ...process.env, HOME: home } }
   );

@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import type { AgentRuntime } from './agent-runtime.js';
+import type { AgentRuntime, AgentSpawn } from './agent-runtime.js';
 import {
+  CRABCAST_CONTRACT_VERSION,
   CrabCastLink,
   type CrabCastRefusal,
   renderRefusal
@@ -133,6 +134,65 @@ interface PtyMirror {
 
 const PTY_BUFFER_LIMIT = 100_000;
 
+/**
+ * Read CrabCast's `channelEnabled` off a frame **without collapsing its third
+ * state** (KAN-294, consuming their KAN-281 at `8d7348f`).
+ *
+ * ## The three states, confirmed from the wire at the pin rather than relayed
+ *
+ * Driven against a real daemon built at `8d7348f`, isolated `dataDir`:
+ *
+ * | what was done | surface | value |
+ * | --- | --- | --- |
+ * | `configure --mcp crabcast`, then `activate` | `activate_response` | `true` |
+ * | `configure` with no `--mcp`, then `activate` | `activate_response` | `false` |
+ * | `configure`, never activated | `agent_status` | `null` |
+ * | a path nobody configured | `agent_status` | `null` |
+ * | `activate` refused for capacity | `activate_response` | `null` |
+ *
+ * That last row was not planned and is the most useful of the five: a refusal
+ * spawned nothing, so there is no spawn to be about, and CrabCast answers
+ * `null` rather than `false` on the one path most likely to have been written
+ * as a boolean.
+ *
+ * ## Why this is a function and not `frame.channelEnabled ?? false`
+ *
+ * Because that expression is the defect, and it is a *silent* one. `??` and
+ * `!!` and a `boolean` type annotation all turn "nobody decided" into "decided
+ * no", and the two differ only for agents nothing ever spawned — so the
+ * collapsed version is green against every agent anybody tests with. CrabCast
+ * say it on the field itself: *"`null` means there is no spawn to be about,
+ * never 'no channel'."* A wrong `false` is the actively damaging value, because
+ * `false` is what a caller branches on to conclude the channel is unavailable.
+ *
+ * **An unrecognised type is `null`, not `false`.** Their §8 requires a value a
+ * consumer does not recognise to be handled as an unknown rather than errored
+ * on, and `null` is this field's spelling of unknown. A string `"true"` would
+ * be a shape nobody has seen; reading it as `true` would be guessing and
+ * reading it as `false` would be the collapse.
+ *
+ * ## Where it is read from, and what that is worth
+ *
+ * `activate_response` — **which is outside their read-path contract.** They
+ * disclosed that themselves and their KAN-287 is the ticket to close it, so
+ * this field can change here without moving
+ * {@link CRABCAST_CONTRACT_VERSION} and without going red in their CI.
+ *
+ * **And `list_agents` does not carry it at all** — checked row by row at the
+ * pin, the key is simply absent. That is not documented anywhere: their
+ * contract covers `list_agents` and `agent_status`, and the `channelEnabled`
+ * section describes `agent_status` and `activate_response` without saying the
+ * census omits it. It matters here more than it would to most consumers,
+ * because **the census is the only thing this runtime polls** ({@link
+ * startCensus}). So the verdict is reachable at the spawn and by a per-agent
+ * `agent_status` round trip, and never from the poll we already run — which is
+ * why it is kept on the session at {@link provision} rather than refreshed.
+ */
+export function readChannelEnabled(frame: Record<string, unknown>): boolean | null {
+  const value = frame.channelEnabled;
+  return typeof value === 'boolean' ? value : null;
+}
+
 export interface CrabCastRuntimeOptions {
   link: CrabCastLink;
   /** How often the census is refreshed while connected. */
@@ -149,6 +209,16 @@ export class CrabCastRuntime implements AgentRuntime {
   private readonly sessions = new Map<string, HerdrSession>();
   /** Butchr session id → CrabCast's own session id, which addresses the wire. */
   private readonly remoteIds = new Map<string, string>();
+  /**
+   * Butchr session id → the spawn's channel verdict, as CrabCast reported it.
+   *
+   * **Three states, and the map has a fourth thing to say: an absent key.** A
+   * key that is not here is a session this adapter has no verdict for at all —
+   * `provision` has not answered yet, or never will. {@link channelEnabledFor}
+   * renders that as `null` too, which is right: "no spawn decided" and "no
+   * answer reached us" are both *not a verdict*, and neither is `false`.
+   */
+  private readonly channelEnabled = new Map<string, boolean | null>();
   private readonly ptyMirrors = new Map<string, PtyMirror>();
 
   private census: Census = { reachable: false, at: 0, rows: [], foreign: [] };
@@ -173,37 +243,50 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   /**
-   * **Deliberately never fired, and this is the honest answer rather than a
-   * gap left by laziness.**
+   * **Still never fired — but the reason changed at `8d7348f`, and the new one
+   * is smaller and worth stating exactly** (KAN-294).
    *
-   * The interface's own docblock is explicit that the command string is "part
-   * of the contract, not a convenience": it is what makes *"was this a
-   * channel-enabled spawn?"* answerable from the thing that was spawned, rather
-   * than from a second read of a switch anything may have rewritten in between.
+   * **The old reason is gone.** It was that CrabCast publishes no command line,
+   * and that the command line was what made *"was this a channel-enabled
+   * spawn?"* answerable — so there was nothing to pass. Both halves have moved:
+   * the interface no longer carries a command string as its contract (it
+   * carries {@link AgentSpawn.channelEnabled}), and CrabCast now publishes
+   * exactly that verdict as `activate_response.channelEnabled`. **The question
+   * this listener exists to answer is now answerable under this runtime**, and
+   * {@link provision} reads and keeps the answer — see {@link channelEnabledFor}.
    *
-   * **CrabCast publishes no command line.** Verified against a running daemon
-   * at the pin: `activate_response` carries `launcher` ("shell", "claude") and
-   * 20 other fields but no argv; `agent_status` and the `agent.activated`
-   * broadcast carry none either. There is nothing to pass.
+   * **The remaining reason is the consumer, not the datum.** The one caller
+   * (`daemon.ts` → `superviseChannelStartup`, KAN-246) does not merely want to
+   * know the verdict; it then *supervises* the startup, and supervision is built
+   * out of two methods this runtime cannot serve: {@link tailAgent}, which
+   * refuses because `AgentRuntime` declares it synchronous, and
+   * {@link pressPaneKey}, which throws because CrabCast has no `press_pane_key`
+   * and its `send_to_agent` opens with a Ctrl+C. Firing would start a watcher
+   * whose every observation is a refusal and whose one action throws — it would
+   * not fail loudly, it would conclude things about a pane it never read. That
+   * is the same defect as fabricating a command line, reached by a shorter
+   * route.
    *
-   * So the choice is between firing with a fabricated command and not firing.
-   * Firing would make `channel-startup.ts` (KAN-246) believe it knows something
-   * it does not, which is the exact defect both projects' north stars name —
-   * a claim that outruns its mechanism. The interface anticipates this: *"A
-   * runtime that never spawns a pane of its own may leave this unfired; the
-   * daemon installs a listener and does not require it to be called."*
+   * The interface still anticipates this: *"A runtime that never spawns a pane
+   * of its own may leave this unfired; the daemon installs a listener and does
+   * not require it to be called."*
    *
-   * **The cost, named rather than buried: channel-startup supervision does not
-   * run under this runtime.** That is one of the reasons this switch is off by
-   * default, and it is a row in the method table with a verdict of `absent`.
+   * **The cost, named rather than buried, and it is unchanged: channel-startup
+   * supervision does not run under this runtime.** What changed is that the
+   * blocker is now KAN-283's async-interface work rather than a missing field on
+   * their side. That is a smaller and more tractable gap than the one this
+   * docblock described yesterday, and it is one of the reasons the switch is off
+   * by default.
    */
   setAgentSpawnedListener(
-    _listener: (session: HerdrSession, spawnedAt: number, command: string) => void
+    _listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {
     this.log(
-      'setAgentSpawnedListener: registered and never fired — CrabCast publishes no spawn ' +
-        'command line, and firing with a fabricated one would break channel-startup ' +
-        'supervision more quietly than not firing does.'
+      'setAgentSpawnedListener: registered and never fired. The spawn verdict IS available ' +
+        'now (activate_response.channelEnabled, kept per session), but channel-startup ' +
+        'supervision is built on tailAgent and pressPaneKey, which this runtime refuses and ' +
+        'throws respectively — firing would start a watcher that concludes things about a ' +
+        'pane it can never read.'
     );
   }
 
@@ -284,8 +367,35 @@ export class CrabCastRuntime implements AgentRuntime {
       launcher: defaultAgent ?? 'claude',
       prompt: promptContent
     };
+    // `mcpServers`, AN OBJECT, AND NOT `mcpConfig`, A STRING (KAN-294).
+    //
+    // This read `configure.mcpConfig = JSON.stringify(mcpServers)` until the
+    // re-pin, and that field does not exist on `configure_agent`. It was not
+    // rejected — CrabCast accepted the call, answered `success: true`, and
+    // simply did not have the servers: `agent_status` echoed
+    // `config.mcpServers: undefined` for an agent configured that way. So every
+    // agent this runtime spawned got NO MCP servers at all, silently, and
+    // `channelEnabled` was structurally `false` for all of them. Confirmed on a
+    // real daemon at the pin, both directions — the wrong field echoes
+    // `undefined`, the right one echoes back what was sent.
+    //
+    // The shape is the one CrabCast's own refusal states: *"an object keyed by
+    // server name … IT IS DEFINITIONS RATHER THAN NAMES: the command, args and
+    // env that spawn each server, written into .mcp.json verbatim."* That is
+    // exactly `McpServerDefinitions`, so this is a pass-through and not a
+    // translation.
+    //
+    // WHAT IS DELIBERATELY NOT DONE HERE. Their `"builtin"` sentinel —
+    // `{"crabcast": "builtin"}` — is how an agent would be given CrabCast's own
+    // channel server, and it is what makes `channelEnabled` answer `true`. This
+    // does not send it. Giving Butchr's agents a CrabCast channel is a cutover
+    // decision about which daemon an agent talks to, and cutover is out of scope
+    // (KAN-294 item 5). The consequence, stated rather than left to be found: an
+    // agent spawned through this runtime answers `channelEnabled: false`, and
+    // that `false` is now honest — it is CrabCast reporting a spawn that decided,
+    // where before it was reporting a spawn whose MCP request it had discarded.
     if (mcpServers && Object.keys(mcpServers).length > 0) {
-      configure.mcpConfig = JSON.stringify(mcpServers);
+      configure.mcpServers = mcpServers;
     }
 
     const configured = await this.link.request(configure);
@@ -329,8 +439,44 @@ export class CrabCastRuntime implements AgentRuntime {
       );
     }
     this.remoteIds.set(session.sessionId, remoteId);
+
+    // THE SPAWN'S CHANNEL VERDICT, TAKEN HERE BECAUSE HERE IS THE ONLY PLACE IT
+    // IS AVAILABLE (KAN-294). `activate_response` is the surface that describes
+    // *the spawn we just made*; `list_agents` — the only thing this runtime
+    // polls — does not carry the field at all, confirmed row by row at the pin.
+    // So this is not a cache of something re-readable: it is the record of a
+    // fact that has no second source short of a per-agent `agent_status` round
+    // trip, and the interface this serves is synchronous.
+    //
+    // Read through `readChannelEnabled` rather than inline, so that the one
+    // place `null` could be flattened into `false` is a named function with a
+    // proof pointed at it (`verify-channel-spawn-verdict.mjs` §2).
+    this.channelEnabled.set(session.sessionId, readChannelEnabled(activated));
+
     session.status = 'active';
-    this.log(`activated ${agentNameFor(session.type, session.key)} as ${remoteId}`);
+    this.log(
+      `activated ${agentNameFor(session.type, session.key)} as ${remoteId} ` +
+        `(channelEnabled=${JSON.stringify(readChannelEnabled(activated))})`
+    );
+  }
+
+  /**
+   * Whether the spawn behind a session was channel-capable, as CrabCast reported
+   * it at activation. **Three states; `null` is not `false`.**
+   *
+   * `null` covers three genuinely different situations, and merging them here is
+   * correct where merging them with `false` would not be: CrabCast said `null`
+   * (no spawn to be about), CrabCast said nothing recognisable, or this adapter
+   * has no record for the session. All three are *"no verdict"*, which is what
+   * `null` means; none of them is *"there is no channel"*.
+   *
+   * Nothing branches on this yet, and that is stated rather than implied — see
+   * {@link setAgentSpawnedListener} for why the one consumer cannot run under
+   * this runtime. It is on {@link describe} so an operator can see it, and it is
+   * the value the live proof asserts arrives.
+   */
+  channelEnabledFor(sessionId: string): boolean | null {
+    return this.channelEnabled.get(sessionId) ?? null;
   }
 
   abandonSession(sessionId: string, error: string): void {
@@ -757,6 +903,11 @@ export class CrabCastRuntime implements AgentRuntime {
    * between two states a caller renders differently.
    */
   private endMirror(sessionId: string, exitCode: number): void {
+    // The verdict belongs to a spawn, and this spawn is over. Dropped rather
+    // than left behind so a later session reusing nothing of this one cannot
+    // read a stale `true` — and dropping it renders as `null`, which is the
+    // honest answer for a session there is no longer a spawn to be about.
+    this.channelEnabled.delete(sessionId);
     const mirror = this.ptyMirrors.get(sessionId);
     if (mirror) {
       this.link.releasePty(mirror.remoteSessionId);
@@ -874,13 +1025,28 @@ export class CrabCastRuntime implements AgentRuntime {
     ptyMirrors: number;
     censusAgeMs: number | null;
     censusReachable: boolean;
+    /**
+     * One entry per session this adapter started, with the spawn's channel
+     * verdict. **Counted three ways rather than summed into a boolean** — a
+     * count of "channel-enabled agents" would have to decide what to do with
+     * the `null`s, and there is no right answer to that question.
+     */
+    channelEnabled: { true: number; false: number; null: number };
   } {
+    const tally = { true: 0, false: 0, null: 0 };
+    for (const session of this.sessions.keys()) {
+      const verdict = this.channelEnabledFor(session);
+      if (verdict === true) tally.true++;
+      else if (verdict === false) tally.false++;
+      else tally.null++;
+    }
     return {
       link: this.link.describe(),
       sessions: this.sessions.size,
       ptyMirrors: this.ptyMirrors.size,
       censusAgeMs: this.census.at ? Date.now() - this.census.at : null,
-      censusReachable: this.census.reachable
+      censusReachable: this.census.reachable,
+      channelEnabled: tally
     };
   }
 
