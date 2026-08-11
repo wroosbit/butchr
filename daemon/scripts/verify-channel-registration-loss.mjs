@@ -13,12 +13,18 @@
 // interrupted: true` and cancelled a working supervisor's tool call — which on
 // the recipient's side renders as a refusal nobody made.
 //
-// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
-// in process; no live daemon, no herdr, no credential, no peer, no terminal.
-// Section 3 spawns a real daemon and a real MCP server and is therefore subject
-// to scheduling, so the one observation whose window a fast machine can close —
-// the identity map immediately after a restart — is taken with the agent
-// SIGSTOPped rather than by winning the race for it (KAN-309).
+// CI-RUNNABLE: yes — sections 1 and 2 import the built daemon modules and assert
+// against them in process. Section 3 STARTS TWO REAL DAEMONS from the built
+// dist, SIGKILLs the first, and spawns a real dist/mcp.js as the surviving
+// agent, all under a private $HOME in os.tmpdir(); it needs no herdr, no
+// credential, no peer, no terminal and no network, which is what makes it
+// unattended-runnable. It is not, and never was, a "no live daemon" script —
+// that clause was carried here by the shared boilerplate and was simply false,
+// contradicting this file's own header four lines up (KAN-309; the general case
+// is KAN-308's). Because it runs real processes it is subject to scheduling, so
+// the one observation whose window a fast machine can close — the identity map
+// immediately after a restart — is taken with the agent SIGSTOPped rather than
+// by winning a race for it.
 //
 // It would equally catch the half that made the downgrade invisible from the
 // *sender's* side, which is the part a reader is most likely to think is covered
