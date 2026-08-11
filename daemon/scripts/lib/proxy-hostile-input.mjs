@@ -27,6 +27,44 @@
 // green** and the whole-table version reports failures. That is in the #127
 // PR body.
 //
+// ── WHAT `refused` AND `contained` ARE EACH COUNTED OVER (KAN-311) ──────────
+//
+// They do not add up to `checked`, and a reader who tries will be short by the
+// fan-out. The two tallies are counted over **different units**:
+//
+//   - `checked` and `refused` are counted **per placement** — one per (operation,
+//     argument, hostile value) triple, incremented once where `build` returns an
+//     `{error}`.
+//   - `contained` and `escapes` are counted **per request** — a cross-product
+//     operation (`atlassian_search`, the only one today) builds two requests
+//     from one placement, and each is resolved and checked separately.
+//
+// So on today's table `204 refused + 215 contained = 419` against `396`
+// placements: the 23 extra are `atlassian_search`'s second request on each of
+// its non-refused placements. Both numbers are right; they are answers to two
+// different questions, and this paragraph is here because the arithmetic
+// invites exactly one wrong conclusion.
+//
+// ── WHY THE TALLY IS ALSO PER ARGUMENT, AND WHY PER OPERATION IS NOT ENOUGH ─
+//
+// KAN-311. The global `refused > 0 && contained > 0` assertion guards the sweep
+// against being vacuous **overall** — 215 contained proves it is not simply
+// rejecting everything — but it says nothing about any particular interpolation.
+// An argument whose validator refuses every hostile value contributes **zero**
+// containment evidence, and its path interpolation could be entirely uncontained
+// with every assertion still green. "None escaped" means *no hostile value that
+// reached a path escaped*, which is weaker than it reads as.
+//
+// KAN-311's ticket asked for this per **operation**. That granularity is too
+// coarse, and measurably so: `atlassian_get_confluence_page` reports 12
+// contained placements — every one of them from `bodyFormat` — while `pageId`,
+// the argument actually interpolated into the path and the one whose
+// `encodeURIComponent` was removed in the mutation that prompted the ticket,
+// contributes zero. A per-operation zero list does not name that operation,
+// before the mutation or after it. **The unit that matters is the argument**,
+// because the argument is what a path interpolates. So `perArgument` is the
+// tally, and `zeroContainmentArguments` is the report.
+//
 
 /**
  * Values that try to leave the parameter they are put in.
@@ -162,12 +200,18 @@ export function pathEscapes(request, expectedPrefix) {
  * sweep that only ever refuses proves nothing — an operation whose `build`
  * rejected everything would produce a clean sweep and no coverage — so the
  * caller asserts that refusals and containments both occurred.
+ *
+ * `perArgument` carries the same tally at the granularity a path actually
+ * interpolates at — see the header on why the operation is the wrong unit. Note
+ * that `refused` is counted per placement and `contained` per request; the two
+ * do not sum to `checked`, and the header says why.
  */
 export function sweepHostileInput(operations) {
   let checked = 0;
   let refused = 0;
   let contained = 0;
   const escapes = [];
+  const perArgument = [];
 
   for (const op of operations) {
     const fields = Object.keys(op.inputSchema?.properties ?? {});
@@ -179,27 +223,201 @@ export function sweepHostileInput(operations) {
         if (other !== field) otherArgs[other] = validFor(other);
       }
       const prefixes = fixedPrefix(op, field, otherArgs);
+      const tally = { tool: op.tool, field, checked: 0, refused: 0, contained: 0, escaped: 0 };
       for (const hostile of HOSTILE) {
         const built = op.build({ ...otherArgs, [field]: hostile });
         checked++;
+        tally.checked++;
         if ('error' in built) {
           refused++;
+          tally.refused++;
           continue; // a refusal is a pass, and the loudest kind
         }
         const requests = 'requests' in built ? built.requests : [built];
         requests.forEach((request, i) => {
           const escape = pathEscapes(request, prefixes?.[i] ?? null);
           if (escape) {
+            tally.escaped++;
             escapes.push(
               `${op.tool}.${field}=${JSON.stringify(String(hostile).slice(0, 30))} → ${escape}`
             );
           } else {
             contained++;
+            tally.contained++;
           }
         });
       }
+      perArgument.push(tally);
     }
   }
 
-  return { checked, refused, contained, escapes };
+  return { checked, refused, contained, escapes, perArgument };
+}
+
+/**
+ * The arguments that contributed no containment evidence at all.
+ *
+ * Every hostile value this argument was given was refused before a path was
+ * built, so **the sweep measured its validator and never its interpolation**.
+ * That is not a defect — a digits-only `pageId` legitimately refuses all twelve
+ * — but it means containment for this argument rests on the validator **alone**,
+ * and the encoding beside it is unproven by this instrument. What proves that
+ * other half is `unencodedPathInterpolations` below, which is why this is a
+ * report and that one is an assertion. KAN-311 decided that split deliberately;
+ * `verify-atlassian-proxy-read-surface.mjs` records the reasoning.
+ */
+export function zeroContainmentArguments(sweep) {
+  return sweep.perArgument.filter((tally) => tally.contained === 0);
+}
+
+// ── THE SECOND MECHANISM: THE ENCODING, READ OFF THE SOURCE ─────────────────
+//
+// Containment of a path interpolation rests on **two independent mechanisms**,
+// and the sweep above can only ever see their composite:
+//
+//   1. the **validator**, which refuses a hostile value before a path is built;
+//   2. the **encoding**, which neutralises one that gets through.
+//
+// When the validator refuses everything, the sweep's verdict is carried by
+// mechanism 1 alone and mechanism 2 is never exercised. Removing
+// `encodeURIComponent` from such a path changes nothing observable: `pageId` is
+// digits-only, so the value that reaches the interpolation has no character
+// encoding would alter, and **the built path is byte-identical either way**.
+// That is not a gap in the sweep's corpus that a better hostile value would
+// close — it is a property of composing a strict validator with an encoder, and
+// no input fed through `build` can distinguish the two builds. Measured, not
+// assumed: the mutation is invisible to all 396 placements.
+//
+// So the encoding is checked where it is visible, which is the source. This is
+// static analysis, and it buys a different claim from the sweep's: not "no
+// hostile value escaped" but **"every place an argument is interpolated into a
+// path either encodes it or is not a string"**. Two instruments, one per
+// mechanism, and the KAN-311 mutation turns this one red while leaving the
+// sweep green — which is the whole point of adding it.
+//
+// WHAT THIS DOES NOT COVER, because a static check is not a runtime one: it
+// reads the operation table's own path templates in `atlassian-proxy.ts` and
+// nothing else. A path assembled somewhere this parser does not look, or built
+// by a helper it cannot follow, is outside it. `router.ts` is what actually
+// issues the request, and section 6 of the read-surface script is what asserts
+// the router consults this table at all.
+
+/**
+ * Interpolated expressions that are safe without encoding, matched **exactly**.
+ *
+ * Every one is a number or a narrowed literal rather than caller text, so there
+ * is nothing for `encodeURIComponent` to do:
+ *
+ *   - `listLimit(args)` clamps to 1..PROXY_LIST_MAX_RESULTS and returns a
+ *     `number`;
+ *   - `maxResults` and `limit` are the same clamp written inline, held in a
+ *     local the builder computed;
+ *   - `format` is narrowed by `['storage','atlas_doc_format','view'].includes()`
+ *     to one of three literals, with a literal fallback.
+ *
+ * That these really are bounded is asserted dynamically rather than taken on
+ * trust here — the limit-bound checks drive every list operation with `10_000`,
+ * `'lots'`, `-5` and `NaN` and require what lands in the path to be in range.
+ *
+ * **The match is on the exact expression text, and that is the point.** A hole
+ * opens by an interpolation becoming caller-controlled, and every way of
+ * writing that — `${args.limit}`, `${asked}`, `${args.format}` — is a string
+ * this list does not contain, so it is reported rather than silently exempted.
+ * Adding an entry here is therefore a deliberate act with a justification owed;
+ * the cost of the list is that it is maintained, and the alternative — inferring
+ * boundedness from the declaration — is a type-checker, which is not this.
+ */
+export const BOUNDED_INTERPOLATIONS = ['listLimit(args)', 'maxResults', 'limit', 'format'];
+
+/**
+ * Every template literal that forms part of a `path:` expression, with the
+ * expressions interpolated into it.
+ *
+ * Scans forward from each `path:` key and collects the backtick spans of the
+ * expression that follows, so that a path concatenated across several fragments
+ * — which most of the longer ones are — is read as one path rather than missed
+ * after its first line.
+ */
+export function pathInterpolations(source) {
+  const found = [];
+  const key = /\bpath\s*:\s*/g;
+  let match;
+  while ((match = key.exec(source))) {
+    let i = match.index + match[0].length;
+    let depth = 0;
+    const interpolations = [];
+    // Walk the expression until the `,`, `;` or closing brace that ends it.
+    while (i < source.length) {
+      const c = source[i];
+      if (c === '`') {
+        let j = i + 1;
+        while (j < source.length && source[j] !== '`') {
+          if (source[j] === '\\') {
+            j += 2;
+            continue;
+          }
+          if (source[j] === '$' && source[j + 1] === '{') {
+            let k = j + 2;
+            let braces = 1;
+            let expression = '';
+            while (k < source.length && braces > 0) {
+              if (source[k] === '{') braces++;
+              else if (source[k] === '}') {
+                braces--;
+                if (!braces) break;
+              }
+              expression += source[k];
+              k++;
+            }
+            interpolations.push({
+              expression: expression.trim(),
+              line: source.slice(0, j).split('\n').length
+            });
+            j = k + 1;
+            continue;
+          }
+          j++;
+        }
+        i = j + 1;
+        continue;
+      }
+      if (c === '(' || c === '{' || c === '[') depth++;
+      else if (c === ')' || c === '}' || c === ']') {
+        if (depth === 0) break;
+        depth--;
+      } else if ((c === ',' || c === ';') && depth === 0) break;
+      else if (c === "'" || c === '"') {
+        const quote = c;
+        i++;
+        while (i < source.length && source[i] !== quote) {
+          if (source[i] === '\\') i++;
+          i++;
+        }
+      }
+      i++;
+    }
+    if (interpolations.length) {
+      found.push({ line: source.slice(0, match.index).split('\n').length, interpolations });
+    }
+  }
+  return found;
+}
+
+/**
+ * Path interpolations that neither encode their argument nor are bounded by
+ * construction — the finding this exists to produce.
+ *
+ * Each is a place a caller-supplied value could reach a URL path unencoded, and
+ * whose containment therefore rests on its validator with nothing behind it.
+ */
+export function unencodedPathInterpolations(source) {
+  const bare = [];
+  for (const path of pathInterpolations(source)) {
+    for (const { expression, line } of path.interpolations) {
+      if (/encodeURIComponent\s*\(/.test(expression)) continue;
+      if (BOUNDED_INTERPOLATIONS.includes(expression)) continue;
+      bare.push({ line, expression });
+    }
+  }
+  return bare;
 }

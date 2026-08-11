@@ -70,10 +70,24 @@ import {
   scopesOf,
   selectedProxyMode
 } from '../dist/atlassian-proxy.js';
-import { HOSTILE, sweepHostileInput } from './lib/proxy-hostile-input.mjs';
+import {
+  HOSTILE,
+  sweepHostileInput,
+  unencodedPathInterpolations,
+  zeroContainmentArguments
+} from './lib/proxy-hostile-input.mjs';
+import { requireFreshDist } from './lib/require-fresh-dist.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
+
+// Before anything is asserted on the modules imported above: this script reads
+// `../dist/`, so a stale build would measure the old code and print a pass
+// indistinguishable from a real one. Exits 2 — a setup guard, not a verdict.
+requireFreshDist(path.join(daemonDir, 'src'), path.join(daemonDir, 'dist'), {
+  hint: 'npm run build --prefix daemon'
+});
+
 const verbose = process.argv.includes('--verbose');
 
 let failures = 0;
@@ -348,6 +362,43 @@ check(
   'and the sweep both refused and contained — it is neither rejecting everything nor validating nothing',
   sweep.refused > 0 && sweep.contained > 0,
   `refused ${sweep.refused}, contained ${sweep.contained}`
+);
+// KAN-311: that assertion is global, and global is not where a path is built.
+// An argument whose validator refuses all twelve hostile values contributes
+// zero containment evidence — the sweep measured its validator and never its
+// interpolation. The list is a report rather than a failure, because refusing
+// everything is correct for a strict validator on an argument with no free-text
+// form; what covers those arguments is the encoding check directly below.
+// `verify-atlassian-proxy-read-surface.mjs` section 2b records the full
+// decision and what was rejected.
+const zeroContainment = zeroContainmentArguments(sweep);
+console.log(
+  `   NOTE  ${zeroContainment.length} of ${sweep.perArgument.length} arguments contributed zero ` +
+    'contained placements — validator measured, encoding not:'
+);
+for (const tally of zeroContainment) {
+  console.log(`           ${tally.tool}.${tally.field} — refused ${tally.refused}/${tally.checked}`);
+}
+check(
+  'at least one argument contributed containment — the sweep exercised a real interpolation',
+  zeroContainment.length < sweep.perArgument.length,
+  `all ${sweep.perArgument.length} arguments refused everything`
+);
+// The second mechanism, checked where it is visible. A path whose argument is
+// strictly validated can lose its `encodeURIComponent` without a single
+// placement above changing — the built path is byte-identical, because the
+// validator only ever lets through characters the encoder would not touch. So
+// the encoding is read off the source, and this is what keeps the count of
+// mechanisms at two rather than silently at one.
+const bareInterpolations = unencodedPathInterpolations(
+  fs.readFileSync(path.join(daemonDir, 'src', 'atlassian-proxy.ts'), 'utf8')
+);
+check(
+  'every interpolation into a path is encoded, or is a bounded number or a narrowed literal',
+  bareInterpolations.length === 0,
+  bareInterpolations
+    .map((b) => `atlassian-proxy.ts:${b.line}  \${${b.expression}} reaches a path unencoded`)
+    .join('\n')
 );
 // The two operations this section used to cover, kept as explicit shape
 // assertions on top of the sweep. The sweep proves a path cannot leave its
