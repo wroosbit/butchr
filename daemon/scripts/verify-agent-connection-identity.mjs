@@ -15,6 +15,9 @@
 // before its old socket's `close` fires has the old cleanup delete the new
 // entry — a live agent, unaddressable, with nothing in any log about it.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // WHAT IT DOES NOT COVER, AND WHO DOES. This script proves the map resolves an
 // identity to a connection. It does NOT fire an addressed frame down that
 // connection and observe it arriving at one model and not the other — nothing

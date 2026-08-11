@@ -6,6 +6,9 @@
 // machine that will actually fall back to a file — or a credential file left
 // readable by anyone but its owner.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Butchr prefers the OS keyring and silently falls back to a 0600 file when
 // libsecret is missing or no secret service is running. Which one you get is
 // invisible from the outside, and until now it was only reported in the

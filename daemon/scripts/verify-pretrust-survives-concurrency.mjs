@@ -10,6 +10,9 @@
 // clobber that cannot be repaired being reported as a successful start rather
 // than refusing.
 //
+// CI-RUNNABLE: no — every stage needs a real spawn, and it refuses to run at
+// all when herdr is absent rather than pretending otherwise.
+//
 // Everything here runs against real processes: a real daemon from dist/, a
 // private herdr server, real panes. Isolation is by $HOME and by
 // HERDR_SOCKET_PATH, exactly as in the other verify-*.mjs scripts; the live

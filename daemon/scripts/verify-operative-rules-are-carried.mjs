@@ -13,6 +13,9 @@
 // script go red on exactly that, with all four prompts missing every word of
 // H-3 and H-4.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // (This used to quote "23 failures". The count is not a fact about `39cd158` —
 // it is a fact about how many entries this file had on the day it was written,
 // and it rises every time a rule is added: it was 60 by 2026-08-10. KAN-241

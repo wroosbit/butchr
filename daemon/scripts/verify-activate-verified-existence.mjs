@@ -7,6 +7,9 @@
 // there at all", which is what turns a bounded wait into either a false alarm
 // or an unbounded hang.
 //
+// CI-RUNNABLE: no — shells out to `which herdr` and activates a real agent
+// through it; it throws outright when herdr is not on PATH.
+//
 // The ticket's symptom was a response of `success: true` with a plausible
 // session id for an agent that was never created. KAN-24's PR #21 closed the
 // half of that where herdr *told* us the spawn failed and we discarded the

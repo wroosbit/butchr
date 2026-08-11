@@ -7,6 +7,9 @@
 // which is exactly what a regressed parametrization would produce — or a
 // credential file left readable by anyone but its owner.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Butchr prefers the OS keyring and silently falls back to a 0600 file when
 // libsecret is missing or no secret service is running. Which one you get is
 // invisible from the outside; reporting it only in the success message would

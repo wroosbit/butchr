@@ -18,6 +18,9 @@
 // criterion 3 being broken in the direction that matters: a merge that leaves
 // the proxy serving on a machine where nobody set the switch.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // ── WHY THE REFUSALS NEED A POSITIVE CONTROL ────────────────────────────────
 //
 // Most of this file asserts that something is refused, and a refusal is what a

@@ -7,6 +7,9 @@
 // convincingly, and cannot tell an agent anything. Three shapes of that, each
 // of which would ship green under a laxer test:
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 //   1. **Stamping `HEAD` instead of the template's own last commit.** The
 //      obvious implementation, and it is wrong in the direction that hides the
 //      defect: `HEAD` moves on every unrelated commit, so the block would name

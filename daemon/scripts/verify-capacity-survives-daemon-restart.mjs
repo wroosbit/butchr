@@ -14,6 +14,10 @@
 // collapses on every deploy, which is exactly the KAN-145 shape this epic keeps
 // re-finding.
 //
+// CI-RUNNABLE: no — starts a real daemon and then warms up for 780 s across 13
+// cost windows so the estimate can walk down off its seed. Both the daemon and
+// the wall clock put it out of reach of a per-PR check.
+//
 // WHY THIS DOES NOT TOUCH THE RUNNING DAEMON
 //
 // BUTCHR_DIR is derived from os.homedir(), so a daemon started with HOME

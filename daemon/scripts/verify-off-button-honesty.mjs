@@ -9,6 +9,9 @@
 // controls nothing. Both are the same defect: a control whose sentence claims
 // more than its mechanism covers.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Sections:
 //
 //   1. the field arrives      — a real router answers list_agents with a real

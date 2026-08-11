@@ -12,6 +12,9 @@
 // `agent.detached` not reaching `setSessionEndedListener`, which is what leaves
 // a dead agent rendering as live.
 //
+// CI-RUNNABLE: no — needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`;
+// it attempts nothing without one.
+//
 // ── WHY THIS SCRIPT EXISTS BESIDE THE OTHER ONE ────────────────────────────
 //
 // `verify-crabcast-runtime-switch.mjs` stands up its own socket and answers its

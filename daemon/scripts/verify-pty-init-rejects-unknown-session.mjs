@@ -6,6 +6,10 @@
 // session it does not hold — substituting some arbitrary session, or spawning
 // a `default/workspace` shell nobody asked for — instead of refusing.
 //
+// CI-RUNNABLE: partial — the rejection path asserts in CI. The regression
+// stage needs herdr to start a real agent and prints `SKIPPED: no herdr to
+// start an agent with` instead.
+//
 // Everything here runs against real processes. Isolation is by $HOME and by
 // HERDR_SOCKET_PATH: BUTCHR_DIR, the daemon socket and every workspace
 // directory derive from os.homedir(), so a temp HOME gives this daemon its own

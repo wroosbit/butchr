@@ -14,6 +14,9 @@
 // the machine and puts a blocking full-screen dialog in front of every
 // activation — the brick this whole ticket exists to be careful about.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // It also catches the quieter thing the flag could take with it: section 3
 // derives the switch-off string from the switch-on one by deleting the flag, so
 // any *other* edit to the command — a lost `--permission-mode`, a changed

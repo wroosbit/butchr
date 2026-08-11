@@ -13,6 +13,9 @@
 // exactly like success — the build goes green either way, which is why this is
 // asserted on inode identity and not on whether anything works.
 //
+// CI-RUNNABLE: yes — reads files off the checkout and asserts on their
+// contents; node builtins only.
+//
 // AND THE SECOND HALF, WHICH IS THE ONE WITH TEETH: that sharing has not been
 // bought by making a workspace able to damage something outside it. Section 3
 // asserts no symlink in the tree leaves the workspace (so `rm -rf node_modules`

@@ -19,6 +19,9 @@
 // that "check issuelinks and activatedBy" stops being sufficient (4); and the
 // 60s/300s intervals the prompts quote to agents drifting from the constants (5).
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // It is a BINDING, and that is the point: each section asserts a claim is
 // present in the prompts AND that the real JiraPoller behaves that way. Either
 // half drifting is a failure, so the code cannot move without the prompts being

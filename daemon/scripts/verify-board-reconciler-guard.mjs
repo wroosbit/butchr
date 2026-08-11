@@ -9,6 +9,9 @@
 // outage tears down every running agent, and an agent's context does not
 // survive its pane. It is the one failure in this design that is unrecoverable.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // A GREEN RUN OF THIS SCRIPT PROVES NOTHING ON ITS OWN, WHICH IS WHY SECTION 1
 // EXISTS
 //
