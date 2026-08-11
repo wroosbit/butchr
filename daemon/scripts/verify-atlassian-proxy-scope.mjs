@@ -347,6 +347,24 @@ check(
   /operation\.build\(args\)/.test(routerSrc) && !/data\.path/.test(routerSrc),
   'a path taken off the wire makes the granted scope unbounded'
 );
+// The fourth, asked for by `epic/KAN-39` at review of KAN-291 and in the shape
+// of the three above. Those guard KAN-272's machinery — the switch, the
+// refusal, the path — and the write policy is the newest thing standing between
+// a *declared* rule and an *enforced* one, on the first write scope this daemon
+// has ever held, with 29 more tools queued behind it in KAN-292 and KAN-293.
+//
+// It is a second home for a property `verify-atlassian-proxy-write-scope.mjs`
+// §6 also asserts, and the duplication is deliberate rather than an oversight:
+// this file is the one a reader opens to ask "what does the proxy grant and
+// what enforces it", and a router section that guards three call sites while
+// silently omitting the fourth reads as though there were only three.
+check(
+  'router.ts refuses a foreign write through refuseWriteOutsideCaller, not an inline condition',
+  /refuseWriteOutsideCaller\(operation,\s*args,\s*callerIdentity\)/.test(routerSrc),
+  'the write policy is declared in atlassian-proxy.ts and not applied by the handler: any ' +
+    "agent can transition any issue the credential can reach. See verify-atlassian-proxy-" +
+    'write-scope.mjs §5 for the policy itself and §6 for the same call site in the build.'
+);
 // An invocation, not a mention. `mcp.ts` names `selectedProxyMode` in a comment
 // explaining why it does not call it, and a bare substring match would make
 // documenting the decision the thing that fails the check on it.

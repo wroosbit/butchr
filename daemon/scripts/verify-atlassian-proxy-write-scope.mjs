@@ -540,6 +540,53 @@ check(
   'the tool list and the gate would be answers about two different machines'
 );
 
+// ── THE SAME WIRING, IN THE BUILD THIS FILE ACTUALLY TESTS ─────────────────
+//
+// Added after `epic/KAN-39` drove this proof red by a route it survived: it
+// replaced the `refuseWriteOutsideCaller` call in **`dist/router.js`** with
+// `null` — every write reachable against anybody's ticket — and this file
+// stayed green, EXIT=0.
+//
+// The checks above read `src/router.ts` and they do work: the identical
+// mutation applied to the source trips all three. But **sections 1 to 5 import
+// from `dist/`**, so until now this file asserted its units against the build
+// and its wiring against the source, and was therefore describing two
+// different programs. A divergence between them was invisible by construction,
+// and a hand-edited `dist` is exactly that divergence.
+//
+// So the wiring is now asserted in both. `src` is what a reviewer reads and
+// what the next change edits; `dist` is what actually runs and what every other
+// assertion in this file is about. Neither is redundant: source-only misses a
+// build that does not match it, and dist-only would pass a stale build that
+// happens to still contain the call.
+const routerDist = fs.readFileSync(path.join(daemonDir, 'dist', 'router.js'), 'utf8');
+check(
+  'the BUILT router applies the write policy, with the identity from the request',
+  /refuseWriteOutsideCaller\(operation,\s*args,\s*callerIdentity\)/.test(routerDist),
+  'src/router.ts consults the policy and the build does not: what runs is not what was reviewed'
+);
+check(
+  'and the BUILT router decides it before anything is sent to Atlassian',
+  (() => {
+    const handler = routerDist.slice(routerDist.indexOf('handleAtlassianProxyCall'));
+    const refusal = handler.indexOf('refuseWriteOutsideCaller(operation');
+    const send = handler.indexOf('.proxyWrite(');
+    return refusal !== -1 && send !== -1 && refusal < send;
+  })(),
+  'in the build that runs, the policy is consulted after the write has gone out'
+);
+// A proof run against a build older than the source it claims to describe is
+// reporting on code nobody has. Cheap, deterministic, and it catches the
+// ordinary version of the mistake above — forgetting to rebuild — as well as
+// the deliberate one.
+check(
+  'and that build is not older than the source it is meant to be',
+  fs.statSync(path.join(daemonDir, 'dist', 'router.js')).mtimeMs >=
+    fs.statSync(path.join(daemonDir, 'src', 'router.ts')).mtimeMs,
+  'dist/router.js predates src/router.ts — run `npm run build`; every assertion in this ' +
+    'file is about the older code'
+);
+
 // The credential's own disclosure. KAN-291 §1 asks where the key lives and who
 // can read it; the answer is "the store KAN-20 built, unchanged". What DID
 // change is what the user is told before they type one, and a stale consent
