@@ -119,6 +119,23 @@ function exempt(tool, why) {
   console.log(`   EXEMPT ${tool.padEnd(45)} ${why}`);
 }
 
+/**
+ * A tool whose call SUCCEEDED but whose result was empty — so the call is
+ * proven and the parsing of a populated response is not.
+ *
+ * Distinct from {@link evidence} on purpose. An empty result from a real
+ * endpoint is a real call and it proves a great deal: auth, path construction,
+ * product routing, the response shape. It proves nothing about reading a
+ * populated body, and collapsing the two into one "returned data" line is how a
+ * proof ends up claiming more than its mechanism covers.
+ */
+const partials = [];
+function partial(tool, why) {
+  covered.add(tool);
+  partials.push({ tool, why });
+  console.log(`   EMPTY  ${tool.padEnd(45)} ${why}`);
+}
+
 const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'kan292-read-'));
 const butchrDir = path.join(fakeHome, '.local', 'share', 'butchr');
 fs.mkdirSync(butchrDir, { recursive: true, mode: 0o700 });
@@ -363,9 +380,7 @@ await withMcp(OWN_KEY, async (mcp) => {
 
   // --- Confluence ---------------------------------------------------------
 
-  const spaces = await call('atlassian_get_confluence_spaces', { limit: 5 });
-  // Every Confluence id below is read out of THIS response, not written here.
-  const space = spaces?.results?.[0];
+  const spaces = await call('atlassian_get_confluence_spaces', { limit: 25 });
   if (spaces) {
     evidence(
       'atlassian_get_confluence_spaces',
@@ -373,19 +388,54 @@ await withMcp(OWN_KEY, async (mcp) => {
     );
   }
 
+  // THE RICHEST REAL CONTENT ON THE SITE, FOUND RATHER THAN NAMED.
+  //
+  // The first draft took `spaces.results[0]`, which is the personal space: two
+  // pages, a 2 KB body and nothing below it. Every Confluence call then
+  // "returned real data" while exercising almost none of the shapes — a read
+  // proved against the thinnest content on the site is a weak reading of
+  // criterion 1, even though every call was genuine.
+  //
+  // So the space and page are CHOSEN BY SIZE, from what the proxy itself
+  // reports. Deliberately not hardcoded page ids, even though `epic/KAN-39`
+  // named three good ones: an id written into this file is a constant that
+  // rots the day somebody archives a page, and choosing by size keeps the
+  // probe pointed at the best available evidence forever without an edit.
+  let space = null;
   let page = null;
-  if (space) {
-    const pages = await call('atlassian_get_confluence_space_pages', {
-      spaceId: String(space.id),
-      limit: 5
+  let pages = null;
+  let best = -1;
+  for (const candidate of spaces?.results ?? []) {
+    const inSpace = await call('atlassian_get_confluence_space_pages', {
+      spaceId: String(candidate.id),
+      limit: 50
     });
-    page = pages?.results?.[0];
-    if (pages) {
-      evidence(
-        'atlassian_get_confluence_space_pages',
-        `space ${space.id} has ${pages.results?.length} page(s): ` +
-          pages.results?.map((p) => `"${p.title}" (id ${p.id})`).join(', ')
-      );
+    if ((inSpace?.results?.length ?? 0) > best) {
+      best = inSpace?.results?.length ?? 0;
+      space = candidate;
+      pages = inSpace;
+    }
+  }
+  if (pages) {
+    evidence(
+      'atlassian_get_confluence_space_pages',
+      `richest space ${space.key} (id ${space.id}) has ${pages.results?.length} page(s), ` +
+        `chosen over ${(spaces?.results?.length ?? 1) - 1} other(s): ` +
+        pages.results?.slice(0, 3).map((p) => `"${p.title}"`).join(', ') + ', …'
+    );
+  }
+
+  // And within it, the page with the most beneath it — so `descendants` is
+  // exercised against a real tree rather than a leaf.
+  let deepest = -1;
+  for (const candidate of pages?.results ?? []) {
+    const kids = await call('atlassian_get_confluence_page_descendants', {
+      pageId: String(candidate.id),
+      limit: 50
+    });
+    if ((kids?.results?.length ?? 0) > deepest) {
+      deepest = kids?.results?.length ?? 0;
+      page = candidate;
     }
   }
 
@@ -401,35 +451,50 @@ await withMcp(OWN_KEY, async (mcp) => {
 
     const descendants = await call('atlassian_get_confluence_page_descendants', {
       pageId: String(page.id),
-      limit: 5
+      limit: 25
     });
     if (descendants) {
       evidence(
         'atlassian_get_confluence_page_descendants',
-        `page ${page.id} has ${descendants.results?.length} descendant(s) — an empty set is a real answer`
+        `page ${page.id} "${page.title}" has ${descendants.results?.length} descendant(s) — ` +
+          'the deepest tree on the site, chosen by measuring rather than by naming a page'
       );
     }
 
-    const footer = await call('atlassian_get_confluence_page_footer_comments', {
-      pageId: String(page.id),
-      limit: 5
-    });
-    if (footer) {
-      evidence(
-        'atlassian_get_confluence_page_footer_comments',
-        `page ${page.id} has ${footer.results?.length} footer comment(s)`
-      );
-    }
-
-    const inline = await call('atlassian_get_confluence_page_inline_comments', {
-      pageId: String(page.id),
-      limit: 5
-    });
-    if (inline) {
-      evidence(
-        'atlassian_get_confluence_page_inline_comments',
-        `page ${page.id} has ${inline.results?.length} inline comment(s)`
-      );
+    // THE TWO COMMENT LISTINGS SUCCEED AND COME BACK EMPTY, AND THE DIFFERENCE
+    // BETWEEN THOSE TWO FACTS IS REPORTED RATHER THAN AVERAGED.
+    //
+    // An empty result from a real endpoint IS a real call: it proves auth, path
+    // construction, product routing and the response shape. It does NOT prove
+    // that this code reads a POPULATED response correctly. Printing "0 comments"
+    // and moving on would quietly let the second claim ride on the first, which
+    // is this epic's recurring defect in its smallest form.
+    //
+    // There is no page on this site against which these two could be proven.
+    // Verified three ways: CQL `type=comment` returns 0, and both v2 collection
+    // endpoints return empty. `epic/KAN-39` suggested three specific pages as
+    // having "real comments" — all three are real and substantial (51 KB, 19 KB
+    // and 64 KB bodies, read through this proxy) and all three have **zero**
+    // comments of either kind. So the honest report is the one below rather
+    // than a better-looking page id.
+    for (const [tool, kind] of [
+      ['atlassian_get_confluence_page_footer_comments', 'footer'],
+      ['atlassian_get_confluence_page_inline_comments', 'inline']
+    ]) {
+      const got = await call(tool, { pageId: String(page.id), limit: 25 });
+      if (!got) continue;
+      const n = got.results?.length ?? 0;
+      if (n > 0) {
+        evidence(tool, `page ${page.id} has ${n} ${kind} comment(s) — populated, and parsed`);
+      } else {
+        partial(
+          tool,
+          `CALL SUCCEEDED, RESULT EMPTY — page ${page.id} has no ${kind} comments, and neither ` +
+            'does any page on this site (CQL type=comment reports 0, and the v2 collection is ' +
+            'empty). Auth, path construction, product routing and the response shape are ' +
+            `proven; POPULATION PARSING IS NOT. Re-test when real ${kind} comments exist.`
+        );
+      }
     }
 
   }
@@ -568,22 +633,34 @@ await withMcp(OWN_KEY, async (mcp) => {
   );
 });
 
-if (exemptions.length) {
+if (exemptions.length || partials.length) {
   rule('WHAT THIS RUN DID NOT ESTABLISH');
-  for (const { tool, why } of exemptions) console.log(`   ${tool}\n      ${why}\n`);
+  for (const { tool, why } of partials) {
+    console.log(`   ${tool}  — CALL PROVEN, POPULATION PARSING UNPROVEN\n      ${why}\n`);
+  }
+  for (const { tool, why } of exemptions) {
+    console.log(`   ${tool}  — NO SUCCESSFUL CALL\n      ${why}\n`);
+  }
   console.log(
-    '   Each exemption above is licensed by a condition this run established through the\n' +
-      '   surface itself, not by a list written into this file. If the condition stops\n' +
-      '   holding, the tool is required to return data like every other one.'
+    '   Every line above is licensed by a condition this run established THROUGH THE SURFACE\n' +
+      '   ITSELF, not by a list written into this file. If the condition stops holding — if a\n' +
+      '   single Confluence comment is ever created — these stop being exempt and are required\n' +
+      '   to return populated data like every other operation.\n' +
+      '\n' +
+      '   No data was created to close any of them. A fixture this script authored would prove\n' +
+      "   that its writer and its reader agree, which is a weaker claim than the one being made,\n" +
+      '   and Confluence has no delete tool, so the litter would be permanent.'
   );
 }
 
+const fullyProven = READS.length - exemptions.length - partials.length;
 console.log(
   failures
     ? `\nFAILED — ${failures} check(s)`
-    : `\nOK — ${READS.length - exemptions.length} of ${READS.length} read operations reached ` +
-      `real Atlassian through a real mcp.ts and returned real data` +
-      (exemptions.length ? `, ${exemptions.length} exempted above` : '') +
-      `, and the same instrument refused with the switch off.`
+    : `\nOK — ${fullyProven} of ${READS.length} read operations returned POPULATED real data from ` +
+      `real Atlassian through a real mcp.ts` +
+      (partials.length ? `; ${partials.length} succeeded with an empty result` : '') +
+      (exemptions.length ? `; ${exemptions.length} could not be called at all` : '') +
+      ` — all three groups are itemised above. The same instrument refused with the switch off.`
 );
 process.exit(failures ? 1 : 0);
