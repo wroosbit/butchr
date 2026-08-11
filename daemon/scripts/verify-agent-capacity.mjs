@@ -12,6 +12,27 @@
 //
 // CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
 // in process; no live daemon, no herdr, no credential, no peer, no terminal.
+// Every section that ASSERTS derives from stated facts, so no verdict here
+// moves with the load, the disk pressure or the free memory of the host.
+//
+// WHAT READS THE LIVE MACHINE, AND WHAT THAT LEAVES UNCOVERED (KAN-309)
+//
+// Section 1 still calls `readCapacity()` — deliberately, because "the cap on
+// THIS machine" is what it is for, and it is where a reader sees the real
+// arithmetic against real hardware. Its verdict is an internal-consistency
+// check (`cap === min(capByCpu, capByMemory)`, and `capBoundBy` names which),
+// which holds on any machine whose derived cap is at least 1. It does NOT hold
+// where capacity.ts's `cap < 1` floor fires and renames `capBoundBy` to
+// `'floor'` — a machine smaller than one agent's worth of core or RAM. No
+// runner or fleet machine is anywhere near that, so it has never fired, and
+// nothing here is covering it. Named rather than left to be discovered.
+//
+// Sections 6 and 7 size their fleets from section 1's live `cap`, so their
+// numbers move between machines while what they assert does not: a full board
+// refuses and a re-attach does not, at whatever cap the host derives.
+//
+// Section 8 used to read the live machine as well, and that is the one that
+// was load-bearing on a verdict — see the note on the section itself.
 //
 // Extended for KAN-36, which re-measured what an agent costs and reserved a
 // slot off the top for the then always-on board manager. Reworked for KAN-41:
@@ -83,7 +104,6 @@ const distDir = process.argv[2] ?? path.join(scriptDir, '..', 'dist');
 const {
   computeCapacity,
   describeCapacity,
-  readMachineFacts,
   readCapacity,
   humanReserveCores,
   humanReserveBytes,
@@ -508,16 +528,41 @@ rule('8. CPU SENSITIVITY — same machine, same agent count, different CPU in us
 // a compiling one, and a count-only cap cannot. The busy row is now a machine
 // whose cores are spent rather than one whose run queue is long — and on the
 // evidence in capacity.ts's header those were never the same thing.
-const facts = readMachineFacts();
+//
+// KAN-309: these facts are STATED, not read off whatever machine this happens
+// to be running on. They used to come from `readMachineFacts()`, and on
+// 2026-08-11 that turned `main` red — a runner whose disk was 23.77% I/O
+// stalled tripped the KAN-218 stall veto, which forces headroom to 0 in BOTH
+// rows, so the comparison this section exists to make could not be made. The
+// section did not find a defect in the CPU term; it reported that the runner's
+// disk was busy, and it reported it as `CPU in use made no difference`, which
+// is the one thing that had not happened.
+//
+// The claim here is about the DERIVATION, so the derivation's inputs are the
+// fixture's business and not the host's. `stall` is written out rather than
+// omitted on purpose: an absent `stall` means "no instrument", which is a
+// different case with a different meaning (the veto goes inert and says so),
+// and a reader cannot tell a deliberately quiet disk from a forgotten field.
+// Stating 0% says the instrument is present, was read, and is not what is
+// binding — which is exactly the precondition this comparison needs.
+const CPU_FACTS = {
+  cores: 4,
+  totalBytes: Math.round(15.4 * GIB),
+  availableBytes: Math.round(12 * GIB),
+  load1: 0.15,
+  busyWindowSeconds: 5,
+  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+};
+
 const byCpu = {};
 for (const [label, busyCores] of [
   ['idle fleet', 0.15],
-  ['busy fleet (compiling)', facts.cores]
+  ['busy fleet (compiling)', CPU_FACTS.cores]
 ]) {
-  const c = computeCapacity({ ...facts, busyCores, busyWindowSeconds: 5 }, 1);
+  const c = computeCapacity({ ...CPU_FACTS, busyCores }, 1);
   byCpu[label] = c;
   console.log(
-    `${label.padEnd(24)} ${String(busyCores.toFixed(2)).padStart(5)} of ${facts.cores} cores in use ` +
+    `${label.padEnd(24)} ${String(busyCores.toFixed(2)).padStart(5)} of ${CPU_FACTS.cores} cores in use ` +
     `→  headroom ${c.headroom} ` +
     `(count says ${c.headroomByCap}, cpu says ${c.headroomByCpu}, memory says ${c.headroomByMemory}; ` +
     `bound by ${c.headroomBoundBy})`
@@ -526,6 +571,25 @@ for (const [label, busyCores] of [
 
 const idleFleet = byCpu['idle fleet'];
 const busyFleet = byCpu['busy fleet (compiling)'];
+
+// The precondition, asserted rather than assumed (KAN-309). The comparison
+// below is only capable of saying anything about the CPU term while no other
+// term is forcing 0 — and the stall veto forces 0 outright, whatever the three
+// counting terms computed. When this section failed on a loaded runner it had
+// stopped being a comparison at all, and it reported the failure as though the
+// CPU term were broken. Checking the veto separately is what makes the
+// difference between the two visible in the output rather than inferable from
+// it: if the fixture or the veto's default ever changes, THIS line goes red and
+// names the stall, and the verdict below keeps meaning what it says.
+verdict(
+  idleFleet.stalled === false && busyFleet.stalled === false,
+  `the stall veto is inert in both rows (${idleFleet.stallPercent}% io/memory stall against a ` +
+    `${idleFleet.stallRefusePercent}% threshold), so what the\n    rows below disagree about is the CPU term and nothing else.`,
+  `the stall veto fired on the stated facts, so the CPU comparison below cannot mean anything: ` +
+    `idle stalled=${idleFleet.stalled}, busy stalled=${busyFleet.stalled}, ` +
+    `stallPercent=${idleFleet.stallPercent} against a threshold of ${idleFleet.stallRefusePercent}.`
+);
+
 verdict(
   // Same machine, same one agent running, same count headroom — and a different
   // answer. If these two rows ever agree, the live term has stopped working and
