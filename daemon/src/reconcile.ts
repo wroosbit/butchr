@@ -38,8 +38,14 @@ export interface RestoreOutcome {
   agentName: string;
   type: string;
   key: string;
-  /** 'already-running' | 'restored' | 'failed' */
-  result: 'already-running' | 'restored' | 'failed';
+  /**
+   * `'deferred'` is KAN-258's addition: the machine refused this agent for
+   * capacity, it is still wanted, and nothing was started. It is a distinct
+   * result from `'failed'` on purpose — a refusal is the gate working, and
+   * filing it under failure is how a healthy deferral comes to look like an
+   * outage in a log somebody scans.
+   */
+  result: 'already-running' | 'restored' | 'failed' | 'deferred';
   /** True when the agent's prior conversation was there to continue. */
   resumedConversation?: boolean;
   /** Whether the interrupted-work message was delivered, and why not. */
@@ -141,14 +147,35 @@ export async function reconcileAgents(opts: {
           // daemon standing in for whoever originally made it, and the registry
           // is the only party that still remembers who that was.
           activatedBy: record.activatedBy ?? null,
-          resume: cause,
-          // These agents were being carried when the power went out, so the
-          // machine has already demonstrated it can hold them. Refusing them at
-          // boot on a load average that is high *because the machine is
-          // booting* would recreate exactly the silent loss this ticket exists
-          // to remove. The override is still recorded and broadcast, so
-          // over-staffing stays deliberate and visible.
-          override: true
+          resume: cause
+          // ---------------------------------------------------------------
+          // `override: true` WAS HERE, AND KAN-258 IS WHY IT IS NOT (2026-08-11)
+          // ---------------------------------------------------------------
+          //
+          // Its argument was good and its condition inverts under exactly the
+          // circumstance that triggers it. It read:
+          //
+          //   *"These agents were being carried when the power went out, so the
+          //   machine has already demonstrated it can hold them."*
+          //
+          // **A hard power-off is the machine demonstrating that it could
+          // not.** On 2026-08-10 the human held the button on a box at load
+          // 29.14 with ten agents on four cores; the registry recorded those
+          // ten as active, so the next boot restored exactly the fleet that had
+          // just failed — serially, staggered, and with the gate switched off
+          // by this line. Two minutes' uptime, load 29 again. It happened at a
+          // cold boot both times.
+          //
+          // The second half of the argument — that refusing at boot *"would
+          // recreate exactly the silent loss this ticket exists to remove"* —
+          // is answered rather than dismissed. A refusal here is now loud in
+          // three places instead of silent in none: this log line carries the
+          // gate's own figures, the registry still records the agent as active,
+          // and `list_agents` reports it under `missingAgents`, which exists
+          // precisely to surface work that has stopped. A board-keyed agent is
+          // additionally retried by the board reconciler within a cycle. **The
+          // fear was loss, and the answer to loss is retry-and-say-so, not
+          // gate-off.**
         },
         (msg: any) => {
           response = msg;
@@ -158,6 +185,24 @@ export async function reconcileAgents(opts: {
       const error = e?.message ?? String(e);
       log(`[reconcile] Restoring ${agentName} threw: ${error}`);
       outcomes.push({ agentName, type, key, result: 'failed', error });
+      continue;
+    }
+
+    // A capacity refusal is not a failure, and saying so is half of KAN-258.
+    // The machine declined to carry this agent *right now*; it is still wanted,
+    // it is still in the registry, and something will come back for it. A log
+    // that reported this as a failed restore would send the reader looking for
+    // a broken agent instead of a full machine.
+    if (!response?.success && response?.refusedBy === 'capacity') {
+      const error = response?.error ?? 'no reason given';
+      log(
+        `[reconcile] DEFERRED ${agentName} (${type}/${key}): the machine cannot carry it yet, ` +
+        `so nothing was started and nothing was overridden. It stays in the registry as ` +
+        `active and will be reported under missingAgents until it comes up; a board-keyed ` +
+        `agent is retried by the board reconciler within a cycle. This is the gate working, ` +
+        `not an outage.\n${error}`
+      );
+      outcomes.push({ agentName, type, key, result: 'deferred', error });
       continue;
     }
 
