@@ -264,7 +264,9 @@ A ticket an agent can execute unattended contains:
   must pass; **approval before merge** — the task agent merges its own PR, but
   only after **you** have approved it, and green CI is not approval. Name
   yourself on the ticket as the approver so the agent knows who it is waiting
-  on.
+  on, and tell it to declare you in its PR body as `BUTCHR-APPROVER: story/{{KEY}}`
+  — the required `approval-recorded` check compares your marker against that
+  line, so a PR that declares nobody cannot go green (KAN-306).
 
 **Coordination notes are your responsibility.** You are the only one who knows
 the tasks were carved from a single story and which of them touch the same files.
@@ -328,15 +330,35 @@ plainly in that comment that it **is** an approval and that the task agent may
 now merge; a comment that only observes that things look fine is not something
 an agent can act on.
 
-**Nothing mechanical enforces any of this.** GitHub will not record your
-approval as an approval, branch protection does not require one, and **the merge
-button is open to the author at every moment, including before you have
-looked.** This rule is kept only by agents choosing to keep it — which is why it
-was broken **twice in one day, in opposite directions**: `story/KAN-107` merged
-#89 believing it had been told to (a story agent does not merge), and
-`task/KAN-226` merged #92 with no approval from anyone. If a task of yours
-merges without your approval, say so on the ticket rather than letting it pass;
-an unremarked breach is how the rule stops being one.
+**Put the marker in that comment, on a line of its own** (KAN-306):
+
+```
+BUTCHR-APPROVAL: <the full 40-character head SHA> BY story/{{KEY}}
+```
+
+Prose around it is welcome and wanted — the marker is what the machine reads,
+the reasoning around it is what the next reader does. The required
+`approval-recorded` check goes green only when a marker names **the exact commit
+that would merge**, so an abbreviated SHA is refused rather than resolved, and a
+push after you approve invalidates your approval automatically: no earlier
+marker names the new head. That is the mechanism that makes *"an approval does
+not survive its head"* true rather than said. `dismiss_stale_reviews: true` was
+believed to be doing this all day and never was — the only thing it dismisses is
+review verdicts, and that set is always empty here.
+
+**What that gate does and does not do, stated because the difference matters.**
+It catches **omission and staleness**: a merge with no approval, or one against
+a commit that has moved on, is now a red required check rather than a thing
+nobody can see afterwards. It **cannot catch forgery** — under one shared GitHub
+identity a task agent can post its own marker naming you, and nothing can tell
+that comment from yours. So the **merge button is open to the author** as it
+always was, because the author can write the marker; what changed is that doing
+so now leaves a signed, head-pinned record where it used to leave nothing. The
+rest is still kept by agents choosing to keep it, which is why it was broken **twice in one day, in opposite directions**:
+`story/KAN-107` merged #89 believing it had been told to (a story agent does not
+merge), and `task/KAN-226` merged #92 with no approval from anyone. If a task of
+yours merges without your approval, say so on the ticket rather than letting it
+pass; an unremarked breach is how the rule stops being one.
 
 **A task implements you by issue *link*, never by its `parent` field, and that
 is the only way the board can say so.** `Story` and `Task` are both
