@@ -460,6 +460,68 @@ for (const op of operationsFor('confluence-read')) {
   }
 }
 
+// ── 5b. the scopes this surface needs ──────────────────────────────────────
+//
+// THIS SECTION EXISTS BECAUSE THE RED-DRIVE FOUND IT MISSING. Six deliberate
+// breakages were applied to this slice and five of them turned this file red.
+// The sixth — giving `atlassian_get_confluence_page` a `write:confluence-content`
+// scope — left it **completely green**, while this file's own header claimed it
+// would catch "a scope quietly widening". It was caught, but by
+// `verify-atlassian-proxy-scope.mjs`, which is a different file with a
+// different remit; nothing here noticed, and a header that claims coverage a
+// script does not have is the artifact-claims-more-than-its-mechanism defect
+// this epic keeps finding, in the proof rather than the feature.
+//
+// So the claim is made true rather than withdrawn. KAN-292's criterion 3 is
+// "the scope actually needed, enumerated per tool", which is this slice's own
+// acceptance criterion and belongs in this slice's own script.
+rule('5b. the scopes — enumerated per tool, and no read may need a write');
+
+check(
+  'no read operation declares a write scope',
+  PROXY_OPERATIONS.filter((op) => op.method === 'GET').every((op) =>
+    scopesOf(op).every((scope) => !/^write:/i.test(scope))
+  ),
+  JSON.stringify(
+    PROXY_OPERATIONS.filter((op) => op.method === 'GET')
+      .filter((op) => scopesOf(op).some((s) => /^write:/i.test(s)))
+      .map((op) => [op.tool, scopesOf(op)])
+  )
+);
+check(
+  'confluence-read needs exactly the five read scopes and nothing else',
+  JSON.stringify(grantedScopes('confluence-read')) ===
+    JSON.stringify([
+      'read:confluence-content.all',
+      'read:confluence-content.summary',
+      'read:confluence-space.summary',
+      'read:jira-user',
+      'read:jira-work'
+    ]),
+  JSON.stringify(grantedScopes('confluence-read'))
+);
+// A scope and a product must agree. A Confluence operation asking for a Jira
+// scope is either mis-tagged or mis-routed, and both are invisible in a passing
+// run of everything else.
+for (const op of operationsFor('confluence-read')) {
+  const scopes = scopesOf(op);
+  if (!scopes.length) continue; // the one unauthenticated read; asserted below
+  const ok = op.products.every((product) =>
+    product === 'site'
+      ? true
+      : scopes.some((scope) => scope.includes(product === 'jira' ? 'jira' : 'confluence'))
+  );
+  check(`${op.tool}'s scopes name the products it reaches`, ok, JSON.stringify({ products: op.products, scopes }));
+}
+check(
+  'exactly one operation is scopeless, and it is the unauthenticated site read',
+  (() => {
+    const none = PROXY_OPERATIONS.filter((op) => scopesOf(op).length === 0);
+    return none.length === 1 && none[0].tool === 'atlassian_get_accessible_resources';
+  })(),
+  JSON.stringify(PROXY_OPERATIONS.filter((op) => scopesOf(op).length === 0).map((op) => op.tool))
+);
+
 // ── 6. the transforms, and what they are allowed to touch ──────────────────
 rule('6. only two operations reshape a response, and neither can reach a credential');
 

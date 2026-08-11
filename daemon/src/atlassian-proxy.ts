@@ -64,15 +64,48 @@ import { JIRA_KEY } from './keys.js';
  * ticket** — see {@link refuseWriteOutsideCaller}, which is where the argument
  * for it, and the honest statement of what it is *not*, are written down.
  *
+ * ## WHAT KAN-292 ADDED: THE REST OF THE READS, AND TWO THINGS IT COULD NOT DO
+ *
+ * The table below went from four operations to twenty-two — eighteen reads,
+ * covering every remaining Jira, Confluence and account read the official
+ * Atlassian MCP server offers. Two of them are not what their names suggest,
+ * and the header is where that is recorded rather than the ticket, because the
+ * ticket is not what the next reader has open:
+ *
+ * **`atlassian_search` is not Rovo Search and cannot be.** The official
+ * `search` tool is Rovo, and every Rovo endpoint refuses this daemon's
+ * credential — `/gateway/api/rovo/search/v1/query`,
+ * `/gateway/api/rovo/v1/search` and `/gateway/api/search/v1` all answer 404 to
+ * a classic API token, measured 2026-08-11. That is not a missing scope, it is
+ * the wrong kind of credential: Rovo is OAuth/app-scoped. So this operation
+ * asks each product its own text query and returns both answers side by side.
+ * It answers the question the tool exists for and **it does not rank across
+ * products**, which is stated in its description and again in its own payload.
+ *
+ * **`getAccessibleAtlassianResources` has the same shape of problem** — its
+ * real endpoint, `/oauth/token/accessible-resources`, is OAuth-only and answers
+ * 401. It is answerable anyway, and honestly: the daemon holds one credential
+ * bound to one site, so one site is the whole truthful answer, and
+ * `/_edge/tenant_info` supplies its cloudId.
+ *
+ * **Confluence is new surface for this daemon**, which made one question worth
+ * answering by call rather than assumption: the credential does reach
+ * Confluence — all eight reads returned 200 against real content. It reaches it
+ * because a **classic** API token carries the account's own permissions across
+ * every product on the site rather than a list of OAuth scopes. The
+ * `read:confluence-*` scopes named in the table are therefore what these
+ * operations would need *if* the credential were ever swapped for a scoped one;
+ * they are an honest enumeration, not a record of grants anybody made.
+ *
  * ## Off by default, and read per call rather than once
  *
  * {@link selectedProxyMode} returns `'off'` for an unset variable, for an empty
- * one, and for anything it does not recognise. The only input that enables
- * anything is the exact string `jira-read`. No truthiness test, no prefix
- * match, no `1` — the discipline `runtime-switch.ts` established for KAN-278,
- * and for its stated reason: falling back to off costs nothing, while falling
- * back to on because somebody typed `jira_read` widens what an entire fleet can
- * do on the strength of a misspelling.
+ * one, and for anything it does not recognise. The only inputs that enable
+ * anything are the exact strings in {@link PROXY_MODES}. No truthiness test, no
+ * prefix match, no `1` — the discipline `runtime-switch.ts` established for
+ * KAN-278, and for its stated reason: falling back to off costs nothing, while
+ * falling back to on because somebody typed `jira_read` widens what an entire
+ * fleet can do on the strength of a misspelling.
  *
  * It differs from `runtime-switch.ts` in **when** it is read, and the
  * difference is deliberate. A runtime is read once at boot because it owns live
@@ -108,6 +141,16 @@ import { JIRA_KEY } from './keys.js';
  * path, a URL or a REST fragment: one would make the granted scope unbounded in
  * a way no reviewer could read off this file, and "the scope actually granted,
  * enumerated field by field" is a KAN-272 acceptance criterion.
+ *
+ * **KAN-292 is where that was most likely to be lost, and it held.** Two of the
+ * tools it adds look from outside like they want a caller-supplied endpoint.
+ * Neither gets one. `atlassian_search` takes prose, which goes into a query
+ * parameter exactly as `jql` has since KAN-272. `atlassian_fetch_resource`
+ * takes an **ARI**, which is the one input here that could reasonably have been
+ * a destination — and is not: an ARI is a five-field grammar, every field is
+ * matched against a closed set, and the cloudId inside it is parsed and then
+ * **discarded**, because honouring it would let an agent name a site. See
+ * {@link parseAri}, which carries the argument in full.
  * {@link grantedScopes} and {@link operationsFor} exist so that enumeration is
  * derived from the table below rather than restated in prose beside it.
  */
@@ -1693,7 +1736,9 @@ export function refuseProxyCall(
       reason: 'proxy-off',
       error:
         `The Butchr daemon's Atlassian proxy is off, so ${tool} is refused. It is off by ` +
-        `default; an operator turns it on by setting ${PROXY_ENV_VAR}=jira-read. Use this ` +
+        `default; an operator turns it on by setting ${PROXY_ENV_VAR} to one of ` +
+        `${PROXY_MODES.filter((m) => m !== 'off').join(' | ')} — each grants strictly more ` +
+        `than the one before it. Use this ` +
         "agent's own Atlassian MCP tools instead — nothing about this refusal stops you " +
         'reaching Jira.'
     };
