@@ -62,20 +62,89 @@ export function dampCost(previous: AgentCost, sample: AgentCost): AgentCost {
  * fleet). A sample rejected here must pull capacity back to the labelled
  * seed rather than leave a stale estimate posing as live — the caller clears
  * its state on null, and verify-agent-capacity.mjs proves each rejection.
+ *
+ * KAN-276 changed *which* trees are averaged, and changed it **on one dimension
+ * only**. That asymmetry is the whole of this comment, because the obvious
+ * version of the change — task trees on both dimensions — was measured and
+ * rejected.
+ *
+ * **`cores` is averaged over `m.chargeable`**, the task-agent trees, where it
+ * used to be averaged over every `claude` tree on the machine including the
+ * supervisors capacity.ts never admits. Measured over 60s and 90s windows on
+ * 2026-08-11, a task agent spent 0.187–0.198 core and a supervisor 0.011–0.014
+ * — a 14–17x difference in one consistent direction, so including them
+ * understated the divisor by ~56%. A smaller divisor is a bigger headroom, so
+ * that contamination *loosened* the gate.
+ *
+ * **`residentBytes` is still averaged over `m.totals`**, every tree, exactly as
+ * before this change. On memory the two populations are not distinguishable:
+ * the same windows put supervisors at 775 MB against a task agent's 722–844 MB,
+ * because a supervisor is the same `claude` binary holding the same MCP servers.
+ * Excluding them therefore buys no accuracy, halves the sample, and moves the
+ * figure in whichever direction the sample happens to fall — measured on a live
+ * fleet at 795 MB → 778 MB, which *lowered* the divisor and raised
+ * `headroomByMemory` from 7 to 8.
+ *
+ * That is an increase in admissions, which this ticket forbids outright, and it
+ * is not a safe thing to ship on the argument that some other term will
+ * probably bind. Leaving the memory divisor alone is what makes the whole
+ * change monotone: `headroomByMemory` cannot move at all, and the memory defect
+ * — which is real — is fixed where it actually lives, as capacity.ts's
+ * SUPERVISOR_MEMORY_BYTES reserve against the static cap.
+ *
+ * **"No task agents running" now reaches this function, and the honest answer
+ * is the seed on *both* dimensions.** Before KAN-276 the fleet's supervisors
+ * kept the tree count above zero whether or not any task agent existed, so an
+ * all-supervisor fleet produced a confident-looking figure that no task agent
+ * had contributed to — the reading this ticket was filed on divided by 0.123
+ * core with `running: 0`. Now that sample is empty and empty degrades, which is
+ * the rule the paragraph above already stated: nothing to measure means the
+ * seed is the only honest answer for the *next* agent. Memory degrades with it
+ * rather than carrying on alone, because publishing half a measurement as
+ * though it were a whole one is the labelling failure KAN-44 exists to prevent.
  */
 export function sampleFromMeasurement(
   m: AgentCostMeasurement,
   machineTotalBytes: number
 ): AgentCost | null {
   if (!Number.isFinite(m.elapsed) || m.elapsed <= 0) return null;
-  if (!m.totals || !Number.isFinite(m.totals.agents) || m.totals.agents <= 0) return null;
+  const chargeable = m.chargeable;
+  if (!chargeable || !Number.isFinite(chargeable.agents) || chargeable.agents <= 0) return null;
+  const all = m.totals;
+  if (!all || !Number.isFinite(all.agents) || all.agents <= 0) return null;
 
-  const cores = m.totals.cores / m.totals.agents;
-  const residentBytes = (m.totals.residentMb * MIB) / m.totals.agents;
+  const cores = chargeable.cores / chargeable.agents;
+  const residentBytes = (all.residentMb * MIB) / all.agents;
 
   if (!Number.isFinite(cores) || cores <= 0) return null;
   if (!Number.isFinite(residentBytes) || residentBytes <= 0) return null;
   if (residentBytes > machineTotalBytes) return null;
 
   return { cores, residentBytes };
+}
+
+/**
+ * The mean resident memory of one supervisor tree over this window, or null
+ * when the window contained none.
+ *
+ * Separate from {@link sampleFromMeasurement} because it feeds a different term
+ * with a different shape: supervisors are charged as a *reserve* against the
+ * static cap (capacity.ts's SUPERVISOR_RESERVE), never as a divisor. Their CPU
+ * is deliberately not returned — see capacity.ts for why the exemption survives
+ * on the dimension where they are 14x cheaper and does not on the one where
+ * they are within noise of a task agent.
+ *
+ * Null rather than zero when there are no supervisors: zero is a measurement
+ * that supervisors are free, and no measurement is not that.
+ */
+export function supervisorMemoryFromMeasurement(
+  m: AgentCostMeasurement,
+  machineTotalBytes: number
+): number | null {
+  const s = m.supervisors;
+  if (!s || !Number.isFinite(s.agents) || s.agents <= 0) return null;
+  const residentBytes = (s.residentMb * MIB) / s.agents;
+  if (!Number.isFinite(residentBytes) || residentBytes <= 0) return null;
+  if (residentBytes > machineTotalBytes) return null;
+  return residentBytes;
 }

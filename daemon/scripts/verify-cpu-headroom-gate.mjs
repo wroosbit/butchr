@@ -94,6 +94,10 @@ const {
 } = await import(path.join(distDir, 'capacity.js'));
 const { measureAgentCost } = await import(path.join(distDir, 'agent-cost.js'));
 const { sampleFromMeasurement } = await import(path.join(distDir, 'agent-cost-damping.js'));
+const { supervisorPredicate } = await import('./lib/supervisor-types.mjs');
+// KAN-276: which trees are chargeable. Read from the integration's own
+// declarations rather than hardcoded here — see lib/supervisor-types.mjs.
+const { isSupervisor } = await supervisorPredicate(distDir);
 const { MessageRouter } = await import(path.join(distDir, 'router.js'));
 const { WorkspaceRegistry } = await import(path.join(distDir, 'registry.js'));
 const { createAtlassianIntegration } = await import(
@@ -173,7 +177,7 @@ verdict(
 // The divisor the daemon would be using: the real instrument, over a real
 // window, so sections 2 and 3 report production numbers rather than the seed.
 rule('   (measuring what one agent tree costs, the way the daemon does)');
-const measurement = await measureAgentCost(10);
+const measurement = await measureAgentCost(10, isSupervisor);
 const sample = sampleFromMeasurement(measurement, os.totalmem());
 // Rounded exactly as daemon.ts publishes it (whole MB, 3-decimal cores), so
 // the figures printed below are the figures the arithmetic divides — which is
@@ -184,7 +188,9 @@ const measured = sample
       cores: Math.round(sample.cores * 1000) / 1000,
       sampledAt: Date.now(),
       windowSeconds: measurement.elapsed,
-      agentTrees: measurement.totals.agents
+      // Task-agent trees, matching what the divisor beside it was averaged
+      // over (KAN-276).
+      agentTrees: measurement.chargeable.agents
     }
   : null;
 // The live path (section 5) divides by whatever the daemon last published, so

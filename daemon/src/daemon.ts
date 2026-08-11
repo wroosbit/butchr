@@ -53,7 +53,11 @@ import { BoardMode, BoardReconciler } from './board-reconcile.js';
 import { AddressableAgent, BoardControlReport, boardControlReport } from './board-control.js';
 import { CommentAuthorship } from './comment-authorship.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
-import { dampCost, sampleFromMeasurement } from './agent-cost-damping.js';
+import {
+  dampCost,
+  sampleFromMeasurement,
+  supervisorMemoryFromMeasurement
+} from './agent-cost-damping.js';
 import {
   COST_ESTIMATE_PATH,
   clearCostEstimate,
@@ -1239,7 +1243,17 @@ function restoreCostEstimate() {
 function sampleFleetCost() {
   let measurement;
   try {
-    measurement = costWindow ? finishMeasurement(costWindow) : null;
+    // What keeps epic and story trees out of the divisor (KAN-276). Passed
+    // rather than imported by agent-cost.ts because supervisor-ness is registry
+    // state that only a booted daemon has; see IsSupervisorType there.
+    //
+    // `registry.declaresSupervisor` and not the free `isSupervisorType`: the
+    // latter answers from *registered* types, so switching Atlassian off while
+    // epic and story agents are still running would put their trees back in the
+    // divisor with nothing saying so. See that method for the argument.
+    measurement = costWindow
+      ? finishMeasurement(costWindow, (t) => registry.declaresSupervisor(t))
+      : null;
     costWindow = startMeasurement();
   } catch (e: any) {
     costWindow = null;
@@ -1251,8 +1265,17 @@ function sampleFleetCost() {
   const sample = sampleFromMeasurement(measurement, os.totalmem());
   if (!sample) {
     degradeCostMeasurement(
-      measurement.totals.agents <= 0
-        ? 'no agent trees running, nothing to measure'
+      measurement.chargeable.agents <= 0
+        ? // Named separately from an empty machine because it is now a state a
+          // busy fleet reaches: supervisors running and no task agent among
+          // them. The seed is the honest answer for the *next* task agent, and
+          // the reading that filed KAN-276 is what the alternative looks like —
+          // 0.123 core/agent published with `running: 0`, averaged entirely
+          // over supervisors.
+          measurement.totals.agents > 0
+          ? `no task-agent trees to measure (${measurement.supervisors.agents} supervisor(s), ` +
+            `${measurement.unmarked.agents} unmarked tree(s) held out)`
+          : 'no agent trees running, nothing to measure'
         : 'sample failed validation'
     );
     return;
@@ -1265,12 +1288,24 @@ function sampleFleetCost() {
   // Published rounded (whole MB, 3-decimal cores) so the figures a capacity
   // report prints are exactly the figures the arithmetic divides by — the
   // hand-reproducibility describeCapacity promises.
+  const supervisorMemory = supervisorMemoryFromMeasurement(measurement, os.totalmem());
   const published = {
     residentBytes: Math.round(costEstimate.residentBytes / (1024 * 1024)) * 1024 * 1024,
     cores: Math.round(costEstimate.cores * 1000) / 1000,
     sampledAt: Date.now(),
     windowSeconds: measurement.elapsed,
-    agentTrees: measurement.totals.agents
+    // The two figures above are averaged over two different populations since
+    // KAN-276 — cores over the task-agent trees, memory over all of them — so
+    // both counts are published rather than one standing in for both.
+    agentTrees: measurement.chargeable.agents,
+    memoryAgentTrees: measurement.totals.agents,
+    // Undamped, deliberately. The damping exists to stop one flattering window
+    // opening the cap (agent-cost-damping.ts); this figure only ever makes the
+    // cap smaller, so a filter that is slow to believe it would be slow in the
+    // unsafe direction. It is also far steadier than the CPU figure it rides
+    // beside: a supervisor's memory is what the binary holds, not what it is
+    // doing.
+    supervisorResidentBytes: supervisorMemory
   };
   setMeasuredAgentCost(published);
   // Written down as soon as it is published, so the copy on disk is never more

@@ -376,6 +376,103 @@ export const MEASURED_AGENT_COST: AgentCost = {
 };
 
 /**
+ * ---------------------------------------------------------------------------
+ * WHAT A SUPERVISOR HOLDS, AND WHY IT IS A RESERVE RATHER THAN A DIVISOR
+ * (KAN-276)
+ * ---------------------------------------------------------------------------
+ *
+ * The header's KAN-41 rule — "only task agents are accounted for at all" — is
+ * kept, and one half of its justification is withdrawn. The justification was
+ * that supervisors are "typically low-resource and idle". Measured on this
+ * machine on 2026-08-11, over two windows of 60s and 90s with a real compile
+ * running in a task agent's tree:
+ *
+ *     task agents  (n=2):  0.198 / 0.187 core,  844 / 722 MB
+ *     supervisors  (n=3):  0.014 / 0.011 core,  775 / 775 MB
+ *
+ * On memory the claim does not hold at all: 775 MB against 722–844 MB is the
+ * same order, because a supervisor is the same `claude` binary holding the same
+ * MCP servers. It reads Jira and waits, which costs no CPU and frees no RAM.
+ *
+ * ---------------------------------------------------------------------------
+ * A SUPERVISOR'S CPU IS NOT FREE. READ THIS BEFORE QUOTING THE 14x.
+ * ---------------------------------------------------------------------------
+ *
+ * "Supervisors are cheap on CPU, so supervisors are free" is the misreading
+ * this paragraph exists to prevent, and it is the one the ratio above invites.
+ * It is wrong twice.
+ *
+ * **The 14x is a duty cycle, not a peak.** A 15s window on the same afternoon
+ * caught `epic/KAN-203` at **0.25 core** while it was actively staffing — more
+ * than either task agent was spending at that moment. A supervisor's CPU is
+ * *bursty and low-duty*: near zero while it waits on Jira, which is most of its
+ * life, and comparable to a task agent's while it works. The 60s and 90s
+ * figures average over both, which is what makes them small.
+ *
+ * **So the exclusion is an argument about estimator quality, not about cost.**
+ * A task agent's *sustained* cost is what the divisor has to predict, and a
+ * mostly-idle bursty process is a bad estimator of it — averaging one in drags
+ * the figure toward an idleness the next task agent will not have. That is the
+ * whole justification, and it says nothing about supervisors being free.
+ *
+ * **Their CPU is charged, and here is where.** `cpuBusyCores` is machine-wide:
+ * it is measured from /proc/stat over a recent window and contains every
+ * process on the box, so a supervisor mid-burst is already inside it and
+ * already shrinking `headroomByCpu`. The live term feels their real cost, at
+ * the moment they are spending it, without anybody having to estimate it.
+ *
+ * What is left uncharged is supervisor CPU in the **static cap**, and that is
+ * deliberate rather than an oversight: `cap` describes the hardware, a duty
+ * cycle is not a property of hardware, and charging a peak that the live term
+ * already catches would refuse activations twice for one burst.
+ *
+ * So the exemption is split along the dimension the evidence actually supports.
+ * Supervisors stay uncharged on CPU and stay out of `running`. Their memory —
+ * which they demonstrably hold, and which on this 4-core laptop is ~2.3 GiB
+ * across three of them — is held back from the static cap's memory budget, as
+ * a reserve sized by how many are actually running.
+ *
+ * **This is KAN-36's supervisor reservation restored, with the objection that
+ * removed it answered.** KAN-36 held back one supervisor's share
+ * unconditionally; KAN-41 deleted it because there was no longer one always-on
+ * supervisor and a fixed reservation had become "arithmetic about an agent that
+ * may not exist". That objection was about the *count*, not about the charge.
+ * The count is now observed — the same census that reports `supervisors` — and
+ * the per-supervisor figure is measured rather than assumed, so the reservation
+ * is zero when no supervisor is running and exact when three are.
+ *
+ * WHY THE STATIC CAP AND NOT LIVE HEADROOM — IT WOULD BE CHARGED TWICE
+ *
+ * `headroomByMemory` divides what the machine says is **available**, and a
+ * running supervisor's resident pages are already not available: the kernel
+ * stopped offering them the moment it started. Subtracting a supervisor reserve
+ * there as well would charge the same memory twice and refuse activations for
+ * memory nobody is short of.
+ *
+ * `capByMemory` has the opposite problem — it divides `totalBytes`, which is
+ * the machine's RAM with nothing running at all, so supervisors were charged
+ * **nowhere** in it. That is the hole, and it is the one this fills.
+ *
+ * This is exactly the shape of {@link HERDR_OVERHEAD_CORES}, for exactly the
+ * same reason, and that precedent is why the asymmetry is not a special case:
+ * herdr's share comes off the static cap and is deliberately left out of live
+ * headroom, "which already contains herdr's real usage — subtracting it there
+ * would charge for it twice".
+ *
+ * THE SEED IS THE AGENT SEED, ON PURPOSE
+ *
+ * 650 MB, the same figure as {@link MEASURED_AGENT_COST}.residentBytes rather
+ * than a second constant of its own. The measurement above is the argument: on
+ * memory a supervisor and a task agent are the same thing to within the spread
+ * of either, so a separate number would be two names for one quantity, free to
+ * drift apart and be re-derived by somebody who noticed only one of them. What
+ * differs between the two populations is CPU, and CPU is not what this reserves.
+ *
+ * BUTCHR_SUPERVISOR_MEMORY_MB overrides it, and 0 disables the term.
+ */
+export const SUPERVISOR_MEMORY_BYTES = 650 * MIB;
+
+/**
  * Where a cost figure came from. Tracked per dimension, because the operator
  * may override cores while memory stays measured.
  *
@@ -400,8 +497,24 @@ export interface MeasuredAgentCost extends AgentCost {
   sampledAt: number;
   /** Length of the window that closed the measurement, in seconds. */
   windowSeconds: number;
-  /** Agent trees the per-tree figures were averaged over. */
+  /**
+   * Agent trees the **cores** figure was averaged over: the task-agent trees,
+   * since KAN-276. It was every tree, which made this a count of one population
+   * printed beside a cost for another.
+   */
   agentTrees: number;
+  /**
+   * Agent trees the **residentBytes** figure was averaged over, which since
+   * KAN-276 is a different and larger population — every tree, unchanged.
+   *
+   * Reported separately rather than left to be assumed equal to `agentTrees`,
+   * because they now differ and the derivation has to be able to say so. A
+   * report that printed one tree count next to two figures averaged over
+   * different populations would be exactly the kind of artifact whose sentence
+   * claims more than its mechanism covers. Absent on a record written before
+   * this field existed, where it falls back to `agentTrees`.
+   */
+  memoryAgentTrees?: number | null;
   /**
    * Set to `'restored'` by agent-cost-store.ts when this figure was read back
    * from disk after a daemon restart rather than sampled by the process that
@@ -410,6 +523,37 @@ export interface MeasuredAgentCost extends AgentCost {
    * on the way to the report that has to say it (KAN-204).
    */
   provenance?: 'measured' | 'restored';
+  /**
+   * Mean resident memory of one *supervisor* tree over the same window, for
+   * {@link SUPERVISOR_MEMORY_BYTES}'s reserve (KAN-276). Null or absent when
+   * the window held no supervisors, which is not the same as zero and must not
+   * be rounded into it — the reserve then falls back to the labelled seed.
+   *
+   * It rides here rather than in its own option for the reason `provenance`
+   * does: it is measured by the same window over the same fleet, and a figure
+   * that travels separately from the measurement it came from is a figure that
+   * arrives without one.
+   */
+  supervisorResidentBytes?: number | null;
+}
+
+/**
+ * Memory held back for the supervisors that are actually running (KAN-276).
+ *
+ * Reported in full rather than as a single number because the whole of this
+ * file's promise is that the arithmetic can be re-done by hand from what it
+ * prints, and `bytes` alone would leave a reader unable to tell a large
+ * reserve caused by many supervisors from one caused by an expensive estimate.
+ */
+export interface SupervisorReserve {
+  /** Supervisors running, from the census. Zero makes the term inert. */
+  count: number;
+  /** What each is charged. */
+  perSupervisorBytes: number;
+  /** `count × perSupervisorBytes` — what comes off the static memory budget. */
+  bytes: number;
+  /** Where `perSupervisorBytes` came from. */
+  source: CostSource;
 }
 
 /**
@@ -809,11 +953,22 @@ export interface Capacity {
   /** Task agents alive right now. Supervisors are not among them. */
   running: number;
   /**
-   * Epic and story agents alive right now. Reported, never charged: they
-   * supervise rather than do the work, and spend most of their lives idle
-   * waiting on Jira. See the header for the argument.
+   * Epic and story agents alive right now. Never counted in `running` and
+   * never charged on CPU — they supervise rather than do the work, and measure
+   * at a fourteenth of a task agent's cores.
+   *
+   * They are no longer charged *nowhere*: the memory they hold is reserved off
+   * the static cap, because on that dimension they cost the same as a task
+   * agent. See {@link supervisorReserve} and SUPERVISOR_MEMORY_BYTES.
    */
   supervisors: number;
+  /**
+   * The memory held back for those supervisors, and how it was arrived at
+   * (KAN-276). `count: 0` makes it inert, and it is still reported then, for
+   * the reason KAN-218 gives about the stall veto: a term that is silent when
+   * it is not protecting you is a term you will assume is.
+   */
+  supervisorReserve: SupervisorReserve;
 
   /** How many more can be started right now. Never negative. */
   headroom: number;
@@ -877,8 +1032,22 @@ export interface CapacityOptions {
   measured?: MeasuredAgentCost | null;
   /** A cap the operator set by hand, bypassing the derivation entirely. */
   configuredCap?: number | null;
-  /** Supervisors observed running. Reported only; it changes no arithmetic. */
+  /**
+   * Supervisors observed running.
+   *
+   * This used to say "reported only; it changes no arithmetic", and since
+   * KAN-276 it changes one line: it sizes the memory reserve held back from the
+   * static cap. It still changes nothing on CPU, and still never enters
+   * `running`.
+   */
   supervisorsRunning?: number;
+  /**
+   * BUTCHR_SUPERVISOR_MEMORY_MB: what one supervisor is charged, overriding
+   * both the measurement and {@link SUPERVISOR_MEMORY_BYTES}. Zero disables the
+   * reserve, which is the way to turn the term off deliberately rather than by
+   * pretending no supervisors are running.
+   */
+  supervisorMemoryOverride?: number | null;
   /**
    * Agents this daemon has started that the instruments cannot have priced
    * yet, from {@link unobservedStartsAmong} (KAN-258).
@@ -935,14 +1104,48 @@ export function computeCapacity(
   const reservedCores = humanReserveCores(machine.cores);
   const reservedBytes = humanReserveBytes(machine.totalBytes);
 
+  // What the supervisors that are actually running hold (KAN-276). Measured
+  // over the same window as the agent cost when that window contained one,
+  // else the seed; an operator override beats both, by the same precedence as
+  // every other cost figure here.
+  //
+  // Null and 0 are different answers and are kept different: a window with no
+  // supervisors in it has measured nothing, so it falls to the seed, while an
+  // explicit override of 0 is an operator turning the term off.
+  const supervisorsRunning = Math.max(0, Math.floor(options.supervisorsRunning ?? 0));
+  const supervisorMemory = ((): { value: number; source: CostSource } => {
+    const override = options.supervisorMemoryOverride;
+    if (override !== undefined && override !== null) return { value: override, source: 'override' };
+    const m = measured?.supervisorResidentBytes;
+    if (typeof m === 'number' && Number.isFinite(m) && m > 0) {
+      return { value: m, source: measured?.provenance === 'restored' ? 'restored' : 'measured' };
+    }
+    return { value: SUPERVISOR_MEMORY_BYTES, source: 'seed' };
+  })();
+  const supervisorReserve: SupervisorReserve = {
+    count: supervisorsRunning,
+    perSupervisorBytes: supervisorMemory.value,
+    bytes: supervisorsRunning * supervisorMemory.value,
+    source: supervisorMemory.source
+  };
+
   // Static cap: what the hardware supports with nothing else assumed. herdr's
   // share comes off here because the load average cannot be consulted for a
-  // machine that is not this one. Nothing is held back for supervisors — see
-  // the header: only task agents are charged.
+  // machine that is not this one.
+  //
+  // Supervisor memory comes off here too, and only here (KAN-276). `totalBytes`
+  // is the machine's RAM with nothing running, so a supervisor's ~650 MB was
+  // charged nowhere in this term; `availableBytes` in the live term below has
+  // already had it taken out by the kernel, so charging it there as well would
+  // charge it twice. Same asymmetry as HERDR_OVERHEAD_CORES, same reason.
+  //
+  // Their CPU is still not charged, and that is the measurement rather than a
+  // leftover: a supervisor spends ~0.012 core against a task agent's ~0.19.
   const cpuBudget = machine.cores - reservedCores - HERDR_OVERHEAD_CORES;
   const capByCpu = Math.floor(Math.max(0, cpuBudget) / cost.cores);
   const capByMemory = Math.floor(
-    Math.max(0, machine.totalBytes - reservedBytes) / cost.residentBytes
+    Math.max(0, machine.totalBytes - reservedBytes - supervisorReserve.bytes) /
+      cost.residentBytes
   );
 
   let cap: number;
@@ -1042,10 +1245,24 @@ export function computeCapacity(
   // failure this ticket is about. Excluding them keeps the comparison between
   // trees that are actually in `busyCores`, and leaves the divisor at the
   // larger, published figure — the conservative direction.
-  const agentTrees = Math.max(
-    0,
-    running + (options.supervisorsRunning ?? 0) - unobservedCount
-  );
+  //
+  // Supervisors are excluded too, and KAN-276 is why the previous line was
+  // right before it and wrong after. `impliedFleetCores` is `cost.cores ×
+  // agentTrees`, and `cost.cores` used to be the average over *every* tree, so
+  // multiplying it by every tree was dimensionally sound. It is now the cost of
+  // a **task agent** specifically, measured at ~14x what a supervisor spends,
+  // so multiplying it by a count that includes supervisors would claim a fleet
+  // CPU nobody is spending — manufacturing the contradiction on an idle machine
+  // exactly as an unobserved start does, and provoking the same response of
+  // *lowering* the divisor and finding more room. Counting only task trees
+  // makes the bound fire strictly less often, which leaves the larger published
+  // divisor standing: the conservative direction, and the one this ticket's
+  // hard constraint requires.
+  //
+  // The supervisors' own CPU stays in `busyCores` on the other side of the
+  // comparison, where it belongs — it is real CPU the machine is spending, and
+  // leaving it in only makes the estimate harder to falsify.
+  const agentTrees = Math.max(0, running - unobservedCount);
   const liveCoresBound =
     coreCost.source === 'override' || cpuBusySource !== 'measured'
       ? null
@@ -1106,7 +1323,8 @@ export function computeCapacity(
     capBoundBy,
     configuredCap,
     running,
-    supervisors: options.supervisorsRunning ?? 0,
+    supervisors: supervisorsRunning,
+    supervisorReserve,
     headroom,
     headroomByCap,
     headroomByCpu,
@@ -1360,6 +1578,8 @@ function envNumber(name: string, allowZero = false): number | undefined {
  *   BUTCHR_AGENT_CORES       — cores one active agent tree spends
  *   BUTCHR_STALL_PERCENT     — the /proc/pressure `full avg10` at which no
  *                              agent is admitted; above 100 disables the term
+ *   BUTCHR_SUPERVISOR_MEMORY_MB — memory reserved per running supervisor;
+ *                              0 disables the reserve (KAN-276)
  */
 export function optionsFromEnv(): CapacityOptions {
   const memoryMb = envNumber('BUTCHR_AGENT_MEMORY_MB');
@@ -1369,10 +1589,16 @@ export function optionsFromEnv(): CapacityOptions {
   const overrides: Partial<AgentCost> = {};
   if (memoryMb !== undefined) overrides.residentBytes = memoryMb * MIB;
   if (cores !== undefined) overrides.cores = cores;
+  // Zero is allowed here and nowhere else in this function: it is how an
+  // operator turns the supervisor reserve off deliberately, which has to be
+  // distinguishable from not having set the variable at all.
+  const supervisorMemoryMb = envNumber('BUTCHR_SUPERVISOR_MEMORY_MB', true);
   return {
     overrides,
     configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null,
-    stallRefusePercent: envNumber('BUTCHR_STALL_PERCENT') ?? null
+    stallRefusePercent: envNumber('BUTCHR_STALL_PERCENT') ?? null,
+    supervisorMemoryOverride:
+      supervisorMemoryMb !== undefined ? supervisorMemoryMb * MIB : null
   };
 }
 
@@ -1511,12 +1737,26 @@ export function describeCapacity(c: Capacity): string {
       beaten.push(`BUTCHR_AGENT_CORES overrides its ${c.measured.cores} core`);
     }
     const restored = c.measured.provenance === 'restored';
+    // The two figures are averaged over two populations since KAN-276 — cores
+    // over the task-agent trees, memory over every tree — so the line names the
+    // population beside each figure rather than printing one tree count and
+    // leaving the reader to assume it covers both. Where they are equal (an
+    // all-task fleet, or a record written before the split) it prints as it
+    // always did.
+    const memoryTrees = c.measured.memoryAgentTrees ?? c.measured.agentTrees;
+    const split = memoryTrees !== c.measured.agentTrees;
     lines.push(
       `  ${restored ? 'restored (damped)' : 'measured (damped)'}: ` +
-      `${Math.round(c.measured.residentBytes / MIB)} MB, ` +
-      `${c.measured.cores} core per agent tree — ${c.measured.agentTrees} tree(s) ` +
+      `${Math.round(c.measured.residentBytes / MIB)} MB` +
+      (split ? ` over ${memoryTrees} agent tree(s)` : '') + ', ' +
+      `${c.measured.cores} core per ${split ? 'task ' : ''}agent tree — ` +
+      `${c.measured.agentTrees} ${split ? 'task ' : ''}tree(s) ` +
       `over a ${Math.round(c.measured.windowSeconds)}s window ` +
       `ending ${new Date(c.measured.sampledAt).toISOString()}` +
+      (split
+        ? '; the core figure excludes supervisor trees (measured at ~1/14th of a task ' +
+          'agent) and the memory figure does not (measured the same within noise)'
+        : '') +
       (restored
         ? ', carried across a daemon restart — sampled by the previous daemon, not this one; ' +
           'the next window replaces it with a measurement of this fleet'
@@ -1540,18 +1780,39 @@ export function describeCapacity(c: Capacity): string {
       `cap: ${c.cap} task agents — ` +
       `CPU allows ${c.capByCpu} ((${m.cores} cores − ${c.reservedForHuman.cores} reserved ` +
       `− ${HERDR_OVERHEAD_CORES} for herdr) ÷ ${c.cost.cores} core/agent), ` +
-      `memory allows ${c.capByMemory} ((${gib(m.totalBytes)} − ${gib(c.reservedForHuman.bytes)}) ` +
-      `÷ ${Math.round(c.cost.residentBytes / MIB)} MB/agent)` +
+      `memory allows ${c.capByMemory} ((${gib(m.totalBytes)} − ${gib(c.reservedForHuman.bytes)}` +
+      (c.supervisorReserve.bytes > 0
+        ? ` − ${gib(c.supervisorReserve.bytes)} for supervisors`
+        : '') +
+      `) ÷ ${Math.round(c.cost.residentBytes / MIB)} MB/agent)` +
       (c.capBoundBy === 'floor'
         ? '; both said 0, floored to 1 because a machine that can run nothing is not a useful answer'
         : `; bound by ${c.capBoundBy}`)
     );
   }
 
+  // The supervisor reserve, spelled out whenever there is one. It is the only
+  // term whose size depends on how many agents of a kind the cap does not count
+  // happen to be running, so a reader who cannot see the count and the
+  // per-supervisor figure cannot reproduce `capByMemory` by hand — which is the
+  // promise this whole function exists to keep (KAN-276).
+  if (c.supervisorReserve.count > 0) {
+    lines.push(
+      `supervisor memory reserve: ${gib(c.supervisorReserve.bytes)} ` +
+      `(${c.supervisorReserve.count} supervisor(s) × ` +
+      `${Math.round(c.supervisorReserve.perSupervisorBytes / MIB)} MB, ` +
+      `${c.supervisorReserve.source}) — held back from the cap's memory budget only. ` +
+      'Their CPU is not charged (measured at ~1/14th of a task agent); their memory is, ' +
+      'because it is not. Live headroom below does not subtract it again: a running ' +
+      "supervisor's pages are already out of the available figure it divides"
+    );
+  }
+
   lines.push(
     `running: ${c.running} task agent(s)` +
     (c.supervisors > 0
-      ? `, plus ${c.supervisors} epic/story supervisor agent(s) (not counted against the cap)`
+      ? `, plus ${c.supervisors} epic/story supervisor agent(s) ` +
+        '(not counted against the cap, and not measured into the per-agent cost above)'
       : '')
   );
   // The stall term gets its own line whether or not it fired, and says so when
