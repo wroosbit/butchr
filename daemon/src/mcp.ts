@@ -18,6 +18,7 @@ import {
   CHANNEL_SELFCHECK_ACTION,
   CHANNEL_SELFCHECK_RESULT_ACTION
 } from './channel-selfcheck.js';
+import { operationByTool, operationsFor, ProxyMode } from './atlassian-proxy.js';
 
 /**
  * Which agent this server belongs to, read off this process's own argv.
@@ -495,9 +496,79 @@ async function callDaemonAPI(action: string, data: any = {}): Promise<any> {
   });
 }
 
+/**
+ * How long tool listing will wait for the daemon to say what its proxy serves.
+ *
+ * Deliberately far shorter than `callDaemonAPI`'s own 30s. This runs during the
+ * client's `initialize`, so a daemon that is wedged would otherwise hold up
+ * every agent's bring-up by half a minute to answer a question about an
+ * optional feature. Timing out here costs the agent the proxy tools and nothing
+ * else — it still has its own Atlassian MCP session, which is what it had
+ * before KAN-272 and what it will have if this feature is reverted.
+ */
+const PROXY_STATUS_TIMEOUT_MS = 3000;
+
+/**
+ * Which Atlassian operations this agent may be offered, asked of the daemon.
+ *
+ * **The daemon is the only reader of the switch**, and this is why the answer
+ * is fetched rather than computed: `atlassian-proxy.ts` exports
+ * `selectedProxyMode`, this process could call it, and the two readings would
+ * then be of two different environments — this server is spawned by the agent's
+ * CLI and inherits that environment, while the daemon may have been started
+ * hours earlier from a systemd unit with quite another one. A tool list built
+ * from the wrong one of those is a menu of tools the daemon will refuse.
+ *
+ * The *shapes* still come from the shared table rather than over the wire:
+ * descriptions and schemas are compiled into this process, so the daemon
+ * reports a mode and this decides what that mode looks like. One source for
+ * "what does atlassian_get_issue take", one source for "is it on".
+ *
+ * ON FAILURE, ADVERTISE NOTHING. A daemon that cannot be asked is not a daemon
+ * that said yes, and the safe direction here is the same one
+ * `selectedProxyMode` takes for an unreadable value.
+ */
+async function proxiedOperations(): Promise<ReturnType<typeof operationsFor>> {
+  try {
+    const res: any = await Promise.race([
+      callDaemonAPI('atlassian_proxy_status'),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`daemon did not answer within ${PROXY_STATUS_TIMEOUT_MS}ms`)),
+          PROXY_STATUS_TIMEOUT_MS
+        )
+      )
+    ]);
+    const mode: ProxyMode | undefined = res?.report?.mode;
+    if (res?.success !== true || !mode || mode === 'off') return [];
+    return operationsFor(mode);
+  } catch (err: any) {
+    // Said on stderr rather than swallowed, for `hello_response`'s reason: an
+    // agent silently missing tools it was meant to have is the failure that
+    // takes longest to notice.
+    console.error(
+      `Atlassian proxy tools not offered: ${err?.message ?? String(err)}. ` +
+        "This agent's own Atlassian MCP session is unaffected."
+    );
+    return [];
+  }
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  // Asked per listing rather than cached, so an operator who turns the proxy
+  // off does not have to also restart every agent for a *new* client's listing
+  // to reflect it. It changes nothing for a client that has already listed —
+  // see the daemon's `handleAtlassianProxyCall` for why the gate is there and
+  // the advertisement is only advisory.
+  const proxied = await proxiedOperations();
+
   return {
     tools: [
+      ...proxied.map((op) => ({
+        name: op.tool,
+        description: op.description,
+        inputSchema: op.inputSchema
+      })),
       {
         name: "butchr_capacity",
         description:
@@ -706,6 +777,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
+    // The Atlassian proxy (KAN-272). Matched against the shared operation table
+    // rather than against whatever this process last advertised: a client may
+    // call a tool it listed minutes ago, and the daemon — which owns the gate —
+    // is where that call is decided. Forwarding an operation the daemon has
+    // since switched off produces its refusal, which is the honest answer; a
+    // guess here would produce a different one.
+    if (operationByTool(name)) {
+      const res = await callDaemonAPI('atlassian_proxy_call', { tool: name, args: args ?? {} });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        // A refused read must never arrive as ordinary text. That substitution
+        // is the 2026-08-10 failure in miniature: what an agent saw was
+        // something that looked like an answer, and the twelve hours went on
+        // whether the credential was dead being unknowable from the call.
+        isError: res?.success === false,
+      };
+    }
+
     if (name === "butchr_capacity") {
       const res = await callDaemonAPI('capacity');
       return {

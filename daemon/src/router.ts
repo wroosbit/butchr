@@ -35,6 +35,13 @@ import type { CarrierVerdict, ChannelCarrier, ChannelRouteOutcome } from './chan
 import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
 import type { ChannelLivenessState } from './channel-liveness.js';
 import { licenceFor, sealClaims } from './message-claims.js';
+import {
+  operationByTool,
+  proxyReport,
+  refuseProxyCall,
+  selectedProxyMode
+} from './atlassian-proxy.js';
+import { renderedKey } from './keys.js';
 
 /**
  * What a sender needs, which is not the same as how it travels (KAN-247).
@@ -1389,6 +1396,12 @@ export class MessageRouter {
         break;
       case 'agent_work_state':
         this.handleAgentWorkState(data, respond);
+        break;
+      case 'atlassian_proxy_status':
+        void guard(this.handleAtlassianProxyStatus(respond), 'atlassian_proxy_status');
+        break;
+      case 'atlassian_proxy_call':
+        void guard(this.handleAtlassianProxyCall(data, respond), 'atlassian_proxy_call');
         break;
       case 'jira_credential_status':
         void guard(this.handleJiraCredentialStatus(respond), 'jira_credential_status');
@@ -3054,6 +3067,152 @@ export class MessageRouter {
       // workDir is included only when herdr actually reported a cwd.
       ...(described.workDir !== null ? { workDir: described.workDir } : {}),
       herdrStatus: described.herdrStatus
+    });
+  }
+
+  // --- The Atlassian proxy (KAN-272) ---------------------------------------
+  //
+  // Two actions, and the split between them is load-bearing. `..._status`
+  // reports what is being served; `..._call` serves it. **The status action is
+  // not a permission check and must never be treated as one** — it is what
+  // `mcp.ts` uses to decide what to advertise, and the advertisement is
+  // advisory. An agent started while the proxy was on keeps the tools in its
+  // list after it is switched off, so the refusal in the call handler is the
+  // only gate there is. One gate, in the daemon, exactly as `channel.ts` puts
+  // the channel gate there and only there.
+
+  /**
+   * What this daemon's Atlassian proxy is serving, and against which account.
+   *
+   * Answers even when off, and answers **fully** when off: the mode, the reason
+   * it is off, and an empty operation list. A status that went quiet when the
+   * feature was off would leave `mcp.ts` unable to tell "off" from "this daemon
+   * is too old to have a proxy", and those two want different behaviour from an
+   * older client.
+   */
+  private async handleAtlassianProxyStatus(respond: Respond) {
+    const decision = selectedProxyMode();
+    const credential = this.jira
+      ? (() => {
+          const status = this.jira.status();
+          return {
+            configured: status.configured === true,
+            ...(typeof status.siteUrl === 'string' ? { siteUrl: status.siteUrl } : {}),
+            ...(typeof status.email === 'string' ? { email: status.email } : {}),
+            ...(typeof status.storage === 'string' ? { storage: status.storage } : {})
+          };
+        })()
+      : { configured: false };
+
+    respond({
+      action: 'atlassian_proxy_status_response',
+      success: true,
+      // Distinct from `mode: 'off'`: a daemon with no Jira service at all cannot
+      // proxy anything however the switch is set, and saying so is different
+      // from saying somebody turned it off.
+      available: !!this.jira,
+      report: proxyReport(decision, credential)
+    });
+  }
+
+  /**
+   * Make one Atlassian read on an agent's behalf — or refuse, loudly.
+   *
+   * THE ORDER OF THE CHECKS IS THE DESIGN. The switch is consulted before the
+   * tool is looked up, so a daemon with the proxy off gives the same refusal
+   * for every tool name and reveals nothing about which operations exist. The
+   * path is built after that, from validated arguments, by the operation's own
+   * `build` — `data` never supplies a path and there is no operation that would
+   * accept one.
+   *
+   * WHAT ATTRIBUTION IS WORTH HERE, STATED BECAUSE IT WILL BE READ AS MORE.
+   * `workspaceType`/`workspaceKey` are stamped into every request body by
+   * `mcp.ts` from its own argv, and the audit line below names them. That makes
+   * a proxied read **attributable** — which agent asked, for what, and what came
+   * back — and it is emphatically **not authentication**: anything that can
+   * reach the daemon's socket can claim any identity, exactly as
+   * `agent-connections.ts` decision 4 records for `hello`. The trust boundary is
+   * still the socket's filesystem permission and this handler does not move it.
+   * The line is worth writing anyway: the blast radius KAN-272 asks to be
+   * written down is "any agent can read as far as the daemon can", and an
+   * unattributed read makes that radius unobservable as well as wide.
+   */
+  private async handleAtlassianProxyCall(data: any, respond: Respond) {
+    const tool = typeof data?.tool === 'string' ? data.tool : '';
+    const args = data?.args && typeof data.args === 'object' ? data.args : {};
+    const caller =
+      typeof data?.workspaceType === 'string' && typeof data?.workspaceKey === 'string'
+        ? `${data.workspaceType}/${renderedKey(data.workspaceKey)}`
+        : 'unidentified caller';
+
+    const fail = (error: string, extra: Record<string, unknown> = {}) => {
+      console.log(`atlassian-proxy: ${caller} → ${tool || '(no tool)'} REFUSED — ${error.split('.')[0]}`);
+      respond({ action: 'atlassian_proxy_call_response', success: false, error, ...extra });
+    };
+
+    if (!this.jira) {
+      fail('This daemon has no Jira support, so it cannot proxy Atlassian reads.');
+      return;
+    }
+
+    const decision = selectedProxyMode();
+    const refusal = refuseProxyCall(decision.mode, tool);
+    if (refusal) {
+      fail(refusal.error, { reason: refusal.reason, mode: decision.mode });
+      return;
+    }
+
+    // Non-null by construction: `refuseProxyCall` returns a refusal for every
+    // tool it cannot find, so reaching here means it found this one.
+    const operation = operationByTool(tool)!;
+    const built = operation.build(args);
+    if ('error' in built) {
+      fail(built.error, { reason: 'bad-arguments' });
+      return;
+    }
+
+    const startedAt = Date.now();
+    const outcome = await this.jira.proxyRead(built.path);
+    const elapsed = Date.now() - startedAt;
+
+    // THE AUDIT LINE. A path, never a credential — auth travels in a header and
+    // `TokenJiraTransport` scrubs every on-the-wire form of the token out of
+    // anything it builds, so there is nothing token-shaped in `built.path` by
+    // construction. Logged for refusals and successes alike: a log that records
+    // only what worked cannot answer "what has this credential been used for",
+    // which is the question an audit line exists for.
+    console.log(
+      `atlassian-proxy: ${caller} → ${tool} ${operation.method} ${built.path} → ` +
+        (outcome.ok
+          ? `${outcome.status} (${elapsed}ms)`
+          : `FAILED${outcome.status ? ` ${outcome.status}` : ''} (${elapsed}ms) ` +
+            `${outcome.credentialFault ? '[credential fault — the fleet is affected]' : '[query fault]'}`)
+    );
+
+    if (!outcome.ok) {
+      respond({
+        action: 'atlassian_proxy_call_response',
+        success: false,
+        error: outcome.error,
+        credentialFault: outcome.credentialFault,
+        ...(outcome.status !== undefined ? { status: outcome.status } : {}),
+        ...(outcome.diagnosis ? { diagnosis: outcome.diagnosis } : {}),
+        ...(outcome.legs ? { legs: outcome.legs } : {})
+      });
+      return;
+    }
+
+    respond({
+      action: 'atlassian_proxy_call_response',
+      success: true,
+      status: outcome.status,
+      // Named `body` rather than spread, so a Jira field called `success` or
+      // `error` cannot overwrite this envelope's own verdict.
+      body: outcome.body,
+      // What actually happened, for a reader of the transcript who wants to
+      // know which credential answered without asking the daemon a second
+      // question. Non-secret: a path and a method.
+      via: { tool, method: operation.method, path: built.path, servedBy: 'butchr-daemon' }
     });
   }
 
