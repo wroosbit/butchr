@@ -12,6 +12,17 @@
 // argument; a scope quietly widening; a transform reaching for the credential;
 // and the switch falling toward on.
 //
+// Since KAN-311 it also catches **an interpolation losing its encoding on a path
+// whose argument is strictly validated** — a change no hostile input can see,
+// because a digits-only validator lets through only characters the encoder would
+// not have altered, so the built path is byte-identical either way. Sections 2b
+// and 2c are that pair: 2b reports which arguments the sweep never exercised an
+// interpolation for, and 2c asserts the encoding those arguments rest on. What
+// 2c does **not** reach is any path built outside this table's own `path:`
+// templates — it is a static read of `atlassian-proxy.ts`, and section 6 plus
+// `verify-atlassian-proxy-failure-is-loud.mjs` are what tie the table to the
+// router that issues the request.
+//
 // CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
 // in process, and reads `atlassian-proxy.ts` and `router.ts` off the checkout;
 // no live daemon, no herdr, no credential, no peer, no terminal, no network.
@@ -53,6 +64,18 @@
 //     what covers arrival, because there the arguments come out of earlier
 //     proxied calls rather than out of a literal in a script.
 //
+// ── BUILD FIRST — THIS SCRIPT IMPORTS `../dist/`, NOT THE TYPESCRIPT ────────
+//
+// Run `npm run build` in `daemon/` before this, and re-run it after every edit
+// to `daemon/src`. A stale `dist` does not fail: it measures the OLD code and
+// prints a pass indistinguishable from a real one. `epic/KAN-39`'s first run at
+// review of #127 was against a `dist` with 13 newer source files and printed
+// `22 operations, 396 placements` — a clean-looking pass over code that was not
+// the code under review, caught only by checking mtimes by hand.
+//
+// You do not have to remember: `requireFreshDist` below refuses the run. It
+// exits 2 — a setup guard, distinct from the 1 this script's verdict exits with.
+//
 // Usage: node daemon/scripts/verify-atlassian-proxy-read-surface.mjs [--verbose]
 // Run it after `npm run build` in daemon/.
 
@@ -81,11 +104,25 @@ import {
   pathEscapes,
   requestsOf,
   sweepHostileInput,
-  validFor
+  unencodedPathInterpolations,
+  validFor,
+  zeroContainmentArguments
 } from './lib/proxy-hostile-input.mjs';
+import { requireFreshDist } from './lib/require-fresh-dist.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+
+// Before anything is asserted on the modules imported above. See the header.
+requireFreshDist(path.join(scriptDir, '..', 'src'), path.join(scriptDir, '..', 'dist'), {
+  hint: 'npm run build --prefix daemon'
+});
+
 const VERBOSE = process.argv.includes('--verbose');
+
+// The proxy source, read once. Section 2c reads it for the path encodings and
+// section 6 for the transform context, so it is hoisted here rather than read
+// twice at two different points in the file.
+const proxySrc = fs.readFileSync(path.join(scriptDir, '..', 'src', 'atlassian-proxy.ts'), 'utf8');
 
 let failures = 0;
 function rule(title) {
@@ -191,6 +228,94 @@ check(
   'and both outcomes occurred — the sweep is neither refusing everything nor validating nothing',
   sweep.refused > 0 && sweep.contained > 0,
   `refused ${sweep.refused}, contained ${sweep.contained}`
+);
+
+// ── 2b. WHICH ARGUMENTS THE SWEEP ACTUALLY MEASURED (KAN-311) ──────────────
+//
+// The assertion above is global, and global is not where a path is built. An
+// argument whose validator refuses all twelve hostile values contributes zero
+// containment evidence: the sweep measured its **validator** and never its
+// **interpolation**, and the encoding beside it could be entirely absent with
+// every check on this page still green. That is exactly what happened — removing
+// `encodeURIComponent` from the get-page path left all 396 placements green,
+// because `pageId` is digits-only and no hostile value ever reaches the
+// interpolation.
+//
+// THE DECISION, WHICH KAN-311 ASKED TO BE MADE DELIBERATELY AND RECORDED:
+//
+//   **Zero containment is a REPORT here, and the encoding is an ASSERTION
+//   below.** Not a failure, because refusing everything is the correct
+//   behaviour for a strict validator on an argument with no free-text form —
+//   `pageId`, `commentId`, `issueKey`, `spaceId` and `transitionId` all
+//   legitimately refuse all twelve, and failing on that would be demanding that
+//   validators be loosened to satisfy a proof, which is the opposite of the
+//   property being protected.
+//
+// WHAT WAS REJECTED, and why, because "we picked a report" is not a decision
+// without the alternatives:
+//
+//   - **Fail on zero containment.** Rejected: it fails eleven arguments that are
+//     correct today, and the only way to make it pass is to weaken a validator.
+//     A proof that pushes the code toward the hole is worse than no proof.
+//   - **Fail where an argument is UNVALIDATED and still contributes nothing** —
+//     the shape the ticket floats. Rejected as an assertion because it is
+//     vacuous on this table: an unvalidated argument by definition does not
+//     refuse, so it always contributes containment, and the check can never
+//     fire. It is a tautology wearing a guard's clothes.
+//   - **Extend the corpus with values that pass the validator and still probe
+//     the encoding.** Rejected because it is impossible, not merely hard: for a
+//     digits-only argument every accepted value is digits, and digits are
+//     unchanged by `encodeURIComponent`. The two builds are byte-identical.
+//     **No input fed through `build` can distinguish them.**
+//
+// So the report names where the evidence is missing, and section 2c asserts the
+// mechanism that covers it. Neither alone is enough: the report does not go red
+// on the mutation (`pageId` is in the zero list before it and after it), and the
+// assertion cannot see a validator. Together they say which of the two
+// mechanisms is carrying each argument.
+rule('2b. per argument — which interpolations the sweep measured, and which it did not');
+
+const zero = zeroContainmentArguments(sweep);
+console.log(
+  `   NOTE  ${zero.length} of ${sweep.perArgument.length} arguments contributed zero contained ` +
+    'placements — their validator refused every hostile value, so this sweep measured the\n' +
+    '         validator and NOT the encoding behind it. Section 2c is what covers those:'
+);
+for (const tally of zero) {
+  console.log(`           ${tally.tool}.${tally.field} — refused ${tally.refused}/${tally.checked}`);
+}
+// The report has to be a report OF something. If every argument refused
+// everything, the sweep measured no interpolation anywhere and the global
+// assertion above is the only thing standing — which is the vacuity this whole
+// section exists to make visible.
+check(
+  'at least one argument contributed containment — the sweep exercised a real interpolation',
+  zero.length < sweep.perArgument.length,
+  `all ${sweep.perArgument.length} arguments refused everything`
+);
+
+// ── 2c. THE ENCODING, WHICH IS THE MECHANISM THE SWEEP CANNOT SEE ──────────
+//
+// The second of the two mechanisms that contain a path. Where a validator
+// refuses every hostile value, the sweep's verdict is carried by the validator
+// alone and the encoding is never exercised — so it is checked where it IS
+// visible, which is the source. This is the check that goes red on KAN-311's
+// mutation while every placement above stays green.
+//
+// The risk it exists to prevent is a future one and the ticket names it exactly:
+// someone relaxes `pageId` to accept a non-digit — a slug, an id with a suffix —
+// and silently un-contains that path, because the encoding that would have held
+// it had already gone and nothing noticed. Two mechanisms make it safe today;
+// this is what keeps the count at two.
+rule('2c. the encoding — every path interpolation encodes its argument or is not a string');
+
+const bareInterpolations = unencodedPathInterpolations(proxySrc);
+check(
+  'every interpolation into a path is encoded, or is a bounded number or a narrowed literal',
+  bareInterpolations.length === 0,
+  bareInterpolations
+    .map((b) => `atlassian-proxy.ts:${b.line}  \${${b.expression}} reaches a path unencoded`)
+    .join('\n')
 );
 
 // ── 3. the ARI, which is the one input that looks like a destination ───────
@@ -409,7 +534,6 @@ check(
 );
 // A transform is given non-secret context and nothing else. Asserted against
 // the source, because the type that enforces it is erased at runtime.
-const proxySrc = fs.readFileSync(path.join(scriptDir, '..', 'src', 'atlassian-proxy.ts'), 'utf8');
 // Read the FIELDS, not the prose. The first version of this check grepped the
 // whole interface block for the word "token" and failed on the docblock
 // sentence *"the token half of Basic auth is not here"* — a comment saying the
