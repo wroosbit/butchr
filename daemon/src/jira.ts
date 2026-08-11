@@ -42,7 +42,23 @@ import {
 // a reconciler wants one verdict about the whole board, not a board it saw
 // three-quarters of.
 //
-// Plus the credential-validation read the settings UI needs. All three
+//   4. "what did an agent ask to read?" — {@link JiraClient.proxyRead}, the
+//      transport half of the daemon-side Atlassian proxy (KAN-272,
+//      atlassian-proxy.ts).
+//
+// (4) arrived on 2026-08-11 and is the one widening that is **not** a new thing
+// the daemon wants to know; it is the same reads, asked for by somebody else.
+// Its shape is deliberately unlike the three above: it takes a path rather than
+// a domain question, because it has no domain question of its own — and that
+// would be a hole in this file's own argument if the path came from the caller.
+// It does not. `atlassian-proxy.ts` holds a fixed table of operations, each
+// building its own path from validated arguments, and no operation anywhere
+// takes a path, a URL or a REST fragment from an agent. The granted scope is
+// that table, and it is `read:jira-work` — the same scope items 1 to 3 already
+// needed, so this too costs the user nothing to grant. Read the table, not this
+// method, to know what the credential is used for.
+//
+// Plus the credential-validation read the settings UI needs. All four
 // operations fit inside the same `read:jira-work` scope the settings page has
 // always asked for, so no widening has ever cost the user anything to grant.
 //
@@ -54,6 +70,14 @@ import {
 // auth. (KAN-20, unchanged by KAN-75.) Nothing here posts a comment, moves a
 // status, or edits a field, and a poller that discovers news reports it by
 // typing at a terminal rather than by writing to Jira.
+//
+// KAN-272 carries a human decision, taken on 2026-08-11 with the reasoning
+// against it in front of them, reversing KAN-39's invariant 2 and authorising
+// the daemon to hold Jira **write** scope. **That authorisation is not spent
+// here.** This file gained a proxy for reads it could already do and not one
+// write method, so the rule above is unchanged in fact and not merely in
+// wording — and the reversal, when it is built, arrives as its own change that
+// can be reviewed and reverted without taking the proxy with it.
 
 /** How long a lookup may take, end to end, before the caller gives up. */
 export const LOOKUP_TIMEOUT_MS = 2000;
@@ -87,6 +111,23 @@ export const POLL_TIMEOUT_MS = 5000;
  * exists to make loud.
  */
 export const BOARD_TIMEOUT_MS = 10_000;
+
+/**
+ * How long a *proxied* read may take — the Atlassian proxy, KAN-272.
+ *
+ * Its own budget for a fourth reason again, and the most generous of the four.
+ * The other three are background: a tab change, a poll tick, a reconciler
+ * cycle, none of them with anybody waiting. A proxied read is a **foreground**
+ * request — an agent has made a tool call and its model is blocked until this
+ * answers — and the cost of giving up early is not a slower UI, it is an agent
+ * told "Atlassian did not respond" about a Jira that was merely having a slow
+ * minute. That is the misdiagnosis this whole file exists to stop producing.
+ *
+ * Bounded well inside `mcp.ts`'s own 30s daemon-request deadline, so a stalled
+ * read is reported by *this* end, with legs and a diagnosis, rather than by the
+ * agent's end as a bare "Daemon request timed out" that names nothing.
+ */
+export const PROXY_TIMEOUT_MS = 15_000;
 
 /**
  * How long *validation* may take. Deliberately far more generous than
@@ -898,6 +939,32 @@ export class JiraClient {
   }
 
   /**
+   * Perform one read on behalf of an agent, and hand back everything about how
+   * it went (KAN-272).
+   *
+   * WHY THIS ONE TAKES A PATH WHEN NOTHING ELSE HERE DOES
+   *
+   * Because it has no domain question. The three methods above are named for
+   * what the daemon wants to know; this is named for who is asking. The path
+   * comes from `atlassian-proxy.ts`'s operation table — never from an agent,
+   * never from a request body — and that table is the granted scope. See the
+   * module header, item 4.
+   *
+   * WHY IT DOES NOT THROW ON A NON-200
+   *
+   * Every other method here throws, and is right to: a 404 from the poller is
+   * an exception on a background timer and nobody is waiting on it. Here a
+   * caller *is* waiting, the status is the most useful thing in the answer, and
+   * the response body of a 400 carries Jira's own explanation of what was wrong
+   * with the query. Throwing would discard both and leave the agent with a
+   * message this file invented. So the status and the legs come back and
+   * {@link JiraIssueTypeService.proxyRead} decides what they mean.
+   */
+  public async proxyRead(path: string, signal: AbortSignal): Promise<JiraResponse> {
+    return this.transport.get(path, signal);
+  }
+
+  /**
    * Check, at submit time, whether the credential the user just typed actually
    * works — and if it does not, say precisely which leg refused it and why.
    *
@@ -1113,6 +1180,123 @@ export function boardPageFrom(body: any, maxResults: number): JiraBoardPage {
 export type JiraBoardOutcome =
   | { ok: true; issues: JiraBoardIssue[] }
   | { ok: false; backOff: boolean; status?: number; error: string };
+
+/**
+ * The outcome of a proxied read, and the distinction that is the whole point
+ * of KAN-272 (atlassian-proxy.ts).
+ *
+ * A third shape rather than a reuse of {@link JiraSnapshotOutcome}, because the
+ * question a *caller* has to answer is different from the one a poller has.
+ * A poller asks "should I slow down?" — hence `backOff`. An agent asks
+ * **"is this my problem or the fleet's?"**, and nothing above could tell it.
+ *
+ * That is exactly the question the 2026-08-10 outage could not answer. Every
+ * agent's Atlassian tools were dead for twelve hours, the processes serving
+ * them were alive, and what each agent saw was a call that did not work — with
+ * no way to tell a bad query from a credential the whole fleet shares and which
+ * had expired eleven days earlier. So {@link JiraProxyOutcome.credentialFault}
+ * is a separate field from the message: `true` means the daemon's credential
+ * was refused or unreachable and **every other agent is about to hit this too**,
+ * which is a thing to report to a human rather than to retry; `false` means
+ * Atlassian answered and disliked *this* request, which is the agent's own to
+ * fix. Reading a failure and not knowing which of those it is, is the defect.
+ *
+ * There is no success shape carrying an empty body. A proxied read either
+ * produces what Atlassian returned or produces a refusal that names a leg —
+ * the silent third option is the one that cost twelve hours.
+ */
+export type JiraProxyOutcome =
+  | { ok: true; status: number; body: any }
+  | {
+      ok: false;
+      /** HTTP status, when Atlassian answered at all. Absent on a dead leg. */
+      status?: number;
+      /** The sentence the agent reads. Never empty, never a bare status. */
+      error: string;
+      /** Machine-readable, when the legs supported a diagnosis. */
+      diagnosis?: JiraDiagnosis;
+      /** Every endpoint tried and what it said. Non-secret by construction. */
+      legs?: JiraLegResult[];
+      /** See the docblock: whose problem this is. */
+      credentialFault: boolean;
+    };
+
+/**
+ * Turn a refused proxied read into the sentence an agent acts on.
+ *
+ * `explainLegs` is reused for exactly the statuses it is right about — 401 and
+ * 403 are auth refusals and its six-case reading of them is the best writing in
+ * this file — and deliberately **not** for the others. Pointed at a 404 from an
+ * issue read it answers *"there is no Jira REST API there; check the site
+ * address"*, which is true of validation and false here: a 404 on
+ * `/rest/api/3/issue/KAN-9999` means Jira has no such issue, and sending an
+ * agent to check the site address over a mistyped key would be the same class
+ * of confident misdiagnosis this file was written to end.
+ */
+function explainProxyFailure(
+  status: number,
+  legs: JiraLegResult[]
+): { error: string; diagnosis?: JiraDiagnosis; credentialFault: boolean } {
+  if (status === 401 || status === 403) {
+    // Only the legs that carried a credential. The cloud-ID leg is
+    // unauthenticated by construction — it is the one leg that needs no token —
+    // so it cannot answer "which credential-bearing endpoint refused this and
+    // what did it say", and `explainLegs` reads it *first*: a site whose
+    // `_edge/tenant_info` answered without a cloudId outranks an explicit 401
+    // there, and the agent would be sent to check the site address over a
+    // credential that had plainly been revoked. That ordering is right for
+    // validation, where the site address is genuinely in doubt, and wrong here,
+    // where the transport is already established and the only question is auth.
+    const explained = explainLegs(legs.filter((leg) => leg.leg !== 'cloud-id'));
+    return {
+      error:
+        `The Butchr daemon's own Atlassian credential was refused (HTTP ${status}). This is ` +
+        'not your query and retrying will not help — every agent using this proxy is about to ' +
+        'see the same thing, and a human has to replace the credential in Butchr settings. ' +
+        `${explained.error}`,
+      diagnosis: explained.diagnosis,
+      credentialFault: true
+    };
+  }
+
+  // Jira's own words about the refusal, where it offered any. Worth more than
+  // anything invented here — see `extractDetail`.
+  const said = legs.map((leg) => leg.detail).filter((detail): detail is string => !!detail);
+  const because = said.length ? ` Jira said: ${said[said.length - 1]}` : '';
+
+  if (status === 404) {
+    return {
+      error:
+        `Jira answered 404 for this request. The daemon's credential worked; the issue or ` +
+        `endpoint asked for does not exist, or this account cannot see it.${because}`,
+      credentialFault: false
+    };
+  }
+  if (status === 400) {
+    return {
+      error: `Jira rejected this request as malformed (400).${because}`,
+      credentialFault: false
+    };
+  }
+  if (status === 429) {
+    return {
+      error:
+        'Atlassian is rate-limiting this credential (429). It is shared by the whole fleet, ' +
+        `so backing off rather than retrying immediately is the cooperative move.${because}`,
+      credentialFault: false
+    };
+  }
+  if (status >= 500) {
+    return {
+      error: `Atlassian returned HTTP ${status} — a fault on their side, not with the credential or the query.${because}`,
+      credentialFault: false
+    };
+  }
+  return {
+    error: `Atlassian returned HTTP ${status}, which this proxy has no specific reading of.${because}`,
+    credentialFault: false
+  };
+}
 
 /**
  * A rejection from the transport, rendered as a verdict.
@@ -1433,6 +1617,80 @@ export class JiraIssueTypeService {
         // Message only, never the error object: on a fetch failure its
         // properties can include the request that produced it.
         error: err?.message ?? 'unknown error'
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * One read made on an agent's behalf — or a refusal that says whose problem
+   * it is (KAN-272).
+   *
+   * Lives here for the reason `pollIssue` and `searchBoard` do, and it is the
+   * reason those two give: this class is the daemon's only holder of a Jira
+   * transport, and a second holder would be a second credential load, a second
+   * cloud-ID lookup, and a second place to teach about OAuth on the day the
+   * auth seam is used. The proxy borrows the transport; `atlassian-proxy.ts`
+   * never learns what a token is, and neither does `router.ts`.
+   *
+   * IT TOUCHES THE FAILURE COOLDOWN IN NEITHER DIRECTION, and here the argument
+   * `pollIssue` makes at length has a fourth leg. Letting a proxied read *set*
+   * `failingUntil` would let one agent's mistyped JQL silently downgrade a
+   * user's Story workspace to a `task` one for thirty seconds. Letting it
+   * *read* the flag would be worse than blinding: the agent would be told
+   * nothing at all, on a foreground call, because an unrelated tab change
+   * failed — a silent empty answer, which is the precise failure mode this
+   * whole ticket exists to remove. The four reads degrade separately, on their
+   * own evidence.
+   *
+   * Never throws, like everything else this service exposes.
+   */
+  public async proxyRead(path: string): Promise<JiraProxyOutcome> {
+    const transport = await this.getTransport();
+    if (!transport) {
+      // Distinct from every other refusal, and the wording matters: an agent
+      // must not read "no credential" as "Jira is down". Nothing is broken —
+      // nobody has configured one — and the agent's own Atlassian session is
+      // unaffected and is the thing to use.
+      return {
+        ok: false,
+        credentialFault: true,
+        error:
+          'The Butchr daemon has no Atlassian credential configured, so it cannot make this ' +
+          'read for you. Nothing is broken and Jira is not down: a human configures one in ' +
+          "Butchr's settings. Use this agent's own Atlassian MCP tools meanwhile."
+      };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+    try {
+      const { status, body, legs } = await new JiraClient(transport).proxyRead(
+        path,
+        controller.signal
+      );
+      if (status >= 200 && status < 300) return { ok: true, status, body };
+      return { ok: false, status, legs, ...explainProxyFailure(status, legs) };
+    } catch (err: any) {
+      // No leg completed — the transport rejects rather than resolves for that
+      // case, carrying the legs on the error precisely so this is answerable.
+      // A dead leg is a credential fault in the sense that matters to the
+      // caller: it is the fleet's problem and not the query's, and the whole
+      // fleet is about to meet it.
+      const legs: JiraLegResult[] = Array.isArray(err?.legs) ? err.legs : [];
+      const explained = legs.length ? explainLegs(legs) : null;
+      return {
+        ok: false,
+        credentialFault: true,
+        ...(legs.length ? { legs } : {}),
+        ...(explained?.diagnosis ? { diagnosis: explained.diagnosis } : {}),
+        error:
+          "The Butchr daemon could not reach Atlassian at all for this read. Every agent " +
+          'using this proxy is about to see the same thing. ' +
+          // Message only, never the error object: on a fetch failure its
+          // properties can include the request that produced it.
+          (explained?.error ?? String(err?.message ?? 'unknown error'))
       };
     } finally {
       clearTimeout(timer);
