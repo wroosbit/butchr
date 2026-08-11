@@ -175,12 +175,90 @@ a condition that must hold at the moment of merging. It means **both** of:
   of approval's two halves, and substituting the half for the whole is exactly
   what `task/KAN-226` did when it merged #92 five minutes after CI went green
   with no approval from anyone. Read `gh pr checks` for the current required
-  set; never trust a remembered list of check names.
+  set; never trust a remembered list of check names. **And check the instrument
+  answered the question you asked**: `gh run list --limit 1` reads the newest run
+  of *any* workflow, and this repository has three — `ci.yml`, `approval.yml`,
+  `deploy-extension.yml` — so `epic/KAN-203` deployed on a **false green** today
+  by reading *"Build & Publish Chrome Extension"* and taking it for CI. Filter,
+  and check the run is against the head you mean: `gh run list --workflow=ci.yml`.
+  Measured 2026-08-11: an unfiltered listing had `Approval … completed/failure`
+  directly above `CI … in_progress` **for the same SHA**, offering a *conclusion*
+  for a run that had not finished.
 - **The ticket's live-proof acceptance criteria demonstrated on the PR** — the
   pasted output is the author's honesty; the re-run is **yours**, against the PR
   head. If the author runs `gh pr update-branch` after you approve, your
   approval was against a head that no longer exists: prior merges land in the
   updated head, so the proof is re-run there before that PR merges.
+
+#### A re-run against a stale build is not a re-run
+
+**This is the reviewer's trap and it has been walked into twice in one
+afternoon, both times by this agent, both times at the moment of approving.**
+Reading a proof's verdict is the whole of your repository work, so a verdict
+about the wrong build is a wrong approval.
+
+**Confirm the build exited 0 before you read the proof's verdict at all: a proof
+run after a failed build did not run on your mutation.** It ran on the previous
+`dist`, so whatever it prints — pass or fail — is evidence about code that was
+not under review, and **both outcomes mislead**. A pass reads as *"the mutation
+was not caught"* and sends someone off strengthening an assertion that was never
+exercised; a fail reads as *"the proof caught it"* when something else did.
+
+**The worked case is that second one**, because a red crediting the wrong
+mechanism is the outcome nobody anticipates. Reviewing
+[#134](https://github.com/wroosbit/butchr/pull/134), turning a `GET` into a
+`DELETE` to prove a write could not be introduced made the build fail —
+`Type '"DELETE"' is not assignable to type '"GET"'` — the proof then ran against
+the stale `dist` and printed `EXIT=0`, and *"the proof caught the write"* was
+nearly recorded. It did not: **the compiler did, and the proof never saw the
+mutation.** A mutation that compiles gave the genuine red. So **a failed build
+means the mutation is not testable as written**, and the move is a mutation that
+compiles — not a re-run, and not a shrug.
+
+**A failed build is only the loud half — before trusting any local proof run,
+check `dist` is not older than `src`.** There need not have been a failure at
+all: at review of [#127](https://github.com/wroosbit/butchr/pull/127) the scope
+proof ran over a `dist` that **13 source files were newer than** and printed
+`22 operations, 396 placements, none escaped` — a completely plausible pass
+**for code that never executed**, because both heads happened to have 22
+operations. Nothing in that output could have said so. It was caught on file
+mtimes and nothing else, which is the only thing that would have caught it.
+
+**But the rule binds on a proof that imports from `dist`, so check which kind you
+ran before you discard a verdict.** A proof that reads source as text is
+unaffected by a failed build — **it read what you wrote** — so its verdict is
+about the mutation, and discarding it wastes a good red. One grep settles it:
+does the script import from `../dist/`, or `readFileSync` from `src`? **The trap
+is the third case, and it fails toward false confidence: 17 of the 81 scripts
+under `daemon/scripts` do both.** `verify-notifications-never-type.mjs` reads
+`daemon/src/*.ts` as text *and* imports from `dist`, which is why it carries
+`--static-only`. After a failed build its overall exit code is a **blend** — the
+static sections tested the mutation, the `dist` sections silently tested
+yesterday's build — so read the section, never the exit code. Both incidents
+above were `dist`-importing, so the rule catches them as written; the qualifier
+exists to stop the **opposite** error, discarding good evidence out of caution.
+
+**And confirm the exit code by a route that actually reports it.**
+`npm run build | tail -5` yields `tail`'s exit status, not the compiler's, so a
+failed build reads as `0`. **Do not pipe the build**, or read `${PIPESTATUS[0]}`
+rather than `$?`. `BUILD_EXIT=0` has been reported here for a build that had just
+failed, by exactly that route, twice in one day. **A rule that says "check the
+exit code" while the obvious idiom reports the wrong one is a rule with a
+trapdoor in it**, so the route is part of the rule.
+
+**Prefer the type to the assertion where the choice exists**, and say so when you
+review. An assertion can be deleted by a later author and the build still
+passes; **an unrepresentable state cannot be introduced at all.** The same day
+produced two instances: `method: 'GET'` as a literal type in
+`daemon/src/launchdarkly-proxy.ts`, which is what refused the `DELETE` above, and
+KAN-301's `transport: 'channel' | 'undelivered'` in `daemon/src/notify.ts`, which
+makes the composer not nameable by a notification producer. In both the assertion
+exists as well — belt and braces, in that order. **This is guidance, not a rule,
+and it is scoped rather than absolute**: plenty of properties cannot be typed,
+and anything about runtime state, a live peer, a file on disk or another
+process's behaviour is the assertion's job. Ask for the type when the invariant
+is about **what the code is able to say**, and for the assertion when it is about
+**what actually happened**.
 
 Your approval verdict lands as a PR **comment**, because GitHub refuses a formal
 review verdict from the account that opened the PR — every agent authenticates
