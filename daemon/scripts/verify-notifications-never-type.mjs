@@ -209,13 +209,37 @@ const IS_DECLARATION = /(?:function|const|let)\s+$/;
 
 const found = [];
 const deliverCalls = [];
+/**
+ * Every mention of `deliverToAgent` in production code outside nudge.ts, called
+ * or merely named.
+ *
+ * A REFERENCE rather than a call, because the regression this ticket is about
+ * does not look like a call. Restoring it is `?? deliverToAgent` — a bare
+ * identifier handed to a delivery seam, invoked later through a variable — and
+ * `deliverCalls` above, which looks for `deliverToAgent(`, does not see it. That
+ * was not a hypothesis: the first red-drive of this script put exactly that line
+ * back and section 1 stayed green while 1b went red. One section catching it is
+ * enough to fail the run, and relying on that would leave the strongest-sounding
+ * assertion in the file quietly unable to see the defect it names.
+ */
+const deliverRefs = [];
 for (const { file, text } of sources) {
-  // Comments discuss `deliverToAgent` at length by design — the modules explain
-  // why they no longer call it — so a hit inside one is not a call site. Blanked
-  // rather than removed so every offset still lines up with the real file.
+  // Comments AND string literals discuss `deliverToAgent` at length by design —
+  // the modules explain why they no longer call it, and `message-claims.ts`
+  // names it inside the sentence a response carries to an agent. Neither is a
+  // reference. Blanked rather than removed, and newlines kept, so every offset
+  // and line number still lines up with the real file.
+  //
+  // Comments are blanked before strings: a comment may contain an apostrophe
+  // ("don't"), which would open a bogus string, and the `[^:]` guard on the
+  // line-comment pattern already keeps it off `https://`.
+  const blank = (m) => m.replace(/[^\n]/g, ' ');
   const code = text
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length))
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, blank)
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, blank)
+    .replace(/`(?:[^`\\]|\\.)*`/g, blank);
 
   for (const m of code.matchAll(COMPOSER_CALL)) {
     const lineStart = code.lastIndexOf('\n', m.index) + 1;
@@ -229,6 +253,17 @@ for (const { file, text } of sources) {
     };
     found.push(hit);
     if (hit.call === 'deliverToAgent') deliverCalls.push(hit);
+  }
+
+  // nudge.ts defines it and is allowed to name it; nowhere else in production
+  // may, in any form.
+  if (file === 'nudge.ts') continue;
+  for (const m of code.matchAll(/(?<![A-Za-z0-9_.])deliverToAgent(?![A-Za-z0-9_])/g)) {
+    deliverRefs.push({
+      file,
+      symbol: enclosingSymbol(code, m.index),
+      line: code.slice(0, m.index).split('\n').length
+    });
   }
 }
 
@@ -254,6 +289,7 @@ for (const site of ALLOWED_COMPOSER_SITES) {
 
 console.log('');
 row('calls to deliverToAgent anywhere in daemon/src', String(deliverCalls.length));
+row('mentions of it outside nudge.ts, called or merely named', String(deliverRefs.length));
 
 if (unexpected.length) {
   console.log('\n  UNDECLARED composer call sites — each of these types into a terminal:');
@@ -267,17 +303,28 @@ if (deliverCalls.length) {
   console.log('\n  deliverToAgent is CALLED in production code:');
   for (const hit of deliverCalls) console.log(`    ${hit.file}:${hit.line} in ${hit.symbol}()`);
 }
+if (deliverRefs.length) {
+  console.log('\n  deliverToAgent is NAMED in production code outside nudge.ts:');
+  for (const hit of deliverRefs) console.log(`    ${hit.file}:${hit.line} in ${hit.symbol}()`);
+  console.log(
+    '    Naming it is enough: `?? deliverToAgent` hands the composer to a delivery seam\n' +
+    '    without ever writing a call, which is exactly how this defect is restored.'
+  );
+}
 
 verdict(
-  unexpected.length === 0 && missing.length === 0 && deliverCalls.length === 0,
+  unexpected.length === 0 &&
+    missing.length === 0 &&
+    deliverCalls.length === 0 &&
+    deliverRefs.length === 0,
   `every one of the ${found.length} composer reaches in daemon/src is one of the ${ALLOWED_COMPOSER_SITES.length} ` +
-    'declared sites, every declared site still exists, and nothing in production calls ' +
-    'deliverToAgent at all.',
+    'declared sites, every declared site still exists, and no production file outside nudge.ts ' +
+    'so much as names deliverToAgent.',
   unexpected.length
     ? `${unexpected.length} undeclared composer call site(s) — a daemon path types at a pane.`
-    : deliverCalls.length
-      ? `${deliverCalls.length} production call(s) to deliverToAgent — a notification path has ` +
-        'regressed to the composer.'
+    : deliverCalls.length || deliverRefs.length
+      ? `deliverToAgent is reachable from production again (${deliverCalls.length} call(s), ` +
+        `${deliverRefs.length} mention(s)) — a notification path has regressed to the composer.`
       : 'the allowlist names a call site that no longer exists; it is describing a build that is gone.'
 );
 
