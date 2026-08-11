@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 57 |
+| `yes` | 58 |
 | `partial` | 5 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **79** |
+| **total** | **80** |
 
-**62 of 79** run on every pull request.
+**63 of 80** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -85,6 +85,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-jira-poller-nudges` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-jira-self-echo-suppression` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-jira-storage-disclosure` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-kan306-gate-demonstration` | yes | imports nothing at all and asserts on a constant; it needs no herdr, no live daemon, no credential, no peer and no terminal. It is in the set on purpose, because being in the set is the whole demonstration. |
 | `verify-ld-credential-diagnostics` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ld-log-hygiene` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ld-storage-disclosure` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
