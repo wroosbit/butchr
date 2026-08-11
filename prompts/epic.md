@@ -182,6 +182,54 @@ a condition that must hold at the moment of merging. It means **both** of:
   approval was against a head that no longer exists: prior merges land in the
   updated head, so the proof is re-run there before that PR merges.
 
+#### A re-run against a stale build is not a re-run
+
+**This is the reviewer's trap and it has been walked into twice in one
+afternoon, both times by this agent, both times at the moment of approving.**
+Reading a proof's verdict is the whole of your repository work, so a verdict
+about the wrong build is a wrong approval.
+
+**Confirm the build exited 0 before you read the proof's verdict at all: a proof
+run after a failed build did not run on your mutation.** It ran on the previous
+`dist`, so whatever it prints — pass or fail — is evidence about code that was
+not under review, and **both outcomes mislead**. A pass reads as *"the mutation
+was not caught"* and sends someone off strengthening an assertion that was never
+exercised; a fail reads as *"the proof caught it"* when something else did.
+
+**The worked case is that second one**, because a red crediting the wrong
+mechanism is the outcome nobody anticipates. Reviewing
+[#134](https://github.com/wroosbit/butchr/pull/134), turning a `GET` into a
+`DELETE` to prove a write could not be introduced made the build fail —
+`Type '"DELETE"' is not assignable to type '"GET"'` — the proof then ran against
+the stale `dist` and printed `EXIT=0`, and *"the proof caught the write"* was
+nearly recorded. It did not: **the compiler did, and the proof never saw the
+mutation.** A mutation that compiles gave the genuine red. So **a failed build
+means the mutation is not testable as written**, and the move is a mutation that
+compiles — not a re-run, and not a shrug.
+
+**A failed build is only the loud half — before trusting any local proof run,
+check `dist` is not older than `src`.** There need not have been a failure at
+all: at review of [#127](https://github.com/wroosbit/butchr/pull/127) the scope
+proof ran over a `dist` that **13 source files were newer than** and printed
+`22 operations, 396 placements, none escaped` — a completely plausible pass
+**for code that never executed**, because both heads happened to have 22
+operations. Nothing in that output could have said so. It was caught on file
+mtimes and nothing else, which is the only thing that would have caught it.
+
+**Prefer the type to the assertion where the choice exists**, and say so when you
+review. An assertion can be deleted by a later author and the build still
+passes; **an unrepresentable state cannot be introduced at all.** The same day
+produced two instances: `method: 'GET'` as a literal type in
+`daemon/src/launchdarkly-proxy.ts`, which is what refused the `DELETE` above, and
+KAN-301's `transport: 'channel' | 'undelivered'` in `daemon/src/notify.ts`, which
+makes the composer not nameable by a notification producer. In both the assertion
+exists as well — belt and braces, in that order. **This is guidance, not a rule,
+and it is scoped rather than absolute**: plenty of properties cannot be typed,
+and anything about runtime state, a live peer, a file on disk or another
+process's behaviour is the assertion's job. Ask for the type when the invariant
+is about **what the code is able to say**, and for the assertion when it is about
+**what actually happened**.
+
 Your approval verdict lands as a PR **comment**, because GitHub refuses a formal
 review verdict from the account that opened the PR — every agent authenticates
 as the same human account, so GitHub cannot tell author from reviewer.

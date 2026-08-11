@@ -880,6 +880,74 @@ const RULES = [
       ],
     },
   },
+  {
+    // KAN-314. The prompt mandated the red drive at `:96` — *break the thing it
+    // guards, watch it go red* — and said nothing about the one way a red drive
+    // silently does not happen. `epic/KAN-203` grepped for it (stale dist,
+    // build must succeed, rebuild before, failed build, `npm run build`) and
+    // found nothing in any of the four prompts.
+    //
+    // FOUR PHRASES, BECAUSE THE RULE HAS FOUR HALVES AND ANY THREE MISLEADS:
+    //   - `did not run on your mutation` — the rule itself. Without it there is
+    //     no rule, only a worked example.
+    //   - `both outcomes mislead` — the half that makes this worse than a
+    //     wasted step. An agent that keeps only the rule assumes a *failed*
+    //     proof after a failed build is still a failure it can trust, and it is
+    //     not: the fail is about the old build too.
+    //   - `older than `src`` — the STALE-DIST case, which had no failed build
+    //     at all. Drop it and the rule reads as being about compile errors,
+    //     which is the smaller and louder half; the #127 incident would still
+    //     pass every word of what remained.
+    //   - `the compiler did` — the worked case's actual point. The misleading
+    //     outcome there was a *red* that credited the wrong mechanism, and that
+    //     is the case people do not anticipate. A prompt that keeps the story
+    //     and drops this clause has kept an anecdote and lost its moral.
+    //
+    // All three PR-opening prompts and not `PROMPTS`: a `confluence` workspace
+    // writes pages, builds nothing and runs no proof, so inventorying it there
+    // would be requiring a rule its reader can never act on. It is in the two
+    // reviewer prompts as emphatically as in `task.md` because both recorded
+    // incidents happened to a reviewer at the moment of approving, not to an
+    // author at the moment of proving.
+    id: 'H-19',
+    title: 'a proof run after a failed build — or over a stale `dist` — is a verdict about the old build',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /did not run on your mutation/i,
+          /both outcomes mislead/i,
+          /is not older than `src`/i,
+          /the compiler did/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-314, second half — `epic/KAN-203`'s framing, which was written down
+    // nowhere. Inventoried despite being explicitly *guidance rather than a
+    // rule*, and the distinction is worth stating because it changes what this
+    // entry asserts: it pins that the guidance is PRESENT and that it is
+    // SCOPED, never that any particular change obeyed it. A future editor
+    // tidying for length would drop the scoping clause first — it reads like
+    // hedging — and what is left is an absolute instruction to type things that
+    // cannot be typed, which is a worse artifact than the one we started with.
+    //
+    // Hence the third pattern. The first two are the guidance; `guidance, not a
+    // rule` is the limit, and the limit is the part being protected.
+    id: 'H-20',
+    title: 'prefer the type to the assertion where the choice exists — scoped, not absolute',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /Prefer the type to the assertion/i,
+          /unrepresentable state cannot be introduced at all/i,
+          /guidance, not a rule/i,
+        ],
+      ])
+    ),
+  },
 ];
 
 /**
