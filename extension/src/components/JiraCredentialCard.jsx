@@ -195,10 +195,37 @@ export function JiraCredentialCard() {
           >
             id.atlassian.com
           </a>
-          . Choose a <strong>scoped</strong> token with <code>read:jira-work</code> — Butchr never
-          writes to Jira. Adding <code>read:jira-user</code> is optional and only lets this page
-          greet you by name. The token goes straight to the local daemon and is never stored in the
-          browser or shown again.
+          . Choose a <strong>scoped</strong> token with <code>read:jira-work</code>. Adding{' '}
+          <code>read:jira-user</code> is optional and only lets this page greet you by name. The
+          token goes straight to the local daemon and is never stored in the browser or shown
+          again.
+        </div>
+        {/*
+          KAN-291. This hint used to read "Butchr never writes to Jira", and that
+          sentence was a promise made to the person about to hand over a
+          credential — the same disclosure-before-typing the storage panel below
+          makes about *where* the secret lands. It stopped being true when the
+          daemon gained its first write path, and a consent statement that has
+          quietly gone stale is worse than one that was never made: a user who
+          read it once has no reason to read it again.
+
+          It is stated as a conditional rather than as "Butchr writes to Jira",
+          because the conditional is the truth. The write path is off unless an
+          operator sets BUTCHR_ATLASSIAN_PROXY=jira-write, a read-scoped token
+          cannot perform a write whatever the switch says, and every existing
+          credential was minted before this existed and therefore cannot. So the
+          honest thing to tell somebody typing a token is what their choice of
+          scope decides — which is why this names the scope and what it enables
+          rather than telling them to add it.
+        */}
+        <div style={{ ...hintStyle, marginTop: 8 }}>
+          <strong>Read scope is enough for everything Butchr does on its own.</strong> It polls the
+          board, resolves issue types, and can proxy those reads for agents. Adding{' '}
+          <code>write:jira-work</code> additionally lets an agent <em>move its own ticket</em>{' '}
+          through the daemon — and only its own: a transition of any other issue is refused before
+          it reaches Atlassian. That write path is off unless an operator turns it on, and a token
+          without this scope simply refuses it. Leave the scope off if you would rather agents kept
+          using their own Atlassian sessions to change anything.
         </div>
         <input
           id="jira-token"

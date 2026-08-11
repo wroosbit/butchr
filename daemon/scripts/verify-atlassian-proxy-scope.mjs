@@ -1,5 +1,14 @@
-// KAN-272: the daemon-side Atlassian proxy is off by default, and what it
-// grants when it is on is exactly one table of GETs under one scope.
+// KAN-272: the daemon-side Atlassian proxy is off by default, and its READ mode
+// grants exactly one table of GETs under one scope.
+//
+// KAN-291 added a write mode, and this file deliberately did not grow to cover
+// it. What it now owns is the property that a write must not disturb: **the
+// read grant is unchanged** — `jira-read` is the same GETs under the same
+// `read:jira-work` it was before, so an operator who granted it granted no more
+// than they thought. Who may write, to what, and under what scope is
+// `verify-atlassian-proxy-write-scope.mjs`, which is where a widening of the
+// write mode goes red. Sections 1–4 here run over the whole table, so a write
+// tagged into a read mode still fails in this file.
 //
 // WHAT FAILURE THIS WOULD CATCH: the proxy widening the daemon's credential
 // beyond what a reviewer can read off `atlassian-proxy.ts` — an operation that
@@ -174,10 +183,21 @@ check(
 // ── 4. the granted scope, and what an agent can reach with it ──────────────
 rule('4. the grant — GETs only, one scope, and no way for an agent to name a path');
 
+// KAN-291 re-pointed this section rather than relaxing it. It used to assert
+// that every operation in the table was a GET; a write exists now, so that
+// sentence is false and keeping it would have meant deleting a check. What
+// replaced it is the property that actually matters and which survives the
+// change: **the read mode is still GETs only**, so an operator who grants
+// `jira-read` grants exactly what they granted before this ticket.
 check(
-  'every proxied operation is a GET',
-  PROXY_OPERATIONS.every((op) => op.method === 'GET'),
-  JSON.stringify(PROXY_OPERATIONS.filter((op) => op.method !== 'GET').map((op) => op.tool))
+  'every operation in jira-read is a GET — the read mode did not acquire a write',
+  operationsFor('jira-read').every((op) => op.method === 'GET'),
+  JSON.stringify(operationsFor('jira-read').filter((op) => op.method !== 'GET').map((op) => op.tool))
+);
+check(
+  'the only non-GET verb anywhere in the table is POST',
+  PROXY_OPERATIONS.every((op) => op.method === 'GET' || op.method === 'POST'),
+  JSON.stringify(PROXY_OPERATIONS.map((op) => [op.tool, op.method]))
 );
 check(
   'jira-read needs exactly read:jira-work and nothing else',
@@ -198,14 +218,24 @@ check(
 // available on an issue and performs none — a substring match on "transition"
 // calls that a write and is exactly the sloppiness that makes a check get
 // deleted rather than fixed. What is checked is the leading verb.
+//
+// KAN-291 made this two-directional, which is the form it should always have
+// had. A name is a claim about what a tool does, and a claim can be wrong in
+// either direction: a read named `transition_` misleads an operator reading the
+// grant, and — the one that matters more — a **write** named `get_` hides
+// itself in the middle of a list of reads. Asserting only the first would let
+// `atlassian_get_issue_status_updated` be a POST.
+const WRITE_VERB = /^(create|update|delete|add|edit|post|put|patch|set|transition|move|assign)_/i;
+const shortName = (op) => op.tool.replace(/^atlassian_/, '');
 check(
-  'no operation is named for a write action',
-  PROXY_OPERATIONS.every(
-    (op) => !/^(create|update|delete|add|edit|post|put|patch|set|transition|move|assign)_/i.test(
-      op.tool.replace(/^atlassian_/, '')
-    )
-  ),
-  JSON.stringify(PROXY_OPERATIONS.map((op) => op.tool))
+  'no READ operation is named for a write action',
+  PROXY_OPERATIONS.filter((op) => op.method === 'GET').every((op) => !WRITE_VERB.test(shortName(op))),
+  JSON.stringify(PROXY_OPERATIONS.filter((op) => op.method === 'GET').map((op) => op.tool))
+);
+check(
+  'every WRITE operation is named for one — a write cannot hide among the reads',
+  PROXY_OPERATIONS.filter((op) => op.method !== 'GET').every((op) => WRITE_VERB.test(shortName(op))),
+  JSON.stringify(PROXY_OPERATIONS.filter((op) => op.method !== 'GET').map((op) => op.tool))
 );
 
 // Every path an agent can cause. A refusal is a pass; a built path that escapes
@@ -275,8 +305,8 @@ check(
 
 const onReport = proxyReport(selectedProxyMode({ [PROXY_ENV_VAR]: 'jira-read' }), { configured: true, siteUrl: 'https://x.atlassian.net', email: 'a@b.c' });
 check(
-  'an on report enumerates every operation with its scope and path shape',
-  onReport.operations.length === PROXY_OPERATIONS.length &&
+  'an on report enumerates every operation of its mode with scope and path shape',
+  onReport.operations.length === operationsFor('jira-read').length &&
     onReport.operations.every((op) => op.scope && op.pathShape && op.method),
   JSON.stringify(onReport.operations)
 );
@@ -332,14 +362,52 @@ check(
   JSON.stringify(mcpSrc.includes('atlassian_proxy_call'))
 );
 
-// The reversal KAN-272 authorises is deliberately not spent in this change, and
-// this is the assertion that keeps that true as the file is edited.
+// ── the transport boundary, which moved on 2026-08-11 ──────────────────────
+//
+// KAN-272 left the authorised reversal unspent and asserted that here:
+//
+//     'jira.ts still has no write method — the authorised reversal is unspent
+//      here', !/\b(method|Method)\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/…
+//
+// KAN-291 is the ticket that spends it, so that assertion had to be replaced.
+// **Worth recording before it is deleted: when the write landed, it did not go
+// red.** `jira.ts` now POSTs, and the old regex still passed — it looked for
+// the literal spelling `method: 'POST'`, and the write arrived as
+// `this.request('POST', …)` behind a `method: 'GET' | 'POST'` union, which that
+// pattern does not match. It was a check on one spelling of a write, not on the
+// presence of one, and had this ticket relied on it to notice a widening it
+// would have been told everything was fine.
+//
+// So its replacement does not ask whether a write *exists* — one does, on
+// purpose. It asserts the shape of the boundary that now holds: **POST and
+// nothing else**, with the verbs that would let an agent destroy or overwrite
+// still absent from this file entirely.
 const jiraSrc = fs.readFileSync(path.join(daemonDir, 'src', 'jira.ts'), 'utf8');
+const forbiddenVerbs = ["'PUT'", "'PATCH'", "'DELETE'", '"PUT"', '"PATCH"', '"DELETE"'].filter((verb) =>
+  jiraSrc.includes(verb)
+);
 check(
-  'jira.ts still has no write method — the authorised reversal is unspent here',
-  !/\b(method|Method)\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/.test(jiraSrc) &&
-    !/method:\s*['"]POST['"]/.test(jiraSrc),
-  'a write reached the transport: KAN-272 says the two halves land separately'
+  'jira.ts has no PUT, PATCH or DELETE — the write is a POST or it is nothing',
+  forbiddenVerbs.length === 0,
+  `found ${JSON.stringify(forbiddenVerbs)}: an overwrite or a deletion reached the transport, ` +
+    'which is a widening well past the one transition KAN-291 authorises'
+);
+check(
+  'the write reaches Atlassian only through a body the caller did not supply',
+  /JSON\.stringify\(requestBody/.test(jiraSrc) && !/JSON\.parse\([^)]*args/.test(jiraSrc),
+  'the transport serialises an object built by the operation table; a pre-serialised string ' +
+    'or a body assembled from arguments would put the grant back in the caller\'s hands'
+);
+// And the property the old assertion was reaching for, checked where it can
+// actually be read: the daemon's own domain operations are still reads. The
+// poller and the reconciler must not have quietly gained the ability to write
+// on the daemon's own account — only the proxy writes, and only when asked.
+check(
+  'only the proxy writes — no domain method on the client posts',
+  (jiraSrc.match(/this\.transport\.post\(/g) ?? []).length === 1,
+  'more than one call site posts: ' +
+    JSON.stringify(jiraSrc.match(/.*this\.transport\.post\(.*/g)) +
+    ' — the daemon is meant to write only what an agent asked it to'
 );
 
 // ── verdict ────────────────────────────────────────────────────────────────
@@ -347,8 +415,10 @@ console.log(
   `\n${
     failures
       ? `FAILED — ${failures} check(s)`
-      : 'OK — off by default, the instrument that says so was shown to say yes as well, ' +
-        'and the grant is three GETs under read:jira-work with no path an agent can name'
+      : 'OK — off by default, the instrument that says so was shown to say yes as well, and ' +
+        `jira-read is ${operationsFor('jira-read').length} GETs under ` +
+        `${grantedScopes('jira-read').join(', ')} with no path an agent can name. The write ` +
+        'mode is verify-atlassian-proxy-write-scope.mjs\'s to police.'
   }\n`
 );
 process.exit(failures ? 1 : 0);
