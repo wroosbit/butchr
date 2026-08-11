@@ -9,6 +9,9 @@
 // defect wearing KAN-252's clothes. It has exactly two routes in, and each is
 // closed by the product rather than by a comment:
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 //   1. **The probe's own carrier writes the token.** A send that fell back to
 //      the composer would TYPE the token into the pane the probe then reads, and
 //      the run would report leg 5 proved having proved nothing but that the

@@ -11,6 +11,9 @@
 // runtime from the one actually serving, and a refusal that says "could not
 // connect" without the figures or the leg that refused.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // ── THE POSITIVE CONTROL, AND WHY THIS SCRIPT IS BUILT AROUND ONE ───────────
 //
 // "No connection was attempted" is an assertion about an absence, and an

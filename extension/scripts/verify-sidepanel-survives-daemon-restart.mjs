@@ -8,6 +8,9 @@
 // is attached to no longer exists. A refusal is only an improvement if the
 // client acts on it.
 //
+// CI-RUNNABLE: no — needs a real daemon, herdr and a loaded extension side
+// panel driving it.
+//
 // The daemon now refuses a PTY request naming a session it does not hold. A
 // refusal is only an improvement if the panel does something sensible with it,
 // so this drives the path end to end and prints both halves of the evidence:

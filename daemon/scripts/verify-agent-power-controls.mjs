@@ -7,6 +7,9 @@
 // control firing without first showing the human whose uncommitted work it is
 // about to end.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Eight sections, one per thing the ticket asked to be decided:
 //
 //   1. off            — the message the page sends, and the agent gone from the census

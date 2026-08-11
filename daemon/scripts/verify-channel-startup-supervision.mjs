@@ -6,6 +6,9 @@
 // will never reach its prompt. There are five separate ways to arrive there and
 // this exercises all of them, because each fails silently in production:
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 //   1. **A stale connection read as readiness.** A re-activated agent's PREVIOUS
 //      MCP server is still in KAN-243's identity map when the new pane spawns —
 //      socket close is not ordered against a fresh connect (agent-connections.ts,

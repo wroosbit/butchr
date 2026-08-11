@@ -6,6 +6,9 @@
 // verify-agent-power-controls; a stub cannot show that a pane actually closed,
 // and this is the half that `herdr agent list` is able to contradict.
 //
+// CI-RUNNABLE: no — starts a real daemon from a built dist and needs herdr to
+// spawn the fleet whose runtime it switches.
+//
 // verify-agent-power-controls.mjs proves the decisions — the confirmation, the
 // candidate list, the refusal, the ordering — against a stubbed herdr, which is
 // what makes it fast and deterministic. It cannot prove that a pane actually

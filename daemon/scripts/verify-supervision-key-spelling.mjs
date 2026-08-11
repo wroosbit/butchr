@@ -11,6 +11,9 @@
 // supervisor's pane still sending the pane spelling. §5 is the section that
 // would catch that one, and it is the section this ticket did not know it needed.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // READ THIS BEFORE CITING THIS SCRIPT: THE TICKET'S PREMISE WAS WRONG
 //
 // KAN-229 says the `?? key` fallback puts a lower-cased key into a delivered

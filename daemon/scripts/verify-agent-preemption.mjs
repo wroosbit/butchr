@@ -9,6 +9,9 @@
 // reached by a new route. It also catches the reverse: an equal-priority
 // activation being *offered* a victim it is not entitled to.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Reworked for KAN-57. When KAN-37 was written, `story` was a charged worker
 // type and the natural demonstration of preemption; KAN-46/KAN-52 then made
 // epic and story uncharged supervisors, and KAN-57 made the gate honour that —

@@ -9,6 +9,9 @@
 // deliberate feature-branch checkout. Every case below is a real clone damaged
 // one way at a time, and every one asserts the verdict it must produce.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Every case is manufactured against a *real* clone of this repository with a
 // real `origin`, not a mock: the repo under test is cloned to a temp directory,
 // then deliberately damaged one way at a time. Nothing touches the live install

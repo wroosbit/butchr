@@ -9,6 +9,9 @@
 // resolved and assembled by the same paths Atlassian's are, the extraction did
 // not happen.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The claim being tested is the architectural one. Before this ticket, adding
 // a workspace type meant editing `registerDefaults()` inside the registry, and
 // adding an MCP server meant editing a hardcoded if-chain in launchers.ts that

@@ -10,6 +10,9 @@
 // rather than as switched off, or an upgrade silently disabling an install
 // that already had a working credential.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Six sections:
 //
 //   1. default        — a fresh install with no credential comes up disabled,

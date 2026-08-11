@@ -7,6 +7,9 @@
 // going the other way: an empty board or a missing herdr becoming an error
 // instead of an empty list.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The live proof for that is on the ticket: a real daemon restart with real
 // agents. What a live run *cannot* show is the two edge cases, because this
 // machine always has agents and always has a herdr. Those are covered here by
