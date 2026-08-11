@@ -37,8 +37,10 @@ import type { ChannelLivenessState } from './channel-liveness.js';
 import { licenceFor, sealClaims } from './message-claims.js';
 import {
   operationByTool,
+  ProxyCaller,
   proxyReport,
   refuseProxyCall,
+  refuseWriteOutsideCaller,
   selectedProxyMode
 } from './atlassian-proxy.js';
 import { renderedKey } from './keys.js';
@@ -3153,10 +3155,20 @@ export class MessageRouter {
   private async handleAtlassianProxyCall(data: any, respond: Respond) {
     const tool = typeof data?.tool === 'string' ? data.tool : '';
     const args = data?.args && typeof data.args === 'object' ? data.args : {};
-    const caller =
-      typeof data?.workspaceType === 'string' && typeof data?.workspaceKey === 'string'
-        ? `${data.workspaceType}/${renderedKey(data.workspaceKey)}`
-        : 'unidentified caller';
+    // The claimed identity, kept structured as well as rendered: the audit line
+    // wants the rendering and `refuseWriteOutsideCaller` wants the fields. Both
+    // are claims — see the docblock above on what attribution is worth here, and
+    // note that a write policy built on it bounds accident and not malice.
+    const callerIdentity: ProxyCaller | null =
+      typeof data?.workspaceType === 'string' &&
+      typeof data?.workspaceKey === 'string' &&
+      data.workspaceType &&
+      data.workspaceKey
+        ? { type: data.workspaceType, key: renderedKey(data.workspaceKey) }
+        : null;
+    const caller = callerIdentity
+      ? `${callerIdentity.type}/${callerIdentity.key}`
+      : 'unidentified caller';
 
     const fail = (error: string, extra: Record<string, unknown> = {}) => {
       console.log(`atlassian-proxy: ${caller} → ${tool || '(no tool)'} REFUSED — ${error.split('.')[0]}`);
@@ -3184,8 +3196,22 @@ export class MessageRouter {
       return;
     }
 
+    // KAN-291: who may be written to, checked before anything is sent. It runs
+    // after `build` so that a malformed key is reported as a malformed key
+    // rather than as somebody else's ticket, and it returns null for every read
+    // — the table's `writesTo` is what says which is which, so a write added
+    // without one cannot slip past this line by being new.
+    const writeRefusal = refuseWriteOutsideCaller(operation, args, callerIdentity);
+    if (writeRefusal) {
+      fail(writeRefusal.error, { reason: writeRefusal.reason, mode: decision.mode });
+      return;
+    }
+
     const startedAt = Date.now();
-    const outcome = await this.jira.proxyRead(built.path);
+    const outcome =
+      operation.method === 'GET'
+        ? await this.jira.proxyRead(built.path)
+        : await this.jira.proxyWrite(built.path, 'body' in built ? built.body : undefined);
     const elapsed = Date.now() - startedAt;
 
     // THE AUDIT LINE. A path, never a credential — auth travels in a header and
@@ -3194,8 +3220,21 @@ export class MessageRouter {
     // construction. Logged for refusals and successes alike: a log that records
     // only what worked cannot answer "what has this credential been used for",
     // which is the question an audit line exists for.
+    //
+    // KAN-291 ADDS THE BODY, AND FOR A WRITE THAT IS THE WHOLE POINT OF THE
+    // LINE. A path answers "what was read"; for a write it answers only "which
+    // issue", and "which issue was changed" without "changed to what" is not an
+    // audit record of a change. It is safe to log by construction rather than by
+    // filtering: the body is built by the operation table from arguments matched
+    // against a regex, so for the one write that exists it is exactly
+    // `{"transition":{"id":"31"}}` and can carry nothing an agent supplied
+    // beyond those digits. That property is asserted in
+    // `verify-atlassian-proxy-write-scope.mjs`; if a later slice adds a write
+    // whose body carries user content, this line is one of the places that has
+    // to be reconsidered rather than inherited.
+    const bodyForLog = 'body' in built && built.body !== undefined ? ` ${JSON.stringify(built.body)}` : '';
     console.log(
-      `atlassian-proxy: ${caller} → ${tool} ${operation.method} ${built.path} → ` +
+      `atlassian-proxy: ${caller} → ${tool} ${operation.method} ${built.path}${bodyForLog} → ` +
         (outcome.ok
           ? `${outcome.status} (${elapsed}ms)`
           : `FAILED${outcome.status ? ` ${outcome.status}` : ''} (${elapsed}ms) ` +

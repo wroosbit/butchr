@@ -141,10 +141,19 @@ every other agent. **A credential is referenced by path, never echoed.**
   un-written, and a quiet leak is worse than a loud one.
 
 *Credentials stop at the daemon* is one of KAN-39's invariants, and the daemon
-enforces its half in code — no write scope, scrubbed logs, storage disclosed
-before the token is typed. Your transcript is the leg nothing enforces: it is
-how a credential gets past that boundary without anybody writing a line of
-code.
+enforces its half in code — scrubbed logs, storage disclosed before the token is
+typed, and nothing token-derived in any message, log or response. Your
+transcript is the leg nothing enforces: it is how a credential gets past that
+boundary without anybody writing a line of code.
+
+This paragraph read *"no write scope, scrubbed logs, …"* until 2026-08-11, and
+that clause is gone rather than softened: KAN-291 gave the daemon one Jira
+**write** — a status transition, behind a proxy mode that is off by default,
+restricted to the calling agent's own ticket. **The invariant it belonged to is
+untouched by that.** *Credentials stop at the daemon* is about a secret not
+travelling back out, and no write path moves it; what changed is what the
+credential is permitted to do at the far end, which was never what this
+paragraph was promising you.
 
 ## 📩 Whose voice is this? Reading provenance on what arrives
 

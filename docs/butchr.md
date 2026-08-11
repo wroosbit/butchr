@@ -380,15 +380,25 @@ The lookup needs read access to Jira, which the daemon did not previously have.
 The user supplies an **Atlassian API token** (site URL + account email + token)
 on the extension's **Settings** page. Design constraints, all deliberate:
 
-- **Read-only, two operations.** `daemon/src/jira.ts` can fetch an issue's type,
-  read an issue's status/comment-ids/links for the poller (widened by the
-  human's KAN-75 decision on 2026-08-03 — see [When a ticket changes and its
-  agent is mid-turn](#-when-a-ticket-changes-and-its-agent-is-mid-turn)), and
-  validate a credential. Both reads fit inside the same `read:jira-work` scope
-  the settings page has always asked for, so the widening costs the user nothing
-  to grant. There are **no write methods**, and none should be added: agents
-  already hold their own scoped interactive auth for writes. Prefer a **scoped**
-  token limited to `read:jira-work` over a classic full-permission one.
+- **Reads, plus exactly one write since KAN-291.** `daemon/src/jira.ts` can
+  fetch an issue's type, read an issue's status/comment-ids/links for the poller
+  (widened by the human's KAN-75 decision on 2026-08-03 — see [When a ticket
+  changes and its agent is
+  mid-turn](#-when-a-ticket-changes-and-its-agent-is-mid-turn)), search the
+  board, proxy a read for an agent, and validate a credential. All of those fit
+  inside the same `read:jira-work` scope the settings page has always asked for,
+  so no *read* widening has ever cost the user anything to grant.
+
+  This bullet used to end **"There are no write methods, and none should be
+  added: agents already hold their own scoped interactive auth for writes."**
+  That rule was reversed by the human on 2026-08-11, twice and explicitly, and
+  its own justification named the condition that changed — the interactive auth
+  is exactly what is being removed. `daemon/src/jira.ts` now has **one** write,
+  a POST used only by the proxy's `atlassian_transition_issue`, behind a proxy
+  mode that is off by default and needing `write:jira-work` — the first scope
+  this has ever cost the user anything to grant. Prefer a **scoped** token over
+  a classic full-permission one, limited to `read:jira-work` unless you intend
+  to enable the write proxy.
 - **The token travels user → settings UI → daemon and stops.** The daemon
   stores it in the OS keyring where one is available (libsecret / `secret-tool`,
   secret passed on stdin, never argv), otherwise in a `0600` file. The

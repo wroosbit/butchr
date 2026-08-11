@@ -5,8 +5,9 @@ import {
   StorageTarget
 } from './credentials.js';
 
-// A minimal, strictly read-only Jira client, and the seam that lets its auth
-// be replaced later without touching anything that calls it.
+// A minimal Jira client — three domain reads, one proxied read, one proxied
+// write — and the seam that lets its auth be replaced later without touching
+// anything that calls it.
 //
 // WHAT THIS IS ALLOWED TO READ, AND WHY THAT CHANGED
 //
@@ -60,24 +61,59 @@ import {
 //
 // Plus the credential-validation read the settings UI needs. All four
 // operations fit inside the same `read:jira-work` scope the settings page has
-// always asked for, so no widening has ever cost the user anything to grant.
+// always asked for, so no read widening has ever cost the user anything to
+// grant.
 //
-// THE RULE THAT DID NOT CHANGE
+//   5. "what did an agent ask to WRITE?" — {@link JiraClient.proxyWrite}, the
+//      transport half of the daemon-side Atlassian write path (KAN-291).
 //
-// There are deliberately no write methods. Not "not yet": an unused write
-// method is an argument for a wider credential scope waiting to happen, and
-// writes already belong to agents, which hold their own scoped interactive
-// auth. (KAN-20, unchanged by KAN-75.) Nothing here posts a comment, moves a
-// status, or edits a field, and a poller that discovers news reports it by
-// typing at a terminal rather than by writing to Jira.
+// THE RULE THAT CHANGED, WHAT REPLACED IT, AND WHY
 //
-// KAN-272 carries a human decision, taken on 2026-08-11 with the reasoning
-// against it in front of them, reversing KAN-39's invariant 2 and authorising
-// the daemon to hold Jira **write** scope. **That authorisation is not spent
-// here.** This file gained a proxy for reads it could already do and not one
-// write method, so the rule above is unchanged in fact and not merely in
-// wording — and the reversal, when it is built, arrives as its own change that
-// can be reviewed and reverted without taking the proxy with it.
+// This heading read THE RULE THAT DID NOT CHANGE until 2026-08-11, and under it:
+//
+//     There are deliberately no write methods. Not "not yet": an unused write
+//     method is an argument for a wider credential scope waiting to happen, and
+//     writes already belong to agents, which hold their own scoped interactive
+//     auth. (KAN-20, unchanged by KAN-75.)
+//
+// **That rule was right, and the premise it rested on is gone.** Its own
+// justification names the condition: *writes already belong to agents, which
+// hold their own scoped interactive auth*. The interactive auth is precisely
+// what the human instructed be removed — the per-agent `mcp-remote` OAuth
+// session whose expiry took the fleet's Jira down for twelve hours on
+// 2026-08-10 — so the sentence "writes already belong to agents" stops being
+// true of the arrangement being built, and a rule whose premise has been
+// deleted is not a rule that survives by being restated. KAN-272 carried the
+// human's reversal of KAN-39's invariant 2 and deliberately left it unspent;
+// KAN-291 is the change that spends it. Leaving the old text in place would
+// have been the worse outcome of the two available: a header asserting a rule
+// the code no longer follows is read as a description and used as a licence,
+// and this board has already been bitten by a stale derivation.
+//
+// WHAT IS TRUE NOW, WHICH IS NARROWER THAN "THERE ARE WRITE METHODS"
+//
+//   - **One** write method, {@link JiraClient.proxyWrite}, and it is a POST.
+//     There is no PUT, no PATCH and no DELETE anywhere in this file, and the
+//     operations that would need them are KAN-293's to add deliberately.
+//   - It is **the same shape as `proxyRead` and for the same reason**: it takes
+//     a path and a body rather than a domain question, because it has no domain
+//     question of its own. Neither comes from an agent. `atlassian-proxy.ts`
+//     holds a fixed table whose entries build the whole path *and the whole
+//     body* from arguments matched against a regex; there is no operation
+//     anywhere that takes a path, a URL, a REST fragment or a JSON body from a
+//     caller. **Read that table, not this method, to know what the credential
+//     can write.**
+//   - Nothing else in this file writes. The poller still reports news by typing
+//     at a terminal rather than by writing to Jira, and the reconciler still
+//     only reads the board. The daemon has not acquired opinions it expresses
+//     into Jira on its own account — every write here is one an agent asked for
+//     and is attributed to it in the audit line `router.ts` emits.
+//   - **The scope is no longer free.** Items 1 to 4 fit inside `read:jira-work`,
+//     which is why no previous widening cost the user anything to grant. A
+//     transition needs `write:jira-work`. That is a genuine new cost to the
+//     person who mints the token, the settings page now says so before they
+//     type one, and it is the reason the write lives behind its own proxy mode
+//     which is off unless an operator sets it.
 
 /** How long a lookup may take, end to end, before the caller gives up. */
 export const LOOKUP_TIMEOUT_MS = 2000;
@@ -231,6 +267,23 @@ export interface JiraTransport {
    * is a conforming but useless one.
    */
   get(path: string, signal: AbortSignal): Promise<JiraResponse>;
+  /**
+   * POST a Jira REST path with a JSON body (KAN-291).
+   *
+   * Same contract as {@link get} in every respect that matters — reject rather
+   * than resolve on transport failure, never let a credential reach the
+   * rejection value, always report legs — and one addition: **the body is
+   * serialised by the implementation, from an object the caller built**. An
+   * implementation that took a pre-serialised string would let a caller
+   * assemble JSON, and assembling JSON is how a caller ends up able to send a
+   * field nobody meant to grant.
+   *
+   * On this interface rather than on a separate one because the alternative was
+   * a `WritableJiraTransport` that every implementation would implement anyway:
+   * the auth, the cloud-ID resolution and the gateway/site fallback are the
+   * whole of what a transport is, and they are identical for both verbs.
+   */
+  post(path: string, body: unknown, signal: AbortSignal): Promise<JiraResponse>;
   /** Non-secret description, safe for logs. */
   describe(): string;
 }
@@ -334,8 +387,10 @@ function describeLeg(leg: JiraLegResult): string {
  * Which base URL to use is not a free choice. Atlassian's newer *scoped* API
  * tokens are only accepted through the gateway at
  * `api.atlassian.com/ex/jira/{cloudId}`; classic full-permission tokens work
- * against the site host directly. Butchr asks for a scoped, read-only token
- * (`read:jira-work`), so the gateway is the primary path — but a user who
+ * against the site host directly. Butchr asks for a scoped token — 
+ * `read:jira-work`, plus `write:jira-work` only if the operator intends to
+ * enable the write proxy (KAN-291) — so the gateway is the primary path. But a
+ * user who
  * pastes a classic token should not get a mystifying failure, so a 401/403
  * from the gateway retries once against the site host, inside the same
  * deadline.
@@ -464,7 +519,13 @@ export class TokenJiraTransport implements JiraTransport {
   private async attempt(
     leg: 'gateway' | 'site',
     base: string,
+    method: 'GET' | 'POST',
     path: string,
+    // `requestBody`, not `body`: the response body is destructured under that
+    // name a few lines down, and two different bodies sharing one identifier in
+    // one method is precisely the sort of thing that reads fine and sends the
+    // wrong one.
+    requestBody: unknown,
     signal: AbortSignal
   ): Promise<{ status?: number; body: any; leg: JiraLegResult }> {
     // The path is what identifies the endpoint; auth travels in a header, so
@@ -474,11 +535,18 @@ export class TokenJiraTransport implements JiraTransport {
     let res: Response;
     try {
       res = await fetch(endpoint, {
-        method: 'GET',
+        method,
         headers: {
           Authorization: this.authHeader,
-          Accept: 'application/json'
+          Accept: 'application/json',
+          // Only on a request that has one. Sending `Content-Type` on a GET is
+          // harmless but says something untrue about the request, and this
+          // file's whole argument is that a thing which says more than it does
+          // is the defect.
+          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {})
         },
+        // Serialised here rather than by the caller — see `JiraTransport.post`.
+        ...(method === 'POST' ? { body: JSON.stringify(requestBody ?? {}) } : {}),
         signal
       });
     } catch (err: any) {
@@ -505,6 +573,27 @@ export class TokenJiraTransport implements JiraTransport {
   }
 
   public async get(path: string, signal: AbortSignal): Promise<JiraResponse> {
+    return this.request('GET', path, undefined, signal);
+  }
+
+  /**
+   * The write half (KAN-291). Identical routing to {@link get}, deliberately.
+   *
+   * A separate path for writes — skipping the gateway, say, or not falling back
+   * to the site host — would mean a write could succeed where a read failed or
+   * the reverse, and the fleet would have two different answers to "is Atlassian
+   * reachable". One router, both verbs.
+   */
+  public async post(path: string, body: unknown, signal: AbortSignal): Promise<JiraResponse> {
+    return this.request('POST', path, body, signal);
+  }
+
+  private async request(
+    method: 'GET' | 'POST',
+    path: string,
+    body: unknown,
+    signal: AbortSignal
+  ): Promise<JiraResponse> {
     const legs: JiraLegResult[] = [];
     const cloudId = await this.resolveCloudId(signal);
     if (this.cloudIdLeg) legs.push(this.cloudIdLeg);
@@ -513,7 +602,9 @@ export class TokenJiraTransport implements JiraTransport {
       const viaGateway = await this.attempt(
         'gateway',
         `${this.gatewayOrigin}/ex/jira/${cloudId}`,
+        method,
         path,
+        body,
         signal
       );
       legs.push(viaGateway.leg);
@@ -526,7 +617,7 @@ export class TokenJiraTransport implements JiraTransport {
       // Either way both legs end up in the record, which is the point.
     }
 
-    const viaSite = await this.attempt('site', this.cred.siteUrl, path, signal);
+    const viaSite = await this.attempt('site', this.cred.siteUrl, method, path, body, signal);
     legs.push(viaSite.leg);
     if (viaSite.status === undefined) {
       throw new JiraRequestError(
@@ -873,7 +964,13 @@ export const BOARD_MAX_RESULTS = 100;
 const SEARCH_PATH = '/rest/api/3/search/jql';
 
 /**
- * The read-only Jira client. Three domain operations, plus validation.
+ * The Jira client. Three domain reads, validation, and — since KAN-291 — one
+ * proxied read and one proxied write.
+ *
+ * It stopped being "the read-only Jira client" on 2026-08-11; see the module
+ * header for what replaced that rule and why the premise it rested on is gone.
+ * The write is a single POST made on an agent's behalf and never on the
+ * daemon's own account.
  */
 export class JiraClient {
   constructor(private transport: JiraTransport) {}
@@ -962,6 +1059,92 @@ export class JiraClient {
    */
   public async proxyRead(path: string, signal: AbortSignal): Promise<JiraResponse> {
     return this.transport.get(path, signal);
+  }
+
+  /**
+   * Perform one write on behalf of an agent (KAN-291).
+   *
+   * Everything the docblock above says about `proxyRead` applies unchanged —
+   * why it takes a path when nothing else here does, and why it does not throw
+   * on a non-200 — and the body is subject to the same rule as the path: it
+   * comes from `atlassian-proxy.ts`'s table, built there from validated
+   * arguments, never forwarded from a request.
+   *
+   * ONE THING IS DIFFERENT, AND IT IS THE 204.
+   *
+   * Jira answers a successful transition with **204 No Content**. So for this
+   * one operation an empty body is the *success* shape, which sits awkwardly
+   * beside `JiraProxyOutcome`'s promise that there is no success shape carrying
+   * an empty body. The promise is kept where it matters: what that sentence
+   * exists to forbid is an empty answer that cannot be told apart from a failed
+   * one, and the status distinguishes these completely — a 204 is Jira saying
+   * it did the thing, and every failure carries a status and a leg. The
+   * distinction is asserted rather than assumed: see the write section of
+   * `verify-atlassian-proxy-write-scope.mjs`.
+   */
+  public async proxyWrite(path: string, body: unknown, signal: AbortSignal): Promise<JiraResponse> {
+    return this.transport.post(path, body, signal);
+  }
+
+  /**
+   * Is this credential still accepted at all? One cheap authenticated read.
+   *
+   * WHY THIS EXISTS — a defect found by KAN-291's probe, in KAN-272's code, on
+   * the **read** path as much as the write one.
+   *
+   * A revoked token against `/rest/api/3/issue/KAN-291` produces
+   * `cloud-id=200 gateway=401 site=404`, because Jira answers **404, not 401**,
+   * for an issue the caller cannot see — it will not tell an unauthenticated
+   * stranger that an issue exists. The final status is therefore 404, and
+   * {@link explainProxyFailure} reads a 404 as a query fault and tells the agent
+   * *"The daemon's credential worked; the issue does not exist."* Every word of
+   * that is wrong, and it is precisely the confident misdiagnosis this file was
+   * written to end: the fleet's credential is dead, every agent is about to hit
+   * it, and each one is being told it mistyped an issue key.
+   *
+   * WHY A PROBE RATHER THAN JUST BELIEVING THE 401 LEG. Because a **classic**
+   * API token legitimately 401s at the gateway and succeeds at the site host —
+   * that fallback is the whole reason `attempt` tries both — so a genuinely
+   * missing issue *also* reads `gateway=401 site=404`. Treating any 401 leg as a
+   * dead credential would send a human to rotate a perfectly good token every
+   * time an agent mistyped a key, which is the same class of confident error
+   * pointing the other way. Only asking the credential a question it can answer
+   * separates them.
+   *
+   * WHY `IDENTITY_PROBE` AND NOT `WORK_PROBE`, WHICH IS WHAT VALIDATION USES
+   * AND WHAT WAS TRIED FIRST. `WORK_PROBE` — `/rest/api/3/project/search` — is
+   * **readable anonymously** on a site that permits anonymous browsing, and
+   * wroosbit.atlassian.net is one. Measured 2026-08-11 with a deliberately
+   * bogus token: `cloud-id=200 gateway=401 site=200`, a clean 200 for a
+   * credential that does not exist. As a liveness check it answers "yes" for
+   * every dead token, which is worse than not checking: it would have made this
+   * whole method a confident second opinion that was always wrong in the same
+   * direction. `/rest/api/3/myself` answered 401 for the same token, because it
+   * is about *who you are* and there is no anonymous answer to that.
+   *
+   * The known ambiguity, stated because `validate` documents it at length: a
+   * *scoped* token holding only `read:jira-work` is also refused by `/myself`.
+   * It does not bite here, and the reason is structural rather than lucky — a
+   * scoped token is accepted **at the gateway**, so its gateway leg succeeds and
+   * this method is never reached. Everything that arrives here already has a
+   * refused gateway leg, which means a classic token or a dead one, and a live
+   * classic token answers `/myself` with a 200.
+   *
+   * It costs one extra request, on a failure path, only when a credential-
+   * bearing leg was refused. Nothing pays for it on the happy path.
+   */
+  public async credentialStillWorks(signal: AbortSignal): Promise<'live' | 'refused' | 'unknown'> {
+    try {
+      const { status } = await this.transport.get(IDENTITY_PROBE, signal);
+      if (status === 200) return 'live';
+      if (status === 401 || status === 403) return 'refused';
+      return 'unknown';
+    } catch {
+      // A dead leg here says nothing about the credential — the network is the
+      // more likely explanation, and claiming either way would be inventing a
+      // diagnosis, which is the habit this file exists to break.
+      return 'unknown';
+    }
   }
 
   /**
@@ -1235,8 +1418,31 @@ export type JiraProxyOutcome =
  */
 function explainProxyFailure(
   status: number,
-  legs: JiraLegResult[]
+  legs: JiraLegResult[],
+  write = false
 ): { error: string; diagnosis?: JiraDiagnosis; credentialFault: boolean } {
+  // KAN-291: on a write, a 403 has one overwhelmingly likely cause that a read
+  // can never have — a credential minted with `read:jira-work` and nothing
+  // else, which is exactly what the settings page instructed every existing
+  // user to create. Saying "replace the credential" without saying *with what*
+  // would send a human to mint the same token again and meet the same 403.
+  if (status === 403 && write) {
+    const explained = explainLegs(legs.filter((leg) => leg.leg !== 'cloud-id'));
+    return {
+      error:
+        "The Butchr daemon's own Atlassian credential was refused for a WRITE (HTTP 403). It " +
+        'authenticated, so the token is live — it is not permitted to change this issue. The ' +
+        'likeliest cause by far is that the token holds read:jira-work and not write:jira-work: ' +
+        'Butchr asked for read scope only until 2026-08-11, so a credential configured before ' +
+        'then cannot write however valid it is. A human replaces it in Butchr settings with a ' +
+        'token carrying write:jira-work. The second possibility is that this Jira account may ' +
+        'not perform this transition on this issue, which no token change fixes. Nothing was ' +
+        `written. ${explained.error}`,
+      diagnosis: explained.diagnosis,
+      credentialFault: true
+    };
+  }
+
   if (status === 401 || status === 403) {
     // Only the legs that carried a credential. The cloud-ID leg is
     // unauthenticated by construction — it is the one leg that needs no token —
@@ -1647,6 +1853,39 @@ export class JiraIssueTypeService {
    * Never throws, like everything else this service exposes.
    */
   public async proxyRead(path: string): Promise<JiraProxyOutcome> {
+    return this.proxyCall('GET', path, undefined);
+  }
+
+  /**
+   * One write made on an agent's behalf — or a refusal that says whose problem
+   * it is (KAN-291).
+   *
+   * Shares {@link proxyCall} with the read for the reason this class exists at
+   * all: the "no credential" refusal, the timeout, the credential-fault
+   * distinction and the loudness guarantee are properties of *proxying*, not of
+   * a verb, and a second copy of them is a second one to get wrong. What the
+   * verb changes is the 403, which for a write is very often a credential
+   * holding read scope only — see {@link explainProxyFailure}.
+   *
+   * WHAT THIS DOES NOT DO, BECAUSE SOMEBODY WILL LOOK FOR IT HERE: it does not
+   * decide **who** may write to **what**. That is `atlassian-proxy.ts`'s
+   * `refuseWriteOutsideCaller`, applied by `router.ts` before this is reached.
+   * Putting it here would have hidden a policy question inside a transport, and
+   * this file would then have had an opinion about workspace identity, which is
+   * a thing it has never needed to know.
+   *
+   * Never throws, like everything else this service exposes.
+   */
+  public async proxyWrite(path: string, body: unknown): Promise<JiraProxyOutcome> {
+    return this.proxyCall('POST', path, body);
+  }
+
+  private async proxyCall(
+    method: 'GET' | 'POST',
+    path: string,
+    body: unknown
+  ): Promise<JiraProxyOutcome> {
+    const write = method !== 'GET';
     const transport = await this.getTransport();
     if (!transport) {
       // Distinct from every other refusal, and the wording matters: an agent
@@ -1657,21 +1896,71 @@ export class JiraIssueTypeService {
         ok: false,
         credentialFault: true,
         error:
-          'The Butchr daemon has no Atlassian credential configured, so it cannot make this ' +
-          'read for you. Nothing is broken and Jira is not down: a human configures one in ' +
-          "Butchr's settings. Use this agent's own Atlassian MCP tools meanwhile."
+          `The Butchr daemon has no Atlassian credential configured, so it cannot make this ` +
+          `${write ? 'write' : 'read'} for you. Nothing is broken and Jira is not down: a ` +
+          "human configures one in Butchr's settings. Use this agent's own Atlassian MCP " +
+          'tools meanwhile.'
       };
     }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
     try {
-      const { status, body, legs } = await new JiraClient(transport).proxyRead(
-        path,
-        controller.signal
+      const client = new JiraClient(transport);
+      const { status, body: responseBody, legs } = write
+        ? await client.proxyWrite(path, body, controller.signal)
+        : await client.proxyRead(path, controller.signal);
+      // 204 included, which is how Jira reports a transition it performed. See
+      // `JiraClient.proxyWrite` on why an empty body is a success shape here and
+      // is still distinguishable from a silent failure.
+      if (status >= 200 && status < 300) return { ok: true, status, body: responseBody };
+
+      const explained = explainProxyFailure(status, legs, write);
+
+      // KAN-291. About to tell an agent that its *query* was at fault — while a
+      // credential-bearing leg was refused. That combination is exactly the
+      // revoked-token-reads-as-404 case in `credentialStillWorks`, and it is
+      // also what a classic token plus a genuinely missing issue looks like.
+      // Ask, rather than guess: the whole cost of getting this wrong is a
+      // fleet-wide outage diagnosed as one agent's typo.
+      const refusedLeg = legs.some(
+        (leg) => leg.leg !== 'cloud-id' && (leg.status === 401 || leg.status === 403)
       );
-      if (status >= 200 && status < 300) return { ok: true, status, body };
-      return { ok: false, status, legs, ...explainProxyFailure(status, legs) };
+      if (!explained.credentialFault && refusedLeg) {
+        const verdict = await client.credentialStillWorks(controller.signal);
+        if (verdict === 'refused') {
+          return {
+            ok: false,
+            status,
+            legs,
+            credentialFault: true,
+            error:
+              `Atlassian answered ${status} for this ${write ? 'write' : 'read'}, but that is ` +
+              "NOT a fault in your request: the Butchr daemon's own credential is no longer " +
+              'being accepted, confirmed by a second probe just now. Jira answers 404 rather ' +
+              'than 401 for an issue the caller may not see, so a dead credential looks exactly ' +
+              'like a missing issue — it is not. Retrying will not help and neither will ' +
+              'checking your issue key; every agent using this proxy is about to see the same ' +
+              'thing, and a human has to replace the credential in Butchr settings. ' +
+              `${write ? 'Nothing was written. ' : ''}`
+          };
+        }
+        if (verdict === 'unknown') {
+          return {
+            ok: false,
+            status,
+            legs,
+            credentialFault: false,
+            error:
+              `${explained.error} (Butchr could not confirm whether its own credential is still ` +
+              'good — the check for that did not complete — so treat this reading as less ' +
+              'certain than it sounds, and check Butchr settings if it repeats.)',
+            ...(explained.diagnosis ? { diagnosis: explained.diagnosis } : {})
+          };
+        }
+      }
+
+      return { ok: false, status, legs, ...explained };
     } catch (err: any) {
       // No leg completed — the transport rejects rather than resolves for that
       // case, carrying the legs on the error precisely so this is answerable.
@@ -1686,8 +1975,12 @@ export class JiraIssueTypeService {
         ...(legs.length ? { legs } : {}),
         ...(explained?.diagnosis ? { diagnosis: explained.diagnosis } : {}),
         error:
-          "The Butchr daemon could not reach Atlassian at all for this read. Every agent " +
-          'using this proxy is about to see the same thing. ' +
+          `The Butchr daemon could not reach Atlassian at all for this ${write ? 'write' : 'read'}.` +
+          (write
+            ? ' NOTHING WAS WRITTEN — no leg completed, so the request never reached Jira. ' +
+              'This is safe to retry once the fleet is reachable again. '
+            : ' ') +
+          'Every agent using this proxy is about to see the same thing. ' +
           // Message only, never the error object: on a fetch failure its
           // properties can include the request that produced it.
           (explained?.error ?? String(err?.message ?? 'unknown error'))

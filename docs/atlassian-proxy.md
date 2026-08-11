@@ -177,8 +177,16 @@ and it is real. Precisely:
 
 - The credential is scoped `read:jira-work` on one Atlassian account, so the
   blast radius is *everything that account can read in Jira*, restricted to the
-  three shapes in the table. It is not admin, not user-directory, not
-  Confluence, and not write.
+  three shapes in the table. It is not admin, not user-directory, and not
+  Confluence.
+- **It was "and not write" until KAN-291**, which added one write operation —
+  `atlassian_transition_issue`, a status change with no rich content — in a
+  proxy mode of its own that is off by default and needs `write:jira-work`.
+  The write's blast radius is bounded a second time and differently: **an agent
+  may transition only its own ticket**, so the radius is not "every issue that
+  account can change" but "the one issue the caller is named for". That
+  restriction bounds accident and is *not* authentication, for the reason the
+  next bullet gives about attribution — the two are the same limitation.
 - **Attribution is not authentication.** Every proxied call is logged with the
   caller's workspace type and key, stamped by `mcp.ts` from its own argv. That
   makes a read attributable; it does not make it authenticated, because anything
