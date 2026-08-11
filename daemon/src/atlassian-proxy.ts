@@ -90,12 +90,22 @@ import { JIRA_KEY } from './keys.js';
  *
  * **Confluence is new surface for this daemon**, which made one question worth
  * answering by call rather than assumption: the credential does reach
- * Confluence — all eight reads returned 200 against real content. It reaches it
- * because a **classic** API token carries the account's own permissions across
- * every product on the site rather than a list of OAuth scopes. The
- * `read:confluence-*` scopes named in the table are therefore what these
- * operations would need *if* the credential were ever swapped for a scoped one;
- * they are an honest enumeration, not a record of grants anybody made.
+ * Confluence — all eight reads returned 200 against real content, including
+ * three design docs of 51 KB, 19 KB and 64 KB read through this proxy. It
+ * reaches it because a **classic** API token carries the account's own
+ * permissions across every product on the site rather than a list of OAuth
+ * scopes. The `read:confluence-*` scopes named in the table are therefore what
+ * these operations would need *if* the credential were ever swapped for a
+ * scoped one; they are an honest enumeration, not a record of grants anybody
+ * made.
+ *
+ * **So the reads themselves are the evidence for the scope, and they are better
+ * evidence than a scope listing would be** — `epic/KAN-39`'s framing at review
+ * of #127, recorded here rather than left in a ticket comment. A listing states
+ * what a credential is *said* to hold; a 200 against a real page is the scope
+ * actually exercised. That distinction is the same one this module makes about
+ * tool presence a few paragraphs down, and it fails the same way: what looks
+ * fine is the *declaration*, and only a call establishes the other thing.
  *
  * ## Off by default, and read per call rather than once
  *
