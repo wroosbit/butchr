@@ -1,4 +1,5 @@
 import { JiraBoardIssue, JiraBoardOutcome, BOARD_MAX_RESULTS } from './jira.js';
+
 import { agentNameFor } from './herdr.js';
 import {
   workspaceTypeForJiraIssueTypeStrict,
@@ -211,6 +212,78 @@ import {
  * the fix is that the board must be true, not that the loop should tolerate a
  * board that is not. Report-only is how you find out which it is before it
  * costs somebody their context.
+ *
+ * THE PARTITION IS CORRECT AND THE REPORTING WAS WRONG (KAN-256, 2026-08-10)
+ *
+ * The paragraph above describes a defect and stops there, and it stopped there
+ * for two more occurrences. `assignee = currentUser()` was asked, explicitly,
+ * whether it is the right partition at all. **It is, and it stays** —
+ *
+ *   - It is the only field that is *structurally* tied to the account this
+ *     daemon authenticates as. A label, a component or a custom field would
+ *     partition the board just as well right up to the moment two machines
+ *     disagreed about who owns a ticket, and none of them can be compared
+ *     against `currentUser()` by a query — the daemon would have to be told its
+ *     own identity by configuration, which is a second store of exactly the kind
+ *     this design refuses.
+ *   - **Every candidate replacement has the same failure.** The defect is not
+ *     that `assignee` can be emptied; it is that emptying it was *silent*. A
+ *     label can be removed by a routine edit too, and a fix that swapped fields
+ *     would have moved the defect rather than closed it while looking finished.
+ *   - Dropping the condition is not available: without it this machine's fleet
+ *     converges toward every ticket on the account, including other machines'.
+ *
+ * So nothing about which tickets are started or stopped changed. What changed is
+ * that **the loop no longer says anything it has not checked**. It used to print
+ * one sentence — *"the board does not have it In Progress or In Review"* — for a
+ * missing ticket whatever the cause, and that sentence is false of the case that
+ * actually recurs. See {@link BOARD_DIAGNOSTIC_JQL} for the second query,
+ * {@link explainAbsence} for the four conditions it distinguishes, and
+ * {@link findNearMisses} for the report that catches the ticket *nobody is
+ * running*, which is the occurrence no stand-down line could ever have covered.
+ *
+ * WHAT EMPTIED THE FIELD — ESTABLISHED, AND THE PART THAT CANNOT BE
+ *
+ * KAN-256 asked, and called it possibly the most valuable thing in the ticket,
+ * because *"a fix that assumes hand-editing will not survive it"*. Read off
+ * KAN-59's Jira changelog rather than reasoned about:
+ *
+ *     2026-08-10T14:08:58Z  assignee  "Wroos Bit" -> null
+ *     2026-08-10T14:09:50Z  [board] stood down epic/KAN-59       (51s later)
+ *     2026-08-10T14:10:44Z  assignee  null -> "Wroos Bit"
+ *     2026-08-10T14:10:51Z  [board] started epic/KAN-59           (7s later)
+ *
+ * **So it was a real write to the field, and the loop then did exactly what it
+ * is designed to do, twice, within a cycle each time.** Two hypotheses die
+ * here: it was not a stale search index, and it was not the reconciler. Nothing
+ * in this repository writes `assignee` at all — the field appears in `daemon/`
+ * and `extension/` only inside this query string and comments about it — so the
+ * daemon did not do it either.
+ *
+ * **Who did is not recoverable, and the reason is structural rather than a gap
+ * in the log.** Every agent reaches Jira through the human's own account, so the
+ * changelog author reads `Wroos Bit` whether the write came from a person or
+ * from any one of nine running agents. Butchr's `[authorship]` records — which
+ * *do* attribute a Jira write to a named agent — cover **comments only**, and a
+ * field edit produces none. That is a genuine hole and it is filed, not fixed
+ * here.
+ *
+ * The consequence for this file is the useful half: **the fix must not assume a
+ * cause, and this one does not.** Nothing above depends on who emptied the
+ * field, on whether it was deliberate, or on it being reverted — the loop
+ * reports the state it finds, every cycle, whoever produced it.
+ *
+ * **What is still not covered, named here because the above reads complete.**
+ * Both queries are Jira *searches*, and a search reads an index rather than the
+ * issue. If that index were ever inconsistent with the issue itself, both
+ * queries would miss a ticket together and `explainAbsence` would report
+ * `wrong-status` — narrowed to what it observed, but still not the whole truth.
+ * The `queries-disagree` branch narrows that a little: it catches the two
+ * searches disagreeing with *each other*. **It has never fired, and it is not
+ * what happened on KAN-59** — it is a branch for a case that is possible and
+ * unobserved, and it is written to say so when it fires rather than to imply it
+ * explains anything. Closing the gap properly needs an authoritative per-key GET
+ * on the stand-down candidates; that is filed rather than done.
  */
 
 /**
@@ -238,6 +311,51 @@ import { JIRA_KEY, renderedKey } from './keys.js';
  */
 export const BOARD_JQL =
   'assignee = currentUser() AND status IN ("In Progress", "In Review")';
+
+/**
+ * The diagnostic query: the *status* half of {@link BOARD_JQL}, alone.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A SECOND QUERY EXISTS, AND WHY IT IS NOT ALLOWED TO START ANYTHING
+ * ---------------------------------------------------------------------------
+ *
+ * KAN-256. {@link BOARD_JQL} has **two** conditions, and every sentence this
+ * module used to write about a missing ticket named only one of them. A ticket
+ * that satisfied the status half and failed the assignee half was reported as
+ * *"the board does not have KAN-59 In Progress or In Review"* — said of a ticket
+ * that **was** In Progress. That is not an imprecise line, it is a false one,
+ * and on 2026-08-10 it sent an operator to check a field that was correct while
+ * an entire project's supervisor sat dark.
+ *
+ * This query is how the loop can tell the difference. It asks the same status
+ * question with the partition removed, so a key that comes back from *this* and
+ * not from {@link BOARD_JQL} has failed the assignee condition specifically —
+ * and the `assignee` field on the row then says whether it is empty or somebody
+ * else's. Three distinguishable conditions where there was one sentence.
+ *
+ * **It is reporting, and it is only reporting.** Nothing in the diff is derived
+ * from it: `toStart` and `toStop` come from {@link BOARD_JQL} alone, exactly as
+ * before. That is deliberate and it is the whole safety argument for adding a
+ * second read to a loop that stands agents down —
+ *
+ *   - **A ticket this query returns is not this fleet's business.** It is In
+ *     Progress on somebody's board, and the partition is what says whose. See
+ *     the decision recorded in {@link BOARD_JQL}'s own comment: the partition is
+ *     correct, and it was the reporting that was wrong.
+ *   - **So it cannot widen jurisdiction, and it cannot cause a stand-down.** A
+ *     second query that fed the diff would be a second store of desired state,
+ *     which is the one thing this file's header says exists nowhere.
+ *   - **And its failure costs nothing.** A diagnostic that did not answer leaves
+ *     the loop converging exactly as it would have; what it changes is that the
+ *     log then says the reason is *undetermined* rather than asserting one. See
+ *     {@link AbsenceReason}'s `undetermined` branch — a line that names a
+ *     condition it did not check is the defect this whole change is about, and
+ *     it would be absurd to fix it by inventing a second way to do it.
+ *
+ * The cost is one search a minute against a budget the poller's own arithmetic
+ * put at roughly 25 GETs a minute, and KAN-256 sanctions it by name.
+ */
+export const BOARD_DIAGNOSTIC_JQL = 'status IN ("In Progress", "In Review")';
 
 /**
  * How long between cycles.
@@ -301,6 +419,41 @@ export interface UnresolvedIssue {
   reason: string;
 }
 
+/**
+ * Which of {@link BOARD_JQL}'s conditions a missing ticket actually failed.
+ *
+ * The point of the discriminant is that the log line can no longer be written
+ * without choosing one, and the choice is made from evidence rather than from
+ * the shape of the query. `undetermined` is a first-class member for that
+ * reason: it is what honesty looks like when the diagnostic did not answer, and
+ * a version of this type without it would push the caller straight back into
+ * asserting the condition it happens to know how to spell.
+ */
+export type AbsenceCondition =
+  | 'wrong-status'
+  | 'no-assignee'
+  | 'assigned-elsewhere'
+  | 'queries-disagree'
+  | 'undetermined';
+
+/** An attributed absence: the condition, and the sentence that states it. */
+export interface AbsenceReason {
+  condition: AbsenceCondition;
+  /** The status the diagnostic saw, where it saw the issue at all. */
+  statusName: string | null;
+  /** Display name of whoever holds it, on `assigned-elsewhere` only. */
+  assignee: string | null;
+  /** The clause the log prints after the key. Never claims an unchecked fact. */
+  detail: string;
+}
+
+/** A ticket In Progress or In Review with nobody in the assignee field. */
+export interface BoardNearMiss {
+  key: string;
+  statusName: string | null;
+  issueTypeName: string | null;
+}
+
 /** Desired against running, with everything the loop deliberately left alone. */
 export interface BoardDiff {
   /** Every issue the board wants, resolved to an agent. */
@@ -349,6 +502,22 @@ export interface BoardCycle {
   stopped: Array<{ agent: RunningAgent; outcome: DeactivateOutcome }>;
   /** True only when the loop was in `converge` and had something to act on. */
   converged: boolean;
+  /**
+   * Tickets In Progress or In Review with an empty assignee (KAN-256).
+   *
+   * **Null and empty are different answers and a proof must be able to tell
+   * them apart**: `[]` is "the diagnostic ran and there are none", `null` is
+   * "nobody looked". Collapsing them would let a cycle that never ran the query
+   * report a clean board, which is the same class of mistake as reading a failed
+   * search as an empty one.
+   */
+  nearMisses: BoardNearMiss[] | null;
+  /**
+   * Why the partitioned query did not return each stand-down target — one entry
+   * per agent in `diff.toStop`, in the same order, whether or not the loop was
+   * allowed to act on it.
+   */
+  absences: Array<{ agentName: string; key: string; reason: AbsenceReason }>;
 }
 
 export interface BoardReconcilerOptions {
@@ -364,6 +533,8 @@ export interface BoardReconcilerOptions {
   /** For the loud line on a supervisor stand-down. Reporting only. */
   isSupervisorType?: (type: string) => boolean;
   jql?: string;
+  /** The reporting-only query of {@link BOARD_DIAGNOSTIC_JQL}. */
+  diagnosticJql?: string;
   maxResults?: number;
   intervalMs?: number;
   startStaggerMs?: number;
@@ -460,6 +631,221 @@ export function computeBoardDiff(
   return { desired, toStart, toStop, unchanged, unresolved, outOfJurisdiction, protectedByUnresolved };
 }
 
+/**
+ * This machine's own Atlassian account id, learned from the board's own answer.
+ *
+ * Every row {@link BOARD_JQL} returns satisfies `assignee = currentUser()`, so
+ * any assignee it carries **is** currentUser's — the partitioned query is a
+ * self-calibrating answer to "who am I", for no extra request and no extra
+ * credential scope. That matters because the alternative was a `/myself` call,
+ * and the honest reason not to make one is that this needs the id only to
+ * *label a log line*; spending a request and a new endpoint on that would be a
+ * poor trade.
+ *
+ * Null when the query returned no rows: an empty board is a real state, and it
+ * simply means the id could not be learned this cycle. Callers must degrade
+ * rather than guess — see {@link explainAbsence}, which downgrades its own
+ * certainty in that case instead of asserting a partition it could not check.
+ */
+export function deriveAccountId(issues: JiraBoardIssue[]): string | null {
+  for (const issue of issues) {
+    if (issue.assigneeAccountId) return issue.assigneeAccountId;
+  }
+  return null;
+}
+
+/**
+ * Tickets the board has In Progress or In Review with **nobody assigned**.
+ *
+ * The near-miss report, and the half of KAN-256 that catches the failure
+ * *before* it costs anybody an agent. A stand-down reason is retrospective — it
+ * explains an agent that has already gone. This is the same defect seen from
+ * the front: a ticket in exactly this state is one the partitioned query can
+ * never return, so its agent is not merely stopped, it is **never started**, and
+ * nothing else in this daemon would ever mention it.
+ *
+ * That is occurrence 2 on KAN-256: on 2026-08-08 a supervisor moved KAN-212 to
+ * In Progress to staff it and reported that the reconciler would pick it up. It
+ * would not have. Nothing was running to be stood down, so no stand-down line
+ * would have been written however well worded — the ticket would simply have sat
+ * there. This function is what says so, once a cycle, out loud.
+ */
+export function findNearMisses(
+  diagnostic: JiraBoardIssue[],
+  projects: Set<string>
+): BoardNearMiss[] {
+  const misses: BoardNearMiss[] = [];
+  for (const issue of diagnostic) {
+    if (issue.assigneeAccountId) continue;
+    const key = issue.key.trim();
+    if (!key) continue;
+    if (!projects.has(projectOf(key))) continue;
+    misses.push({
+      key,
+      statusName: issue.statusName,
+      issueTypeName: issue.issueTypeName
+    });
+  }
+  return misses;
+}
+
+/** `KAN-256` → `KAN`. Empty for anything not shaped like a Jira key. */
+export function projectOf(key: string): string {
+  const upper = key.trim().toUpperCase();
+  if (!JIRA_KEY.test(upper)) return '';
+  return upper.slice(0, upper.lastIndexOf('-'));
+}
+
+/**
+ * The projects this fleet demonstrably works in.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE NEAR-MISS REPORT IS SCOPED AT ALL, AND HOW THE SCOPE WAS FOUND
+ * ---------------------------------------------------------------------------
+ *
+ * {@link BOARD_DIAGNOSTIC_JQL} drops the assignee condition, and an unscoped
+ * query over the whole account then returns *every* unassigned In Progress
+ * ticket anybody has, in any project. The first live run of this code against
+ * the real board returned four — all in `SAM1`, Jira's own sample project,
+ * unassigned since the day it was created and of no interest to anybody.
+ *
+ * **Unfiltered, that is four log lines a minute forever**, and a report that
+ * cries wolf 5,760 times a day is not a safety feature: it is the thing that
+ * buries the one occurrence that matters. The near-miss report exists because
+ * KAN-59's went unnoticed. Shipping it in a form that trains its reader to skim
+ * past it would have reproduced the original failure through the mechanism
+ * built to prevent it — and it would have looked finished, because the line was
+ * there and it was correct.
+ *
+ * So the scope is **projects this fleet is actually in**, from two sources
+ * unioned, and the second one is the one that matters:
+ *
+ *   - projects named by the partitioned query's own rows, and
+ *   - **projects named by the agents currently running.**
+ *
+ * The second is not redundant. Consider the case the report is *most* needed
+ * for: every ticket on the board gets unassigned at once. The partitioned query
+ * then returns nothing, so a scope derived from it alone would be empty and the
+ * report would fall silent at exactly the moment the whole fleet was about to be
+ * stood down. The running agents still name their project, so each of them gets
+ * a line saying precisely why it is about to die.
+ *
+ * When both are empty nothing is at stake — no board rows, no agents — and an
+ * empty scope reports nothing, which is correct rather than a degradation.
+ */
+export function fleetProjects(board: JiraBoardIssue[], running: RunningAgent[]): Set<string> {
+  const projects = new Set<string>();
+  for (const issue of board) {
+    const project = projectOf(issue.key);
+    if (project) projects.add(project);
+  }
+  for (const agent of running) {
+    const project = projectOf(agent.key);
+    if (project) projects.add(project);
+  }
+  return projects;
+}
+
+/**
+ * Why {@link BOARD_JQL} did not return `key` — decided from evidence.
+ *
+ * Pure, and separated from the logging on purpose: what makes the old line
+ * wrong is not its prose but that no code anywhere had established which
+ * condition failed. This is that code, and it is testable without a daemon.
+ *
+ * `diagnostic` is null when the diagnostic query was not run or did not answer,
+ * and that case returns `undetermined` rather than falling back to the old
+ * sentence. **The fallback is the bug.** A loop that says "not In Progress or In
+ * Review" whenever it has nothing better to say is exactly what produced the
+ * false line on KAN-59, and reproducing it on the failure path would leave the
+ * defect live in precisely the conditions — Jira degraded — where an operator is
+ * least able to check it by hand.
+ */
+export function explainAbsence(
+  key: string,
+  diagnostic: JiraBoardIssue[] | null,
+  accountId: string | null
+): AbsenceReason {
+  const wanted = key.trim().toUpperCase();
+
+  if (!diagnostic) {
+    return {
+      condition: 'undetermined',
+      statusName: null,
+      assignee: null,
+      detail:
+        `this daemon's partitioned board query did not return it, and the diagnostic query ` +
+        `that would say which condition it failed — wrong status, no assignee, or assigned to ` +
+        `another account — did not answer this cycle. The reason is genuinely unknown; ` +
+        `\`${BOARD_DIAGNOSTIC_JQL}\` run by hand will say which`
+    };
+  }
+
+  const row = diagnostic.find((issue) => issue.key.trim().toUpperCase() === wanted);
+
+  if (!row) {
+    // The one case in which the sentence this module used to print for
+    // everything is true. It is still narrowed to what was actually observed:
+    // a search answered, and the key was in neither result.
+    return {
+      condition: 'wrong-status',
+      statusName: null,
+      assignee: null,
+      detail:
+        `the board does not have it In Progress or In Review under any assignee — ` +
+        `it was returned by neither \`${BOARD_JQL}\` nor \`${BOARD_DIAGNOSTIC_JQL}\``
+    };
+  }
+
+  const status = row.statusName ?? 'In Progress or In Review';
+
+  if (!row.assigneeAccountId) {
+    return {
+      condition: 'no-assignee',
+      statusName: row.statusName,
+      assignee: null,
+      detail:
+        `it IS ${status} on the board, but its assignee field is empty, and this daemon's ` +
+        `query is \`${BOARD_JQL}\` — both halves. An unassigned ticket is invisible to it: ` +
+        `not started, and not restarted if its agent dies. Assign it to this machine's Jira ` +
+        `account and the next cycle will pick it up. Do not go and check the status; the ` +
+        `status is correct (KAN-256)`
+    };
+  }
+
+  if (accountId && row.assigneeAccountId === accountId) {
+    // Status right, assignee right, and the partitioned query still did not
+    // return it. Nothing about the ticket explains that, so the line must not
+    // pretend something does — the two searches disagreed, and saying so is the
+    // only honest reading available from here.
+    return {
+      condition: 'queries-disagree',
+      statusName: row.statusName,
+      assignee: row.assigneeDisplayName,
+      detail:
+        `it is ${status} AND assigned to this machine's own account, yet \`${BOARD_JQL}\` did ` +
+        `not return it while \`${BOARD_DIAGNOSTIC_JQL}\` did, seconds apart. Both conditions ` +
+        `hold, so nothing about this ticket explains its absence — the two searches disagreed ` +
+        `with each other. Suspect Jira's search index rather than the board (KAN-256)`
+    };
+  }
+
+  const who = row.assigneeDisplayName ?? row.assigneeAccountId;
+  return {
+    condition: 'assigned-elsewhere',
+    statusName: row.statusName,
+    assignee: row.assigneeDisplayName,
+    detail:
+      `it is ${status} on the board but assigned to ${who}, not to this machine's Jira ` +
+      `account, so it is not this fleet's business however it is statused` +
+      (accountId
+        ? ''
+        : ` — though note this cycle's partitioned query returned no rows, so this machine's ` +
+          `own account id could not be learned from it and "not this machine's" is inferred ` +
+          `from that absence rather than compared`)
+  };
+}
+
 /** One line describing a diff, for a log that is read at a glance. */
 export function describeBoardDiff(diff: BoardDiff): string {
   const parts = [
@@ -497,6 +883,7 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  */
 export class BoardReconciler {
   private readonly jql: string;
+  private readonly diagnosticJql: string;
   private readonly maxResults: number;
   private readonly intervalMs: number;
   private readonly startStaggerMs: number;
@@ -506,6 +893,7 @@ export class BoardReconciler {
 
   constructor(private readonly opts: BoardReconcilerOptions) {
     this.jql = opts.jql ?? BOARD_JQL;
+    this.diagnosticJql = opts.diagnosticJql ?? BOARD_DIAGNOSTIC_JQL;
     this.maxResults = opts.maxResults ?? BOARD_MAX_RESULTS;
     this.intervalMs = opts.intervalMs ?? BOARD_CYCLE_MS;
     this.startStaggerMs = opts.startStaggerMs ?? START_STAGGER_MS;
@@ -589,7 +977,9 @@ export class BoardReconciler {
       refusal: null,
       started: [],
       stopped: [],
-      converged: false
+      converged: false,
+      nearMisses: null,
+      absences: []
     };
 
     if (mode === 'off') {
@@ -637,7 +1027,49 @@ export class BoardReconciler {
 
     const diff = computeBoardDiff(outcome.issues, running);
     cycle.diff = diff;
-    this.report(diff, mode);
+
+    // ------------------------------------------------------- the diagnostic --
+    //
+    // Reporting only, and deliberately *after* the diff: nothing in here may
+    // change what is started or stopped, and running it once the diff already
+    // exists is the cheapest way to keep that true — there is no decision left
+    // for it to influence. See BOARD_DIAGNOSTIC_JQL for the argument in full.
+    //
+    // WHY THE WHOLE BLOCK IS WRAPPED, AND IT IS NOT BELT-AND-BRACES
+    //
+    // `tick()` catches, so an exception thrown anywhere in here would be caught
+    // one level up and the cycle would end **having converged nothing** — a
+    // reporting fault silently acquiring the power to stand the fleet still.
+    // That is the same trade `readDiagnostic` refuses for a failed query, and
+    // refusing it there while leaving it available to a null dereference three
+    // lines later would be a guard that only covered the failure somebody had
+    // already thought of. Reporting degrades; convergence continues.
+    let diagnostic: JiraBoardIssue[] | null = null;
+    try {
+      diagnostic = await this.readDiagnostic();
+      const accountId = deriveAccountId(outcome.issues);
+      if (diagnostic) {
+        cycle.nearMisses = findNearMisses(diagnostic, fleetProjects(outcome.issues, running));
+      }
+      for (const agent of diff.toStop) {
+        cycle.absences.push({
+          agentName: agent.agentName,
+          key: agent.key,
+          reason: explainAbsence(agent.key, diagnostic, accountId)
+        });
+      }
+    } catch (e: any) {
+      // Deliberately not a refusal: the diff above is untouched and still
+      // correct, so the loop goes on to act on it with worse log lines.
+      cycle.absences.length = 0;
+      this.opts.log(
+        `[board] the diagnostic reporting failed: ${e?.message ?? String(e)}. Convergence is ` +
+        `unaffected and proceeds on the diff already computed; stand-down lines this cycle ` +
+        `will report an undetermined reason rather than guessing one.`
+      );
+    }
+
+    this.report(diff, mode, cycle);
 
     if (mode !== 'converge') return cycle;
     if (!diff.toStop.length && !diff.toStart.length) return cycle;
@@ -654,9 +1086,14 @@ export class BoardReconciler {
         stood = { success: false, error: e?.message ?? String(e) };
       }
       cycle.stopped.push({ agent, outcome: stood });
+      // The second half of KAN-256, and the one actually read during the
+      // incident: this is the line that appears when the agent is already gone,
+      // so it is where an operator starts. It carried the same unconditional
+      // sentence as the line above and was wrong in exactly the same way.
+      const reason = cycle.absences.find((a) => a.agentName === agent.agentName)?.reason;
       this.opts.log(
         stood.success
-          ? `[board] stood down ${address(agent)}: the board does not have it In Progress or In Review.`
+          ? `[board] stood down ${address(agent)}: ${reason?.detail ?? 'no reason was established'}.`
           : `[board] could not stand down ${address(agent)}: ${stood.error ?? 'no reason given'}`
       );
     }
@@ -697,8 +1134,39 @@ export class BoardReconciler {
     return cycle;
   }
 
+  /**
+   * The diagnostic query, whose failure is not an event.
+   *
+   * Returns null on any failure at all, and — unlike every other read in this
+   * file — **sets no refusal and takes no branch**. That asymmetry is the point
+   * rather than an oversight: the main read decides what should run, so a read
+   * that did not answer must stop the loop acting; this one decides only what a
+   * sentence says, so a read that did not answer costs a sentence its detail and
+   * nothing else. Wiring it into the refusal path would have made a reporting
+   * improvement able to halt convergence, which is a strictly worse daemon than
+   * the one that had no diagnostic.
+   */
+  private async readDiagnostic(): Promise<JiraBoardIssue[] | null> {
+    try {
+      const outcome = await this.opts.jira.searchBoard(this.diagnosticJql, this.maxResults);
+      if (outcome.ok) return outcome.issues;
+      this.opts.log(
+        `[board] the diagnostic query could not be read: ${outcome.error}. Convergence is ` +
+        `unaffected — this query never starts or stops anything — but stand-down lines this ` +
+        `cycle cannot name which condition a missing ticket failed, and will say so.`
+      );
+      return null;
+    } catch (e: any) {
+      this.opts.log(
+        `[board] the diagnostic query threw: ${e?.message ?? String(e)}. Convergence is ` +
+        `unaffected; stand-down lines this cycle will report an undetermined reason.`
+      );
+      return null;
+    }
+  }
+
   /** Say what the cycle sees, whether or not it is allowed to act on it. */
-  private report(diff: BoardDiff, mode: BoardMode): void {
+  private report(diff: BoardDiff, mode: BoardMode, cycle: BoardCycle): void {
     const verb = mode === 'converge' ? 'converging' : 'would converge';
     this.opts.log(`[board] ${describeBoardDiff(diff)}.`);
 
@@ -724,18 +1192,40 @@ export class BoardReconciler {
     for (const agent of diff.toStart) {
       this.opts.log(`[board] ${verb}: start ${address(agent)} (${agent.issueTypeName}, ${agent.statusName}).`);
     }
+    // The near-miss report (KAN-256). Every cycle, whether or not anything is
+    // being stood down, and whether or not an agent exists for the key — the
+    // ticket nobody is running is exactly the one no other line would mention.
+    for (const miss of cycle.nearMisses ?? []) {
+      this.opts.log(
+        `[board] ${miss.key} is ${miss.statusName ?? 'In Progress or In Review'} on the board ` +
+        `with NO ASSIGNEE, so this daemon's query cannot see it: it will not be started, and ` +
+        `if an agent for it is running it will be stood down. Assign it to this machine's Jira ` +
+        `account to staff it. (KAN-256; this line is a report, not an action — nothing about ` +
+        `this ticket has been started or stopped.)`
+      );
+    }
+
+    const reasonFor = new Map(cycle.absences.map((a) => [a.agentName, a.reason]));
     for (const agent of diff.toStop) {
       const supervisor = agent.type ? this.opts.isSupervisorType?.(agent.type) === true : false;
+      // Never the old unconditional sentence. `explainAbsence` always returns a
+      // reason — `undetermined` when it could not establish one — so there is no
+      // branch here that names a condition nobody checked.
+      const reason = reasonFor.get(agent.agentName);
+      // Through the helper, and not only for consistency: these are the lines in
+      // the file that name a key *outside* an address, and they are what tells a
+      // reader which ticket to go and fix. `agent` is a RunningAgent, so its key
+      // can be the pane spelling.
+      const detail = reason
+        ? `${renderedKey(agent.key)}: ${reason.detail}`
+        : `${renderedKey(agent.key)} was not returned by the board query, and this cycle ` +
+          `recorded no reason for that`;
       this.opts.log(
         supervisor
-          ? `[board] ${verb}: STAND DOWN SUPERVISOR ${address(agent)} — the board does not ` +
-            // Through the helper as well, and not only for consistency: this is
-            // the one line in the file that names a key *outside* an address, and
-            // it is the sentence that tells a reader which ticket to go and move.
-            // `agent` here is a RunningAgent, so its key can be the pane spelling.
-            `have ${renderedKey(agent.key)} In Progress or In Review. Supervisors are not exempt from ` +
-            `this rule (KAN-221); to keep one running, its ticket has to say so.`
-          : `[board] ${verb}: stop ${address(agent)} — not In Progress or In Review on the board.`
+          ? `[board] ${verb}: STAND DOWN SUPERVISOR ${address(agent)} — ${detail}. ` +
+            `Supervisors are not exempt from this rule (KAN-221); to keep one running, its ` +
+            `ticket has to say so.`
+          : `[board] ${verb}: stop ${address(agent)} — ${detail}.`
       );
     }
   }

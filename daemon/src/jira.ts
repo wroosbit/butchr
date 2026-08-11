@@ -760,6 +760,26 @@ export interface JiraBoardIssue {
   statusName: string | null;
   /** `Task`, `Story`, `Epic`, … as Jira spells it, or null when absent. */
   issueTypeName: string | null;
+  /**
+   * Who the issue is assigned to, or null for **genuinely unassigned**.
+   *
+   * KAN-256 is why this is read at all, and the null is load-bearing rather
+   * than incidental. The reconciler's query has two conditions and its
+   * stand-down sentence named only one of them, so a ticket that was In
+   * Progress with an empty assignee was reported as *"the board does not have
+   * it In Progress or In Review"* — a false statement in a log line, which on
+   * 2026-08-10 sent an operator to check the status of an epic whose status was
+   * correct. Distinguishing *no assignee* from *somebody else's* needs the
+   * field itself; the set difference between the two queries cannot do it.
+   *
+   * `null` here means Jira returned no assignee. It does **not** mean the field
+   * was absent from the response — the board search always asks for it — and
+   * nothing downstream may treat the two as the same, which is why the account
+   * id and the display name are separate fields rather than one string.
+   */
+  assigneeAccountId: string | null;
+  /** The assignee's display name, for log lines that name a person. */
+  assigneeDisplayName: string | null;
 }
 
 /**
@@ -776,8 +796,17 @@ export interface JiraBoardPage {
   complete: boolean;
 }
 
-/** The `fields` the board search asks for. Nothing else is read. */
-const BOARD_FIELDS = 'status,issuetype';
+/**
+ * The `fields` the board search asks for. Nothing else is read.
+ *
+ * `assignee` joined the list for KAN-256. The main query cannot need it — every
+ * row it returns satisfies `assignee = currentUser()` by construction — but the
+ * *diagnostic* query drops that half of the condition deliberately, and then the
+ * field is the only thing that separates *nobody* from *somebody else*. One
+ * field list rather than two: a second one would be a second thing to keep in
+ * step with `boardPageFrom`, for one string.
+ */
+const BOARD_FIELDS = 'status,issuetype,assignee';
 
 /**
  * How many issues one board search may return.
@@ -1033,10 +1062,19 @@ export function boardPageFrom(body: any, maxResults: number): JiraBoardPage {
     if (!key) continue;
     const statusName = row?.fields?.status?.name;
     const issueTypeName = row?.fields?.issuetype?.name;
+    // `fields.assignee` is null on an unassigned issue — the case this was added
+    // for — so the optional chain and the type check are doing different jobs and
+    // neither is redundant.
+    const assigneeAccountId = row?.fields?.assignee?.accountId;
+    const assigneeDisplayName = row?.fields?.assignee?.displayName;
     issues.push({
       key,
       statusName: typeof statusName === 'string' && statusName ? statusName : null,
-      issueTypeName: typeof issueTypeName === 'string' && issueTypeName ? issueTypeName : null
+      issueTypeName: typeof issueTypeName === 'string' && issueTypeName ? issueTypeName : null,
+      assigneeAccountId:
+        typeof assigneeAccountId === 'string' && assigneeAccountId ? assigneeAccountId : null,
+      assigneeDisplayName:
+        typeof assigneeDisplayName === 'string' && assigneeDisplayName ? assigneeDisplayName : null
     });
   }
 
