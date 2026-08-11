@@ -46,20 +46,29 @@
 //   section that runs in CI (`notification-carrier` in ci.yml) — see the note
 //   at the end of this header on why that matters more than usual here.
 //
-//   SECTIONS 2-4 supply the world: the channel route is a function this script
-//   writes, so what they establish is that the SHIPPED producers behave
-//   correctly given a carrier, never that the real carrier behaves that way.
-//   WHO COVERS THAT: `verify-channel-registration-loss.mjs`, which drives the
-//   real `routeChannelMessage`, the real `carrierFor` and a real daemon restart,
-//   and is the reason this script does not re-derive the carrier decision.
+//   SECTIONS 2-5 supply the WORLD but not the MECHANISM. Jira is a stub and the
+//   agents are addresses this script invents; the carrier is the shipped
+//   `routeChannelMessage` over the shipped `AgentConnectionRegistry` over real
+//   Unix sockets, with the real kill switch — so `registration-lost` in the
+//   output is `carrierFor`'s verdict rather than a literal written here, and
+//   "the channel went down" is a real `release()` of a real registration. What
+//   they still do NOT establish is that a daemon restart produces that state,
+//   or that the registry is the one production wires.
+//   WHO COVERS THAT: `verify-channel-registration-loss.mjs`, section 3, which
+//   kills and restarts a real daemon.
 //
-//   WHAT NO SECTION HERE COVERS: that a real Jira change reaches a real agent
-//   over a real channel. Nothing in this file talks to Jira or to a client.
-//   WHO COVERS IT: the live observation pasted into the PR body — a real ticket
-//   moved on the real board, and the poller's own log line naming `transport:
-//   channel` for a real recipient. That is an observation rather than a script,
-//   and it is named here so the reader is not left inferring a coverage that
-//   does not exist.
+//   WHAT NO SECTION HERE COVERS: that a frame reaches a MODEL. Sections 2-5 read
+//   the bytes off the far end of a socket, which is C1 and C2 and is the whole
+//   of what the channel can ever establish — C3 is not observable on this
+//   carrier at all (message-claims.ts), so no version of this script can close
+//   it. Nor does anything here talk to real Jira or a real Claude client.
+//   WHO COVERS IT: nobody, on this branch, and the PR says so plainly rather
+//   than leaving it to be inferred. The live leg — a real ticket moved on the
+//   real board reaching a real agent — needs this build deployed to the fleet's
+//   daemon, which restarts it and drops every agent's registration, so it is the
+//   approver's call and not something a task agent does to a working fleet on
+//   its own. `channel-liveness.ts`'s scheduled probe is the only thing in the
+//   system that looks as far as a model, and it samples rather than covers.
 //
 // ---------------------------------------------------------------------------
 // ON "IS THIS PROOF EVER INVOKED", WHICH IS A FAIR QUESTION TO ASK OF IT
@@ -394,14 +403,44 @@ if (STATIC_ONLY) {
 // The live harness for sections 2-4
 // ===========================================================================
 
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'kan301-'));
+
+/**
+ * A private `$HOME`, set BEFORE the product is imported.
+ *
+ * `ipc.ts` computes `BUTCHR_DIR` from `os.homedir()` at module load, and the
+ * channel kill switch lives inside it. Without this the script would read — and
+ * `writeChannelSwitch` would WRITE — the live fleet's switch, which would take
+ * every running agent off channels for as long as this proof took to run. A
+ * private HOME gives a private switch; nothing else here depends on it, and
+ * unlike `lib/isolated-daemon.mjs` this starts no daemon, no herdr pane and no
+ * client, so it takes no capacity from the fleet.
+ */
+process.env.HOME = TMP;
+
 const { PendingNotifications, channelNotifier, refuseWithoutCarrier } = await import(
   path.join(path.resolve(distDir), 'notify.js')
 );
 const { JiraPoller, JiraPollState } = await import(path.join(path.resolve(distDir), 'jira-poll.js'));
 const { SupervisionNotifier } = await import(path.join(path.resolve(distDir), 'nudge.js'));
 const { snapshotFrom } = await import(path.join(path.resolve(distDir), 'jira.js'));
+const { routeChannelMessage, writeChannelSwitch, CHANNEL_SWITCH_PATH } = await import(
+  path.join(path.resolve(distDir), 'channel.js')
+);
+const { AgentConnectionRegistry } = await import(
+  path.join(path.resolve(distDir), 'agent-connections.js')
+);
+const net = await import('net');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'kan301-'));
+if (!CHANNEL_SWITCH_PATH.startsWith(TMP)) {
+  console.error(
+    `REFUSING TO RUN: the channel switch resolved to ${CHANNEL_SWITCH_PATH}, which is outside ` +
+    `this proof's private HOME (${TMP}). Writing it would take the live fleet off channels.`
+  );
+  process.exit(1);
+}
+writeChannelSwitch(true);
+
 let stateFiles = 0;
 const nextStateFile = () => path.join(TMP, `jira-poll-${++stateFiles}.json`);
 
@@ -436,32 +475,107 @@ function tripwireHerdr() {
 }
 
 /**
- * A channel that can be switched on and off, in the shape `routeChannelMessage`
- * returns. Not the real router — see the header on who covers that — so it is
- * kept to the two fields the notifier reads, and no more, in order not to look
- * like a reimplementation of a decision it is not making.
+ * A channel made of the SHIPPED parts: the real `AgentConnectionRegistry`, real
+ * Unix sockets, the real kill switch and the real `routeChannelMessage`.
+ *
+ * The first draft of this returned a hand-written `{routed: true}` object. That
+ * would have tested the notifier against a carrier this script invented, which
+ * is the KAN-145 shape and is worth avoiding when the real one costs a socket
+ * pair — so `up(false)` here does what a daemon restart does, `release` the
+ * registration, and everything downstream of that is product code deciding for
+ * itself. `registration-lost` in the output below is therefore `carrierFor`'s
+ * verdict, not this file's.
+ *
+ * **It still does not prove a frame reaches a MODEL**, and no amount of socket
+ * realism will: that needs a real client, and the header says who covers it.
+ * What this removes is the weaker caveat — that the carrier's *decision* was
+ * supplied — which `verify-channel-registration-loss.mjs` covers in depth and
+ * which it would be careless to depend on entirely from here.
  */
-function fakeChannel() {
+const openChannels = [];
+
+async function realChannel(agents) {
+  const sockDir = fs.mkdtempSync(path.join(TMP, 'chan-'));
+  const sockPath = path.join(sockDir, 'test.sock');
+  const registry = new AgentConnectionRegistry();
   const written = [];
-  let up = true;
-  return {
-    written,
-    up: (on) => {
-      up = on;
-    },
-    route: (address, content) => {
-      if (!up) {
-        return {
-          routed: false,
-          reason: 'registration-lost',
-          detail: `${address.type}/${address.key}: no channel registration (test)`
-        };
+  const serverSide = new Map();
+
+  const server = net.createServer((socket) => {
+    // The daemon's side of an agent's link. The next `hello` binds it.
+    // A destroyed peer raises ECONNRESET here; swallowed because teardown is
+    // not the subject and an unhandled 'error' would take the process down
+    // mid-proof with a stack trace that says nothing about notifications.
+    socket.on('error', () => {});
+    serverSide.set(socket, true);
+  });
+  await new Promise((res) => server.listen(sockPath, res));
+
+  const clients = [];
+  const bind = async (address) => {
+    const client = net.createConnection(sockPath);
+    client.on('error', () => {});
+    await new Promise((res) => client.once('connect', res));
+    // The frame the agent's client would receive; captured so the proof can
+    // print exactly what the recipient reads.
+    let buf = '';
+    client.on('data', (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.trim()) written.push({ address: `${address.type}/${address.key}`, ...JSON.parse(line) });
       }
-      written.push({ address: `${address.type}/${address.key}`, content });
-      return { routed: true, connectionId: 'conn-test', address };
-    }
+    });
+    clients.push(client);
+    // The server-side socket for this connection is the one the registry binds.
+    await new Promise((res) => setTimeout(res, 20));
+    const sock = [...serverSide.keys()].pop();
+    registry.register(sock, address);
+    return sock;
   };
+
+  const bound = new Map();
+  for (const a of agents) bound.set(`${a.type}/${a.key}`, await bind(a));
+
+  const channel = {
+    written,
+    close: () => {
+      for (const c of clients) c.destroy();
+      for (const sock of serverSide.keys()) sock.destroy();
+      server.close();
+    },
+    /** Drop or restore every registration, as a daemon restart and a reconnect do. */
+    up: (on) => {
+      for (const [label, sock] of bound) {
+        if (on) {
+          const [type, key] = label.split('/');
+          registry.register(sock, { type, key });
+        } else {
+          registry.release(sock);
+        }
+      }
+    },
+    route: (address, content) =>
+      routeChannelMessage({
+        registry,
+        address,
+        content,
+        meta: { sender: '[butchr daemon]', workspaceType: address.type, workspaceKey: address.key },
+        // Every agent here is one the durable registry would expect to be
+        // running, which is what turns "no connection" into `registration-lost`
+        // rather than into a composer fallback. That distinction is KAN-274's
+        // and is asserted, not assumed, by the output below.
+        managed: () => true
+      })
+  };
+  openChannels.push(channel);
+  return channel;
 }
+
+/** Wait for the frames the notifier wrote to arrive on the clients' sockets. */
+const settle = () => new Promise((res) => setTimeout(res, 60));
 
 const jiraBody = (key, issue) => ({
   key,
@@ -503,7 +617,6 @@ rule('AC2 — a real ticket change reaches a real recipient over the channel, an
 
 {
   const herdr = tripwireHerdr();
-  const channel = fakeChannel();
   const pending = new PendingNotifications({ log: () => {} });
   const log = [];
 
@@ -511,6 +624,7 @@ rule('AC2 — a real ticket change reaches a real recipient over the channel, an
     { agentName: 'butchr-task-kan-301', type: 'task', key: 'KAN-301' },
     { agentName: 'butchr-epic-kan-39', type: 'epic', key: 'KAN-39' }
   ];
+  const channel = await realChannel(agents);
 
   const jira = stubJira({
     'KAN-301': { status: 'In Progress', comments: [11444], links: ['KAN-39'] },
@@ -530,6 +644,7 @@ rule('AC2 — a real ticket change reaches a real recipient over the channel, an
   await poller.pollOnce(); // first sight — baseline, announces nothing
   jira.issues['KAN-301'].status = 'In Review';
   const tick = await poller.pollOnce();
+  await settle();
 
   console.log('');
   row('events recognised', String(tick.events.length));
@@ -564,13 +679,13 @@ rule('AC4 — with the channel down the news is HELD and VISIBLE, not dropped an
 
 {
   const herdr = tripwireHerdr();
-  const channel = fakeChannel();
   const pending = new PendingNotifications({ log: () => {} });
 
   const agents = [
     { agentName: 'butchr-task-kan-301', type: 'task', key: 'KAN-301' },
     { agentName: 'butchr-epic-kan-39', type: 'epic', key: 'KAN-39' }
   ];
+  const channel = await realChannel(agents);
   const jira = stubJira({
     'KAN-301': { status: 'In Progress', comments: [11444], links: ['KAN-39'] },
     'KAN-39': { status: 'In Progress', comments: [], links: ['KAN-301'] }
@@ -625,6 +740,7 @@ rule('AC4 — with the channel down the news is HELD and VISIBLE, not dropped an
   // The agents' MCP servers re-announce. KAN-274 measured this at seconds.
   channel.up(true);
   pending.flush(channel.route);
+  await settle();
   const afterFlush = pending.report();
 
   console.log('');
@@ -670,7 +786,10 @@ rule('AC4 — with the channel down the news is HELD and VISIBLE, not dropped an
 rule('AC4b — an agent that was never told is distinguishable from one told and idle');
 
 {
-  const channel = fakeChannel();
+  const channel = await realChannel([
+    { type: 'task', key: 'KAN-301' },
+    { type: 'epic', key: 'KAN-39' }
+  ]);
   const loud = [];
   let clock = 1_000_000;
   const pending = new PendingNotifications({
@@ -736,8 +855,8 @@ rule('AC3 — the supervision notifier rides the channel too');
 
 {
   const herdr = tripwireHerdr();
-  const channel = fakeChannel();
   const pending = new PendingNotifications({ log: () => {} });
+  const channel = await realChannel([{ type: 'epic', key: 'KAN-39' }]);
 
   const notifier = new SupervisionNotifier({
     herdrBridge: herdr,
@@ -757,6 +876,7 @@ rule('AC3 — the supervision notifier rides the channel too');
 
   await notifier.onSweep(census('working'));
   const blocked = await notifier.onSweep(census('blocked'));
+  await settle();
 
   console.log('');
   row('transitions recognised', String(blocked.changes.length));
@@ -810,5 +930,6 @@ console.log(
     : '\n  See the FAILED lines above.\n'
 );
 
+for (const channel of openChannels) channel.close();
 fs.rmSync(TMP, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);
