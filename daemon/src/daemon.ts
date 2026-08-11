@@ -12,6 +12,7 @@ import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
 import {
+  LD_API_ORIGIN,
   LaunchDarklyIntegration,
   createLaunchDarklyIntegration
 } from './integrations/launchdarkly.js';
@@ -150,10 +151,52 @@ if (!fdUsage) {
 // answers within its own timeout, so the registry can depend on it without
 // activation ever being able to hang or fail on Jira's account.
 const jira = new JiraIssueTypeService(new CredentialStore());
-// LaunchDarkly holds a credential only, for now: no flag reads, no LD-owned
-// workspace types. The adapter exists so the settings UI has somewhere real
-// to store and validate a token (KAN-86).
-const launchdarkly = new LaunchDarklyIntegration();
+// LaunchDarkly: a stored credential (KAN-86) and, since KAN-298, the ten reads
+// `launchdarkly-proxy.ts` serves through it.
+//
+// THE ORIGIN OVERRIDE IS FOR PROOFS AND IS CLAMPED TO LOOPBACK. Nothing in
+// normal operation sets it, and it defaults to LaunchDarkly's real API. It
+// exists because the alternative — the shape LaunchDarkly's own credential
+// path already rejected in `validateLdToken`'s docblock — is to exercise the
+// 401 and 403 branches by firing invalid credentials at app.launchdarkly.com,
+// and a proof should not need to do that.
+//
+// **The clamp is the whole of why this is safe to have**, and it is a clamp
+// rather than a warning: a non-loopback value is refused and the default is
+// kept, so this variable cannot redirect the daemon's LaunchDarkly traffic —
+// credential and all — to a host somebody else chose. An override that could
+// do that would be a credential-exfiltration primitive configured by an
+// environment variable, which is a strictly worse thing than the exposure this
+// ticket set out to remove.
+const launchdarkly = new LaunchDarklyIntegration(undefined, ldApiOrigin());
+
+function ldApiOrigin(): string {
+  const raw = process.env.BUTCHR_LAUNCHDARKLY_API_ORIGIN;
+  if (!raw || !raw.trim()) return LD_API_ORIGIN;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.trim());
+  } catch {
+    console.log(
+      `launchdarkly: BUTCHR_LAUNCHDARKLY_API_ORIGIN="${raw}" is not a URL — ignoring it and using ` +
+        `${LD_API_ORIGIN}.`
+    );
+    return LD_API_ORIGIN;
+  }
+  // Loopback only, by hostname rather than by resolution: a name that resolves
+  // to 127.0.0.1 today is a name somebody else controls tomorrow.
+  const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === '::1' || parsed.hostname === 'localhost';
+  if (!loopback) {
+    console.log(
+      `launchdarkly: BUTCHR_LAUNCHDARKLY_API_ORIGIN="${raw}" is not a loopback address — REFUSED, ` +
+        `using ${LD_API_ORIGIN}. This override exists for local proofs and must never be able to ` +
+        "send the daemon's LaunchDarkly credential to another host."
+    );
+    return LD_API_ORIGIN;
+  }
+  console.log(`launchdarkly: API origin overridden to ${parsed.origin} (loopback; proofs only).`);
+  return parsed.origin;
+}
 
 // The registry is empty until an integration fills it: what workspace types
 // this daemon has is the sum of what its enabled integrations contribute, and
