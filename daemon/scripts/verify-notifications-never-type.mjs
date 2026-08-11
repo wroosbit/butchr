@@ -3,7 +3,12 @@
 //
 // WHAT FAILURE THIS WOULD CATCH: a daemon-side notification path delivering by
 // pane insertion — the defect this ticket exists for, and the one that had been
-// live on every poller notification since 2026-08-04. `jira-poll.ts` and
+// live on every poller notification since 2026-08-04. Since KAN-304 it also
+// catches a NEW notification producer wired to the composer, or wired to
+// nothing: §AC1b asserts the exact number of producers the daemon hands the
+// channel carrier to, so a fourth arrives through a failing assertion and has
+// to argue for itself rather than appearing silently.
+// `jira-poll.ts` and
 // `SupervisionNotifier` both called `deliverToAgent`, which opens every send
 // with `send-keys <pane> C-c`. herdr.ts says what that costs in its own words:
 // "One cancels the recipient's turn — its in-flight tool call with it." This
@@ -351,11 +356,21 @@ verdict(
 
 // ---------------------------------------------------------------------------
 
-rule('AC1b — the two notification producers reach for the channel, and daemon.ts wires it');
+rule('AC1b — the three notification producers reach for the channel, and daemon.ts wires it');
 
+// KAN-304 added the third: a pull-request watcher. It is the first producer
+// written AFTER the practice was dropped, so it is the first one for which this
+// section is a gate on new code rather than a regression test on fixed code —
+// and it caught it. The count below read `=== 2` when that branch started, and
+// the branch's first run of this script went red on this line with the watcher
+// wired and nothing else wrong. That is what a proof being load-bearing looks
+// like, and it is why the count is asserted exactly rather than as `>= 2`: a
+// fourth producer must arrive through this line and argue for itself.
 const pollSrc = sources.find((s) => s.file === 'jira-poll.ts').text;
 const nudgeSrc = sources.find((s) => s.file === 'nudge.ts').text;
 const daemonSrc = sources.find((s) => s.file === 'daemon.ts').text;
+const prWatchSrc = sources.find((s) => s.file === 'pr-watch.ts')?.text ?? '';
+const githubSrc = sources.find((s) => s.file === 'github.ts')?.text ?? '';
 
 const checks = [
   {
@@ -375,8 +390,21 @@ const checks = [
     ok: /channelNotifier\s*\(/.test(daemonSrc)
   },
   {
-    label: 'daemon.ts hands it to BOTH producers (deliver: notifyAgent, twice)',
-    ok: (daemonSrc.match(/deliver:\s*notifyAgent/g) ?? []).length === 2
+    label: 'pr-watch.ts exists at all — the KAN-304 producer is on this build',
+    ok: prWatchSrc.length > 0
+  },
+  {
+    label: "pr-watch.ts's delivery default is refuseWithoutCarrier",
+    ok: /this\.opts\.deliver\s*\?\?\s*refuseWithoutCarrier/.test(prWatchSrc)
+  },
+  {
+    label: 'daemon.ts hands it to ALL THREE producers (deliver: notifyAgent, thrice)',
+    // Anchored to a whole line, so a WIRING site is counted and a docblock that
+    // merely names the field is not. The looser regex this replaced counted a
+    // prose mention in daemon.ts's own comment and reported four producers on a
+    // build that has three — an assertion wrong in the direction that would have
+    // hidden a producer wired to nothing.
+    ok: (daemonSrc.match(/^\s*deliver:\s*notifyAgent,?\s*$/gm) ?? []).length === 3
   },
   {
     label: 'daemon.ts flushes held notifications on the sweep',
@@ -391,6 +419,14 @@ const checks = [
     ok: !/\.sendToAgent\s*\(|deliverToAgent\s*\(/.test(
       sources.find((s) => s.file === 'notify.ts')?.text ?? ''
     )
+  },
+  {
+    label: 'pr-watch.ts and github.ts contain no composer reach at all',
+    ok: !/\.sendToAgent\s*\(|deliverToAgent\s*\(/.test(prWatchSrc + githubSrc)
+  },
+  {
+    label: "daemon.ts exposes the PR watcher's health to list_agents",
+    ok: /prWatch:\s*\(\)\s*=>\s*prWatcher\.healthReport\(\)/.test(daemonSrc)
   }
 ];
 
@@ -399,10 +435,11 @@ for (const check of checks) row(check.label, check.ok ? 'yes' : '*** NO ***');
 
 verdict(
   checks.every((c) => c.ok),
-  'both producers default to a refusal rather than a pane write, and the running daemon wires ' +
-    'the channel carrier into both, flushes what it holds, and reports what it could not deliver.',
+  'all three producers default to a refusal rather than a pane write, and the running daemon ' +
+    'wires the channel carrier into every one of them, flushes what it holds, and reports both ' +
+    'what it could not deliver and whether it can still see GitHub.',
   'a producer still defaults to the composer, or the daemon does not wire the channel carrier ' +
-    'into both — the seam exists and production does not use it, which is the KAN-145 shape.'
+    'into all three — the seam exists and production does not use it, which is the KAN-145 shape.'
 );
 
 if (STATIC_ONLY) {

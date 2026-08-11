@@ -37,6 +37,7 @@ import type { ChannelLivenessState } from './channel-liveness.js';
 import type { PendingReport } from './notify.js';
 import type { GuardianState } from './guardian.js';
 import { boardPageFor } from './board-page.js';
+import type { PrWatchHealth } from './pr-watch.js';
 import { licenceFor, sealClaims } from './message-claims.js';
 import {
   operationByTool,
@@ -971,6 +972,26 @@ export interface MessageRouterOptions {
    * different facts and only the second is a claim about the fleet.
    */
   guardian?: () => GuardianState;
+
+  /**
+   * Whether the pull-request watcher can currently see GitHub (KAN-304).
+   *
+   * A reader, by the same rule as the four above. Fleet-level for the same
+   * reason `pendingNotifications` is: the question it answers — *"is anything
+   * about our pull requests going unobserved right now?"* — is not a property of
+   * any one running agent, and the interesting answer names pull requests whose
+   * agents are not in the listing at all.
+   *
+   * It exists because a watcher is the artifact most able to fail silently: a
+   * daemon that has not reached GitHub for an hour reports exactly the same
+   * clean nothing as one that has looked every minute and found nothing new.
+   * `PrWatchHealth.detail` is the sentence that separates them, and this is what
+   * puts it where a supervisor will actually read it.
+   *
+   * Absent when nothing wired it, and never `null`, so "nothing has changed"
+   * cannot be confused with "this daemon does not watch pull requests".
+   */
+  prWatch?: () => PrWatchHealth;
 }
 
 /**
@@ -1002,7 +1023,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'channelLiveness',
   'agentRuntimeReport',
   'pendingNotifications',
-  'guardian'
+  'guardian',
+  'prWatch'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -1068,6 +1090,8 @@ export class MessageRouter {
   private readonly pendingNotifications?: MessageRouterOptions['pendingNotifications'];
   /** See {@link MessageRouterOptions.guardian}. */
   private readonly guardian?: MessageRouterOptions['guardian'];
+  /** See {@link MessageRouterOptions.prWatch}. */
+  private readonly prWatch?: MessageRouterOptions['prWatch'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -1107,6 +1131,7 @@ export class MessageRouter {
     this.agentRuntimeReport = opts.agentRuntimeReport;
     this.pendingNotifications = opts.pendingNotifications;
     this.guardian = opts.guardian;
+    this.prWatch = opts.prWatch;
   }
 
   /**
@@ -4306,6 +4331,9 @@ export class MessageRouter {
       ...(this.pendingNotifications
         ? { undeliveredNotifications: this.pendingNotifications() }
         : {}),
+      // KAN-304. Whether anything is being observed about the fleet's pull
+      // requests at all, and since when it last could be.
+      ...(this.prWatch ? { prWatch: this.prWatch() } : {}),
       ...(this.channelLiveness ? { channelLiveness: this.channelLiveness() } : {}),
       // WHO IS WATCHING THIS FLEET, AND WHETHER ITS POKE IS LANDING (KAN-284).
       //
