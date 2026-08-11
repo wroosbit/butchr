@@ -60,6 +60,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-agent-resumption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-runtime-seam` | yes | reads files off the checkout and asserts on their contents; node builtins only. |
 | `verify-atlassian-proxy-failure-is-loud` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-atlassian-proxy-read-surface` | yes | imports the built daemon modules and asserts against them in process, and reads `atlassian-proxy.ts` and `router.ts` off the checkout; no live daemon, no herdr, no credential, no peer, no terminal, no network. The half that needs real Atlassian is deliberately not here — it is `probe-atlassian-proxy-read-surface.mjs`, which is a `probe-` precisely because CI cannot run it. |
 | `verify-atlassian-proxy-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-atlassian-proxy-write-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-board-reconciler-guard` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
