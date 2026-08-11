@@ -837,16 +837,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function run() {
   const transport = new StdioServerTransport();
 
+  await server.connect(transport);
+
   // WHEN THE CLIENT GOES, STOP TRYING TO COME BACK (KAN-274). The reconnect
   // loop's whole purpose is to keep an *agent* addressable, and there is no
   // agent once the client that hosts this server has gone: retrying then would
   // re-register an identity nothing can be delivered to, which is worse than
-  // being absent because the daemon would resolve a live connection for it and
+  // being absent, because the daemon would resolve a live connection for it and
   // route real messages into a dead process. The timer is `unref`ed as well, so
   // this is belt-and-braces rather than the only thing that lets the process
-  // exit — but an `unref`ed timer still fires in a process with other work, and
-  // this is what stops it doing so.
+  // exit — but an `unref`ed timer still fires in a process that has other work,
+  // and this is what stops it doing so.
+  //
+  // INSTALLED AFTER `connect` AND CHAINED, rather than set before it. `connect`
+  // installs its own `onclose`, and the SDK's doc comment states that it
+  // "replac[es] any callbacks that have already been set" — its implementation
+  // actually chains to the previous one, so setting this first happens to work
+  // today. Depending on which of the two is true is depending on the difference
+  // between a library's documentation and its implementation, and this ordering
+  // needs neither to hold.
+  const closedByProtocol = transport.onclose;
   transport.onclose = () => {
+    closedByProtocol?.();
     linkClosedForGood = true;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -854,7 +866,6 @@ async function run() {
     }
   };
 
-  await server.connect(transport);
   console.error("Butchr MCP Server running on stdio");
   // Connect eagerly (spawning the daemon if needed) so broadcast events stream
   // as notifications. A link that later drops is re-established by
