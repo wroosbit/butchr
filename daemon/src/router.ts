@@ -3232,12 +3232,44 @@ export class MessageRouter {
       return;
     }
 
+    // KAN-292: an operation makes one request or a fan-out the TABLE declared,
+    // and this is where the two are made one shape. Nothing a caller sent
+    // decides how many requests there are or which product each goes to — see
+    // `ProxyRequest` — so what follows is a loop over a list this file did not
+    // choose the length of.
+    const requests =
+      'requests' in built
+        ? built.requests
+        : [
+            {
+              // A bare `{ path }` means the operation's first declared product,
+              // which for everything that predates Confluence is `jira`.
+              product: built.product ?? operation.products[0] ?? 'jira',
+              path: built.path,
+              ...('body' in built ? { body: built.body } : {})
+            }
+          ];
+
     const startedAt = Date.now();
-    const outcome =
-      operation.method === 'GET'
-        ? await this.jira.proxyRead(built.path)
-        : await this.jira.proxyWrite(built.path, 'body' in built ? built.body : undefined);
+    const outcomes = [];
+    for (const request of requests) {
+      const outcome =
+        operation.method === 'GET'
+          ? await this.jira.proxyRead(request.path, request.product)
+          : await this.jira.proxyWrite(request.path, request.body);
+      outcomes.push({ request, outcome });
+      // A fan-out stops at its first failure rather than pressing on. Half an
+      // answer presented as an answer is the failure mode this whole module was
+      // written against, and `atlassian_search`'s two legs are not independent
+      // questions — one of them failing means the result is not what its shape
+      // claims.
+      if (!outcome.ok) break;
+    }
     const elapsed = Date.now() - startedAt;
+    // The last outcome is the failing one when anything failed (the loop broke
+    // there), and otherwise the last success.
+    const outcome = outcomes[outcomes.length - 1].outcome;
+    const auditPath = outcomes.map(({ request }) => request.path).join(' + ');
 
     // THE AUDIT LINE. A path, never a credential — auth travels in a header and
     // `TokenJiraTransport` scrubs every on-the-wire form of the token out of
@@ -3257,9 +3289,10 @@ export class MessageRouter {
     // `verify-atlassian-proxy-write-scope.mjs`; if a later slice adds a write
     // whose body carries user content, this line is one of the places that has
     // to be reconsidered rather than inherited.
-    const bodyForLog = 'body' in built && built.body !== undefined ? ` ${JSON.stringify(built.body)}` : '';
+    const writtenBody = outcomes.find(({ request }) => request.body !== undefined)?.request.body;
+    const bodyForLog = writtenBody !== undefined ? ` ${JSON.stringify(writtenBody)}` : '';
     console.log(
-      `atlassian-proxy: ${caller} → ${tool} ${operation.method} ${built.path}${bodyForLog} → ` +
+      `atlassian-proxy: ${caller} → ${tool} ${operation.method} ${auditPath}${bodyForLog} → ` +
         (outcome.ok
           ? `${outcome.status} (${elapsed}ms)`
           : `FAILED${outcome.status ? ` ${outcome.status}` : ''} (${elapsed}ms) ` +
@@ -3279,17 +3312,57 @@ export class MessageRouter {
       return;
     }
 
+    // KAN-292: two operations reshape what came back before the agent sees it,
+    // and both had to. `transform` is given only non-secret credential facts —
+    // see `ProxyTransformContext`, which cannot carry a token by shape. A
+    // transform that throws is a bug in this daemon rather than in the agent's
+    // request, so it is reported as one instead of being allowed to look like
+    // Atlassian refusing something.
+    let responseBody: unknown = outcome.body;
+    if (operation.transform) {
+      const credential = this.jira.status();
+      // `CredentialStatus` is an open record of `string | boolean`, so the two
+      // fields wanted here are narrowed to strings rather than asserted: a
+      // `siteUrl` that somehow arrived as a boolean should reach the transform
+      // as absent, not as `true`.
+      const asText = (value: unknown) => (typeof value === 'string' ? value : undefined);
+      try {
+        responseBody = operation.transform(
+          // Every outcome here is a success — the loop above breaks on the
+          // first failure and the `!outcome.ok` branch returned before this.
+          outcomes.map(({ outcome: o }) => (o.ok ? o.body : undefined)),
+          { siteUrl: asText(credential.siteUrl), email: asText(credential.email) }
+        );
+      } catch (err: any) {
+        fail(
+          `${tool} reached Atlassian successfully, but the Butchr daemon failed to assemble the ` +
+            `answer: ${err?.message ?? String(err)}. This is a defect in the daemon and not in ` +
+            'your request — nothing about your arguments would change it. The underlying read ' +
+            'did succeed, so the data exists; report this rather than retrying.',
+          { reason: 'transform-failed' }
+        );
+        return;
+      }
+    }
+
     respond({
       action: 'atlassian_proxy_call_response',
       success: true,
       status: outcome.status,
       // Named `body` rather than spread, so a Jira field called `success` or
       // `error` cannot overwrite this envelope's own verdict.
-      body: outcome.body,
+      body: responseBody,
       // What actually happened, for a reader of the transcript who wants to
       // know which credential answered without asking the daemon a second
       // question. Non-secret: a path and a method.
-      via: { tool, method: operation.method, path: built.path, servedBy: 'butchr-daemon' }
+      via: {
+        tool,
+        method: operation.method,
+        path: auditPath,
+        products: requests.map((r) => r.product),
+        ...(operation.transform ? { reshapedByDaemon: true } : {}),
+        servedBy: 'butchr-daemon'
+      }
     });
   }
 

@@ -241,6 +241,16 @@ export interface JiraLegResult {
   failure?: JiraLegFailure;
 }
 
+/**
+ * Which Atlassian host a path belongs to (KAN-292).
+ *
+ * The transport's own spelling of `atlassian-proxy.ts`'s `ProxyProduct`. It is
+ * restated here rather than imported because the dependency runs the other way
+ * — this file is the seam the proxy borrows, and a transport that imported the
+ * proxy's types would make the low-level module depend on the policy one.
+ */
+export type TransportProduct = 'jira' | 'confluence' | 'site';
+
 /** A response, plus the record of everything tried to obtain it. */
 export interface JiraResponse {
   status: number;
@@ -265,8 +275,15 @@ export interface JiraTransport {
    * report — on the resolved value and on the rejection alike — are what makes
    * a failure diagnosable, so an implementation that returns an empty `legs`
    * is a conforming but useless one.
+   *
+   * `product` (KAN-292) selects which host the path is appended to, and does
+   * **nothing else**. It defaults to `jira`, so every caller that predates
+   * Confluence keeps the behaviour it had. See {@link TokenJiraTransport.baseFor}
+   * for what each value routes at, and note that it cannot widen anything: the
+   * path is still built by `atlassian-proxy.ts` from validated arguments, and a
+   * product only decides which of three fixed origins it is joined to.
    */
-  get(path: string, signal: AbortSignal): Promise<JiraResponse>;
+  get(path: string, signal: AbortSignal, product?: TransportProduct): Promise<JiraResponse>;
   /**
    * POST a Jira REST path with a JSON body (KAN-291).
    *
@@ -572,8 +589,44 @@ export class TokenJiraTransport implements JiraTransport {
     };
   }
 
-  public async get(path: string, signal: AbortSignal): Promise<JiraResponse> {
-    return this.request('GET', path, undefined, signal);
+  /**
+   * Where a product's requests go, at each of the two legs.
+   *
+   * THE GATEWAY BASE IS THE ONLY THING A PRODUCT CHANGES. At the site host,
+   * Jira and Confluence are already distinguished by the path itself —
+   * Confluence's own paths begin `/wiki` — so the site leg is identical for
+   * both and this returns the bare site URL for each.
+   *
+   * `site` is the exception in the other direction: `/_edge/tenant_info` is
+   * site metadata served by neither product's API, and it has **no gateway
+   * form at all**. Returning `null` for its gateway base is what makes
+   * {@link request} skip that leg rather than spend a request discovering the
+   * same thing on every call.
+   */
+  private baseFor(product: TransportProduct, cloudId: string | null) {
+    switch (product) {
+      case 'confluence':
+        return {
+          gateway: cloudId ? `${this.gatewayOrigin}/ex/confluence/${cloudId}` : null,
+          site: this.cred.siteUrl
+        };
+      case 'site':
+        return { gateway: null, site: this.cred.siteUrl };
+      case 'jira':
+      default:
+        return {
+          gateway: cloudId ? `${this.gatewayOrigin}/ex/jira/${cloudId}` : null,
+          site: this.cred.siteUrl
+        };
+    }
+  }
+
+  public async get(
+    path: string,
+    signal: AbortSignal,
+    product: TransportProduct = 'jira'
+  ): Promise<JiraResponse> {
+    return this.request('GET', path, undefined, signal, product);
   }
 
   /**
@@ -592,21 +645,17 @@ export class TokenJiraTransport implements JiraTransport {
     method: 'GET' | 'POST',
     path: string,
     body: unknown,
-    signal: AbortSignal
+    signal: AbortSignal,
+    product: TransportProduct = 'jira'
   ): Promise<JiraResponse> {
     const legs: JiraLegResult[] = [];
     const cloudId = await this.resolveCloudId(signal);
     if (this.cloudIdLeg) legs.push(this.cloudIdLeg);
 
-    if (cloudId) {
-      const viaGateway = await this.attempt(
-        'gateway',
-        `${this.gatewayOrigin}/ex/jira/${cloudId}`,
-        method,
-        path,
-        body,
-        signal
-      );
+    const base = this.baseFor(product, cloudId);
+
+    if (base.gateway) {
+      const viaGateway = await this.attempt('gateway', base.gateway, method, path, body, signal);
       legs.push(viaGateway.leg);
       if (viaGateway.status !== undefined && viaGateway.status !== 401 && viaGateway.status !== 403) {
         return { status: viaGateway.status, body: viaGateway.body, legs };
@@ -617,7 +666,7 @@ export class TokenJiraTransport implements JiraTransport {
       // Either way both legs end up in the record, which is the point.
     }
 
-    const viaSite = await this.attempt('site', this.cred.siteUrl, method, path, body, signal);
+    const viaSite = await this.attempt('site', base.site, method, path, body, signal);
     legs.push(viaSite.leg);
     if (viaSite.status === undefined) {
       throw new JiraRequestError(
@@ -1057,8 +1106,12 @@ export class JiraClient {
    * message this file invented. So the status and the legs come back and
    * {@link JiraIssueTypeService.proxyRead} decides what they mean.
    */
-  public async proxyRead(path: string, signal: AbortSignal): Promise<JiraResponse> {
-    return this.transport.get(path, signal);
+  public async proxyRead(
+    path: string,
+    signal: AbortSignal,
+    product: TransportProduct = 'jira'
+  ): Promise<JiraResponse> {
+    return this.transport.get(path, signal, product);
   }
 
   /**
@@ -1419,8 +1472,18 @@ export type JiraProxyOutcome =
 function explainProxyFailure(
   status: number,
   legs: JiraLegResult[],
-  write = false
+  write = false,
+  // KAN-292: which product actually refused. It was `Jira` in every sentence
+  // below until Confluence reads existed, and a Confluence 400 reported as
+  // "Jira rejected this request" sends the reader to the wrong API's
+  // documentation — found by `probe-atlassian-proxy-read-surface.mjs`, which
+  // met exactly that message on a Confluence endpoint. The 401/403 sentences
+  // deliberately do NOT take it: those are about the credential, which is one
+  // credential for both products, so naming a product there would suggest the
+  // other one still worked.
+  product: TransportProduct = 'jira'
 ): { error: string; diagnosis?: JiraDiagnosis; credentialFault: boolean } {
+  const said_by = product === 'confluence' ? 'Confluence' : 'Jira';
   // KAN-291: on a write, a 403 has one overwhelmingly likely cause that a read
   // can never have — a credential minted with `read:jira-work` and nothing
   // else, which is exactly what the settings page instructed every existing
@@ -1468,19 +1531,19 @@ function explainProxyFailure(
   // Jira's own words about the refusal, where it offered any. Worth more than
   // anything invented here — see `extractDetail`.
   const said = legs.map((leg) => leg.detail).filter((detail): detail is string => !!detail);
-  const because = said.length ? ` Jira said: ${said[said.length - 1]}` : '';
+  const because = said.length ? ` ${said_by} said: ${said[said.length - 1]}` : '';
 
   if (status === 404) {
     return {
       error:
-        `Jira answered 404 for this request. The daemon's credential worked; the issue or ` +
-        `endpoint asked for does not exist, or this account cannot see it.${because}`,
+        `${said_by} answered 404 for this request. The daemon's credential worked; the issue, ` +
+        `page or endpoint asked for does not exist, or this account cannot see it.${because}`,
       credentialFault: false
     };
   }
   if (status === 400) {
     return {
-      error: `Jira rejected this request as malformed (400).${because}`,
+      error: `${said_by} rejected this request as malformed (400).${because}`,
       credentialFault: false
     };
   }
@@ -1852,8 +1915,11 @@ export class JiraIssueTypeService {
    *
    * Never throws, like everything else this service exposes.
    */
-  public async proxyRead(path: string): Promise<JiraProxyOutcome> {
-    return this.proxyCall('GET', path, undefined);
+  public async proxyRead(
+    path: string,
+    product: TransportProduct = 'jira'
+  ): Promise<JiraProxyOutcome> {
+    return this.proxyCall('GET', path, undefined, product);
   }
 
   /**
@@ -1883,7 +1949,8 @@ export class JiraIssueTypeService {
   private async proxyCall(
     method: 'GET' | 'POST',
     path: string,
-    body: unknown
+    body: unknown,
+    product: TransportProduct = 'jira'
   ): Promise<JiraProxyOutcome> {
     const write = method !== 'GET';
     const transport = await this.getTransport();
@@ -1909,13 +1976,13 @@ export class JiraIssueTypeService {
       const client = new JiraClient(transport);
       const { status, body: responseBody, legs } = write
         ? await client.proxyWrite(path, body, controller.signal)
-        : await client.proxyRead(path, controller.signal);
+        : await client.proxyRead(path, controller.signal, product);
       // 204 included, which is how Jira reports a transition it performed. See
       // `JiraClient.proxyWrite` on why an empty body is a success shape here and
       // is still distinguishable from a silent failure.
       if (status >= 200 && status < 300) return { ok: true, status, body: responseBody };
 
-      const explained = explainProxyFailure(status, legs, write);
+      const explained = explainProxyFailure(status, legs, write, product);
 
       // KAN-291. About to tell an agent that its *query* was at fault — while a
       // credential-bearing leg was refused. That combination is exactly the
