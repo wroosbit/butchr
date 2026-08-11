@@ -222,21 +222,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      # `actions/checkout` leaves a detached HEAD at the PR merge commit, so
-      # this repository has no local `main` — and a clone of it therefore gets
-      # no `origin/main`, which is exactly how both staleness proofs failed on
-      # the first run of this job:
+      # THE TWO EVENTS THIS WORKFLOW RUNS ON CHECK OUT DIFFERENTLY, AND THIS STEP
+      # HAS TO SURVIVE BOTH. Getting that wrong is what turned `main` red for
+      # eight minutes after #126 merged, so both halves are written down.
+      #
+      # On `pull_request`, `actions/checkout` leaves a DETACHED HEAD at the merge
+      # commit and there is no local `main` at all. A clone of this checkout then
+      # gets no `origin/main`, because a clone resolves `origin/*` from the LOCAL
+      # branches of its source — which is how both staleness proofs failed on the
+      # first run of this job:
       #
       #     fatal: 'origin/main' is not a commit and a branch 'main' cannot be
       #     created from it
       #
-      # Neither script is wrong; a developer's clone has a local `main` and a
-      # CI checkout does not. Giving the checkout one is the environment's job,
-      # not the proof's.
+      # On `push` to `main`, the branch itself IS checked out, so a local `main`
+      # already exists and git refuses to move it:
+      #
+      #     fatal: cannot force update the branch 'main' used by worktree at ...
+      #
+      # So: create it only when it is missing, and never force it. On a push the
+      # existing `main` is the commit under test, which is what these proofs
+      # should be cloning anyway.
+      #
+      # Neither script is wrong. A developer's clone has a local `main`; a CI
+      # checkout may not. Supplying one is the environment's job, not the proof's.
       - name: Give the checkout a local `main` for the staleness proofs to clone
         run: |
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git branch --force main origin/main
+          if git show-ref --verify --quiet refs/heads/main; then
+            echo "local main already exists at $(git rev-parse --short main) (push build)"
+          else
+            git branch main origin/main
+            echo "created local main at $(git rev-parse --short main) (pull_request build)"
+          fi
           git branch --list main
 
       - uses: actions/setup-node@v4
