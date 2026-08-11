@@ -16,6 +16,9 @@
 // still reaches the intended recipient, so a broadcast masquerading as a route
 // passes any test that only asks "did the right agent get it".
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // It also catches the allowlist drifting in EITHER direction: an eighth
 // `*_event` forwarded because somebody named it that way (§1.3's firehose), and
 // a real daemon event silently NOT forwarded because it was added to the daemon

@@ -7,6 +7,9 @@
 // it degrades silently: every agent is still running, and every one of them is
 // unreadable.
 //
+// CI-RUNNABLE: no — spawns herdr directly to inspect how panes and tabs are
+// allocated.
+//
 // Before the fix, `herdr agent start` was called with no placement flags, so
 // every agent split whatever pane was current and the whole fleet piled into
 // one tab. Panes in a rendered tab are sized by the app's split layout, so the

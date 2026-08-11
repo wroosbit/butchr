@@ -8,6 +8,9 @@
 // counts, or an older daemon that omits `activatedBy` breaking the page
 // instead of flattening it.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // WHY THE PAYLOAD IS SYNTHETIC
 //
 // Because this half was cleared to build against the agreed wire contract and

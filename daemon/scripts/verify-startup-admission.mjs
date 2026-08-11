@@ -14,6 +14,9 @@
 // those happening silently — a deferral nobody logged is indistinguishable from
 // a machine that had room.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // WHY THE OBVIOUS PROOF WOULD PROVE NOTHING
 //
 // "The gate refused" is trivially true of a gate on a full machine, and this

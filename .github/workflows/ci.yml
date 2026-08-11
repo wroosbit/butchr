@@ -143,6 +143,130 @@ jobs:
       - name: Verify every operative rule is carried by a prompt
         run: node daemon/scripts/verify-operative-rules-are-carried.mjs --verbose --require-baseline
 
+  # KAN-295: the partition itself — that every `verify-` script says whether CI
+  # can run it, and that CI actually calls the thing that runs them.
+  #
+  # WHY IT IS A SEPARATE JOB FROM `verify-runnable-set` BELOW, AND NOT A STEP IN
+  # IT — this is the guard against the defect the whole ticket is about: a guard
+  # that exists and is not run. If it were a step in the job that builds and runs
+  # the set, then a broken build would take the guard down with it, and the one
+  # check that would have said "the partition has come apart" would report
+  # nothing. It needs no build, so it does not share a job with one.
+  #
+  # It is *also* a member of the runnable set below, deliberately — the script's
+  # own §4 asserts both wirings are present. Belt and braces on the one check
+  # whose absence is invisible.
+  #
+  # WHY THIS IS SAFE TO REQUIRE — the same argument that earned
+  # `verify-script-sweep` and `operative-rule-carriage` theirs. It imports only
+  # node builtins, reads `ci.yml` and the script headers off the checkout, and
+  # builds its fixtures under `os.tmpdir()`. No build, no `npm install`, no
+  # daemon, no herdr, no PTY, no network, no Jira, no wall clock.
+  #
+  # Do not "soften" this job with `continue-on-error`, a path filter or an
+  # `|| true`. If it goes red, the fix is in the script header it names, or in
+  # `ci-partition.md`, and never here.
+  ci-partition:
+    name: ci-partition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify every verify-* script declares whether CI can run it
+        run: node daemon/scripts/verify-ci-partition-is-enforced.mjs --verbose
+
+  # KAN-295: run the `verify-` scripts the partition says CI can run.
+  #
+  # This is the job the ticket was filed for. Before it, 76 `verify-*` scripts
+  # existed and CI evaluated the assertions of exactly one — every "made to go
+  # red" proof on the board was a one-time demonstration at review time that
+  # nothing re-evaluated after merge.
+  #
+  # THE SET IS NOT LISTED HERE, AND THAT IS THE POINT. The runner discovers it by
+  # reading the `CI-RUNNABLE:` line out of every `verify-*.mjs` in the tree. A
+  # list in this file would have put the ticket's own defect back one layer up:
+  # a script could be added, be perfectly runnable, and be run by nothing,
+  # because somebody forgot to edit a list. Nothing has to be edited here for a
+  # new script to be picked up.
+  #
+  # WHY THIS IS NOT AS SAFE AS THE THREE ABOVE, STATED PLAINLY. It installs
+  # dependencies and builds both packages, so it has more surface than a pure
+  # static check. What it does NOT have is the flakiness that kept these scripts
+  # out of CI in the first place: the runner refuses to run anything a script
+  # header does not certify as needing no herdr, no live daemon, no credential,
+  # no peer and no terminal, and it sandboxes `HOME` for every child so nothing
+  # can reach a real fleet. Scripts that need any of those are classified `no`
+  # and are not run here — `daemon/scripts/ci-partition.md` lists all of them
+  # with the reason for each.
+  #
+  # If a script here proves flaky, the fix is to reclassify it in its own header
+  # with the reason — not to add `continue-on-error` here, which would turn the
+  # whole set back into a check nobody reads.
+  verify-runnable-set:
+    name: verify-runnable-set
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, unlike the one-object fetch `operative-rule-carriage`
+      # gets. `verify-staleness-check` and `verify-staleness-over-socket` each
+      # `git clone` this checkout into a scratch directory and then `git
+      # checkout -B main origin/main` inside the clone — a real clone damaged
+      # one way at a time is the whole design of those proofs. A clone resolves
+      # `origin/*` from the *local branches* of the repository it was cloned
+      # from, and a shallow checkout has none of the objects those branches
+      # need.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # `actions/checkout` leaves a detached HEAD at the PR merge commit, so
+      # this repository has no local `main` — and a clone of it therefore gets
+      # no `origin/main`, which is exactly how both staleness proofs failed on
+      # the first run of this job:
+      #
+      #     fatal: 'origin/main' is not a commit and a branch 'main' cannot be
+      #     created from it
+      #
+      # Neither script is wrong; a developer's clone has a local `main` and a
+      # CI checkout does not. Giving the checkout one is the environment's job,
+      # not the proof's.
+      - name: Give the checkout a local `main` for the staleness proofs to clone
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git branch --force main origin/main
+          git branch --list main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: daemon/package-lock.json
+
+      # NOT `--ignore-scripts` here, unlike `daemon-typecheck`: several of these
+      # scripts import the built daemon, which pulls in node-pty, and a node-pty
+      # that was never built fails at import rather than at use.
+      - name: Install daemon dependencies
+        run: npm ci
+        working-directory: daemon
+
+      - name: Build the daemon
+        run: npm run build
+        working-directory: daemon
+
+      - name: Install extension dependencies
+        run: npm ci
+        working-directory: extension
+
+      - name: Build the extension
+        run: npm run build
+        working-directory: extension
+
+      - name: Run every verify-* script the partition says CI can run
+        run: node daemon/scripts/run-ci-verify-set.mjs
+
   extension-build:
     name: extension-build
     runs-on: ubuntu-latest

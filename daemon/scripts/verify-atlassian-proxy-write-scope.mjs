@@ -12,6 +12,9 @@
 // which is the direction KAN-272's criterion 3 cared about and which a write
 // makes considerably more expensive to get wrong.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // ── WHY THE REFUSALS NEED A POSITIVE CONTROL ────────────────────────────────
 //
 // Inherited wholesale from `verify-atlassian-proxy-scope.mjs`, whose §3 makes

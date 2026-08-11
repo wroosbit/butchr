@@ -6,6 +6,9 @@
 // epic/K while task/K is live reuses task/K's session — and how the failure
 // path's cleanup destroys a healthy, unrelated agent's PTY.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The ticket's symptom: `handleActivateByKey` resolved the session with
 // `getSessionByKey(key)` — a key-only match, on keys that are shared across
 // types by design. Activating epic/K while task/K was live reused task/K's

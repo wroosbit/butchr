@@ -17,6 +17,10 @@
 // interrupt that never happened, and callers deciding not to send because they
 // believed they would destroy work that was never at risk.
 //
+// CI-RUNNABLE: no — the switch-off and stop-now legs spawn herdr, and it
+// counts their absence as failures rather than skipping them, so it is red in
+// CI by its own honest design.
+//
 // And it catches the loss design §5.1 says we would otherwise take "without
 // noticing": a router that always preferred the channel once one existed would
 // silently delete the fleet's only stop-now signal. Nothing would fail; agents

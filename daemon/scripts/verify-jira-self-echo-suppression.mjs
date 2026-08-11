@@ -18,6 +18,9 @@
 // a *read* whose response is full of comment ids and requires that none of them
 // be claimed as a write.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Six sections plus a control:
 //
 //   0. the control    — the same scenario with the authorship source removed,

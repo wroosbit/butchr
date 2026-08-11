@@ -6,6 +6,9 @@
 // intent should be honoured, or a wait budget computed from the wall clock,
 // which a clock adjustment mid-wait turns into a hang no timeout ever ends.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The reboot proof is the one this cannot stand in for, and the ticket says so
 // explicitly: a simulated daemon restart is not evidence for a power cut. What
 // this DOES establish is every property the reboot proof depends on — that the

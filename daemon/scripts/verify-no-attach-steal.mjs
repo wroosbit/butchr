@@ -5,6 +5,9 @@
 // second `--takeover` attach, which evicts the first and leaves the sidepanel
 // rendering a terminal that will never produce another byte.
 //
+// CI-RUNNABLE: no — takes the key of a live agent as its argument and attaches
+// to it; there is nothing to pass in CI.
+//
 // Before the fix, a second spawnSession for one agent opened a second
 // `herdr agent attach --takeover`, which evicted the first and left the
 // sidepanel rendering a dead frame. This drives exactly that sequence and

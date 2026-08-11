@@ -12,6 +12,9 @@
 // figures no longer reproduce by hand, and a `busyCores` that is silently the
 // load-average fallback everywhere because nothing ever measures the real one.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Six sections:
 //
 //   1. instrument   — a real /proc/stat window on this machine: cores in use

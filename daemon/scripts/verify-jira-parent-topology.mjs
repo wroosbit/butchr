@@ -18,6 +18,9 @@
 // the defect hid behind (5b); and the new relation announcing an issue's status
 // change twice, or on every subsequent tick (5d).
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Six sections:
 //
 //   1. the field arrives   — the real JiraClient, driven through a transport

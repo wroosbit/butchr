@@ -8,6 +8,9 @@
 // renders. It equally catches the redaction ceasing to fire — redacting
 // nothing fails as loudly as leaking.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The companion script (verify-ld-credential-diagnostics.mjs) exercises the
 // validator directly. This one goes the whole way: it drives
 // `router.handle({action: 'set_integration_credential', integration:

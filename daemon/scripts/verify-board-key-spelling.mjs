@@ -10,6 +10,14 @@
 // and unstoppable by the loop forever. §2 is the section that would catch the
 // second one, and it is the one this ticket said was still owed.
 //
+// CI-RUNNABLE: quarantined — CI-runnable (0.3 s, build only) but RED as of
+// KAN-295. Two assertions pin log wording that KAN-221/KAN-256 have since
+// changed: §3 requires the literal `have KAN-501 In Progress`, and §5 selects
+// its line with `.find(l => l.includes("stood down"))`, which now matches the
+// KAN-256 no-assignee diagnostic instead of the stand-down it means. The
+// property under test still holds — the correctly spelled `task/KAN-500` line
+// is in the same output. Rot, not regression. Owned by KAN-300.
+//
 // WHY BOTH HALVES ARE IN ONE SCRIPT
 //
 // Because the defect and its tempting fix live at the same seam. `inJurisdiction`

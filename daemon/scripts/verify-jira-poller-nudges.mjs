@@ -18,6 +18,9 @@
 // catches a rate-limit response that degrades to silence rather than to a
 // slower poll, or that lets one deleted ticket's 404 pace the whole fleet (5).
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Seven sections, one per thing the ticket asks to be true:
 //
 //   1. a status change  — linked agents and the parent agent are told; the

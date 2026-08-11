@@ -12,6 +12,9 @@
 // REFUSED being counted as a source that said "empty" (§5), which is the same
 // defect wearing the fallback's clothes.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // ---------------------------------------------------------------------------
 // THIS SCRIPT SUPPLIES ITS OWN INPUT. READ WHAT THAT LEAVES UNCOVERED.
 // ---------------------------------------------------------------------------

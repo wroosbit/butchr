@@ -6,6 +6,9 @@
 // that agent on every reboot — unattended, and correctly, because the registry
 // now says it should be running.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // WHAT THE TICKET ASKED, AND WHAT IS ACTUALLY TRUE
 //
 // KAN-196 was filed as "the post-reboot restore re-activates deliberately

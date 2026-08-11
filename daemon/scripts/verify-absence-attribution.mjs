@@ -10,6 +10,9 @@
 // entire project's supervisor sat dark. A false sentence in a log line is worse
 // than no sentence: it spends the reader's attention and returns a wrong answer.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // THE RED IS SECTION 1, AND IT IS THE POINT OF THE SCRIPT
 //
 // Sections 2-5 assert that the new lines are right, and on their own they prove
