@@ -175,7 +175,15 @@ a condition that must hold at the moment of merging. It means **both** of:
   of approval's two halves, and substituting the half for the whole is exactly
   what `task/KAN-226` did when it merged #92 five minutes after CI went green
   with no approval from anyone. Read `gh pr checks` for the current required
-  set; never trust a remembered list of check names.
+  set; never trust a remembered list of check names. **And check the instrument
+  answered the question you asked**: `gh run list --limit 1` reads the newest run
+  of *any* workflow, and this repository has three — `ci.yml`, `approval.yml`,
+  `deploy-extension.yml` — so `epic/KAN-203` deployed on a **false green** today
+  by reading *"Build & Publish Chrome Extension"* and taking it for CI. Filter,
+  and check the run is against the head you mean: `gh run list --workflow=ci.yml`.
+  Measured 2026-08-11: an unfiltered listing had `Approval … completed/failure`
+  directly above `CI … in_progress` **for the same SHA**, offering a *conclusion*
+  for a run that had not finished.
 - **The ticket's live-proof acceptance criteria demonstrated on the PR** — the
   pasted output is the author's honesty; the re-run is **yours**, against the PR
   head. If the author runs `gh pr update-branch` after you approve, your

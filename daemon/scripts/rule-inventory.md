@@ -117,6 +117,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-18` — KAN-306 — the approval marker: head-pinned, signed, required — and blind to forgery by construction
 - `H-19` — KAN-314 — a proof run after a failed build, or over a stale `dist`, is a verdict about the old build
 - `H-20` — KAN-314 — prefer the type to the assertion where the choice exists — scoped, not absolute
+- `H-21` — KAN-314 — check the instrument answered the question you asked — filter the CI run by workflow and head
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
 <!-- INVENTORY:END -->

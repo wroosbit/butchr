@@ -935,6 +935,33 @@ const RULES = [
     //
     // Hence the third pattern. The first two are the guidance; `guidance, not a
     // rule` is the limit, and the limit is the part being protected.
+    id: 'H-21',
+    title: 'check the instrument answered the question you asked — filter the CI run by workflow and head',
+    // KAN-314, added at `epic/KAN-39`'s review of #136. The third shape of
+    // H-19's failure, and the one that is not about builds: `gh run list
+    // --limit 1` reads the newest run of ANY workflow, and this repository has
+    // three. `epic/KAN-203` deployed on a false green off that row.
+    //
+    // DELIBERATELY NOT FOLDED INTO H-19, and not generalised into one rule
+    // about epistemics. The approver's own framing at review — *"a sharp rule
+    // about builds beats a vague rule about epistemics"* — is the reason. The
+    // shared shape is worth one sentence and no more, because the FIX differs
+    // every time and is always specific: name the build, name the workflow,
+    // name the head. A single abstract rule would be obeyed by nobody at the
+    // moment it mattered, which is the only moment a rule is worth anything.
+    //
+    // The `--workflow=ci.yml` pattern is the concrete instruction and would be
+    // the first casualty of a rewrite toward the abstract; `false green` names
+    // the outcome, so a prompt keeping the command and losing the reason cannot
+    // pass either.
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [/--workflow=ci\.yml/, /the question you asked/i, /false green/i],
+      ])
+    ),
+  },
+  {
     id: 'H-20',
     title: 'prefer the type to the assertion where the choice exists — scoped, not absolute',
     carriedBy: Object.fromEntries(
