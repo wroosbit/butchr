@@ -405,6 +405,21 @@ and read the response to learn what it actually cost. You send to more agents
 than anybody on this board, so a rule you loosen here is loosened across the
 whole fleet at once.
 
+**A third answer exists, and it is not a carrier at all.** `transport:
+'unregistered'` with `success: false` is a **refusal**: the recipient holds no
+channel registration, so nothing was sent, nothing was typed and nothing was
+interrupted. It is the ordinary state for the first seconds after a daemon
+restart — which drops *every* registration — and after a socket error or a
+client reload, which drop one. **Until KAN-274 that state was silent, and it was
+the expensive kind of silent**: the recipient's `butchr_list_agents` row said
+`transport: "channel"`, the send took the composer anyway, and an ordinary steer
+arrived at an idle supervisor as a Ctrl+C. A routine deploy could therefore
+manufacture a cancelled tool call — which on the recipient's side renders as a
+refusal nobody made. **Wait and retry**: an agent re-registers by itself within
+seconds, and the row reads `channel` again when it has. Do **not** reach for
+`intent: 'stop-now'` to get past a refusal unless you actually mean to destroy
+the tool call the recipient is running, because that is exactly what it will do.
+
 | Guard | Composer path | Channel path |
 | --- | --- | --- |
 | **Meaningful transitions only** — To Do ↔ In Progress, → In Review, → Done; never on edits, comments or assignment | **unchanged** — every send destroys the work the recipient had in flight | **the cost changes rather than vanishes**: destroyed work becomes consumed context, which is not free. The rule stands as written, because you cannot know before sending which column applies. |

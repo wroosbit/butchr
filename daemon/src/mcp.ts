@@ -135,6 +135,82 @@ const pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) 
 let nextRequestId = 0;
 
 /**
+ * RE-REGISTERING AFTER THE LINK DROPS, WITHOUT WAITING FOR A TOOL CALL (KAN-274)
+ *
+ * `daemonLink` is called from exactly one place — `callDaemonAPI` — so before
+ * this, a link was only ever established by the agent *doing something*. The
+ * `hello` beside it already carried the right intent, and says so: it is sent on
+ * every established link "because the daemon forgets on `close` — a daemon
+ * restart must leave this server re-registered rather than silently
+ * unaddressable". That sentence was true of a **busy** agent and false of an
+ * idle one, and the difference is the whole defect.
+ *
+ * Measured on the 2026-08-11T15:00:40Z restart: four agents survived, `0 failed`,
+ * and **no** connection re-identified for 291 seconds. The three that came back
+ * did so at their own next tool call (15:05:31, 15:05:41, 15:06:07); the one that
+ * was idle never did. So the population left unaddressable is precisely the
+ * population it is most costly to interrupt — an idle supervisor is the thing you
+ * most often want to steer, and a steer to one arrived as a Ctrl+C.
+ *
+ * **This has to live agent-side, and that is a finding rather than a preference.**
+ * The daemon cannot re-register anybody: the socket it lost is its only path to
+ * this process, which is a stdio child of the client and holds no listener the
+ * daemon could reach. So the agent must initiate, and the fix is to make it
+ * initiate by itself.
+ *
+ * **Keyed to the link dropping, not to a restart.** A restart is the commonest
+ * trigger and demonstrably not the only one — `write EPIPE` dropped
+ * `task/KAN-278`'s registration on its own at 14:59:49Z the same day. Every one
+ * of them arrives here as a `close`.
+ */
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 15_000;
+let reconnectAttempt = 0;
+let reconnectTimer: NodeJS.Timeout | null = null;
+/** Set once the process is shutting down, so a dying link stops retrying. */
+let linkClosedForGood = false;
+
+/**
+ * Backoff with full jitter.
+ *
+ * The jitter is not decoration. Every agent's link dies in the same millisecond
+ * when the daemon restarts, so a fixed schedule would have the whole fleet
+ * reconnect in lockstep — the thundering herd arriving at a daemon that is still
+ * doing its own boot reconciliation. Randomising spreads the same number of
+ * connects across the window.
+ */
+function reconnectDelayMs(attempt: number): number {
+  const ceiling = Math.min(RECONNECT_BASE_MS * 2 ** Math.min(attempt, 10), RECONNECT_MAX_MS);
+  return Math.floor(Math.random() * ceiling);
+}
+
+/**
+ * Try to get the link back, and keep trying.
+ *
+ * Failure is expected rather than exceptional: the daemon is down for the whole
+ * early part of a restart, so the first few attempts refuse and that is the
+ * normal path through here, not an error to report. It is `unref`ed so a process
+ * whose only remaining work is a pending reconnect can still exit — an MCP server
+ * that outlived its client must not be held open by its own retry timer.
+ */
+function scheduleReconnect(): void {
+  if (linkClosedForGood || reconnectTimer || daemonSocket || connectingDaemon) return;
+  const wait = reconnectDelayMs(reconnectAttempt++);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (linkClosedForGood || daemonSocket) return;
+    daemonLink({ reconnect: true }).then(
+      () => {},
+      // Still down. Say nothing per attempt — this runs every few seconds during
+      // a restart and a line each would bury the one that matters — and come
+      // back. `daemonLink`'s own catch has already cleared `connectingDaemon`.
+      () => scheduleReconnect()
+    );
+  }, wait);
+  reconnectTimer.unref?.();
+}
+
+/**
  * The ONE place a `notifications/claude/channel` frame is emitted.
  *
  * Two callers now — an addressed message from the daemon (KAN-244) and the
@@ -255,10 +331,32 @@ async function answerSelfCheck(socket: net.Socket, msg: any): Promise<void> {
   });
 }
 
-function daemonLink(): Promise<net.Socket> {
+/**
+ * The link to the daemon, established on demand.
+ *
+ * `reconnect: true` is the KAN-274 path and it differs in one way that matters:
+ * **it never spawns a daemon.** `connectToDaemon` starts one when the socket is
+ * absent, which is right for a tool call — something wants the daemon *now* —
+ * and wrong for a reconnect, which is waiting for a daemon that is already coming
+ * back under systemd. The difference only became load-bearing with this ticket:
+ * before it, a reconnect happened when one agent happened to make a call, and
+ * after it every surviving agent reconnects at once. A fleet-wide `spawnDaemon`
+ * on every restart is a race a *systemd* restart can lose — the socket is free
+ * for a moment mid-restart, and an agent-spawned daemon that wins it becomes the
+ * fleet's daemon as a child of an MCP server, outside the supervision that is
+ * supposed to own it. (The reverse race is already known-harmless: a loser hits
+ * EADDRINUSE and exits without ever listening, which launchers.ts records.)
+ *
+ * `retries: 0` for the same reason: the cadence belongs to the jittered backoff
+ * in {@link scheduleReconnect}, and `connectToDaemon`'s own 20×250ms loop nested
+ * inside it would be two schedules for one wait, with the inner one unjittered.
+ */
+function daemonLink(opts: { reconnect?: boolean } = {}): Promise<net.Socket> {
   if (daemonSocket) return Promise.resolve(daemonSocket);
   if (!connectingDaemon) {
-    connectingDaemon = connectToDaemon()
+    connectingDaemon = connectToDaemon(
+      opts.reconnect ? { spawnIfMissing: false, retries: 0 } : {}
+    )
       .then((socket) => {
         connectingDaemon = null;
         daemonSocket = socket;
@@ -343,6 +441,10 @@ function daemonLink(): Promise<net.Socket> {
           });
         }
 
+        // The link is up, so the next drop starts its backoff from zero rather
+        // than from wherever the last outage left it.
+        reconnectAttempt = 0;
+
         socket.on('error', () => {});
         socket.on('close', () => {
           daemonSocket = null;
@@ -351,6 +453,14 @@ function daemonLink(): Promise<net.Socket> {
             entry.reject(new Error('Daemon connection closed'));
           }
           pending.clear();
+          // KAN-274. Without this the identity binding above is re-sent only when
+          // this agent next makes a tool call, so an idle agent stays
+          // unaddressable for as long as it stays idle and the next message to it
+          // arrives as a composer Ctrl+C. The in-flight requests are still
+          // rejected — this reconnects the link, it does not retry their work,
+          // and re-sending a request nobody asked to repeat would be a second
+          // delivery the caller did not ask for.
+          scheduleReconnect();
         });
 
         return socket;
@@ -528,7 +638,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_send_to_agent",
         description:
-          "Sends a message to a running agent. THE DAEMON CHOOSES HOW IT TRAVELS, PER RECIPIENT, AT SEND TIME — you never choose a transport and must never infer one. Two carriers exist: a CHANNEL, which delivers into the recipient's context and is acted on at its next turn boundary without disturbing work in flight; and the COMPOSER, which types into the recipient's terminal after a Ctrl+C. Which one carried your message is stated in the response as `transport`, together with `transportChosenBecause`. Read it there; do not work it out from whether the recipient has a channel, because you cannot see that and it changes underneath you. WHAT THE COMPOSER COSTS: its Ctrl+C does not merely clear a half-typed line — it cancels whatever the recipient is doing at that moment, including a tool call in flight, which does not resume. On the recipient's side the cancellation renders as a refusal, so an interrupted agent may report that a human rejected work nobody rejected, and an interrupt landing across parallel calls can leave some applied and report them all refused. The response says `interrupted: true` when that is what happened. A channel send costs the recipient nothing but context. WHAT YOU MAY CLAIM AFTERWARDS: the response carries `claims`, four separate facts that are never collapsed into one — the transport accepted the bytes (C1), a live session exists (C2), the text entered the transcript (C3), the model read it (C4). Each is `true`, `false`, or `null`, and NULL IS SILENCE, NOT A NEGATIVE: it means nothing here measured that, so resending on it may type a duplicate at an agent already working on the first copy. `licenses` says in one sentence what you may and may not state. Never report a message as received by an agent on the strength of `success` alone — `success` is C1 and nothing more. PROVENANCE: the daemon prefixes what it delivers with a sender tag it derives from YOUR workspace identity — `[from story/KAN-75] your message` — so do not write a sender into the message yourself; a sender you type is body text and is delivered after the daemon's tag rather than instead of it. The response echoes `sender` and `delivered` so you can see exactly what your recipient reads. On the composer, `butchr_tail_agent` is still the only thing that shows whether the Enter took. The recipient's convention is that an untagged message is the human typing directly, so relay a human decision as a decision you are reporting, not as your own instruction.",
+          "Sends a message to a running agent. THE DAEMON CHOOSES HOW IT TRAVELS, PER RECIPIENT, AT SEND TIME — you never choose a transport and must never infer one. Two carriers exist: a CHANNEL, which delivers into the recipient's context and is acted on at its next turn boundary without disturbing work in flight; and the COMPOSER, which types into the recipient's terminal after a Ctrl+C. Which one carried your message is stated in the response as `transport`, together with `transportChosenBecause`. Read it there; do not work it out from whether the recipient has a channel, because you cannot see that and it changes underneath you. A THIRD VALUE MEANS NOTHING CARRIED IT: `transport: 'unregistered'` with `success: false` is a REFUSAL, not a delivery — the recipient holds no channel registration (a daemon restart, a socket error or a client reload drops one) and a steer is not permitted to reach it by interrupting it. Nothing was sent, so nothing was interrupted and nothing needs undoing. It re-registers by itself within seconds, so the fix is to wait and retry; `error` names the condition and what to do. Do not convert it into a `stop-now` to get past it unless you actually mean to destroy the tool call the recipient is running, which is what `stop-now` does. WHAT THE COMPOSER COSTS: its Ctrl+C does not merely clear a half-typed line — it cancels whatever the recipient is doing at that moment, including a tool call in flight, which does not resume. On the recipient's side the cancellation renders as a refusal, so an interrupted agent may report that a human rejected work nobody rejected, and an interrupt landing across parallel calls can leave some applied and report them all refused. The response says `interrupted: true` when that is what happened. A channel send costs the recipient nothing but context. WHAT YOU MAY CLAIM AFTERWARDS: the response carries `claims`, four separate facts that are never collapsed into one — the transport accepted the bytes (C1), a live session exists (C2), the text entered the transcript (C3), the model read it (C4). Each is `true`, `false`, or `null`, and NULL IS SILENCE, NOT A NEGATIVE: it means nothing here measured that, so resending on it may type a duplicate at an agent already working on the first copy. `licenses` says in one sentence what you may and may not state. Never report a message as received by an agent on the strength of `success` alone — `success` is C1 and nothing more. PROVENANCE: the daemon prefixes what it delivers with a sender tag it derives from YOUR workspace identity — `[from story/KAN-75] your message` — so do not write a sender into the message yourself; a sender you type is body text and is delivered after the daemon's tag rather than instead of it. The response echoes `sender` and `delivered` so you can see exactly what your recipient reads. On the composer, `butchr_tail_agent` is still the only thing that shows whether the Enter took. The recipient's convention is that an untagged message is the human typing directly, so relay a human decision as a decision you are reporting, not as your own instruction.",
         inputSchema: {
           type: "object",
           properties: {
@@ -602,7 +712,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_list_agents",
         description:
-          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down. ALSO CHECK preemptedAgents: agents deliberately stood down to free capacity for higher-priority work, listed until they are put back. Their work was interrupted rather than finished, so their tickets must NOT be left In Progress — move each back to To Do with a comment naming what took its slot. Re-activating one resumes the conversation it was stopped in. standbyAgents is NOT a problem to fix: agents somebody switched off on purpose whose workspace is still on disk, listed so they can be started again (butchr_activate_agent with their type and key, and their recorded defaultAgent so they come back as what they were). standbyTotal is the unclipped count when more exist than are listed. ALSO CHECK each agent's `channel`: what its startup channel self-check found, and the carrier its messages will actually take. `transport: 'composer'` means that agent's channel loop did not prove out at bring-up, so a message to it will interrupt whatever it is doing — an agent silently on the composer while you believe it is on channels is exactly what this field exists to prevent. `outcome: 'unverified-client'` means the loop works but the Claude Code version it is running is one nobody has measured channel delivery on; channels are a research preview and the contract can move, so treat delivery to that agent as unproven and say so if you rely on it. `outcome: 'unchecked'` is NOT a fault: nobody has checked, usually because the agent outlived a daemon restart, and its messages still route over the channel. `clientVersion` is the client's own report of itself and is what pins any of this to a version. An absent `channel` field means this daemon cannot answer, which is different from every value it could carry.",
+          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down. ALSO CHECK preemptedAgents: agents deliberately stood down to free capacity for higher-priority work, listed until they are put back. Their work was interrupted rather than finished, so their tickets must NOT be left In Progress — move each back to To Do with a comment naming what took its slot. Re-activating one resumes the conversation it was stopped in. standbyAgents is NOT a problem to fix: agents somebody switched off on purpose whose workspace is still on disk, listed so they can be started again (butchr_activate_agent with their type and key, and their recorded defaultAgent so they come back as what they were). standbyTotal is the unclipped count when more exist than are listed. ALSO CHECK each agent's `channel`: what its startup channel self-check found, and the carrier its messages will actually take. `transport: 'composer'` means that agent's channel loop did not prove out at bring-up, so a message to it will interrupt whatever it is doing — an agent silently on the composer while you believe it is on channels is exactly what this field exists to prevent. `outcome: 'unverified-client'` means the loop works but the Claude Code version it is running is one nobody has measured channel delivery on; channels are a research preview and the contract can move, so treat delivery to that agent as unproven and say so if you rely on it. `outcome: 'unchecked'` is NOT a fault: nobody has checked, usually because the agent outlived a daemon restart. READ `transport` RATHER THAN `outcome` FOR THE CARRIER — they are different questions and an unchecked agent can be on any of the three. `transport: 'unregistered'` means the agent holds no channel registration while the registry expects it to: a steer to it is REFUSED rather than delivered, it is the ordinary state for the first seconds after a daemon restart or a socket error, and it clears by itself when the agent's MCP server re-announces. Before KAN-274 this field read `'channel'` in that state and a send to such an agent interrupted it, so an older daemon's row cannot be trusted on this point. `clientVersion` is the client's own report of itself and is what pins any of this to a version. An absent `channel` field means this daemon cannot answer, which is different from every value it could carry.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -815,10 +925,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 async function run() {
   const transport = new StdioServerTransport();
+
   await server.connect(transport);
+
+  // WHEN THE CLIENT GOES, STOP TRYING TO COME BACK (KAN-274). The reconnect
+  // loop's whole purpose is to keep an *agent* addressable, and there is no
+  // agent once the client that hosts this server has gone: retrying then would
+  // re-register an identity nothing can be delivered to, which is worse than
+  // being absent, because the daemon would resolve a live connection for it and
+  // route real messages into a dead process. The timer is `unref`ed as well, so
+  // this is belt-and-braces rather than the only thing that lets the process
+  // exit — but an `unref`ed timer still fires in a process that has other work,
+  // and this is what stops it doing so.
+  //
+  // INSTALLED AFTER `connect` AND CHAINED, rather than set before it. `connect`
+  // installs its own `onclose`, and the SDK's doc comment states that it
+  // "replac[es] any callbacks that have already been set" — its implementation
+  // actually chains to the previous one, so setting this first happens to work
+  // today. Depending on which of the two is true is depending on the difference
+  // between a library's documentation and its implementation, and this ordering
+  // needs neither to hold.
+  const closedByProtocol = transport.onclose;
+  transport.onclose = () => {
+    closedByProtocol?.();
+    linkClosedForGood = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
   console.error("Butchr MCP Server running on stdio");
-  // Connect eagerly (spawning the daemon if needed) so broadcast events
-  // stream as notifications; tool calls reconnect lazily on failure.
+  // Connect eagerly (spawning the daemon if needed) so broadcast events stream
+  // as notifications. A link that later drops is re-established by
+  // `scheduleReconnect` rather than by the next tool call — see the KAN-274
+  // header above it for why waiting for a tool call left idle agents
+  // unaddressable, and what that cost them.
   daemonLink().catch(() => {});
 }
 

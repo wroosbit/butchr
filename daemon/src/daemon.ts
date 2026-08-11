@@ -5,7 +5,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
-import { HerdrBridge } from './herdr.js';
+import { HerdrBridge, agentNameFor } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { createAgentRuntime, type RuntimeSwitchReport } from './runtime-switch.js';
 import { MessageRouter } from './router.js';
@@ -29,6 +29,7 @@ import {
 } from './agent-connections.js';
 import {
   CHANNEL_SWITCH_PATH,
+  carrierFor,
   channelEmissionEnabled,
   routeChannelMessage,
   writeChannelSwitch
@@ -254,6 +255,70 @@ const channelSelfChecks = new ChannelSelfCheckStore();
  * loopback socket.
  */
 const selfCheckAcks = new ChannelSelfCheckAckRegistry();
+
+/**
+ * Whether the durable registry expects this agent to be running (KAN-274).
+ *
+ * **The one fact that separates a lost registration from an address that never
+ * had one**, and the reason KAN-274 needed no new persistence to find it. The
+ * agent registry is a log on disk: it survives the restart that empties
+ * `agentConnections`, and its `expected()` is precisely the set of agents that
+ * were activated, have not been stood down, and therefore run a Butchr MCP server
+ * that is supposed to be announcing itself on a socket.
+ *
+ * So an address that is in here with no connection has **lost** one — the state a
+ * `steer` refuses rather than delivering by Ctrl+C. An address that is not in
+ * here never had one: a `butchr-*` pane with nothing behind it, a human-activated
+ * workspace that legitimately stays anonymous (`hello` with no identity is
+ * refused, and that is correct), an agent started outside Butchr. Every one of
+ * those keeps the composer it has always been reached by.
+ *
+ * Read fresh per call rather than cached, for the reason board-control.ts gives
+ * about its mode: this decides whether a message is refused, and a set captured
+ * at boot is stale in exactly the case that matters — an agent activated since.
+ * `intents()` re-reads the log, which is a few KB and is already re-read on every
+ * `list_agents`.
+ */
+/**
+ * The set of expected agent names, re-derived only when the log has changed.
+ *
+ * `intents()` re-reads and re-parses `agents.jsonl` on every call — 0.93 ms
+ * against the 114-entry log this was measured on, and the log grows to 500
+ * records before compaction. {@link isManagedAgent} is asked once per row of
+ * every `list_agents`, so an uncached read would put ~28 ms of re-parsing the
+ * same file thirty times into a call a supervisor makes on a poll.
+ *
+ * **Keyed on the file's own mtime and size rather than on a timer**, so it is a
+ * memo and not a cache with a staleness window: the moment anything appends an
+ * activation the key changes and the next read is fresh. A time-based cache
+ * would have been simpler and would have been a stored fact that outlives what
+ * it describes, which is the artefact this codebase keeps paying for.
+ */
+let managedMemo: { key: string; names: Set<string> } | null = null;
+
+function expectedAgentNames(): Set<string> {
+  let key: string;
+  try {
+    const stat = fs.statSync(REGISTRY_PATH);
+    key = `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    // No registry file yet. Ask every time rather than memoising an absence:
+    // the file appears the moment the first agent is activated.
+    key = '';
+  }
+  if (key && managedMemo?.key === key) return managedMemo.names;
+
+  const names = new Set<string>();
+  for (const [name, intent] of agentRegistry.intents()) {
+    if (intent.event === 'activated') names.add(name);
+  }
+  if (key) managedMemo = { key, names };
+  return names;
+}
+
+function isManagedAgent(address: { type: string; key: string }): boolean {
+  return expectedAgentNames().has(agentNameFor(address.type, address.key));
+}
 
 /**
  * The scheduled end-to-end channel probe (KAN-252).
@@ -711,7 +776,23 @@ const server = net.createServer((socket) => {
           address,
           content,
           meta,
-          selfCheck: channelSelfChecks
+          selfCheck: channelSelfChecks,
+          // KAN-274. What separates "this agent lost its registration" from
+          // "this address never had one": the durable registry survives the
+          // restart that drops the connections, and it names exactly the agents
+          // that run an MCP server and are therefore supposed to hold one.
+          managed: isManagedAgent
+        }),
+      // KAN-274. The row and the route ask the same function, so a row cannot
+      // report a carrier the next send will not take — which is what it did for
+      // every agent that outlived a daemon restart.
+      channelCarrier: (address, degraded) =>
+        carrierFor({
+          emissionEnabled: channelEmissionEnabled(),
+          degraded,
+          registered: agentConnections.resolve(address) !== undefined,
+          managed: isManagedAgent(address),
+          switchPath: CHANNEL_SWITCH_PATH
         }),
       // What each agent's startup self-check found, for `list_agents` (KAN-248).
       // A reader rather than the store, for the same reason `channelRoute` is a
@@ -1263,6 +1344,39 @@ function onListen() {
             idle.map((o) => o.agentName).join(', ')
           : '')
       );
+      // WHAT THE RESTART DROPPED, COUNTED AT THE MOMENT IT DROPPED IT (KAN-274).
+      //
+      // The line above is true and was misleading in the same breath: `0 failed`
+      // is a statement about *agents*, and the agents really did survive. What
+      // did not survive is every one of their channel registrations, and until
+      // this ticket nothing said so — on 2026-08-11 four agents came through a
+      // restart, `0 failed`, and the fleet was addressable by nobody for 291
+      // seconds with no line anywhere to say it.
+      //
+      // Derived rather than remembered: this daemon never saw the old
+      // registrations, so it cannot count what *it* lost. It counts what is
+      // missing now — surviving agents holding no connection — which is the same
+      // number and is a fact this process can actually observe. Saying it any
+      // other way would be inventing a memory of a predecessor.
+      const survivors = result.outcomes.filter((o) => o.result === 'already-running');
+      const unregistered = survivors.filter(
+        (o) => agentConnections.resolve({ type: o.type, key: o.key }) === undefined
+      );
+      if (unregistered.length) {
+        log(
+          `[reconcile] ${unregistered.length} of ${survivors.length} surviving agent(s) hold no ` +
+          `channel registration: ${unregistered.map((o) => `${o.type}/${o.key}`).join(', ')}. ` +
+          `A daemon restart drops every one — the agents are fine and are simply not addressable ` +
+          `over the channel until each one's MCP server re-announces itself, which it now does by ` +
+          `itself within seconds rather than waiting for the agent's next tool call. Until then a ` +
+          `steer to one is REFUSED rather than delivered by a composer interrupt, and ` +
+          `butchr_list_agents reports transport 'unregistered' on its row (KAN-274).`
+        );
+      } else if (survivors.length) {
+        log(
+          `[reconcile] All ${survivors.length} surviving agent(s) hold a channel registration.`
+        );
+      }
       // Whatever restoration could not bring back is a loss, and is announced
       // by the same sweep that watches for losses later.
       sweepForMissingAgents();
