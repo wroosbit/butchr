@@ -74,6 +74,15 @@ import {
   scopesOf,
   selectedProxyMode
 } from '../dist/atlassian-proxy.js';
+import {
+  BASE,
+  HOSTILE,
+  fixedPrefix,
+  pathEscapes,
+  requestsOf,
+  sweepHostileInput,
+  validFor
+} from './lib/proxy-hostile-input.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const VERBOSE = process.argv.includes('--verbose');
@@ -90,14 +99,6 @@ function check(label, ok, detail) {
     if (detail) console.log(`         ${String(detail).split('\n').slice(0, 6).join('\n         ')}`);
   }
   if (!ok) failures++;
-}
-
-/** Every request an operation builds for these arguments, or `null` if refused. */
-function requestsOf(op, args) {
-  const built = op.build(args);
-  if ('error' in built) return null;
-  if ('requests' in built) return built.requests;
-  return [{ product: built.product ?? op.products[0], path: built.path, body: built.body }];
 }
 
 // ── 1. the surface is complete, and counted off the live list ──────────────
@@ -169,161 +170,28 @@ check(
 
 // Every argument of every operation, fed the same hostile values. This is the
 // section that would have caught a `fetch` implemented the obvious way.
-const HOSTILE = [
-  '../../../../rest/api/3/myself',
-  'KAN-1/../../admin',
-  'KAN-1?expand=changelog&x=/rest/api/3/user',
-  'KAN-1#/rest/api/3/anything',
-  '../..%2f..%2fadmin',
-  'https://evil.example.com/rest/api/3/myself',
-  '//evil.example.com/x',
-  'KAN 1',
-  '',
-  'NOT-A-KEY-AT-ALL',
-  ' /rest/api/3/myself',
-  '163933/../../../admin'
-];
-
-// A path is safe when it still addresses the endpoint its own template names.
 //
-// THE FIRST VERSION OF THIS FUNCTION WAS WRONG, AND IT IS WORTH SAYING HOW,
-// because the wrong version is the one that looks more thorough. It grepped the
-// built path for `..`, `http:` and `//` and called any of them an escape. That
-// reported 29 failures against a table that is perfectly safe:
-// `encodeURIComponent` leaves `.` alone — it is an unreserved character — and
-// encodes `/` as `%2F`, so a hostile `../../admin` correctly becomes
-// `..%2F..%2Fadmin`: dots intact, slashes neutralised, going nowhere. A checker
-// that reads that as traversal is measuring the wrong thing, and "make the
-// check pass" would have meant deleting it rather than fixing it.
-//
-// What matters is where the URL RESOLVES, so that is what is measured. The path
-// is resolved against a base exactly as `fetch` would resolve it, and it must
-// still land on the same origin and under the same fixed prefix its own
-// template produces. A `..` that does nothing survives this; a `..` that climbs
-// a segment does not, because resolution normalises it away and the prefix
-// check then fails.
-const BASE = 'https://site.invalid';
-
-/**
- * The literal part of an operation's path — everything before the first place
- * an argument goes — derived by building the SAME operation twice with two
- * different benign values and taking the common prefix of what came out.
- *
- * Derived rather than declared, for two reasons. A new operation is covered the
- * day it is added instead of when somebody remembers to write its shape here;
- * and a `pathShape` string that has drifted from what `build` actually does
- * cannot quietly widen this check, because this never reads `pathShape`.
- */
-function fixedPrefix(op, field, otherArgs) {
-  const a = requestsOf(op, { ...otherArgs, [field]: pickBenign(field, 0) });
-  const b = requestsOf(op, { ...otherArgs, [field]: pickBenign(field, 1) });
-  if (!a || !b || a.length !== b.length) return null;
-  return a.map((request, i) => {
-    const pa = new URL(request.path, BASE).pathname;
-    const pb = new URL(b[i].path, BASE).pathname;
-    let n = 0;
-    while (n < pa.length && n < pb.length && pa[n] === pb[n]) n++;
-    // Back off to the last complete segment, so a prefix never ends mid-id.
-    return pa.slice(0, pa.lastIndexOf('/', n) + 1);
-  });
-}
-
-/** Two different, valid values for a field, so a prefix can be derived. */
-function pickBenign(field, which) {
-  if (/issueKey/i.test(field)) return which ? 'ZZZ-9' : 'KAN-1';
-  if (/projectKey/i.test(field)) return which ? 'ZZZ' : 'KAN';
-  if (/Id$/i.test(field)) return which ? '424242' : '163933';
-  if (field === 'id') {
-    return which ? 'ari:cloud:jira:c:issue/424242' : 'ari:cloud:jira:c:issue/163933';
-  }
-  if (field === 'limit' || field === 'maxResults') return which ? 4 : 5;
-  if (field === 'bodyFormat') return which ? 'view' : 'storage';
-  return which ? 'zzz' : 'aaa';
-}
-
-function pathEscapes(request, expectedPrefix) {
-  let url;
-  try {
-    url = new URL(request.path, BASE);
-  } catch {
-    return 'the path does not parse as a URL at all';
-  }
-  if (url.origin !== BASE) return `resolves to a different origin: ${url.origin}`;
-  if (url.hash) return `carries a fragment: ${url.hash}`;
-  if (expectedPrefix != null && !url.pathname.startsWith(expectedPrefix)) {
-    return `resolves outside its template: ${url.pathname} is not under ${expectedPrefix}`;
-  }
-  return null;
-}
-
-let hostileChecked = 0;
-let hostileRefused = 0;
-let hostileContained = 0;
-const escapes = [];
-for (const op of PROXY_OPERATIONS) {
-  const fields = Object.keys(op.inputSchema.properties ?? {});
-  for (const field of fields) {
-    // Fill every OTHER field with something valid, so the operation gets far
-    // enough to build and the hostile value is the only thing under test.
-    const otherArgs = {};
-    for (const other of fields) {
-      if (other !== field) otherArgs[other] = validFor(op, other);
-    }
-    const prefixes = fixedPrefix(op, field, otherArgs);
-    for (const hostile of HOSTILE) {
-      const built = op.build({ ...otherArgs, [field]: hostile });
-      hostileChecked++;
-      if ('error' in built) {
-        hostileRefused++;
-        continue; // a refusal is a pass, and the loudest kind
-      }
-      const requests = 'requests' in built ? built.requests : [built];
-      requests.forEach((request, i) => {
-        const escape = pathEscapes(request, prefixes?.[i] ?? null);
-        if (escape) {
-          escapes.push(`${op.tool}.${field}=${JSON.stringify(hostile.slice(0, 30))} → ${escape}`);
-        } else {
-          hostileContained++;
-        }
-      });
-    }
-  }
-}
+// The corpus and the checker moved to `lib/proxy-hostile-input.mjs` at
+// `epic/KAN-39`'s review of #127, so that `verify-atlassian-proxy-scope.mjs` —
+// the file that owns KAN-272's "no operation takes a path" sentence — runs the
+// SAME sweep over the same table rather than a second copy of it. Two copies of
+// a 400-placement corpus is two things to drift, and the one that stops
+// covering `fetch` is the one nobody re-reads.
+const sweep = sweepHostileInput(PROXY_OPERATIONS);
 check(
-  `all ${hostileChecked} hostile argument placements were refused (${hostileRefused}) or ` +
-    `stayed inside their parameter (${hostileContained})`,
-  escapes.length === 0,
-  escapes.slice(0, 6).join('\n')
+  `all ${sweep.checked} hostile argument placements were refused (${sweep.refused}) or ` +
+    `stayed inside their parameter (${sweep.contained})`,
+  sweep.escapes.length === 0,
+  sweep.escapes.slice(0, 6).join('\n')
 );
-// Both outcomes must actually occur, or the loop above proved nothing: all
-// refusals would mean the operations never build, and all containments would
-// mean no validator rejects anything.
+// Both outcomes must actually occur, or the sweep proved nothing: all refusals
+// would mean the operations never build, and all containments would mean no
+// validator rejects anything.
 check(
-  'and both outcomes occurred — the loop is neither refusing everything nor validating nothing',
-  hostileRefused > 0 && hostileContained > 0,
-  `refused ${hostileRefused}, contained ${hostileContained}`
+  'and both outcomes occurred — the sweep is neither refusing everything nor validating nothing',
+  sweep.refused > 0 && sweep.contained > 0,
+  `refused ${sweep.refused}, contained ${sweep.contained}`
 );
-
-/** A value this field will accept, so other fields can be exercised. */
-function validFor(op, field) {
-  // `id` is tested BEFORE the /Id$/ suffix rule. The suffix rule matches the
-  // bare name `id` too, which handed `atlassian_fetch_resource` a plain number
-  // where it wanted an ARI — the operation then refused every argument and
-  // section 5's positive control caught it, which is what a positive control is
-  // for.
-  if (field === 'id') return 'ari:cloud:jira:c4c-523:issue/10301';
-  if (/issueKey/i.test(field)) return 'KAN-1';
-  if (/projectKey/i.test(field)) return 'KAN';
-  if (/Id$/i.test(field)) return '163933';
-  if (field === 'limit' || field === 'maxResults') return 5;
-  if (field === 'cql') return 'type=page';
-  if (field === 'jql') return 'project = KAN';
-  if (field === 'query') return 'butchr';
-  if (field === 'bodyFormat') return 'storage';
-  if (field === 'fields') return 'summary';
-  if (field === 'transitionId') return '31';
-  return 'x';
-}
 
 // ── 3. the ARI, which is the one input that looks like a destination ───────
 rule('3. the ARI is parsed, never forwarded');
@@ -384,7 +252,7 @@ rule('4. product routing — a Confluence path never goes to the Jira host, or t
 for (const op of operationsFor('confluence-read')) {
   const fields = Object.keys(op.inputSchema.properties ?? {});
   const args = {};
-  for (const field of fields) args[field] = validFor(op, field);
+  for (const field of fields) args[field] = validFor(field);
   const requests = requestsOf(op, args);
   if (!requests) {
     check(`${op.tool} builds a request for valid arguments`, false, JSON.stringify(op.build(args)));
@@ -417,7 +285,7 @@ let built_ok = 0;
 for (const op of operationsFor('confluence-read')) {
   const fields = Object.keys(op.inputSchema.properties ?? {});
   const args = {};
-  for (const field of fields) args[field] = validFor(op, field);
+  for (const field of fields) args[field] = validFor(field);
   if (requestsOf(op, args)) built_ok++;
 }
 check(
@@ -452,7 +320,7 @@ for (const op of operationsFor('confluence-read')) {
   const fields = Object.keys(op.inputSchema.properties ?? {});
   if (!fields.includes('limit')) continue;
   const args = {};
-  for (const field of fields) args[field] = validFor(op, field);
+  for (const field of fields) args[field] = validFor(field);
   for (const asked of [10_000, PROXY_LIST_MAX_RESULTS + 1, 'lots', -5, NaN]) {
     const requests = requestsOf(op, { ...args, limit: asked });
     const bounded = requests?.every((request) => {
@@ -659,7 +527,7 @@ console.log(
   failures
     ? `\nFAILED — ${failures} check(s)`
     : `\nOK — ${operationsFor('confluence-read').length} reads across three products, ` +
-      `${hostileChecked} hostile argument placements contained, the ARI parsed rather than ` +
+      `${sweep.checked} hostile argument placements contained, the ARI parsed rather than ` +
       `forwarded, and ${grantedScopes('confluence-read').length} scopes readable off one table.`
 );
 process.exit(failures ? 1 : 0);
