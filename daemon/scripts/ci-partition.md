@@ -53,7 +53,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-absence-attribution` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-activate-requires-agent` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-activation-records-real-parentage` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
-| `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Every section that ASSERTS derives from stated facts, so no verdict here moves with the load, the disk pressure or the free memory of the host. |
 | `verify-agent-connection-identity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-power-controls` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-preemption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
