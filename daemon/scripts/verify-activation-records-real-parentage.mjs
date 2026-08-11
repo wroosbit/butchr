@@ -7,6 +7,9 @@
 // `activatedBy` was `null` for every agent in the fleet, forever, while every
 // individual link of the chain looked correct.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // It is the *write* path that was uncovered, and the gap is worth naming
 // precisely because two honest scripts sat either side of it:
 //

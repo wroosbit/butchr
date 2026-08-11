@@ -16,6 +16,11 @@
 // tick's memory advanced or not advanced by the grouping, which would either
 // replay the hand-off forever or swallow the half that failed to deliver (4).
 //
+// CI-RUNNABLE: partial — the coalescing assertions run in CI. The CONTROL leg
+// needs an `--unfixed` build to show the defect it prevents, and AC3d needs
+// `--live`; both are skipped without them and both are named in the run
+// output.
+//
 // Sections:
 //
 //   0. CONTROL     — the pre-fix daemon, same scenario, showing the two

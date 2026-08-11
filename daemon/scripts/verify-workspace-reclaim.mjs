@@ -14,6 +14,9 @@
 // containment check that a traversal or a symlinked workspace can walk out of,
 // and a "dry run" that deletes.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // AND, ADDED BY KAN-261: a stand-down that reclaims nothing, so the cleanup goes
 // back to happening only when somebody remembers; a stand-down that reclaims the
 // wrong workspace, or one somebody is still working in; a **preempted** agent

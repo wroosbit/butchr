@@ -9,6 +9,9 @@
 // carries the raw operating-system error with none of the diagnosis that tells
 // you which of the two failures you are looking at.
 //
+// CI-RUNNABLE: no — stands up a private herdr server and makes real spawns
+// fail against it.
+//
 // Before the fix, `herdr agent start` was a bare spawnSync whose result was
 // discarded. A refused spawn produced a session marked 'active' and an
 // activate response of `success: true`, which is how an outage stayed

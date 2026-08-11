@@ -23,6 +23,9 @@
 // counter-example asserted in section 7: the non-standard `-`/`_` alphabet, and
 // `A` rather than `=` padding.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Seven sections, one per acceptance criterion, plus the inherited behaviours:
 //
 //   1. page URLs     — all four forms resolve to { confluence, <pageId> },

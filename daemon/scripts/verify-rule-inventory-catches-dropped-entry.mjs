@@ -7,6 +7,13 @@
 // A dropped entry removes the assertion that would have noticed it was dropped,
 // and the sweep then passes *harder*: one fewer assertion to satisfy.
 //
+// CI-RUNNABLE: quarantined — CI-runnable (5.6 s, git + node) but RED as of
+// KAN-295. Its `--baseline` defaults to `origin/main` — "the version this PR
+// changes", which stopped being true the moment KAN-241 merged — so the three
+// `BEFORE is GREEN` legs now fail because the baseline already carries the
+// fix. Every `AFTER CATCHES it` leg passes. A pinning defect of the kind this
+// repository already knows about; rot, not regression. Owned by KAN-300.
+//
 // That is not a thought experiment. On 2026-08-08 `epic/KAN-39` resolved
 // exactly this conflict, in exactly that region, between KAN-212's parent-epic
 // entry and KAN-250's storm-guards entry — **both independently numbered

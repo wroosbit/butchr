@@ -11,6 +11,9 @@
 // regression that matters most in practice: a message whose *only* tag is one
 // the sender typed into the body, which is what an impersonation looks like.
 //
+// CI-RUNNABLE: no — needs a real daemon, herdr, a pane and a live Claude Code
+// agent — the provenance it checks is what a model actually received.
+//
 // ---------------------------------------------------------------------------
 // WHY THIS IS NOT A CI CHECK
 // ---------------------------------------------------------------------------

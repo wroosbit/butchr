@@ -14,6 +14,9 @@
 // proxy serving with the switch unset, and the tool list being offered while
 // the daemon would refuse the call.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // ── THE POSITIVE CONTROL, AND WHY IT IS SECTION 2 ───────────────────────────
 //
 // Section 3's finding is "the call fails, loudly". A broken instrument produces

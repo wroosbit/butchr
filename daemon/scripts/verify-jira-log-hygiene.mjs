@@ -7,6 +7,9 @@
 // — a run that redacts nothing fails as loudly as a run that leaks, because
 // the two look identical to a grep.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The companion script (verify-jira-credential-diagnostics.mjs) exercises the
 // transport and client directly. This one goes the whole way: it drives
 // `router.handle({action: 'set_jira_credential', …})` exactly as the native

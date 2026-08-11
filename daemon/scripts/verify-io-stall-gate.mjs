@@ -14,6 +14,9 @@
 // preemption that stands an agent down to relieve a stall it cannot relieve; and
 // a derivation whose `headroom` no longer reproduces from the terms it prints.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Seven sections:
 //
 //   1. instrument     — a real /proc/pressure read on this machine, all the way

@@ -15,6 +15,10 @@
 // real agents doing real work, and checks the ids it extracts against the live
 // Jira API.
 //
+// CI-RUNNABLE: no — checks comment ids against the live Jira API and needs a
+// real Atlassian credential; without one it correctly reports that it is not
+// evidence of anything.
+//
 // It fails if it finds no attributions to check (a parser that matches nothing
 // is the failure, not a quiet machine), and it fails if an id it extracted is
 // not really a comment on the issue it named.

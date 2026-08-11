@@ -8,6 +8,9 @@
 // notices nothing. It would also catch an interface that has drifted into a
 // copy of the class, by proving every member is required by a real caller.
 //
+// CI-RUNNABLE: yes — reads files off the checkout and asserts on their
+// contents; node builtins only.
+//
 // WHY THAT FIRST FAILURE IS NOT HYPOTHETICAL. `daemon-typecheck` does catch a
 // *partial* revert, because `daemon.ts` types its variable as `AgentRuntime`
 // and passing that to a `HerdrBridge` parameter fails. Revert both together and

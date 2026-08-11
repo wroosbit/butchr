@@ -11,6 +11,10 @@
 // figure computed entirely from supervisors — and `capByCpu` moved between 12
 // and 20 on unchanged hardware purely with what happened to be in the sample.
 //
+// CI-RUNNABLE: partial — the exclusion arithmetic asserts in CI. Section 5
+// needs a running fleet and is skipped without one — the header already said
+// so before this partition existed.
+//
 // It also catches the second half: supervisors exempt from the cap on *both*
 // dimensions, when they hold ~650 MB each and are 92% as heavy as a task agent
 // in memory while being ~14x cheaper on CPU.

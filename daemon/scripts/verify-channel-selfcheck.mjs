@@ -8,6 +8,9 @@
 // silent state KAN-248 exists to prevent, and it has three separate ways to
 // arrive, each of which looks like success from outside:
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 //   1. **A verdict that is reported and not enforced.** The row says
 //      `transport: composer` and `routeChannelMessage` keeps writing frames to
 //      the agent anyway, because the gate was never asked. The listing would be

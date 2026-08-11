@@ -9,6 +9,9 @@
 // the same time, any encoded form of the token reaching a message, a log line
 // or a response.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The constraint that shapes this script: no agent may hold a real credential
 // (KAN-20). So every case is produced against a local stub with a fake token.
 // That is not a weaker test than the real thing — the stub can produce a 403,

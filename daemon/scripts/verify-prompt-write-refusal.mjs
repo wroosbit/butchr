@@ -7,6 +7,10 @@
 // with no instructions at all, "verified" only in the sense that a live
 // runtime exists behind the name.
 //
+// CI-RUNNABLE: partial — the refusal itself is asserted in CI. Section 1, the
+// silent uninstructed start that makes the refusal meaningful, needs a dist
+// built from `origin/main` and is skipped without one.
+//
 // The ticket's symptom: when the `.butchr-prompt.md` write failed, initPty
 // logged `Failed to write prompt file` and fell through to spawn. The agent
 // came up, found no instructions, and the activation still answered

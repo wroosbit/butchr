@@ -8,6 +8,9 @@
 // "staffed" by a bare bash prompt that answers `success: true, verified: true`
 // and executes every `butchr_send_to_agent` message as a shell command.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The ticket's symptom: `resolveLauncher` treated an omitted name as `shell`
 // and warned-then-fell-back on an unknown one, so `butchr_activate_agent`
 // without the field "staffed" a ticket with a bare bash prompt that answered
