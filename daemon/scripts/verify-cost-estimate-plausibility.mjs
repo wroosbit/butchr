@@ -114,6 +114,10 @@ const { saveCostEstimate, loadCostEstimate, clearCostEstimate, COST_ESTIMATE_MAX
 const { sampleProcesses, groupByAgent, measureAgentCost } = await import(
   path.join(distDir, 'agent-cost.js')
 );
+const { supervisorPredicate } = await import('./lib/supervisor-types.mjs');
+// KAN-276: measureAgentCost has no default answer for "which trees are
+// chargeable" — see lib/supervisor-types.mjs for why it must be asked.
+const { isSupervisor } = await supervisorPredicate(distDir);
 
 // The pre-change model, if it was built. `computeCapacity` is pure, so the old
 // formula can be handed the exact facts the new one saw.
@@ -285,7 +289,7 @@ rule('2. THE INVARIANT, ON THIS MACHINE — real trees, a real /proc/stat window
 // Nothing invented in this section. The tree count is whatever is running on
 // this machine right now, and the busy figure is a window this script closed.
 readMachineFacts(); // opens the /proc/stat baseline; one reading measures no rate
-const liveMeasurement = await measureAgentCost(5);
+const liveMeasurement = await measureAgentCost(5, isSupervisor);
 const liveFacts = readMachineFacts();
 const liveTrees = groupByAgent(sampleProcesses()).size;
 
@@ -422,12 +426,40 @@ const CASES = [
     why: 'nothing to multiply by; the estimate asserts nothing about an empty fleet'
   },
   {
-    name: 'supervisors counted among the trees',
+    // This case asserted the opposite until KAN-276, and the assertion moved
+    // because the quantity underneath it did. `cost.cores` was the average over
+    // *every* claude tree, so multiplying it by every tree — supervisors
+    // included — was a sound claim about total fleet CPU, and 0.617 × 6 = 3.70
+    // against 2.00 busy was a genuine contradiction. It is now the cost of a
+    // **task agent** specifically, measured at ~14x what a supervisor spends,
+    // so multiplying it by 6 would claim a fleet CPU the estimate never
+    // asserted and manufacture a contradiction out of the arithmetic.
+    //
+    // The trade-off is real and is the reason this comment is long: the bound
+    // now fires less often, so it catches a post-restart fiction less often
+    // too, which is what KAN-204 built it for. That is accepted because it
+    // errs toward the *larger* divisor — here headroom 1 where the old model
+    // said 3 — and because KAN-204's primary fix, carrying the estimate across
+    // the restart so there is no fiction to catch, is untouched and is proved
+    // by section 4.
+    name: 'supervisors alongside one task agent',
     facts: M,
     running: 1,
+    options: { measured: asMeasured(0.617, 1), supervisorsRunning: 5 },
+    fires: false,
+    why: 'the estimate is per *task* agent since KAN-276: 0.617 × 1 = 0.62, under 2.00 busy'
+  },
+  {
+    // The other half of the same rule, so the case above is evidence that the
+    // multiplication counts task agents rather than evidence that the bound
+    // has been quietly disabled: same supervisors, same busy machine, a task
+    // fleet large enough for the estimate to contradict it on its own.
+    name: 'task fleet large enough to contradict',
+    facts: M,
+    running: 6,
     options: { measured: asMeasured(0.617, 6), supervisorsRunning: 5 },
     fires: true,
-    why: 'supervisors are never charged, but they are processes: 0.617 × 6 = 3.70 against 2.00 busy'
+    why: 'six task agents at 0.617 = 3.70 against 2.00 busy — the estimate still loses to the machine'
   },
   {
     name: 'idle machine, zero busy',

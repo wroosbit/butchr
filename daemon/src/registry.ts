@@ -119,6 +119,34 @@ export class WorkspaceRegistry {
   }
 
   /**
+   * Whether any integration *declares* this type a supervisor, enabled or not.
+   *
+   * Deliberately different from {@link isSupervisorType}, which answers from
+   * the registered types and therefore answers `false` for every type of a
+   * switched-off integration. That is the right answer for routing — a
+   * disabled type resolves nothing and staffs nothing — and the wrong one for
+   * the agent-cost filter (KAN-276), where the question is what a `claude`
+   * tree already running on this machine *is*.
+   *
+   * Those two come apart in one narrow case with a silent and expensive
+   * failure: disable Atlassian while epic and story agents are still running,
+   * and `isSupervisorType` stops recognising their trees, so they rejoin the
+   * per-task-agent divisor and drag it back down — the exact contamination
+   * KAN-276 removed, restored by a settings toggle, with nothing in any report
+   * saying so. Supervisor-ness is a property of the workspace type, not of
+   * whether its integration is switched on, so the cost filter asks this.
+   */
+  public declaresSupervisor(type: string | null | undefined): boolean {
+    if (typeof type !== 'string') return false;
+    for (const integration of this.integrationsById.values()) {
+      for (const config of integration.workspaceTypes) {
+        if (config.type === type) return config.supervisor === true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * The MCP servers every spawning agent gets from the integrations, keyed by
    * server name and in registration order.
    *

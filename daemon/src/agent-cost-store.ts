@@ -93,7 +93,12 @@ export function saveCostEstimate(
       cores: measured.cores,
       sampledAt: measured.sampledAt,
       windowSeconds: measured.windowSeconds,
-      agentTrees: measured.agentTrees
+      agentTrees: measured.agentTrees,
+      // Written when there is one. A restart with supervisors already up would
+      // otherwise fall back to the seed for the first window, which is the
+      // conservative direction but throws away a measurement for no reason
+      // (KAN-276). Absent when the window held no supervisor: null is not zero.
+      supervisorResidentBytes: measured.supervisorResidentBytes ?? null
     });
     const fd = fs.openSync(tmp, 'w', 0o600);
     try {
@@ -141,6 +146,15 @@ export function loadCostEstimate(
   const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0;
   if (!positive(residentBytes) || !positive(cores)) return null;
   if (!positive(windowSeconds) || !positive(agentTrees)) return null;
+  // Validated on the same terms as the agent figure and dropped rather than
+  // rejecting the whole record: a file written before KAN-276 has no such
+  // field, and the rest of it is still a good measurement of this fleet. A
+  // dropped figure falls back to the seed, which reserves more, not less.
+  const supervisorResidentBytes =
+    positive(parsed.supervisorResidentBytes) &&
+    parsed.supervisorResidentBytes <= machineTotalBytes
+      ? (parsed.supervisorResidentBytes as number)
+      : null;
   if (typeof sampledAt !== 'number' || !Number.isFinite(sampledAt)) return null;
   // The same ceiling sampleFromMeasurement applies to a live window: one agent
   // tree cannot hold more memory than the machine has.
@@ -154,6 +168,7 @@ export function loadCostEstimate(
     sampledAt,
     windowSeconds,
     agentTrees,
+    supervisorResidentBytes,
     provenance: 'restored'
   };
 }

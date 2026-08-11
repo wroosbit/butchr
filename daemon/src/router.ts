@@ -359,7 +359,20 @@ function capacityDto(c: Capacity) {
       : null,
     measuredAt: c.measured ? new Date(c.measured.sampledAt).toISOString() : null,
     measuredWindowSeconds: c.measured ? Math.round(c.measured.windowSeconds) : null,
+    // Task-agent trees only, since KAN-276. It was every claude tree on the
+    // machine, which made it a count of one population sitting next to a cost
+    // for another — a reading of `running: 0` with `measuredAgentTrees: 3` was
+    // how the contamination was finally spotted, and this field now cannot
+    // report that combination.
     measuredAgentTrees: c.measured ? c.measured.agentTrees : null,
+    // What is held back for supervisors, and what it was worked out from
+    // (KAN-276). Always present, `count: 0` when no supervisor is running.
+    supervisorReserve: {
+      count: c.supervisorReserve.count,
+      perSupervisorMb: Math.round(c.supervisorReserve.perSupervisorBytes / (1024 * 1024)),
+      reservedMb: Math.round(c.supervisorReserve.bytes / (1024 * 1024)),
+      source: c.supervisorReserve.source
+    },
     capByCpu: c.capByCpu,
     capByMemory: c.capByMemory,
     headroomByCap: c.headroomByCap,

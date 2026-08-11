@@ -658,16 +658,47 @@ verdict(
 // -------------------------------------------------------- 12. degrade --
 rule('12. DEGRADE — the instrument breaks; capacity still answers, from the seed');
 
+// KAN-276 split the populations these windows describe: `cores` is averaged
+// over `chargeable` (the task-agent trees) and `residentBytes` over `totals`
+// (every tree), so a fixture has to carry both or it is rejected for a reason
+// it did not mean to test. `win()` builds the pair from a task figure and an
+// optional supervisor figure, which is what keeps each rejection below
+// attributable to the defect in its own name rather than to a missing field.
+//
+// The positive control at the end is what makes that a real constraint. Without
+// it every assertion here is "returns null", and a sampleFromMeasurement broken
+// into returning null unconditionally — by exactly the sort of field rename this
+// change made — would satisfy all of them.
 const window60 = { elapsed: 60, loadStart: 0.2, loadEnd: 0.2, agents: [] };
+const win = (chargeable, supervisors = { agents: 0, cores: 0, residentMb: 0 }, extra = {}) => ({
+  ...window60,
+  ...extra,
+  chargeable,
+  supervisors,
+  totals: {
+    agents: chargeable.agents + supervisors.agents,
+    cores: chargeable.cores + supervisors.cores,
+    residentMb: chargeable.residentMb + supervisors.residentMb
+  }
+});
 const badWindows = [
-  ['zero agent trees ', { ...window60, totals: { agents: 0, cores: 0, residentMb: 0 } }],
-  ['negative cores   ', { ...window60, totals: { agents: 3, cores: -0.2, residentMb: 1800 } }],
-  ['zero cores       ', { ...window60, totals: { agents: 3, cores: 0, residentMb: 1800 } }],
-  ['absurd rss       ', {
-    ...window60,
-    totals: { agents: 3, cores: 0.4, residentMb: (FACTS.totalBytes / MIB) * 9 }
-  }],
-  ['zero-length window', { ...window60, elapsed: 0, totals: { agents: 3, cores: 0.4, residentMb: 1800 } }]
+  ['zero agent trees ', win({ agents: 0, cores: 0, residentMb: 0 })],
+  ['negative cores   ', win({ agents: 3, cores: -0.2, residentMb: 1800 })],
+  ['zero cores       ', win({ agents: 3, cores: 0, residentMb: 1800 })],
+  ['absurd rss       ', win({ agents: 3, cores: 0.4, residentMb: (FACTS.totalBytes / MIB) * 9 })],
+  ['zero-length window', win({ agents: 3, cores: 0.4, residentMb: 1800 }, undefined, { elapsed: 0 })],
+  // KAN-276: supervisors in the window and no task agent is a fleet that is
+  // running but has nothing to measure a *task* agent's cost from. It must
+  // degrade to the seed rather than publish the supervisors' average as a
+  // per-task-agent figure — which is the exact reading this ticket was filed
+  // on, `agentCores: 0.123` with `running: 0`. Note the memory leg *could*
+  // still be computed here, over the three supervisor trees; it degrades with
+  // cores anyway, because publishing half a measurement as though it were a
+  // whole one is the labelling failure KAN-44 exists to prevent.
+  ['all supervisors  ', win(
+    { agents: 0, cores: 0, residentMb: 0 },
+    { agents: 3, cores: 0.04, residentMb: 2325 }
+  )]
 ];
 console.log('what sampleFromMeasurement makes of windows that prove nothing:\n');
 let allRejected = true;
@@ -676,6 +707,28 @@ for (const [label, m] of badWindows) {
   allRejected &&= s === null;
   console.log(`  ${label} → ${s === null ? 'null (rejected)' : JSON.stringify(s) + ' — CHECK THIS'}`);
 }
+
+// The window that must NOT be rejected, and which also pins the split: cores
+// over the 3 task trees (0.6 ÷ 3 = 0.2), memory over all 5 (3600 MB ÷ 5 = 720).
+// If the memory leg ever starts excluding supervisors too, this figure moves to
+// 700 and this control goes red — which is the guard KAN-276 wants on it, since
+// that variant was measured to loosen headroomByMemory and was not shipped.
+const goodWindow = win(
+  { agents: 3, cores: 0.6, residentMb: 2100 },
+  { agents: 2, cores: 0.02, residentMb: 1500 }
+);
+const goodSample = sampleFromMeasurement(goodWindow, FACTS.totalBytes);
+const goodAccepted =
+  goodSample !== null &&
+  Math.abs(goodSample.cores - 0.2) < 1e-9 &&
+  Math.abs(goodSample.residentBytes - 720 * MIB) < 1;
+console.log(
+  `  ${'a good window    '} → ${goodSample === null ? 'null — CHECK THIS' : JSON.stringify(goodSample)}` +
+  `\n${' '.repeat(23)}(cores over the 3 task trees: 0.6 ÷ 3 = 0.2;` +
+  `\n${' '.repeat(23)} memory over all 5: 3600 MB ÷ 5 = 720 MB — the supervisors are in` +
+  `\n${' '.repeat(23)} the memory leg deliberately, and out of the core leg deliberately)`
+);
+allRejected &&= goodAccepted;
 console.log(
   '\n  The daemon clears the live measurement on null (and on a /proc read\n' +
   '  throwing), so what capacity answers is:\n'
@@ -686,10 +739,11 @@ verdict(
   // A bad window adopted as a divisor is worse than no measurement: it would
   // set the cap from noise and label the result as measured.
   allRejected && /\(seed\)/.test(degraded) && !/\(measured\)/.test(degraded),
-  'every bad window rejects to null, and the figures that follow are the seed\n' +
-    '    constants with the report *saying* seed — the same guarantee the Jira lookup\n' +
-    '    makes: whatever breaks, capacity still answers, conservatively, and a figure\n' +
-    '    nobody measured is labelled as such.',
+  'every bad window rejects to null — including a fleet of supervisors with no task\n' +
+    '    agent in it — while a good window is still accepted and averaged over its task\n' +
+    '    trees alone. The figures that follow are the seed constants with the report\n' +
+    '    *saying* seed: whatever breaks, capacity still answers, conservatively, and a\n' +
+    '    figure nobody measured is labelled as such.',
   allRejected
     ? 'the degraded report did not fall back to the seed, or did not label itself (seed).'
     : 'a window that measured nothing was accepted as a per-agent cost.'
