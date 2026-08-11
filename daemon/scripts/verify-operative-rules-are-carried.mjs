@@ -881,6 +881,134 @@ const RULES = [
     },
   },
   {
+    // KAN-314. The prompt mandated the red drive at `:96` — *break the thing it
+    // guards, watch it go red* — and said nothing about the one way a red drive
+    // silently does not happen. `epic/KAN-203` grepped for it (stale dist,
+    // build must succeed, rebuild before, failed build, `npm run build`) and
+    // found nothing in any of the four prompts.
+    //
+    // FOUR PHRASES, BECAUSE THE RULE HAS FOUR HALVES AND ANY THREE MISLEADS:
+    //   - `did not run on your mutation` — the rule itself. Without it there is
+    //     no rule, only a worked example.
+    //   - `both outcomes mislead` — the half that makes this worse than a
+    //     wasted step. An agent that keeps only the rule assumes a *failed*
+    //     proof after a failed build is still a failure it can trust, and it is
+    //     not: the fail is about the old build too.
+    //   - `older than `src`` — the STALE-DIST case, which had no failed build
+    //     at all. Drop it and the rule reads as being about compile errors,
+    //     which is the smaller and louder half; the #127 incident would still
+    //     pass every word of what remained.
+    //   - `the compiler did` — the worked case's actual point. The misleading
+    //     outcome there was a *red* that credited the wrong mechanism, and that
+    //     is the case people do not anticipate. A prompt that keeps the story
+    //     and drops this clause has kept an anecdote and lost its moral.
+    //
+    // All three PR-opening prompts and not `PROMPTS`: a `confluence` workspace
+    // writes pages, builds nothing and runs no proof, so inventorying it there
+    // would be requiring a rule its reader can never act on. It is in the two
+    // reviewer prompts as emphatically as in `task.md` because both recorded
+    // incidents happened to a reviewer at the moment of approving, not to an
+    // author at the moment of proving.
+    // THREE MORE PATTERNS, ADDED AT `epic/KAN-39`'s REVIEW OF #136, and they
+    // are the rule's own defect turned into assertions. As first written the
+    // rule said a proof after a failed build is a verdict about the old build,
+    // *whatever it prints* — which is true of a proof that imports from `dist`
+    // and FALSE of one that reads source as text. That is this epic's signature
+    // defect (a sentence claiming more than its mechanism covers) committed by
+    // the rule about not committing it, and it was found by applying the rule
+    // to a real PR and watching it give the wrong answer: at review of #137 a
+    // failed build would have sent a valid red from a text-reading proof
+    // (`verify-notifications-never-type.mjs`) into the bin.
+    //
+    //   - `reads source as text` — the qualifier. Without it the rule imposes a
+    //     re-run on every static proof in the tree, and the cost of THAT error
+    //     is invisible, because discarding good evidence looks like caution.
+    //   - `--static-only` — the MIXED case, which is the one that fails toward
+    //     false confidence rather than away from it. 17 of 81 scripts under
+    //     `daemon/scripts` both import `dist` and read `src`; after a failed
+    //     build their overall exit code is a blend of a real verdict and a
+    //     stale one. An agent that has the qualifier and not this reads the
+    //     blend as static and trusts it.
+    //   - `PIPESTATUS` — the trapdoor. The rule tells you to confirm the build
+    //     exited 0, and the obvious idiom (`npm run build | tail -5`) reports
+    //     `tail`'s status instead. Measured twice on this board in one day, and
+    //     once by this ticket's own implementer. An instruction whose standard
+    //     idiom silently defeats it is not an instruction.
+    id: 'H-22',
+    title: 'a proof run after a failed build — or over a stale `dist` — is a verdict about the old build',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /did not run on your mutation/i,
+          /both outcomes mislead/i,
+          /is not older than `src`/i,
+          /the compiler did/i,
+          /reads source as text/i,
+          /--static-only/,
+          /PIPESTATUS/,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-314, second half — `epic/KAN-203`'s framing, which was written down
+    // nowhere. Inventoried despite being explicitly *guidance rather than a
+    // rule*, and the distinction is worth stating because it changes what this
+    // entry asserts: it pins that the guidance is PRESENT and that it is
+    // SCOPED, never that any particular change obeyed it. A future editor
+    // tidying for length would drop the scoping clause first — it reads like
+    // hedging — and what is left is an absolute instruction to type things that
+    // cannot be typed, which is a worse artifact than the one we started with.
+    //
+    // Hence the third pattern. The first two are the guidance; `guidance, not a
+    // rule` is the limit, and the limit is the part being protected.
+    id: 'H-21',
+    title: 'check the instrument answered the question you asked — filter the CI run by workflow and head',
+    // KAN-314, added at `epic/KAN-39`'s review of #136. The third shape of
+    // H-22's failure, and the one that is not about builds: `gh run list
+    // --limit 1` reads the newest run of ANY workflow, and this repository has
+    // three. `epic/KAN-203` deployed on a false green off that row.
+    //
+    // (Both references here said H-19 until the merge of 2026-08-11: KAN-284
+    // landed that id first, so KAN-314's entry moved to H-22 and every
+    // reference outside it moved with it, per the `2a24912` precedent recorded
+    // in `rule-inventory.md`.)
+    //
+    // DELIBERATELY NOT FOLDED INTO H-22, and not generalised into one rule
+    // about epistemics. The approver's own framing at review — *"a sharp rule
+    // about builds beats a vague rule about epistemics"* — is the reason. The
+    // shared shape is worth one sentence and no more, because the FIX differs
+    // every time and is always specific: name the build, name the workflow,
+    // name the head. A single abstract rule would be obeyed by nobody at the
+    // moment it mattered, which is the only moment a rule is worth anything.
+    //
+    // The `--workflow=ci.yml` pattern is the concrete instruction and would be
+    // the first casualty of a rewrite toward the abstract; `false green` names
+    // the outcome, so a prompt keeping the command and losing the reason cannot
+    // pass either.
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [/--workflow=ci\.yml/, /the question you asked/i, /false green/i],
+      ])
+    ),
+  },
+  {
+    id: 'H-20',
+    title: 'prefer the type to the assertion where the choice exists — scoped, not absolute',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /Prefer the type to the assertion/i,
+          /unrepresentable state cannot be introduced at all/i,
+          /guidance, not a rule/i,
+        ],
+      ])
+    ),
+  },
+  {
     // KAN-284. THE GUARDIAN POKE IS AN OPERATIVE RULE BECAUSE IT ARRIVES
     // UNANNOUNCED OTHERWISE, AND AN UNANNOUNCED SCHEDULED MESSAGE IS ONE A
     // MODEL IS RIGHT TO REFUSE.
