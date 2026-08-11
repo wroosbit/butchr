@@ -210,14 +210,34 @@ jobs:
     name: verify-runnable-set
     runs-on: ubuntu-latest
     steps:
+      # Full history, unlike the one-object fetch `operative-rule-carriage`
+      # gets. `verify-staleness-check` and `verify-staleness-over-socket` each
+      # `git clone` this checkout into a scratch directory and then `git
+      # checkout -B main origin/main` inside the clone — a real clone damaged
+      # one way at a time is the whole design of those proofs. A clone resolves
+      # `origin/*` from the *local branches* of the repository it was cloned
+      # from, and a shallow checkout has none of the objects those branches
+      # need.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # `verify-rule-inventory-catches-dropped-entry` and the operative-rule
-      # sweep both read a baseline out of `origin/main`, which the default
-      # shallow checkout does not have. Same one-object fetch as
-      # `operative-rule-carriage` above, for the same reason.
-      - name: Fetch the baseline ref the sweeps read
-        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+      # `actions/checkout` leaves a detached HEAD at the PR merge commit, so
+      # this repository has no local `main` — and a clone of it therefore gets
+      # no `origin/main`, which is exactly how both staleness proofs failed on
+      # the first run of this job:
+      #
+      #     fatal: 'origin/main' is not a commit and a branch 'main' cannot be
+      #     created from it
+      #
+      # Neither script is wrong; a developer's clone has a local `main` and a
+      # CI checkout does not. Giving the checkout one is the environment's job,
+      # not the proof's.
+      - name: Give the checkout a local `main` for the staleness proofs to clone
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git branch --force main origin/main
+          git branch --list main
 
       - uses: actions/setup-node@v4
         with:

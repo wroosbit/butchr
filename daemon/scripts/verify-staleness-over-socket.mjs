@@ -12,6 +12,11 @@
 //
 // CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
 // in process; no live daemon, no herdr, no credential, no peer, no terminal.
+// It does `git clone` this checkout into a scratch directory and then
+// `checkout -B main origin/main` inside the clone, so the checkout it runs
+// from needs a **local** `main` branch — a clone resolves `origin/*` from the
+// local branches of its source, and `actions/checkout` leaves a detached HEAD
+// with none. The `verify-runnable-set` job creates one; see the comment there.
 //
 // The startup-log leg waits for the line rather than reading once (KAN-251).
 // What that wait covers is the daemon's buffered write stream reaching disk —
