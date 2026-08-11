@@ -6,6 +6,9 @@
 // resolving to a workspace it should not, or an issue-type lookup that throws
 // taking the activation down with it instead of degrading to `task`.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Three sections, one per acceptance criterion:
 //
 //   1. issue-type refinement — an Epic issue resolves to an `epic` workspace,

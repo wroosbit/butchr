@@ -9,6 +9,13 @@
 // less means the refactor quietly changed which tools a live agent comes up
 // holding.
 //
+// CI-RUNNABLE: quarantined — CI-runnable (0.1 s, build only) but RED as of
+// KAN-295. It crashes with a TypeError in a diagnostic `console.log` when no
+// `atlassian` entry is written — the no-credential case, which is CI. Its own
+// verdict below that line was written to handle exactly that case, so the
+// assertion is fine and the logging above it is not. Rot, not regression.
+// Owned by KAN-300.
+//
 // SCOPE, NARROWED SINCE KAN-145: what is compared here is the *assembly* — which
 // servers a workspace gets and where each one comes from. It is not the whole of
 // the file a real activation writes: herdr.ts passes the assembly through

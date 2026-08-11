@@ -10,6 +10,14 @@
 // reads. In `--clean` mode it catches the opposite failure: a daemon that
 // reports staleness on an install that is not stale.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+// It does `git clone` this checkout into a scratch directory and then
+// `checkout -B main origin/main` inside the clone, so the checkout it runs
+// from needs a **local** `main` branch — a clone resolves `origin/*` from the
+// local branches of its source, and `actions/checkout` leaves a detached HEAD
+// with none. The `verify-runnable-set` job creates one; see the comment there.
+//
 // The startup-log leg waits for the line rather than reading once (KAN-251).
 // What that wait covers is the daemon's buffered write stream reaching disk —
 // nothing more. It does not make the log leg independent of the other two: all

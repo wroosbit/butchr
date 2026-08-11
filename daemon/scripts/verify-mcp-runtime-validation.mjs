@@ -10,6 +10,10 @@
 // line, and no way to find out why. That is the bug as it actually happened: the
 // epic agent lost Jira for two hours and `which('npx')` had succeeded.
 //
+// CI-RUNNABLE: partial — sections 2 onward run in CI. Section 1 — the red —
+// needs an unfixed dist built from `origin/main` and is skipped without one,
+// which the script prints.
+//
 // ---------------------------------------------------------------------------
 // WHAT THIS SCRIPT SUPPLIES ITSELF, AND WHAT THAT LEAVES UNCOVERED
 // ---------------------------------------------------------------------------

@@ -11,6 +11,9 @@
 // agent's last frame, which is the capability the old docblock claimed and §5
 // asserts is absent.
 //
+// CI-RUNNABLE: no — needs a real herdr server and a terminal; it says so and
+// stops when there is neither.
+//
 // ---------------------------------------------------------------------------
 // WHY THIS IS THE HAND-RUN HALF OF A PAIR
 // ---------------------------------------------------------------------------

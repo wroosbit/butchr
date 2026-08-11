@@ -13,6 +13,9 @@
 // nobody can interpret), and the daemon's own notices drifting away from the
 // `[butchr daemon]` token the prompts teach.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // ---------------------------------------------------------------------------
 // WHAT THIS SCRIPT SUPPLIES, AND WHAT IT THEREFORE DOES NOT TEST
 // ---------------------------------------------------------------------------

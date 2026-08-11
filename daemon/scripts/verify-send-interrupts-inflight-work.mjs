@@ -10,6 +10,9 @@
 // rejection the human never made. This script is the measurement that decides
 // which of the two sentences is true, and it fails if the small one is.
 //
+// CI-RUNNABLE: no — needs a real daemon and a live agent with a tool call
+// actually in flight — the interrupt is the thing under test.
+//
 // ---------------------------------------------------------------------------
 // WHAT THIS IS AND IS NOT
 // ---------------------------------------------------------------------------

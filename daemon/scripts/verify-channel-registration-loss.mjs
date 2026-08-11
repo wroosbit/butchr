@@ -13,6 +13,9 @@
 // interrupted: true` and cancelled a working supervisor's tool call — which on
 // the recipient's side renders as a refusal nobody made.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // It would equally catch the half that made the downgrade invisible from the
 // *sender's* side, which is the part a reader is most likely to think is covered
 // and is not: `butchr_list_agents` reported `transport: "channel"` for exactly

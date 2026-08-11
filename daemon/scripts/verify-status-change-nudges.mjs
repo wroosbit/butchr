@@ -11,6 +11,9 @@
 // and never submitted — the failure a substring check over the scrollback
 // passes rather than catches, which is why section 3 exists.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Six sections, one per thing the ticket asks to be true:
 //
 //   1. supervisor of record  — written at activation from the caller's own

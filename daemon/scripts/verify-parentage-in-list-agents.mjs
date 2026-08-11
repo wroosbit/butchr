@@ -5,6 +5,9 @@
 // no org chart, because the daemon answered the parentage question badly. Four
 // shapes of that, and the last is the one that silently costs the most:
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 //   * a row nesting under the wrong agent, or under nothing — `activatedBy`
 //     naming an agent that did not staff it, or dropped from one of the four
 //     lists so that whole category renders rootless;

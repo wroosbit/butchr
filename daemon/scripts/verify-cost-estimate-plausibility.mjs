@@ -15,6 +15,9 @@
 // either of which would be a gate quietly loosening itself on a figure nobody
 // measured.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Five sections:
 //
 //   1. the walk      — the damping arithmetic from the seed, window by window,

@@ -10,6 +10,9 @@
 // refusal whose headline blames a constraint that did not bind. Each of those
 // has happened at least once on this board; each has a section below.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // Extended for KAN-36, which re-measured what an agent costs and reserved a
 // slot off the top for the then always-on board manager. Reworked for KAN-41:
 // KAN-39 replaced that single manager with epic and story agents that are
