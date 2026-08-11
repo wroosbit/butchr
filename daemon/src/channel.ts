@@ -157,12 +157,127 @@ export type ChannelRefusal =
   | 'channel-disabled'
   | 'selfcheck-failed'
   | 'no-connection'
+  | 'registration-lost'
   | 'socket-closed';
 
 /** What one attempt to write an addressed frame did. */
 export type ChannelRouteOutcome =
   | { routed: true; connectionId: string; address: AgentAddress }
   | { routed: false; reason: ChannelRefusal; detail: string; switchPath?: string };
+
+/**
+ * The carrier an agent's next `steer` takes.
+ *
+ * `'unregistered'` is the third state KAN-274 asks for, and it is neither of the
+ * other two on purpose: the agent is not on the channel, and delivering by
+ * composer would interrupt work nobody decided to interrupt. A `steer` in this
+ * state is **refused**; only `stop-now` still takes the composer, because taking
+ * the recipient's work is what `stop-now` is *for*.
+ */
+export type ChannelCarrier = 'channel' | 'composer' | 'unregistered';
+
+/** What {@link carrierFor} decided, and the sentence that says why. */
+export interface CarrierVerdict {
+  transport: ChannelCarrier;
+  /** `null` exactly when {@link transport} is `'channel'`. */
+  refusal: ChannelRefusal | null;
+  /** One sentence, derived from the branch taken rather than written twice. */
+  detail: string;
+}
+
+/**
+ * WHICH CARRIER, AND THE ONE PLACE THAT DECIDES IT (KAN-274).
+ *
+ * Extracted from {@link routeChannelMessage} rather than written beside it, and
+ * the extraction is the point rather than tidiness. Before this ticket the
+ * routing decision lived here and a *second*, differently-derived answer to the
+ * same question lived in `list_agents` — which read the self-check verdict alone
+ * and answered `transport: 'channel'` for agents that had no connection at all.
+ * That is KAN-145's defect shape exactly: one fact with two implementations, and
+ * the copy nobody routes on is the one that was wrong. It cost an agent an
+ * interrupt on 2026-08-11, and it cost it *twice over*, because a supervisor that
+ * checked the row first was told `channel` and interrupted anyway.
+ *
+ * So the report and the route now consult this, and the report cannot claim a
+ * carrier the next message will not take. `runtime-switch.ts` is the shape.
+ *
+ * **The order of the branches is load-bearing and unchanged.** The switch is read
+ * before the map, so a disabled channel answers `channel-disabled` for a
+ * disconnected agent as well as a connected one — the alternative leaks the
+ * identity map's contents through a gate that is supposed to be shut, and callers
+ * here do not even resolve a connection until the gate has opened. `degraded`
+ * sits second so an agent that is both degraded and disconnected reads as
+ * degraded, which is the cause somebody can act on.
+ *
+ * **`managed` is what separates a lost registration from an agent that never had
+ * one**, and it needs no new persistence to do it: the durable agent registry
+ * already survives a daemon restart and already names exactly the population that
+ * runs an MCP server and is therefore *supposed* to hold a connection. A pane, a
+ * human-activated workspace, an agent started outside Butchr — none are in it,
+ * none ever had a channel to lose, and all of them keep the composer they have
+ * always had. Refusing on a bare `no-connection` instead would have broken every
+ * one of those, and would have broken the whole fleet the day somebody pulled the
+ * kill switch.
+ */
+export function carrierFor(opts: {
+  emissionEnabled: boolean;
+  degraded: boolean;
+  registered: boolean;
+  /** Whether the durable registry expects this agent to be running. */
+  managed: boolean;
+  /** For the `channel-disabled` sentence only. */
+  switchPath?: string;
+}): CarrierVerdict {
+  if (!opts.emissionEnabled) {
+    return {
+      transport: 'composer',
+      refusal: 'channel-disabled',
+      detail:
+        'channel emission is switched off fleet-wide, so nothing is written to any connection' +
+        (opts.switchPath ? ` (switch: ${opts.switchPath})` : '')
+    };
+  }
+
+  if (opts.degraded) {
+    return {
+      transport: 'composer',
+      refusal: 'selfcheck-failed',
+      detail:
+        'this agent failed its startup channel self-check and is degraded to the composer; ' +
+        'butchr_list_agents carries the outcome and the client version on its row'
+    };
+  }
+
+  if (opts.registered) {
+    return {
+      transport: 'channel',
+      refusal: null,
+      detail: 'a live channel connection is registered for this agent'
+    };
+  }
+
+  if (opts.managed) {
+    return {
+      transport: 'unregistered',
+      refusal: 'registration-lost',
+      detail:
+        'this agent is one the durable registry expects to be running, and it holds no channel ' +
+        'registration — its MCP server has not (re-)announced itself since the link dropped. A ' +
+        'daemon restart drops every registration, and a socket error or a client reload drops ' +
+        'one; the agent is fine and is simply not addressable over the channel yet. It ' +
+        're-registers by itself within seconds of the daemon being reachable (KAN-274)'
+    };
+  }
+
+  return {
+    transport: 'composer',
+    refusal: 'no-connection',
+    detail:
+      'no live channel connection is registered for this agent, and the durable registry does ' +
+      'not expect one — a pane or a workspace that runs no Butchr MCP server has always been ' +
+      'reached by the composer'
+  };
+}
 
 /**
  * Write one addressed frame to one connection, or say why not.
@@ -180,26 +295,32 @@ export type ChannelRouteOutcome =
  * thing that made putting this capability on the shared server defensible — is
  * exactly the claim that could not then be made.
  *
- * So the order of the four refusals is fixed here rather than at either call
- * site, and it is deliberate: **the switch is read before the map is consulted.**
- * A disabled channel must answer `channel-disabled` for an agent that is not
- * connected as well as for one that is, because the alternative leaks the
- * identity map's contents through a gate that is supposed to be shut.
+ * **The order of the refusals moved to {@link carrierFor} under KAN-274 and is
+ * consulted from here rather than repeated.** It moved because a *second* reader
+ * of the same question appeared — `list_agents` — and answered it differently;
+ * see that function's header. The ordering itself is unchanged, and the reasons
+ * for it are unchanged: the switch is read before the map, so a disabled channel
+ * answers `channel-disabled` for a disconnected agent as well as a connected one
+ * rather than leaking the identity map through a shut gate, and `selfcheck-failed`
+ * sits between them so a degraded agent that is also disconnected reads as
+ * degraded — the cause somebody can act on — rather than as an incidental
+ * `no-connection`. What this function still owns is everything below the verdict:
+ * resolving the connection, writing the frame, and the `socket-closed` race that
+ * only a writer can observe.
  *
- * **`selfcheck-failed` sits second, between the switch and the map, and it is
- * what makes T5's fallback a behaviour rather than a label** (KAN-248). An agent
- * whose startup self-check failed is on the composer, and the only way to make
- * that true of its traffic — rather than merely reported on its row — is to
- * refuse it here, where the carrier is chosen. It is ordered ahead of the map for
- * the same reason the switch is: a degraded agent that also happens to be
- * disconnected should read as degraded, which is the cause somebody can act on,
- * rather than as an incidental `no-connection`.
+ * **`selfcheck-failed` is what makes T5's fallback a behaviour rather than a
+ * label** (KAN-248), and refusing here — where the carrier is chosen — is the
+ * only thing that makes it true of an agent's *traffic* rather than of its row.
+ * KAN-274 is the same argument applied to a registration that has gone: a row
+ * that said `channel` while the next message took a Ctrl+C was a label with no
+ * behaviour under it.
  *
- * `selfCheck` is optional and its ABSENCE ROUTES. A daemon wired without one —
- * the daemon's own internal router, and every harness — behaves exactly as it
- * did before KAN-248. So does an agent with no verdict recorded: unchecked is not
- * failed, and channel-selfcheck.ts argues at length why conflating the two would
- * take the fleet off channels on every daemon restart.
+ * `selfCheck` and `managed` are both optional and their ABSENCE ROUTES AS BEFORE.
+ * A daemon wired without them — the daemon's own internal router, and every
+ * harness — behaves exactly as it did before KAN-248 and KAN-274 respectively. So
+ * does an agent with no verdict recorded: unchecked is not failed, and
+ * channel-selfcheck.ts argues at length why conflating the two would take the
+ * fleet off channels on every daemon restart.
  */
 export function routeChannelMessage(opts: {
   registry: AgentConnectionRegistry;
@@ -208,36 +329,44 @@ export function routeChannelMessage(opts: {
   meta?: unknown;
   /** KAN-248's verdicts. Asked one question: has this agent been degraded? */
   selfCheck?: { degraded: (address: AgentAddress) => boolean };
+  /**
+   * Whether the durable registry expects this agent to be running (KAN-274).
+   *
+   * Optional, and **its absence answers `no-connection` exactly as before** — a
+   * harness or an internal router wired without it keeps the pre-KAN-274
+   * behaviour rather than acquiring a refusal nobody wired a reader for. Same
+   * shape and same reason as `selfCheck` above.
+   */
+  managed?: (address: AgentAddress) => boolean;
 }): ChannelRouteOutcome {
-  const { registry, address, content, meta, selfCheck } = opts;
+  const { registry, address, content, meta, selfCheck, managed } = opts;
 
-  if (!channelEmissionEnabled()) {
+  // THE ORDER LIVES IN `carrierFor` AND IS CONSULTED, NOT REPEATED (KAN-274).
+  // The gate is still read before the map — literally, not just in the answer:
+  // `resolve` is not called at all until emission is on and the agent is not
+  // degraded, so a shut gate cannot leak the identity map's contents even by
+  // timing.
+  const emissionEnabled = channelEmissionEnabled();
+  const degraded = selfCheck?.degraded(address) ?? false;
+  const target = emissionEnabled && !degraded ? registry.resolve(address) : undefined;
+
+  const verdict = carrierFor({
+    emissionEnabled,
+    degraded,
+    registered: target !== undefined,
+    managed: managed?.(address) ?? false,
+    switchPath: CHANNEL_SWITCH_PATH
+  });
+
+  if (verdict.transport !== 'channel' || !target) {
+    // `refusal` is non-null on every non-`channel` branch by construction; the
+    // fallback exists so this narrows without a cast rather than because a
+    // fifth state is expected.
     return {
       routed: false,
-      reason: 'channel-disabled',
-      detail:
-        'channel emission is off; nothing was written to any connection ' +
-        `(switch: ${CHANNEL_SWITCH_PATH})`,
-      switchPath: CHANNEL_SWITCH_PATH
-    };
-  }
-
-  if (selfCheck?.degraded(address)) {
-    return {
-      routed: false,
-      reason: 'selfcheck-failed',
-      detail:
-        `${describeAddress(address)} failed its startup channel self-check and has been degraded ` +
-        `to the composer; butchr_list_agents carries the outcome and the client version on its row`
-    };
-  }
-
-  const target = registry.resolve(address);
-  if (!target) {
-    return {
-      routed: false,
-      reason: 'no-connection',
-      detail: `no live connection for ${describeAddress(address)}`
+      reason: verdict.refusal ?? 'no-connection',
+      detail: `${describeAddress(address)}: ${verdict.detail}`,
+      ...(verdict.refusal === 'channel-disabled' ? { switchPath: CHANNEL_SWITCH_PATH } : {})
     };
   }
 

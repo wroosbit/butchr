@@ -31,7 +31,7 @@ import {
 import { ResumeCause } from './resume.js';
 import { nudgeResumedAgent } from './nudge.js';
 import { senderTagFor, withSenderTag } from './provenance.js';
-import type { ChannelRouteOutcome } from './channel.js';
+import type { CarrierVerdict, ChannelCarrier, ChannelRouteOutcome } from './channel.js';
 import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
 import type { ChannelLivenessState } from './channel-liveness.js';
 import { licenceFor, sealClaims } from './message-claims.js';
@@ -215,8 +215,21 @@ interface ListedAgent {
 interface ListedAgentChannel {
   /** `'unchecked'` when no verdict exists; otherwise the report's own outcome. */
   outcome: ChannelSelfCheckReport['outcome'] | 'unchecked';
-  /** The carrier this agent's messages take. An unchecked agent still routes. */
-  transport: ChannelSelfCheckReport['transport'];
+  /**
+   * The carrier this agent's next `steer` actually takes, asked of the same
+   * function that routes it (KAN-274).
+   *
+   * **`'unregistered'` is the third value and the one to read carefully**: the
+   * agent holds no channel registration and the registry expects it to, so a
+   * `steer` to it is refused rather than delivered by a composer interrupt. It
+   * is the ordinary state for the first seconds after a daemon restart, a socket
+   * error or a client reload, and it clears by itself when the agent's MCP
+   * server re-announces.
+   *
+   * Before KAN-274 this was the self-check verdict alone and said `'channel'` for
+   * agents that had no connection at all.
+   */
+  transport: ChannelCarrier;
   /** True only when the loop was proved on a client version somebody measured. */
   proved: boolean;
   clientName: string | null;
@@ -825,6 +838,27 @@ export interface MessageRouterOptions {
    * would let "this daemon cannot tell you" read as "nothing is wrong".
    */
   channelSelfCheck?: (address: { type: string; key: string }) => ChannelSelfCheckReport | null;
+  /**
+   * Which carrier this agent's next `steer` takes, and why (KAN-274).
+   *
+   * A reader for the same reason the two above are, and it exists so that the
+   * *row* and the *route* cannot disagree: `list_agents` used to answer this
+   * question itself, off the self-check verdict alone, and got it wrong for every
+   * agent that had lost its registration. It now asks `carrierFor` — the one
+   * function `routeChannelMessage` also consults.
+   *
+   * The second argument is whether this agent's own self-check degraded it, which
+   * the caller has already read; passing it keeps this reader from being a second
+   * consumer of the verdict store.
+   *
+   * **Absence keeps the old answer.** A daemon that passes none reports the
+   * self-check verdict exactly as it did before this ticket, rather than
+   * acquiring a third transport value no reader was written for.
+   */
+  channelCarrier?: (
+    address: { type: string; key: string },
+    degraded: boolean
+  ) => CarrierVerdict;
 
   /**
    * What the scheduled end-to-end channel probe has found (KAN-252).
@@ -887,6 +921,7 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'boardControl',
   'channelRoute',
   'channelSelfCheck',
+  'channelCarrier',
   'channelLiveness',
   'agentRuntimeReport'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
@@ -944,6 +979,8 @@ export class MessageRouter {
   private readonly channelRoute?: MessageRouterOptions['channelRoute'];
   /** See {@link MessageRouterOptions.channelSelfCheck}. */
   private readonly channelSelfCheck?: MessageRouterOptions['channelSelfCheck'];
+  /** See {@link MessageRouterOptions.channelCarrier}. */
+  private readonly channelCarrier?: MessageRouterOptions['channelCarrier'];
   /** See {@link MessageRouterOptions.channelLiveness}. */
   private readonly channelLiveness?: MessageRouterOptions['channelLiveness'];
   /** See {@link MessageRouterOptions.agentRuntimeReport}. */
@@ -982,6 +1019,7 @@ export class MessageRouter {
     this.boardControl = opts.boardControl;
     this.channelRoute = opts.channelRoute;
     this.channelSelfCheck = opts.channelSelfCheck;
+    this.channelCarrier = opts.channelCarrier;
     this.channelLiveness = opts.channelLiveness;
     this.agentRuntimeReport = opts.agentRuntimeReport;
   }
@@ -2571,6 +2609,85 @@ export class MessageRouter {
       return;
     }
 
+    // A STEER IS REFUSED RATHER THAN DELIVERED BY CTRL+C (KAN-274).
+    //
+    // `intent: 'steer'` is defined as *the recipient can finish what it is doing
+    // first*. Delivering one by composer interrupt contradicts that definition,
+    // and until this ticket it did so **silently**: a registration dropped by a
+    // daemon restart left the agent looking exactly like one on a channel — its
+    // `list_agents` row said `transport: "channel"` — and the sender learned the
+    // truth from `interrupted: true` in the response, after the interrupt had
+    // landed. A routine deploy therefore manufactured a cancelled tool call in an
+    // idle supervisor, which on the recipient's side renders as a refusal nobody
+    // made.
+    //
+    // **Narrow on purpose, and every part of the narrowing is load-bearing.**
+    // Only `registration-lost` refuses — the state where the durable registry
+    // expects this agent to hold a connection and it holds none. A blanket
+    // refusal on `no-connection` would break every send to a pane or a
+    // human-activated workspace that never had a channel, and would break the
+    // whole fleet the day somebody pulls the kill switch. `channel-disabled` and
+    // `selfcheck-failed` are *decided* states that are already reported, so the
+    // composer is the intended carrier there and nothing is refused.
+    //
+    // **`stop-now` never reaches here**, because `channelOutcome` is not even
+    // computed for it: taking the recipient's work is what `stop-now` is for, and
+    // it remains the fleet's only way to do so. That is also the escape hatch —
+    // a sender that means to interrupt says so, explicitly and on the record,
+    // rather than doing it by accident.
+    if (channelOutcome?.routed === false && channelOutcome.reason === 'registration-lost') {
+      respond({
+        action: 'send_to_agent_response',
+        success: false,
+        key,
+        type: address.type,
+        transport: 'unregistered',
+        transportChosenBecause: channelOutcome.detail,
+        intent: want,
+        // NOTHING WAS SENT, and the claims say so rather than leaving a reader to
+        // infer it from `success`. That inference is the exact defect KAN-150
+        // recorded — `success` read as delivery — and a refusal is the one case
+        // where getting it wrong is cheapest to prevent.
+        claims: sealClaims(
+          'composer',
+          {
+            transportAccepted: false,
+            sessionPresent: 'not-measured',
+            enteredTranscript: false,
+            // NOT `false`, though nothing was sent and no model can have read it.
+            // C4 is unobservable on the composer, and `sealClaims` refuses a
+            // boolean for it — correctly: the rule is about what the carrier can
+            // establish, and a refusal is not a licence to start asserting on a
+            // claim nothing here can see. The basis carries the plain fact.
+            modelRead: 'not-measured'
+          },
+          {
+            transportAccepted:
+              'nothing was written to any carrier: the channel had no registration to write to, ' +
+              'and this send was a steer, which is not permitted to interrupt',
+            sessionPresent:
+              'not asked — the refusal happened before any pane was resolved, so this says ' +
+              'nothing about whether the agent is up. It almost certainly is: a lost ' +
+              'registration is about the link, not the agent',
+            enteredTranscript: 'nothing was sent',
+            modelRead: 'nothing was sent'
+          }
+        ),
+        interrupted: false,
+        error:
+          `Refused: ${address.type}/${address.key} holds no channel registration, and a steer ` +
+          `must not be delivered by interrupting it. ${channelOutcome.detail}. ` +
+          `WHAT TO DO: wait and retry — it re-registers by itself within seconds of the daemon ` +
+          `being reachable, and butchr_list_agents shows transport 'channel' again when it has. ` +
+          `If this cannot wait, send it with intent 'stop-now', which takes the composer and ` +
+          `WILL destroy the tool call it is running. If it is news rather than a steer, a comment ` +
+          `on its Jira ticket reaches it within a minute and costs it no interrupt.`,
+        sender: tag,
+        delivered: tagged
+      });
+      return;
+    }
+
     // THE COMPOSER, and why it was chosen. §5.1 asks for a closed set of cases
     // rather than a vague fallback, so the reason is assembled from the actual
     // decision rather than described in general terms.
@@ -4144,15 +4261,29 @@ export class MessageRouter {
   ): { channel: ListedAgentChannel } | {} {
     if (!this.channelSelfCheck || !type) return {};
     const report = this.channelSelfCheck({ type, key });
+
+    // THE CARRIER IS ASKED OF THE THING THAT ROUTES, NOT DERIVED A SECOND TIME
+    // (KAN-274). This used to read `report.transport`, or the literal `'channel'`
+    // when there was no report — the self-check verdict alone, with nothing
+    // asking whether a connection existed. The row therefore said
+    // `transport: "channel"` for every agent that had outlived a daemon restart,
+    // while a send to one of them took the composer and Ctrl+C'd it. Measured on
+    // 2026-08-11: four agents in that state for 291 seconds, and the row's own
+    // `detail` named the missing condition in prose — "when one is registered" —
+    // while the field ignored it.
+    //
+    // `channelCarrier` is absent on a daemon wired without one, and the verdict
+    // then falls back to the report exactly as before.
+    const verdict = this.channelCarrier?.({ type, key }, report?.transport === 'composer') ?? null;
+
     if (!report) {
       return {
         channel: {
           outcome: 'unchecked',
-          // AN UNCHECKED AGENT ROUTES OVER THE CHANNEL, so this says `channel`
-          // rather than hedging — it is a statement about what will happen to
-          // the next message, and `routeChannelMessage` will not refuse this
-          // agent. `outcome` is where the reader learns that nothing proved it.
-          transport: 'channel',
+          // Unchecked still says nothing about the carrier — `carrierFor` does,
+          // and on an agent that holds a live registration it still answers
+          // `channel`, which is what it always should have meant.
+          transport: verdict?.transport ?? 'channel',
           proved: false,
           clientName: null,
           clientVersion: null,
@@ -4162,22 +4293,32 @@ export class MessageRouter {
           detail:
             'no startup channel self-check has run for this agent — most often because it ' +
             'outlived the daemon that would have checked it, or because it was spawned while ' +
-            'channel emission was off. Unchecked is not failed: its messages still route over ' +
-            'the channel when one is registered. Re-activating it runs the check.'
+            'channel emission was off. Unchecked is not failed. ' +
+            (verdict
+              ? `Its next steer takes: ${verdict.transport} — ${verdict.detail}. `
+              : '') +
+            'Re-activating it runs the check.'
         }
       };
     }
     return {
       channel: {
         outcome: report.outcome,
-        transport: report.transport,
+        // The verdict wins over the report's own field, and can only ever be
+        // *worse* than it: `carrierFor` is handed this report's degradation as
+        // an input, so a `composer` verdict stays `composer` and a `channel`
+        // one becomes `unregistered` when the connection behind it has gone.
+        transport: verdict?.transport ?? report.transport,
         proved: report.proved,
         clientName: report.clientName,
         clientVersion: report.clientVersion,
         clientVersionVerified: report.clientVersionVerified,
         checkedAt: report.checkedAt,
         elapsedMs: report.elapsedMs,
-        detail: report.detail
+        detail:
+          verdict && verdict.transport !== report.transport
+            ? `${report.detail} — but its next steer takes: ${verdict.transport}. ${verdict.detail}`
+            : report.detail
       }
     };
   }
