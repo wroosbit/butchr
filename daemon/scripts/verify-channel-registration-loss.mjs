@@ -54,16 +54,29 @@
 //   than by a socket dying.
 //   WHO COVERS THAT: section 3, on a real daemon, with nothing supplied.
 //
-//   SECTION 3 supplies none of it, and it is the section that exists because the
-//   other two would both pass on a build with the defect fully present. A real
-//   daemon is started from the build under test, a real `dist/mcp.js` is spawned
-//   the way an activation spawns it, and then the daemon is KILLED and a new one
-//   started — the actual operational action. Nothing in section 3 writes a
-//   registration, drops one, or reconnects anything: it watches the production
-//   code do all three and reads the result out of the daemon's own identity map.
-//   **The agent makes no tool call at any point after the restart**, which is
-//   the whole of what KAN-274 is about — a busy agent always reconnected, and
+//   SECTION 3 is the section that exists because the other two would both pass
+//   on a build with the reconnect defect fully present. A real daemon is started
+//   from the build under test, a real `dist/mcp.js` is spawned the way an
+//   activation spawns it, and then the daemon is KILLED and a new one started —
+//   the actual operational action. **Nothing here writes a registration, drops
+//   one, or reconnects anything**: it watches the production code do all three
+//   and reads the result out of the daemon's own identity map and its own log
+//   file. **The agent makes no tool call at any point after the restart**, which
+//   is the whole of what KAN-274 is about — a busy agent always reconnected, and
 //   proving it with one would prove nothing.
+//
+//   IT SUPPLIES EXACTLY ONE THING, and the AC4 checks are the ones that depend
+//   on it: an `agents.jsonl` activation record, because `reconcileAgents` counts
+//   dropped registrations only for agents the durable registry EXPECTS to be
+//   running, and a section that spawned only an MCP server would leave that
+//   registry empty — reconcile would report "no agents that should be running"
+//   and the count line would never execute, leaving an assertion that looks like
+//   a check and tests nothing. Everything downstream of that one record is the
+//   shipped code: that a restart finds the agent surviving, notices it holds no
+//   connection, and says so in the log an operator reads.
+//   WHAT THAT LEAVES UNCOVERED: nothing here proves a real *activation* writes
+//   such a record — that is `verify-activation-records-real-parentage.mjs` and
+//   `verify-agent-resumption.mjs`, and this script does not re-test it.
 //
 //   WHAT NO SECTION HERE COVERS: whether a MODEL is disturbed by a composer
 //   send, or notices a channel one. No Claude Code client and no model is run
@@ -79,7 +92,7 @@
 // ---------------------------------------------------------------------------
 // HOW TO WATCH IT GO RED
 // ---------------------------------------------------------------------------
-// THREE modes, one per behaviour this ticket changed, because a red that reaches
+// FOUR modes, one per behaviour this ticket changed, because a red that reaches
 // only one of them leaves the others' assertions unproven — and a check that has
 // only ever passed is evidence of nothing. Each patches the COPIED build, so
 // none of them can touch the real one.
@@ -95,6 +108,11 @@
 //                     and it is what makes SECTION 2's "NOTHING WAS TYPED" check
 //                     a gate rather than a sentence that has only ever passed.
 //
+//   `--silent-drop`   removes the AC4 count from `daemon.js`, restoring the
+//                     silence that made this defect invisible in the first
+//                     place: `0 failed`, truthfully, and nothing about the
+//                     registrations the restart took with it. SECTION 3 fails.
+//
 //   `--stale-row`     puts `router.js` back to deriving the carrier from the
 //                     self-check verdict alone. That is the reported symptom
 //                     literally: `list_agents` answering `transport: "channel"`
@@ -109,7 +127,7 @@
 // from os.homedir(), so a temp HOME gives this its own daemon, its own socket
 // and its own switch, and the live daemon at ~/.local/share/butchr is untouched.
 //
-// Usage: node daemon/scripts/verify-channel-registration-loss.mjs [--no-reconnect] [--stale-row] [--deliver-anyway]
+// Usage: node daemon/scripts/verify-channel-registration-loss.mjs [--no-reconnect] [--stale-row] [--deliver-anyway] [--silent-drop]
 
 import net from 'net';
 import path from 'path';
@@ -126,6 +144,7 @@ const daemonDir = path.resolve(scriptDir, '..');
 const noReconnect = process.argv.includes('--no-reconnect');
 const staleRow = process.argv.includes('--stale-row');
 const deliverAnyway = process.argv.includes('--deliver-anyway');
+const silentDrop = process.argv.includes('--silent-drop');
 
 if (!existsSync(path.join(daemonDir, 'dist', 'daemon.js'))) {
   console.error('daemon/dist/daemon.js is missing — run `npm run build` in daemon/ first.');
@@ -194,6 +213,29 @@ if (staleRow) {
   console.log('--stale-row: patched the copied router.js back to deriving the carrier from the');
   console.log('             self-check verdict alone. This is the reported KAN-274 symptom.');
   console.log('             Section 2 is expected to FAIL.');
+}
+
+// `--silent-drop` removes the AC4 count, restoring the silence that made this
+// defect invisible: the restart still reports `0 failed`, truthfully, and says
+// nothing about the registrations it took with it.
+if (silentDrop) {
+  const target = path.join(distDir, 'daemon.js');
+  const before = readFileSync(target, 'utf8');
+  const after = before.replace(
+    'if (unregistered.length) {',
+    'if (false) { // --silent-drop (KAN-274 proof): the restart says nothing'
+  );
+  if (after === before) {
+    console.error(
+      '--silent-drop could not find the `if (unregistered.length) {` count guard in the copied ' +
+      'daemon.js. The patch did not apply, so this run would report an honest restart for the ' +
+      'wrong reason. Refusing to continue.'
+    );
+    process.exit(2);
+  }
+  writeFileSync(target, after);
+  console.log('--silent-drop: patched the copied daemon.js so the restart reports nothing about');
+  console.log('               the registrations it dropped. Section 3 AC4 is expected to FAIL.');
 }
 
 // `--deliver-anyway` is the headline defect: a steer at an agent with no
@@ -581,8 +623,37 @@ const home = path.join(scratch, 'home-live');
 const butchrDir = path.join(home, '.local', 'share', 'butchr');
 mkdirSync(butchrDir, { recursive: true, mode: 0o700 });
 const socketPath = path.join(butchrDir, 'butchr.sock');
+const daemonLogPath = path.join(butchrDir, 'daemon.log');
 process.env.HOME = home;
 writeChannelSwitch(true);
+
+// THE DURABLE REGISTRY, WRITTEN BY HAND — and this is the one thing section 3
+// supplies, so it is named here rather than left for a reader to discover.
+//
+// AC 4 asks the restart to say how many registrations it dropped, and it can
+// only say that about agents it EXPECTS to be running: `reconcileAgents` reads
+// `AgentRegistry.expected()`, which is this file. A section that spawned only an
+// MCP server would leave the registry empty, reconcile would report "no agents
+// that should be running", and the count line would never execute — so the
+// assertion below would be vacuous while looking like a check.
+//
+// What is supplied is one activation record. What is NOT supplied, and is what
+// the assertion actually tests, is everything downstream of it: that a real
+// restart finds this agent surviving, notices it holds no connection, and says
+// so. The herdr census shim from section 2 is on PATH and names this agent, so
+// `reconcile` classifies it as already-running rather than as one to restore.
+writeFileSync(
+  path.join(butchrDir, 'agents.jsonl'),
+  JSON.stringify({
+    event: 'activated',
+    at: '2026-08-11T00:00:00.000Z',
+    agentName: 'butchr-task-kan-9274',
+    type: 'task',
+    key: 'KAN-9274',
+    workDir: scratch,
+    defaultAgent: 'claude'
+  }) + '\n'
+);
 
 function startDaemon(label) {
   const proc = spawn(process.execPath, [path.join(distDir, 'daemon.js')], {
@@ -701,6 +772,51 @@ check(
   'immediately after the restart the new daemon holds NO registration for it',
   !afterRestart.includes('task/kan-9274'),
   `identity map: [${afterRestart.join(', ') || 'empty'}] — this is the state the defect leaves behind`
+);
+
+// AC 4 — THE RESTART SAYS WHAT IT DROPPED, AND SOMETHING WATCHES IT SAY SO.
+//
+// Added after review: the count was implemented and unasserted, so the line
+// could have been deleted or reworded into uselessness with every check still
+// green. On this ticket in particular that is the wrong shape to leave lying
+// around — the whole thesis here is that silence is expensive, and `0 failed`
+// was true and misleading in the same line. An unguarded report of a dropped
+// count is that same defect one level up.
+//
+// Read out of the daemon's OWN log file rather than a captured stream, because
+// that is the artefact an operator actually reads after a deploy.
+let reconcileLine = null;
+for (let i = 0; i < 80; i++) {
+  const text = existsSync(daemonLogPath) ? readFileSync(daemonLogPath, 'utf8') : '';
+  // Only lines from the SECOND daemon: the first one logged its own reconcile to
+  // the same file, and matching that would pass without the restart having said
+  // anything at all.
+  const afterSecondBoot = text.split('Butchr daemon listening on').pop() ?? '';
+  reconcileLine = afterSecondBoot
+    .split('\n')
+    .find((l) => l.includes('hold no channel registration')) ?? null;
+  if (reconcileLine) break;
+  await sleep(250);
+}
+
+check(
+  'AC4: the restart reports how many surviving agents hold no registration',
+  reconcileLine !== null,
+  reconcileLine
+    ? reconcileLine.trim().slice(0, 150) + '…'
+    : 'no line naming a dropped count appeared in the daemon log after the restart'
+);
+check(
+  'AC4: and it names them, rather than reporting a bare number',
+  reconcileLine !== null && reconcileLine.includes('task/KAN-9274'),
+  reconcileLine?.includes('task/KAN-9274')
+    ? 'the affected agent is named'
+    : 'a count with no names sends the reader nowhere'
+);
+check(
+  'AC4: and it says what a sender should expect — that a steer is refused, not delivered',
+  reconcileLine !== null && reconcileLine.includes('REFUSED'),
+  'the line has to tell an operator what changed for messaging, not only that a number is non-zero'
 );
 
 // AND NOW THE WHOLE TICKET: does it come back on its own?
