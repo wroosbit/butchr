@@ -194,8 +194,27 @@ Recorded here and on KAN-59 as observations. **None is a change request**, and
    argument must be of type string or an instance of Buffer…"* — rather than a
    validation refusal. Their other refusals are exemplary; this one leaks an
    internal message.
-3. **The README's walkthrough is behind the CLI.** It documents `activate <type>
-   <key>`, workspace types in `crabcast.config.json`, and a `reset` command.
-   At the pin the CLI is path-addressed with `configure`/`forget` and `reset` is
-   gone. The refusal for `reset` is excellent and explains itself; the README is
-   what would mislead a new consumer first.
+3. ~~The README's walkthrough is behind the CLI.~~ **Withdrawn — this was
+   false, and the way it was false is the useful part.**
+
+   I reported that their README documented `activate <type> <key>`, workspace
+   types, and a `reset` command. It does not, at the pin: line 5 opens *"An
+   agent is a directory plus a few knobs… There are no workspace types, no keys
+   and no names to remember"*, the walkthrough is path-addressed throughout, and
+   `crabcast reset` appears zero times in its 823 lines. The four surviving
+   mentions of `workspaceTypes` are all in refusal and migration text
+   documenting its **removal**.
+
+   **What I actually read was `~/code/wroosbit/crabcast/README.md` — the shared
+   clone's working tree, sitting at `59ba420`** — while every behavioural claim
+   in this document came from the pinned worktree at `7c6d97f`. The two
+   disagreed by 23 commits and I did not notice, because the clone is kept
+   current with `git fetch` and **never checked out**: our own task prompt tells
+   agents not to run `checkout` or `pull` there, precisely because other agents
+   share it. So its **refs** are fresh and its **files** are frozen wherever the
+   clone was last left, and nothing about the directory says so.
+
+   That is a trap for every agent on this machine, not a mistake about
+   CrabCast: **read documentation out of your own pinned worktree, never out of
+   the shared clone.** The pin is what you are running against, and it is the
+   only tree whose files match its name.
