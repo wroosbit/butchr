@@ -80,6 +80,41 @@ import type {
  * it would only move that dependency rather than remove it. The type-only
  * import keeps the implementation swappable, which is what this ticket is for.
  */
+/**
+ * What a runtime reports about a spawn it just made (KAN-294).
+ *
+ * ## `channelEnabled` has three states and `null` is not `false`
+ *
+ * - `true` — the spawn decided, and it is channel-capable.
+ * - `false` — the spawn decided, and it is not.
+ * - `null` — **no spawn decided this.** The runtime made no channel decision it
+ *   can report, or has none to report about. It is *not* a way of saying "no
+ *   channel".
+ *
+ * **Collapsing `null` into `false` is a silent defect and that is why it is
+ * spelled out here rather than left to the type.** The two differ only for
+ * agents nothing ever spawned, so a two-state read is green on every agent
+ * anybody tests with and wrong on exactly the population it was added for.
+ * CrabCast state it in as many words on the same field at `8d7348f`: *"`null`
+ * means there is no spawn to be about, never 'no channel'."* It is invariant 11
+ * on this side too — silence is not a negative. The name is deliberately theirs,
+ * so one fact carries one name across both projects.
+ *
+ * ## `command` is diagnostic and nothing may branch on it
+ *
+ * Present where the runtime spawned a command line and `null` where it did not
+ * — CrabCast publishes no argv at the pin, verified from the wire. It is here
+ * for logs and for a human reading one. **The question it used to answer is
+ * answered by `channelEnabled` now**, and `verify-channel-spawn-verdict.mjs` §4
+ * asserts that no consumer has quietly gone back to reading it.
+ */
+export interface AgentSpawn {
+  /** The spawn's own channel verdict. Three states; see above. */
+  channelEnabled: boolean | null;
+  /** The command line, where this runtime spawns one. Diagnostic only. */
+  command: string | null;
+}
+
 export interface AgentRuntime {
   // -- lifecycle ------------------------------------------------------------
 
@@ -88,20 +123,28 @@ export interface AgentRuntime {
 
   /**
    * Register the callback fired once per pane this runtime actually spawns,
-   * with the moment of the spawn and the command line it ran. Called once, by
+   * with the moment of the spawn and what the spawn decided. Called once, by
    * `daemon.ts`, which uses it to watch a channel-enabled agent through its
    * startup (KAN-246, channel-startup.ts).
    *
-   * **The command string is part of the contract, not a convenience.** It is
-   * what makes "was this a channel-enabled spawn?" answerable from the thing
-   * that was spawned, rather than from a second read of a switch that anything
-   * may have rewritten in between — see the note on the implementation.
+   * **`channelEnabled` is part of the contract; the command string is the
+   * convenience.** That is the reverse of what this docblock said until
+   * KAN-294, and the reversal is the point. The old wording made the command
+   * line load-bearing — it was what made *"was this a channel-enabled spawn?"*
+   * answerable from the thing that was spawned rather than from a second read
+   * of a switch. The question was right and the carrier was wrong: a command
+   * line answers it only for a runtime that spells its channel decision as a
+   * flag, and `epic/KAN-59` is explicit that CrabCast does not — *"the channel
+   * is not a command-line switch here — it is an MCP server entry."* Under that
+   * shape the string sniff does not fail, it silently answers "no channel" for
+   * every agent, which is the worse of the two outcomes. So the verdict now
+   * crosses this boundary as a verdict.
    *
    * A runtime that never spawns a pane of its own may leave this unfired; the
    * daemon installs a listener and does not require it to be called.
    */
   setAgentSpawnedListener(
-    listener: (session: HerdrSession, spawnedAt: number, command: string) => void
+    listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void;
 
   spawnSession(

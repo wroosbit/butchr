@@ -240,6 +240,15 @@ Nothing else in the channel stack depends on it: KAN-244's capability, KAN-247's
 routing and KAN-249's brief all continue to work, inert, exactly as they did
 before this landed.
 
+**KAN-294 moved one of those rows and the revert has to know it.** The
+`daemon.ts` wiring no longer searches the spawned command line for
+`DEV_CHANNELS_FLAG`; `AgentLauncher.command` returns `{command, channelEnabled}`
+and the listener branches on the verdict. So reverting the KAN-246 merge alone
+now leaves `launchers.ts` returning a record nothing reads and `daemon.ts`
+importing a type that is gone. **Revert KAN-294 first, then KAN-246** — or, more
+cheaply, note that the switch at Level 1 is unaffected by any of this and is
+still the whole of what turns channels off.
+
 ### How you would know you need it
 
 The daemon writes every one of these to `~/.local/share/butchr/daemon.log`:

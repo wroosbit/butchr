@@ -524,17 +524,67 @@ function claudeCommand(promptCommand: string, channelFlags: string): string {
   return `claude ${flags} --continue || claude ${flags} ${shellQuote(promptCommand)}`;
 }
 
+/**
+ * A spawn as the launcher composed it: the command line, and the launcher's own
+ * record of whether it made that spawn channel-capable.
+ *
+ * **`channelEnabled` is a decision, not an inference, and that is the whole
+ * reason this type exists (KAN-294).** Until now the only thing that crossed
+ * this boundary was the command string, and the one consumer answered *"was
+ * this a channel-enabled spawn?"* by looking for {@link DEV_CHANNELS_FLAG} in
+ * it. That worked, exactly and only, because a `claude` spawn happens to wear
+ * its channel decision on its command line — which is a fact about one
+ * launcher, not about spawns. `epic/KAN-59` is emphatic that it does not
+ * generalise: *"CrabCast has no `DEV_CHANNELS_FLAG` equivalent at all. The
+ * channel is not a command-line switch here — it is an MCP server entry."* A
+ * second runtime whose spawns are `{command, args, env}` has nothing to match
+ * against, so the heuristic does not fail there — it silently answers "no
+ * channel" for every agent.
+ *
+ * So the decision is captured **here**, at the one site that takes it, and
+ * carried. Downstream reads a boolean it was handed rather than re-deriving one
+ * from a string that was never meant to answer the question.
+ *
+ * **Three values, and `null` is not `false`** — the same three CrabCast
+ * publishes on `activate_response` and `agent_status` at `8d7348f`, deliberately
+ * spelled the same way so one fact has one name across both projects:
+ *
+ * - `true` — the spawn decided, and it is channel-capable.
+ * - `false` — the spawn decided, and it is not.
+ * - `null` — **no spawn decided this.** There is nothing to be about: nothing
+ *   composed this pane, or the runtime that did cannot say. It is *not* a way
+ *   of saying "no channel", and reading it as one is a silent defect visible
+ *   only on agents nobody ever spawned.
+ *
+ * Every launcher in {@link AGENT_LAUNCHERS} answers `true` or `false`, because
+ * every one of them composes the spawn it is describing. `null` reaches this
+ * type from a runtime that did not — see {@link AgentSpawn}.
+ */
+export interface LaunchCommand {
+  /** Shell command run inside the pane (via `bash -c`). */
+  command: string;
+  /** Whether this spawn was made channel-capable. See above; `null` is not `false`. */
+  channelEnabled: boolean | null;
+}
+
 export interface AgentLauncher {
   /**
-   * Shell command run inside the herdr pane (via bash -c).
+   * Shell command run inside the herdr pane (via bash -c), plus the launcher's
+   * own record of what it decided while composing it.
    *
    * A function rather than a constant because the fallback prompt is no longer
    * always the same sentence: an agent being restored after a reboot whose
    * conversation could not be recovered must be told that, not greeted as if
    * it were starting fresh. `promptCommand` is what to say when there is no
    * conversation to continue; omitted, it is the ordinary cold start.
+   *
+   * **It returns a record rather than a string so that the channel decision and
+   * the command it produced come out of the SAME call.** Splitting them into
+   * two accessors would put a second read of the switch between the two, which
+   * is the exact race herdr.ts composes this once to avoid — see
+   * {@link LaunchCommand}.
    */
-  command: (promptCommand?: string) => string;
+  command: (promptCommand?: string) => LaunchCommand;
   /**
    * Optional pre-launch setup, e.g. CLI-specific MCP config. Throwing refuses
    * the activation: initPty answers with session.spawnError + terminated, the
@@ -584,7 +634,10 @@ export interface AgentLauncher {
 // and never by fallback.
 export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
   shell: {
-    command: () => 'bash'
+    // `false`, not `null`: a bare bash prompt is a spawn that decided, and what
+    // it decided is that there is no channel here. `null` would claim nobody
+    // knows, which is untrue of a launcher whose whole command is `bash`.
+    command: () => ({ command: 'bash', channelEnabled: false })
   },
   claude: {
     // Interactive session: resume if a conversation exists, else start one
@@ -601,8 +654,23 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
     // With the switch off — the shipped state, which KAN-246 does not change —
     // `developmentChannelFlags()` is `''` and this is the command Butchr has
     // always spawned, byte for byte.
-    command: (promptCommand = PROMPT_CMD) =>
-      claudeCommand(promptCommand, developmentChannelFlags()),
+    //
+    // THE SWITCH IS READ ONCE HERE AND THE VERDICT TRAVELS WITH THE COMMAND
+    // (KAN-294). `developmentChannelFlags()` reads a file, so calling it twice
+    // — once to build the command and once to answer "was this channel-enabled?"
+    // — admits a window in which the two disagree, and the disagreement is
+    // invisible: the pane runs one answer while the daemon supervises the other.
+    // One call, one verdict, both returned together.
+    command: (promptCommand = PROMPT_CMD) => {
+      const channelFlags = developmentChannelFlags();
+      return {
+        command: claudeCommand(promptCommand, channelFlags),
+        // Derived from the flags THIS command was built with, not from a second
+        // reading of the switch. With the switch off — the shipped state —
+        // `channelFlags` is `''` and this is `false`.
+        channelEnabled: channelFlags !== ''
+      };
+    },
     setup: (workDir) => {
       configureClaudeSettings(workDir);
       const trust = trustClaudeWorkspace(workDir);
@@ -622,8 +690,15 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
     }
   },
   'anti-gravity': {
-    command: (promptCommand = PROMPT_CMD) =>
-      `agy --continue || agy -i ${shellQuote(promptCommand)}`,
+    // `false` for the same reason as `shell`, and it is a statement about this
+    // launcher rather than about agy: nothing here passes a channel flag and
+    // `configureAgyMcp` writes agy's own MCP config, not Claude Code's channel
+    // server. If agy ever grows one, this is the line that decides — which is
+    // the point of the decision living at the composing site.
+    command: (promptCommand = PROMPT_CMD) => ({
+      command: `agy --continue || agy -i ${shellQuote(promptCommand)}`,
+      channelEnabled: false
+    }),
     setup: (_workDir, mcpServers) => configureAgyMcp(mcpServers)
   }
 };
