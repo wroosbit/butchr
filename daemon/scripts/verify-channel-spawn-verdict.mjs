@@ -17,6 +17,11 @@
 // forever. `epic/KAN-59`: "CrabCast has no DEV_CHANNELS_FLAG equivalent at all.
 // The channel is not a command-line switch here — it is an MCP server entry."
 //
+// CI-RUNNABLE: yes — imports the built daemon modules, stages its own $HOME and
+// its own unix socket in temporary directories, and needs no herdr, no pty, no
+// network and no CrabCast. Section 3 creates and removes two probe workspaces
+// under the workspaces root, per path and never by reverting a directory.
+//
 // ---------------------------------------------------------------------------
 // WHAT THIS SCRIPT SUPPLIES ITSELF, AND WHO COVERS THE REST
 // ---------------------------------------------------------------------------

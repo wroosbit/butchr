@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 55 |
+| `yes` | 56 |
 | `partial` | 5 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **77** |
+| **total** | **78** |
 
-**60 of 77** run on every pull request.
+**61 of 78** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -68,6 +68,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-channel-liveness` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-registration-loss` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-selfcheck` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-channel-spawn-verdict` | yes | imports the built daemon modules, stages its own $HOME and its own unix socket in temporary directories, and needs no herdr, no pty, no network and no CrabCast. Section 3 creates and removes two probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-channel-startup-supervision` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ci-partition-is-enforced` | yes | builds its fixtures in a temporary directory and reads `ci.yml` and the script headers off the checkout; node builtins only, no build, no daemon, no herdr, no credential, no network. |
 | `verify-confluence-workspaces` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
