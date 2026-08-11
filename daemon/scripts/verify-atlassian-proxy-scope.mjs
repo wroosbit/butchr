@@ -64,6 +64,7 @@ import {
   operationsFor,
   proxyReport,
   refuseProxyCall,
+  scopesOf,
   selectedProxyMode
 } from '../dist/atlassian-proxy.js';
 
@@ -199,10 +200,74 @@ check(
   PROXY_OPERATIONS.every((op) => op.method === 'GET' || op.method === 'POST'),
   JSON.stringify(PROXY_OPERATIONS.map((op) => [op.tool, op.method]))
 );
+// KAN-292 re-pointed this one, and the honest thing is to say that it moved
+// rather than to present the new list as though it had always been there.
+//
+// It used to read "jira-read needs exactly read:jira-work and nothing else",
+// and that was true of the three operations KAN-272 shipped. This slice adds
+// six more Jira reads, two of which — `atlassian_get_user_info` and
+// `atlassian_lookup_account_id` — read the **user directory** rather than issue
+// data. That is `read:jira-user`, a different scope, and rounding it into
+// `read:jira-work` because both start with `read:` is precisely the quiet
+// widening `grantedScopes` exists to expose.
+//
+// So the check is not relaxed: it is still an EXACT list, and it still fails
+// the moment a seventh scope appears. What changed is which list, and the
+// change is visible in this diff rather than inferrable from a passing run.
+//
+// Note what is NOT here: no `write:` scope, and nothing Confluence. Those are
+// asserted separately below and in verify-atlassian-proxy-write-scope.mjs.
 check(
-  'jira-read needs exactly read:jira-work and nothing else',
-  JSON.stringify(grantedScopes('jira-read')) === JSON.stringify(['read:jira-work']),
+  'jira-read needs exactly read:jira-work and read:jira-user — the two Jira reads, and no more',
+  JSON.stringify(grantedScopes('jira-read')) ===
+    JSON.stringify(['read:jira-user', 'read:jira-work']),
   JSON.stringify(grantedScopes('jira-read'))
+);
+// The rung above it. Stated as its own exact list for the same reason: the way
+// a mode acquires a scope nobody granted is by one operation being tagged into
+// it, and an exact comparison is the only thing that notices.
+check(
+  'confluence-read needs exactly the Jira reads plus the three Confluence read scopes',
+  JSON.stringify(grantedScopes('confluence-read')) ===
+    JSON.stringify([
+      'read:confluence-content.all',
+      'read:confluence-content.summary',
+      'read:confluence-space.summary',
+      'read:jira-user',
+      'read:jira-work'
+    ]),
+  JSON.stringify(grantedScopes('confluence-read'))
+);
+// The property that survives every rung being added: a READ mode never needs a
+// WRITE scope. This is the one that would matter most if it broke, because
+// nothing about the tool list would look different.
+for (const mode of ['jira-read', 'confluence-read']) {
+  check(
+    `${mode} requires no write scope at all`,
+    !grantedScopes(mode).some((scope) => /^write:/.test(scope)),
+    JSON.stringify(grantedScopes(mode))
+  );
+}
+// An operation that declares no scope is legitimate — `/_edge/tenant_info` is
+// unauthenticated site metadata — but exactly one operation may do it, and a
+// second appearing silently is far more likely to be a forgotten field than a
+// second genuinely unauthenticated endpoint.
+const scopeless = PROXY_OPERATIONS.filter((op) => scopesOf(op).length === 0);
+check(
+  'exactly one operation declares no scope, and it is the unauthenticated site-metadata read',
+  scopeless.length === 1 && scopeless[0].tool === 'atlassian_get_accessible_resources',
+  JSON.stringify(scopeless.map((op) => op.tool))
+);
+// And no scope is a compound string. This is here because the first draft of
+// this slice wrote a two-scope operation as `'read:jira-work read:confluence-
+// content.all'`, which type-checked, read correctly to a human, and defeated
+// the deduplication in `grantedScopes` — the enumeration grew an entry rather
+// than reusing the two it already had. A scope with a space in it is always
+// this bug.
+check(
+  'no scope is a space-joined compound — the list is the list',
+  PROXY_OPERATIONS.every((op) => scopesOf(op).every((scope) => !/\s/.test(scope))),
+  JSON.stringify(PROXY_OPERATIONS.flatMap((op) => scopesOf(op).filter((s) => /\s/.test(s))))
 );
 check(
   'no operation accepts a path, url, endpoint or method argument',
