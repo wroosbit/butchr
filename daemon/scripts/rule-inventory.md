@@ -115,6 +115,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-16` — KAN-242 — the brief is a snapshot: the commit it came from, and it does not outrank `origin/main`
 - `H-17` — KAN-252 — the channel liveness probe is named in the brief, with its ask and declining held open
 - `H-18` — KAN-306 — the approval marker: head-pinned, signed, required — and blind to forgery by construction
+- `H-19` — KAN-284 — the guardian poke is expected, is additional, and proves only that it was delivered
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
 <!-- INVENTORY:END -->

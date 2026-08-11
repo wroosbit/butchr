@@ -378,6 +378,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       sendResponse({ status: 'error', error: 'Native host not connected' });
     }
+  } else if (message.type === 'GUARDIAN') {
+    // KAN-284's one setting, relayed. `op` is 'get', 'set', 'clear' or 'poke'
+    // and this decides none of them — the daemon owns the rule, including the
+    // refusal that keeps there being exactly one guardian.
+    //
+    // **Nothing here second-guesses that refusal**, by the same rule as
+    // SET_INTEGRATION_ENABLED above: a relay that pre-checked whether a
+    // guardian already existed would be a second copy of the rule, and the copy
+    // in the relay is the one that goes stale. `replace` is forwarded as sent,
+    // so an options page that means to change the guardian says so and one that
+    // does not gets the daemon's refusal with the incumbent named in it.
+    if (!isConnected || !nativePort) {
+      connectNativeHost();
+    }
+    if (nativePort) {
+      nativePort.postMessage({
+        action: 'guardian',
+        op: message.op,
+        type: message.workspaceType,
+        key: message.key,
+        replace: message.replace,
+        intervalMs: message.intervalMs
+      });
+      sendResponse({ status: 'sent' });
+    } else {
+      sendResponse({ status: 'error', error: 'Native host not connected' });
+    }
   } else if (message.type === 'OPEN_TAB') {
     chrome.tabs.create({ url: message.url });
     sendResponse({ status: 'opened' });
