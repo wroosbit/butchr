@@ -123,6 +123,7 @@ const { JiraPoller, JiraPollState } = await import(
 const { CommentAuthorship } = await import(path.join(path.resolve(distDir), 'comment-authorship.js'));
 const { snapshotFrom } = await import(path.join(path.resolve(distDir), 'jira.js'));
 const { deliveryFingerprint } = await import(path.join(path.resolve(distDir), 'nudge.js'));
+const { deliverToAgent } = await import(path.join(path.resolve(distDir), 'nudge.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 let failures = 0;
@@ -315,7 +316,16 @@ function newPoller(Poller, { jira, herdr, agents, parents = {}, stateFile, autho
     confirmTimeoutMs: 400,
     confirmPollMs: 50,
     ...(authorship ? { authorship } : {}),
-    ...(deliver ? { deliver } : {})
+    // KAN-301 made this seam's default a REFUSAL rather than the composer, so a
+    // harness that reads delivery off a pane now has to ask for the composer by
+    // name. Deliberate, not a red made to go away: this proof counts
+    // INTERRUPTIONS PER RECIPIENT, and it can only count them on a carrier that
+    // leaves a mark on a pane. Production rides the channel;
+    // `verify-notifications-never-type.mjs` §1b asserts that this injection has
+    // no counterpart in `daemon/src`. The coalescing it proves is unchanged by
+    // the carrier and still matters: KAN-219 measured one channel event and
+    // explicitly declined to say anything about a burst.
+    deliver: deliver ?? deliverToAgent
   });
 }
 
@@ -797,7 +807,6 @@ console.log(`
   const stateFile = nextStateFile();
   const seenOnDisk = [];
 
-  const { deliverToAgent } = await import(path.join(path.resolve(distDir), 'nudge.js'));
   const spy = async (opts) => {
     seenOnDisk.push(JSON.parse(fs.readFileSync(stateFile, 'utf8')).issues['KAN-900']);
     return deliverToAgent(opts);
@@ -964,7 +973,10 @@ if (LIVE) {
     // owns its own clock again. Kept short only so a run costs a minute rather
     // than three. The code path is unchanged; only the patience is.
     confirmTimeoutMs: 15_000,
-    confirmPollMs: 500
+    confirmPollMs: 500,
+    // The composer, by name — same reason as `newPoller` above. This section is
+    // the live one: real panes, real Ctrl+C, counting real interruptions.
+    deliver: deliverToAgent
   });
 
   /**

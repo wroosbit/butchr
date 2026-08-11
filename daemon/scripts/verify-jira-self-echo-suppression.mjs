@@ -61,6 +61,7 @@ const distDir = args.find((a) => !a.startsWith('--')) ?? path.join(scriptDir, '.
 const { JiraPoller, JiraPollState } = await import(path.join(distDir, 'jira-poll.js'));
 const { CommentAuthorship } = await import(path.join(distDir, 'comment-authorship.js'));
 const { snapshotFrom } = await import(path.join(distDir, 'jira.js'));
+const { deliverToAgent } = await import(path.join(distDir, 'nudge.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 let failures = 0;
@@ -294,6 +295,16 @@ function newPoller({ jira, herdr, agents, parents = {}, stateFile, authorship, l
     state: new JiraPollState(stateFile),
     confirmTimeoutMs: 400,
     confirmPollMs: 50,
+    // KAN-301 made this seam's default a REFUSAL rather than the composer, so a
+    // harness that reads delivery off a pane now has to ask for the composer by
+    // name. This is that ask, and it is deliberate rather than a red made to go
+    // away: what this proof is about is WHO gets told and WHAT the message says,
+    // and the composer is the only carrier whose delivery can be confirmed as
+    // submitted output (C3) — a channel frame is unobservable past the socket.
+    // It is NOT a claim about production's carrier. Production rides the
+    // channel, and `verify-notifications-never-type.mjs` §1b is what asserts
+    // that this injection has no counterpart anywhere in `daemon/src`.
+    deliver: deliverToAgent,
     ...(authorship ? { authorship } : {})
   });
 }

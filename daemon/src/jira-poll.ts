@@ -5,7 +5,7 @@ import { agentNameFor } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { JiraIssueSnapshot, JiraSnapshotOutcome } from './jira.js';
-import { deliverToAgent } from './nudge.js';
+import { NotifyFn, refuseWithoutCarrier } from './notify.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
 import { CommentAuthorship } from './comment-authorship.js';
 
@@ -500,8 +500,21 @@ export interface JiraPollerOptions {
   state?: JiraPollState;
   intervalMs?: number;
   degradedIntervalMs?: number;
-  /** Swapped out only by a proof, which has no real pane to confirm against. */
-  deliver?: typeof deliverToAgent;
+  /**
+   * How a notification actually travels (KAN-301).
+   *
+   * Channel-only in production, and its DEFAULT is a refusal rather than a pane
+   * write — see {@link refuseWithoutCarrier}. Until KAN-301 this defaulted to
+   * `deliverToAgent`, so every ticket change this poller announced opened with a
+   * Ctrl+C at the recipient and cancelled whatever it was doing.
+   *
+   * Still swappable, and the harnesses that swap it deliberately choose the
+   * composer in order to read delivery off a real pane. That is a legitimate
+   * thing for a proof to do and not a thing production does: nothing in
+   * `daemon/src` may hand a composer function to this seam, and
+   * `verify-notifications-never-type.mjs` asserts it statically.
+   */
+  deliver?: NotifyFn;
   /** Overridable so a proof runs in seconds rather than in minutes. */
   confirmTimeoutMs?: number;
   confirmPollMs?: number;
@@ -916,7 +929,15 @@ export class JiraPoller {
   }
 
   /**
-   * Work out who one issue's events concern, and interrupt each of them once.
+   * Work out who one issue's events concern, and tell each of them once.
+   *
+   * IT NO LONGER INTERRUPTS ANYBODY (KAN-301). Everything below about Ctrl+C is
+   * kept as the reason this shape exists rather than as a description of what it
+   * now costs: notifications ride the channel, are acted on at the recipient's
+   * next turn boundary, and destroy no work in flight. The coalescing stays
+   * regardless — two frames of context where one would do is still a cost, and
+   * KAN-219 measured a single channel event and explicitly declined to say
+   * anything about a burst.
    *
    * ONE ISSUE, ONE INTERRUPTION PER RECIPIENT (KAN-207)
    *
@@ -952,7 +973,7 @@ export class JiraPoller {
     tick: PollTick
   ): Promise<void> {
     const { log, herdrBridge, supervisorFor } = this.opts;
-    const deliver = this.opts.deliver ?? deliverToAgent;
+    const deliver = this.opts.deliver ?? refuseWithoutCarrier;
 
     // Every event in the group is one issue's, by construction in `pollOnce`.
     const issueKey = events[0].key;
