@@ -12,6 +12,10 @@
 // Ctrl+C, plus 22 notifications that cost two interrupts each and were dropped
 // anyway.
 //
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+// in process, over Unix sockets it creates under a private $HOME in os.tmpdir();
+// no live daemon, no herdr, no credential, no peer, no terminal.
+//
 // The cost is not the lost turn. A cancelled tool call renders to the recipient
 // as a REFUSAL, so an agent cannot tell the poller's interrupt from the human
 // declining something. `epic/KAN-39` is the worked example, in the first person
@@ -42,9 +46,9 @@
 //   allowlist, and that daemon.ts hands both notification producers the
 //   channel-only carrier. It is the only section that can see the WIRING, and
 //   the wiring is exactly what sections 2-4 have to supply for themselves. It
-//   needs no build, no daemon, no herdr and no PTY, which is why it is the
-//   section that runs in CI (`notification-carrier` in ci.yml) — see the note
-//   at the end of this header on why that matters more than usual here.
+//   needs no build, no daemon, no herdr and no PTY, and `--static-only` runs it
+//   alone for a fast local check. In CI the whole file runs; see the note at the
+//   end of this header.
 //
 //   SECTIONS 2-5 supply the WORLD but not the MECHANISM. Jira is a stub and the
 //   agents are addresses this script invents; the carrier is the shipped
@@ -73,13 +77,21 @@
 // ---------------------------------------------------------------------------
 // ON "IS THIS PROOF EVER INVOKED", WHICH IS A FAIR QUESTION TO ASK OF IT
 // ---------------------------------------------------------------------------
-// KAN-295 found that CI evaluates the assertions of ONE `verify-*` script out
-// of 74. Section 1 of this one is the second, and that is a deliberate design
-// choice rather than a happy accident: the property KAN-301 most needs to hold
-// FOREVER — "no notification path types at a pane" — is a static property of
-// the source, so it was written as static analysis specifically in order to be
-// cheap enough to require. Sections 2-4 need a built `dist/` and are NOT run by
-// CI; they are run by hand, and the PR says so rather than implying otherwise.
+// The ticket warned not to assume a registered proof is an invoked one, and
+// when this script was written that warning was sharp: CI evaluated the
+// assertions of ONE `verify-*` script out of 76. **KAN-295 landed while this
+// branch was in flight and changed the answer** — `verify-runnable-set` now
+// discovers every script whose header says `CI-RUNNABLE: yes` and runs it on
+// every pull request. This one says yes and every section asserts, so the whole
+// file runs, not a static subset of it.
+//
+// That is why this script carries no CI job of its own. An earlier revision of
+// this branch added one, `notification-carrier`, running `--static-only`; it was
+// dropped on the rebase because a bespoke job for one script is precisely the
+// hand-maintained list KAN-295's runner exists to abolish — a second script
+// would need a second job, and the one nobody remembered to add would be
+// invisible. `--static-only` survives as a fast local mode and as the answer to
+// "can this be checked without a build", not as a CI entry point.
 //
 // Usage:
 //   node daemon/scripts/verify-notifications-never-type.mjs [dist]
@@ -395,7 +407,10 @@ verdict(
 
 if (STATIC_ONLY) {
   rule(`STATIC ONLY — ${failures} failure(s)`);
-  console.log('  Sections 2-4 skipped: they need a built dist/. This is what CI runs.\n');
+  console.log(
+    '  Sections 2-5 skipped: they need a built dist/. CI runs the WHOLE file via\n' +
+    '  verify-runnable-set (KAN-295); this flag is a fast local check, not that.\n'
+  );
   process.exit(failures ? 1 : 0);
 }
 
