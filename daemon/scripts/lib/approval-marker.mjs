@@ -56,6 +56,110 @@
 /** `<type>/<KEY>` — the fleet's own name for an agent, e.g. `epic/KAN-39`. */
 const AGENT = /^(epic|story|task|confluence)\/([A-Z][A-Z0-9]*-\d+)$/;
 
+// ---------------------------------------------------------------------------
+// TWO VERDICTS, TWO CARRIERS — KAN-317.
+//
+// KAN-306 published its answer twice: once as the `approval-recorded` commit
+// status, and once as the exit code of the job that posted it. That looked like
+// belt and braces and was not. The two carriers behave differently, and the
+// difference is the whole defect:
+//
+//   THE STATUS IS REPLACED.  It is POSTed at the head SHA, so the newest POST
+//   for that context wins. An approval arriving by comment overwrites the
+//   failure the push wrote. This carrier tracks the current answer, which is why
+//   it is the one branch protection requires.
+//
+//   THE JOB CONCLUSION IS NOT.  A workflow run's conclusion is fixed when the
+//   run ends. Worse, the re-evaluation triggered by the approving comment does
+//   not even attach to the head — an `issue_comment` run attaches its check run
+//   to the DEFAULT BRANCH (that is the whole reason the status exists). So the
+//   red `approval-gate` run written by the opening push is never superseded and
+//   never replaced. It sits on the head for all time.
+//
+// Every pull request begins unapproved, so every pull request earned a red
+// `approval-gate` run, so every APPROVED pull request in this repository read
+// `mergeStateStatus: UNSTABLE` rather than `CLEAN` — permanently, on #133, #134,
+// #135, #137 and #138.
+//
+// AND THAT IS NOT COSMETIC, WHICH IS WHY IT IS FIXED RATHER THAN DOCUMENTED.
+// `UNSTABLE` is indistinguishable at a glance from a real problem, and the
+// natural repair is `gh pr update-branch` — which moves the head and voids the
+// approval marker. Red-looking PR → rebase to clear it → approval dies →
+// `approval-recorded` goes red for real → still `UNSTABLE` → rebase again. That
+// loop fired on #138, costing a re-review, ninety seconds after the PR had been
+// green and approved.
+//
+// THE REPAIR IS TO STOP PUTTING THE APPROVAL VERDICT IN A CARRIER THAT CANNOT
+// RETRACT IT. Each carrier now answers exactly one question:
+//
+//   `approval-recorded` (a commit status, REQUIRED)
+//       Is this head approved?  Replaceable, head-pinned, and the only thing
+//       branch protection reads. Unchanged by KAN-317 — omission, staleness and
+//       a wrong signer all still turn it red, exactly as KAN-306 built it.
+//
+//   `approval-gate` (the job conclusion, NOT required)
+//       Did the gate manage to evaluate this head and publish that answer?
+//       Green means the gate ran and reported. Red means it could not — it
+//       could not read the head, or could not publish, or contradicted itself.
+//
+// SO A GREEN JOB OVER A RED STATUS IS THE DESIGNED READING, not a hole. It says
+// "the gate is working, and its answer is no". The job log says so in those
+// words, because the failure mode of this change is a reader who takes the green
+// job for an approval.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO. It does not weaken the gate: nothing here
+// touches `evaluate` above, and `approval-recorded` is the required context in
+// branch protection, so an unapproved pull request is still BLOCKED rather than
+// merely untidy. The candidate fix of "have the job always exit 0 regardless"
+// was rejected for the reason KAN-317 gives — it relies on nobody reading the
+// job as meaningful, which is the current confusion inverted. The job stays
+// meaningful; it is answering a narrower question, and saying which.
+
+/**
+ * The exit-code policy, as one pure function, because it is the thing that must
+ * not be quietly re-conflated. `check-approval-recorded.mjs` computes nothing
+ * about its own exit code except through here, so there is exactly one place in
+ * the repository that decides which failures are the job's.
+ *
+ * `.mjs` cannot spell `exitOn` as a literal type, which is what `prompts/*.md`
+ * would prefer over an assertion — an unrepresentable state cannot be
+ * introduced, whereas an assertion can be deleted. The nearest available thing
+ * is a closed set plus a throw, so that a typo becomes a loud crash rather than
+ * a silently-chosen branch. `EXIT_ON` is exported so a caller can enumerate the
+ * valid values rather than retyping a string literal.
+ *
+ * @param {{ gateHealthy: boolean, approved: boolean, exitOn: 'gate-health' | 'approval' }} q
+ * @returns {0 | 1}
+ */
+export const EXIT_ON = Object.freeze({ GATE_HEALTH: 'gate-health', APPROVAL: 'approval' });
+
+export function exitCodeFor({ gateHealthy, approved, exitOn }) {
+  if (typeof gateHealthy !== 'boolean' || typeof approved !== 'boolean') {
+    throw new TypeError(
+      `exitCodeFor needs booleans for gateHealthy and approved (got ${typeof gateHealthy}, ${typeof approved}). ` +
+        'Refusing to guess, because every wrong guess here is a gate that reports the wrong colour.'
+    );
+  }
+  if (exitOn !== EXIT_ON.GATE_HEALTH && exitOn !== EXIT_ON.APPROVAL) {
+    throw new TypeError(
+      `exitCodeFor got exitOn=${JSON.stringify(exitOn)}, which is neither ` +
+        `${JSON.stringify(EXIT_ON.GATE_HEALTH)} nor ${JSON.stringify(EXIT_ON.APPROVAL)}.`
+    );
+  }
+
+  // A gate that could not publish its verdict is a job failure under BOTH
+  // modes, and this line is the invariant rather than a shortcut. The mode
+  // chooses who carries the APPROVAL answer; it never excuses a broken gate,
+  // because a broken gate has not established anything at all. Fail closed.
+  if (!gateHealthy) return 1;
+
+  // `gate-health` is the CI default: the status carries the approval answer, so
+  // the job does not repeat it. `approval` is for a caller that has suppressed
+  // the status — with no other carrier, the exit code has to be the answer or
+  // the answer is nowhere.
+  return exitOn === EXIT_ON.APPROVAL ? (approved ? 0 : 1) : 0;
+}
+
 /**
  * The canonical approval line, matched anywhere in a comment body but only on a
  * line of its own. Prose around it is welcome and expected — the marker is what
