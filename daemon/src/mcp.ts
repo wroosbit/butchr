@@ -19,6 +19,7 @@ import {
   CHANNEL_SELFCHECK_RESULT_ACTION
 } from './channel-selfcheck.js';
 import { operationByTool, operationsFor, ProxyMode } from './atlassian-proxy.js';
+import { ldOperationByTool, ldOperationsFor, LdProxyMode } from './launchdarkly-proxy.js';
 
 /**
  * Which agent this server belongs to, read off this process's own argv.
@@ -554,17 +555,71 @@ async function proxiedOperations(): Promise<ReturnType<typeof operationsFor>> {
   }
 }
 
+/**
+ * Which LaunchDarkly operations this agent may be offered, asked of the daemon
+ * (KAN-298).
+ *
+ * Everything {@link proxiedOperations} says applies here unchanged, including
+ * the reason the answer is *fetched* rather than computed: this process inherits
+ * the agent CLI's environment and the daemon may have been started hours earlier
+ * from a systemd unit with quite another one, so a tool list built from the
+ * wrong environment is a menu of tools the daemon will refuse.
+ *
+ * A separate call rather than a field on the Atlassian one, because they are
+ * separate switches: an operator turns the LaunchDarkly proxy on without
+ * touching the Atlassian proxy, and a combined status would make one status
+ * action's timeout cost an agent both sets of tools.
+ *
+ * ON FAILURE, ADVERTISE NOTHING — a daemon that cannot be asked is not a daemon
+ * that said yes.
+ */
+async function ldProxiedOperations(): Promise<ReturnType<typeof ldOperationsFor>> {
+  try {
+    const res: any = await Promise.race([
+      callDaemonAPI('launchdarkly_proxy_status'),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`daemon did not answer within ${PROXY_STATUS_TIMEOUT_MS}ms`)),
+          PROXY_STATUS_TIMEOUT_MS
+        )
+      )
+    ]);
+    const mode: LdProxyMode | undefined = res?.report?.mode;
+    if (res?.success !== true || !mode || mode === 'off') return [];
+    return ldOperationsFor(mode);
+  } catch (err: any) {
+    // Said on stderr rather than swallowed: an agent silently missing tools it
+    // was meant to have is the failure that takes longest to notice, and it is
+    // the precise failure this integration has been living with — the official
+    // LaunchDarkly server has been exiting before it spoke MCP for a week, and
+    // what that looked like was a tool list with nothing in it and no reason.
+    console.error(
+      `LaunchDarkly proxy tools not offered: ${err?.message ?? String(err)}.`
+    );
+    return [];
+  }
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  // Asked per listing rather than cached, so an operator who turns the proxy
-  // off does not have to also restart every agent for a *new* client's listing
-  // to reflect it. It changes nothing for a client that has already listed —
-  // see the daemon's `handleAtlassianProxyCall` for why the gate is there and
-  // the advertisement is only advisory.
-  const proxied = await proxiedOperations();
+  // Asked per listing rather than cached, so an operator who turns a proxy off
+  // does not have to also restart every agent for a *new* client's listing to
+  // reflect it. It changes nothing for a client that has already listed — see
+  // the daemon's `handleAtlassianProxyCall` and `handleLaunchDarklyProxyCall`
+  // for why the gate is there and the advertisement is only advisory.
+  //
+  // Concurrently, and that matters: each waits up to PROXY_STATUS_TIMEOUT_MS on
+  // a daemon that may be wedged, and in series a wedged daemon would cost every
+  // agent's bring-up twice that rather than once.
+  const [proxied, ldProxied] = await Promise.all([proxiedOperations(), ldProxiedOperations()]);
 
   return {
     tools: [
       ...proxied.map((op) => ({
+        name: op.tool,
+        description: op.description,
+        inputSchema: op.inputSchema
+      })),
+      ...ldProxied.map((op) => ({
         name: op.tool,
         description: op.description,
         inputSchema: op.inputSchema
@@ -791,6 +846,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // is the 2026-08-10 failure in miniature: what an agent saw was
         // something that looked like an answer, and the twelve hours went on
         // whether the credential was dead being unknowable from the call.
+        isError: res?.success === false,
+      };
+    }
+
+    // The LaunchDarkly proxy (KAN-298), matched against the shared operation
+    // table for the same reason the Atlassian one is: a client may call a tool
+    // it listed minutes ago, and the daemon — which owns the gate — is where
+    // that call is decided. Forwarding an operation the daemon has since
+    // switched off produces its refusal, which is the honest answer.
+    if (ldOperationByTool(name)) {
+      const res = await callDaemonAPI('launchdarkly_proxy_call', { tool: name, args: args ?? {} });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        // A refused read must never arrive as ordinary text — a refusal that
+        // reads like an answer is the defect this whole integration exists to
+        // remove, and an empty flag list that is really a dead credential is
+        // exactly the shape it takes here.
         isError: res?.success === false,
       };
     }
