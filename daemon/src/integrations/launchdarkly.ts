@@ -5,7 +5,7 @@ import {
   CredentialStore,
   StorageTarget
 } from '../credentials.js';
-import { VALIDATE_TIMEOUT_MS, failureKind, redact, truncate } from '../jira.js';
+import { PROXY_TIMEOUT_MS, VALIDATE_TIMEOUT_MS, failureKind, redact, truncate } from '../jira.js';
 import { CredentialAdapter, Integration } from './integration.js';
 
 // LaunchDarkly as Butchr's second integration: a stored API token, validated
@@ -17,9 +17,16 @@ import { CredentialAdapter, Integration } from './integration.js';
 // `CredentialAdapter` interface those four operations became. Nothing here
 // changed to satisfy it; the interface was written from this class.
 //
-// There are no LD *features* here — no flag reads, no LD-owned workspace
-// types. Those are follow-on stories; this module exists so a token can be
-// stored, checked, disclosed, and scrubbed, end to end.
+// KAN-298 adds the second thing this credential is for: {@link
+// LaunchDarklyIntegration.proxyRead}, one GET made on an agent's behalf. What
+// it may read is not decided here — `launchdarkly-proxy.ts` owns the operation
+// table and the switch, and this file never learns what a tool is. The split is
+// the one `jira.ts` and `atlassian-proxy.ts` keep: a transport that knows about
+// credentials and HTTP, and a table that knows about policy.
+//
+// There are still no LD-owned workspace types, and there is no write path of
+// any kind — see `launchdarkly-proxy.ts`'s header for why that is a decision
+// rather than a gap.
 
 /** The credential in full. LaunchDarkly needs nothing but the token. */
 export interface LdCredential {
@@ -262,6 +269,155 @@ function trail(legs: LdLegResult[]): string {
 }
 
 /**
+ * What one proxied read produced — LaunchDarkly's answer, or a refusal that
+ * says **whose problem it is** (KAN-298).
+ *
+ * The same shape and the same argument as `JiraProxyOutcome`, and the argument
+ * is worth repeating rather than cross-referencing because it is the whole point
+ * of this type. An agent that reads a failure has one question:
+ * **"is this my problem or the fleet's?"** {@link credentialFault} is a separate
+ * field from the message because that question must not have to be answered by
+ * parsing prose. `true` means the daemon's credential was refused or unreachable
+ * and **every other agent is about to hit this too**, which is a thing to report
+ * to a human rather than to retry; `false` means LaunchDarkly answered and
+ * disliked *this* request, which is the agent's own to fix.
+ *
+ * **There is no success shape carrying an empty body.** A proxied read either
+ * produces what LaunchDarkly returned or produces a refusal naming the endpoint
+ * — the silent third option is the defect this whole ticket exists to remove,
+ * and the one the broken `~/.claude.json` entry has been producing for a week by
+ * exiting before it ever spoke MCP.
+ */
+export type LdProxyOutcome =
+  | { ok: true; status: number; body: any }
+  | {
+      ok: false;
+      /** HTTP status, when LaunchDarkly answered at all. Absent on a dead leg. */
+      status?: number;
+      /** The sentence the agent reads. Never empty, never a bare status. */
+      error: string;
+      /** Machine-readable, when the leg supported a diagnosis. */
+      diagnosis?: LdDiagnosis;
+      /** The endpoint tried and what it said. Non-secret by construction. */
+      legs?: LdLegResult[];
+      /** See the docblock: whose problem this is. */
+      credentialFault: boolean;
+    };
+
+/**
+ * Turn a refused proxied read into the sentence an agent acts on.
+ *
+ * Exported because the refusals are the security-relevant half of this file and
+ * a verify script should be able to drive every branch of them without a
+ * network, a credential or a daemon.
+ *
+ * THE 403 IS THE INTERESTING ONE and it is why this function exists rather than
+ * a `switch` inline. LaunchDarkly returns 403 for two completely different
+ * situations that want opposite responses from the reader:
+ *
+ *  - **`"Plan does not allow this operation"`** — an account entitlement. Every
+ *    AI Configs endpoint answers this on a plan without AI Configs, which is the
+ *    state of the account this was built against: four of the ten mirrored
+ *    operations return it. Nothing about the credential is wrong, no token
+ *    change fixes it, and retrying never will. Reporting it as "the credential
+ *    was refused" would send somebody to replace a perfectly good token.
+ *  - **anything else 403** — the token authenticated and its role does not cover
+ *    this resource, which *is* a credential problem and does want a human.
+ *
+ * Distinguishing them is done on LaunchDarkly's own words, which are better than
+ * anything invented here — see `extractDetail`.
+ */
+export function explainLdProxyFailure(
+  status: number,
+  legs: LdLegResult[]
+): { error: string; diagnosis?: LdDiagnosis; credentialFault: boolean } {
+  const said = legs.map((leg) => leg.detail).filter((detail): detail is string => !!detail);
+  const because = said.length ? ` LaunchDarkly said: ${said[said.length - 1]}` : '';
+  const planLimited = said.some((detail) => /plan does not allow/i.test(detail));
+
+  if (status === 403 && planLimited) {
+    return {
+      error:
+        'LaunchDarkly refused this read because THE ACCOUNT PLAN DOES NOT INCLUDE THIS FEATURE ' +
+        `(403).${because} This is an entitlement on the LaunchDarkly account, not a problem with ` +
+        "the Butchr daemon's credential and not a missing resource: the token authenticated and " +
+        'the endpoint exists. No token change fixes it and retrying will not help — the plan has ' +
+        'to include the feature. AI Configs are the usual case. Every other operation this proxy ' +
+        'serves is unaffected.',
+      diagnosis: 'ld-forbidden',
+      // Deliberately false. It is not the credential, and marking it a
+      // credential fault would tell the whole fleet its shared token had died.
+      credentialFault: false
+    };
+  }
+
+  if (status === 401) {
+    return {
+      error:
+        "The Butchr daemon's own LaunchDarkly credential was refused (401). This is not your " +
+        'query and retrying will not help — every agent using this proxy is about to see the ' +
+        'same thing, and a human has to replace the credential in Butchr settings. The token is ' +
+        `wrong, expired, or revoked.${because}`,
+      diagnosis: 'token-rejected',
+      credentialFault: true
+    };
+  }
+
+  if (status === 403) {
+    return {
+      error:
+        "The Butchr daemon's own LaunchDarkly credential authenticated but is not permitted this " +
+        `read (403).${because} This is a permission problem on the LaunchDarkly side — the ` +
+        "token's role does not cover this resource — rather than a mistyped token, and a human " +
+        'has to widen the role or replace the credential in Butchr settings.',
+      diagnosis: 'ld-forbidden',
+      credentialFault: true
+    };
+  }
+
+  if (status === 404) {
+    return {
+      error:
+        `LaunchDarkly answered 404 for this read. The daemon's credential worked; the project, ` +
+        `flag, environment or AI Config asked for does not exist, or this account cannot see ` +
+        `it. Check the keys — they are case-sensitive.${because}`,
+      diagnosis: 'unexpected-status',
+      credentialFault: false
+    };
+  }
+  if (status === 400) {
+    return {
+      error: `LaunchDarkly rejected this read as malformed (400).${because}`,
+      diagnosis: 'unexpected-status',
+      credentialFault: false
+    };
+  }
+  if (status === 429) {
+    return {
+      error:
+        'LaunchDarkly is rate-limiting this credential (429). It is shared by the whole fleet, ' +
+        `so backing off rather than retrying immediately is the cooperative move.${because}`,
+      diagnosis: 'unexpected-status',
+      credentialFault: false
+    };
+  }
+  if (status >= 500) {
+    return {
+      error:
+        `LaunchDarkly returned HTTP ${status} — a fault on their side, not with the credential ` +
+        `or the query.${because}`,
+      diagnosis: 'unexpected-status',
+      credentialFault: false
+    };
+  }
+  return {
+    error: `LaunchDarkly returned HTTP ${status}, which this proxy has no specific reading of.${because}`,
+    diagnosis: 'unexpected-status',
+    credentialFault: false
+  };
+}
+
+/**
  * The LaunchDarkly credential, as the router consumes it: exactly the four
  * operations the credential handlers need, nothing more.
  */
@@ -324,6 +480,133 @@ export class LaunchDarklyIntegration
   /** Remove the credential from both backends. Idempotent. */
   public async clearCredential(): Promise<void> {
     await this.store.clear();
+  }
+
+  /**
+   * One read made on an agent's behalf, through the daemon's own credential
+   * (KAN-298).
+   *
+   * WHAT THIS DOES NOT DO, BECAUSE SOMEBODY WILL LOOK FOR IT HERE: it does not
+   * decide **what** may be read. The path arrives already built by
+   * `launchdarkly-proxy.ts`'s operation table from arguments it validated, and
+   * this method neither parses it nor checks it. Putting a policy question
+   * inside a transport is how the granted scope stops being readable off one
+   * table, and it is why the equivalent split exists between `jira.ts` and
+   * `atlassian-proxy.ts`.
+   *
+   * There is deliberately **no** `proxyWrite` beside this. Adding one is not a
+   * matter of copying this method with a verb changed — see
+   * `launchdarkly-proxy.ts`'s header for the decision and the four options it
+   * rejected.
+   *
+   * THE TOKEN DOES NOT APPEAR IN THE ANSWER, by construction rather than by
+   * filtering: auth travels in a header, the path is built from validated
+   * arguments, and every on-the-wire form of the secret is scrubbed out of any
+   * detail LaunchDarkly hands back — the same list `validateLdToken` builds, for
+   * the same reason.
+   *
+   * Never throws.
+   */
+  public async proxyRead(path: string, beta = false): Promise<LdProxyOutcome> {
+    const cred = await this.store.load();
+    if (!cred) {
+      // Distinct from every other refusal, and the wording matters: an agent
+      // must not read "no credential" as "LaunchDarkly is down". Nothing is
+      // broken — nobody has configured one.
+      return {
+        ok: false,
+        credentialFault: true,
+        error:
+          'The Butchr daemon has no LaunchDarkly credential configured, so it cannot make this ' +
+          'read for you. Nothing is broken and LaunchDarkly is not down: a human configures one ' +
+          "in Butchr's settings, under Integrations."
+      };
+    }
+
+    const token = cred.token;
+    const secrets = [
+      token,
+      encodeURIComponent(token),
+      Buffer.from(token).toString('base64'),
+      ...(token.length >= 24 ? [token.slice(0, 16)] : [])
+    ];
+    const scrub = (text: string) => redact(text, ...secrets);
+    const endpoint = scrub(`${this.apiOrigin}${path}`);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+    try {
+      let res: Response;
+      try {
+        res = await fetch(endpoint, {
+          method: 'GET',
+          headers: {
+            // LaunchDarkly API tokens go in Authorization bare — no scheme.
+            Authorization: token,
+            Accept: 'application/json',
+            // Only where the operation asked for it. Sent unconditionally it
+            // would be a second, undeclared thing every request carries.
+            ...(beta ? { 'LD-API-Version': 'beta' } : {})
+          },
+          signal: controller.signal
+        });
+      } catch (err: any) {
+        // No response at all. Rebuilt rather than forwarded: this is the path
+        // where a helpful runtime is most likely to quote the request — and
+        // therefore the header — back at us.
+        const failure = failureKind(err, controller.signal);
+        const leg: LdLegResult = { leg: 'api', endpoint, failure };
+        return {
+          ok: false,
+          credentialFault: true,
+          diagnosis: failure,
+          legs: [leg],
+          error:
+            'The Butchr daemon could not reach LaunchDarkly at all for this read. Every agent ' +
+            'using this proxy is about to see the same thing. ' +
+            (failure === 'timeout'
+              ? `Nothing answered within ${PROXY_TIMEOUT_MS}ms — this is a timeout, not a refusal, ` +
+                'so nothing has been established about the credential.'
+              : `${hostOf(endpoint)} could not be reached. Check the machine's connection.`)
+        };
+      }
+
+      let raw = '';
+      try {
+        raw = await res.text();
+      } catch {
+        // A truncated or aborted body is not itself the story; the status is.
+      }
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // Error responses are routinely not JSON, whatever the header claims.
+      }
+
+      // Scrub, *then* truncate. Reversing these defeats redaction outright —
+      // see the comment on `truncate` in jira.ts for the incident that proved it.
+      const detail = extractDetail(raw, parsed);
+      const leg: LdLegResult = {
+        leg: 'api',
+        endpoint,
+        status: res.status,
+        ...(detail ? { detail: truncate(scrub(detail)) } : {}),
+        ...traceOf(res)
+      };
+
+      if (res.status >= 200 && res.status < 300) {
+        // `parsed` rather than `raw`, and the null case is a real one: a 204 has
+        // no body. It is reported as the success it is, with the status saying
+        // which success — never as an empty object that reads like a project
+        // with nothing in it.
+        return { ok: true, status: res.status, body: parsed };
+      }
+
+      return { ok: false, status: res.status, legs: [leg], ...explainLdProxyFailure(res.status, [leg]) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
