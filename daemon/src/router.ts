@@ -34,6 +34,7 @@ import { senderTagFor, withSenderTag } from './provenance.js';
 import type { CarrierVerdict, ChannelCarrier, ChannelRouteOutcome } from './channel.js';
 import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
 import type { ChannelLivenessState } from './channel-liveness.js';
+import type { PendingReport } from './notify.js';
 import { licenceFor, sealClaims } from './message-claims.js';
 import {
   operationByTool,
@@ -916,6 +917,26 @@ export interface MessageRouterOptions {
    * is the ordinary case — and the handler says so rather than guessing.
    */
   agentRuntimeReport?: RuntimeSwitchReport;
+
+  /**
+   * Notifications the daemon could not deliver (KAN-301).
+   *
+   * A reader rather than the store, by the same rule as `channelSelfCheck` and
+   * `channelLiveness` above: the router reports what is held and must not be one
+   * keystroke away from being able to hold, flush or abandon anything itself.
+   *
+   * Fleet-level rather than a per-agent row, and that is deliberate. The
+   * interesting case is an agent that is **not** in the listing — one that was
+   * stood down while news for it was still held — and a field hung off each
+   * running agent's row could not express that. It is also the shape of the
+   * question a supervisor asks: *"is there anything Butchr failed to tell
+   * anyone?"*
+   *
+   * Absent when nothing wired it — every `verify-*.mjs` constructing a bare
+   * router is the ordinary case — and never `null`, so "nothing is held" cannot
+   * be confused with "this daemon does not track that".
+   */
+  pendingNotifications?: () => PendingReport;
 }
 
 /**
@@ -945,7 +966,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'channelSelfCheck',
   'channelCarrier',
   'channelLiveness',
-  'agentRuntimeReport'
+  'agentRuntimeReport',
+  'pendingNotifications'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -1007,6 +1029,8 @@ export class MessageRouter {
   private readonly channelLiveness?: MessageRouterOptions['channelLiveness'];
   /** See {@link MessageRouterOptions.agentRuntimeReport}. */
   private readonly agentRuntimeReport?: MessageRouterOptions['agentRuntimeReport'];
+  /** See {@link MessageRouterOptions.pendingNotifications}. */
+  private readonly pendingNotifications?: MessageRouterOptions['pendingNotifications'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -1044,6 +1068,7 @@ export class MessageRouter {
     this.channelCarrier = opts.channelCarrier;
     this.channelLiveness = opts.channelLiveness;
     this.agentRuntimeReport = opts.agentRuntimeReport;
+    this.pendingNotifications = opts.pendingNotifications;
   }
 
   /**
@@ -4001,6 +4026,26 @@ export class MessageRouter {
       // whether each agent's loop was proved as far as its *client*; this says
       // whether anything got past the client into a *model*, which is the leg
       // none of those rows can see.
+      // NEWS THE DAEMON COULD NOT DELIVER (KAN-301), and the one field on this
+      // response that answers a question about *absence*.
+      //
+      // The board's most-repeated failure, in `epic/KAN-39`'s words: "an agent
+      // that did NOT get the news must be distinguishable from one that got it
+      // and had nothing to do." Dropping pane insertion is what made that
+      // question askable — a Ctrl+C always landed, so there was nothing to
+      // report — and it is what makes answering it mandatory rather than nice.
+      //
+      // `pending` is recoverable and retried on every sweep; `abandoned` is
+      // Butchr saying plainly that it gave up and that those agents were never
+      // told. The abandoned count is never reset, because a counter that returns
+      // to zero is the same silence in a tidier costume.
+      //
+      // Omitted rather than nulled when no store is wired, by the same rule as
+      // `boardControl` above: "this daemon holds no notifications" and "this
+      // daemon cannot tell you" are different answers.
+      ...(this.pendingNotifications
+        ? { undeliveredNotifications: this.pendingNotifications() }
+        : {}),
       ...(this.channelLiveness ? { channelLiveness: this.channelLiveness() } : {}),
       ...(staleness ? { staleness } : {}),
       // Omitted rather than nulled when no sweep has run, by the same rule as

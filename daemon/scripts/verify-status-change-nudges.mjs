@@ -480,6 +480,14 @@ console.log(`
     herdrBridge: bridge,
     supervisorFor: (name) => router.supervisorFor(name),
     recordedKeyFor: (name) => router.recordedKeyFor(name),
+    // KAN-301 made this seam's default a REFUSAL rather than the composer, so a
+    // harness that reads delivery off a pane now has to ask for the composer by
+    // name. Deliberate, not a red made to go away: this proof is about WHICH
+    // transitions are recognised and WHO is told, and the composer is the only
+    // carrier whose delivery can be confirmed as submitted output (C3).
+    // Production rides the channel; `verify-notifications-never-type.mjs` §1b
+    // asserts that this injection has no counterpart in `daemon/src`.
+    deliver: deliverToAgent,
     log: () => {}
   });
 
@@ -598,6 +606,14 @@ rule('AC4 — kill a child\'s runtime: its supervisor is told once, and only onc
     herdrBridge: bridge,
     supervisorFor: (name) => router.supervisorFor(name),
     recordedKeyFor: (name) => router.recordedKeyFor(name),
+    // KAN-301 made this seam's default a REFUSAL rather than the composer, so a
+    // harness that reads delivery off a pane now has to ask for the composer by
+    // name. Deliberate, not a red made to go away: this proof is about WHICH
+    // transitions are recognised and WHO is told, and the composer is the only
+    // carrier whose delivery can be confirmed as submitted output (C3).
+    // Production rides the channel; `verify-notifications-never-type.mjs` §1b
+    // asserts that this injection has no counterpart in `daemon/src`.
+    deliver: deliverToAgent,
     log: (...args) => log.push(args.join(' '))
   });
 
@@ -720,6 +736,14 @@ rule('AC6 — nobody to tell, nobody home, and one event per event');
     herdrBridge: bridge,
     supervisorFor: (name) => router.supervisorFor(name),
     recordedKeyFor: (name) => router.recordedKeyFor(name),
+    // KAN-301 made this seam's default a REFUSAL rather than the composer, so a
+    // harness that reads delivery off a pane now has to ask for the composer by
+    // name. Deliberate, not a red made to go away: this proof is about WHICH
+    // transitions are recognised and WHO is told, and the composer is the only
+    // carrier whose delivery can be confirmed as submitted output (C3).
+    // Production rides the channel; `verify-notifications-never-type.mjs` §1b
+    // asserts that this injection has no counterpart in `daemon/src`.
+    deliver: deliverToAgent,
     log: (...args) => log.push(args.join(' '))
   });
 

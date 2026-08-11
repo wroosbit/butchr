@@ -184,7 +184,11 @@ function stubHerdr(names, statuses = {}) {
  * event.
  */
 async function runScenario(nudgeMod, { subject, subjectKey, recordedKey, parent }) {
-  const { SupervisionNotifier } = nudgeMod;
+  // Both out of the SAME module, which matters here and nowhere else: this
+  // proof builds deliberately damaged copies of `dist` and runs the scenario
+  // against each, so pairing a notifier from one build with a delivery
+  // primitive from another would silently test a mixture of the two.
+  const { SupervisionNotifier, deliverToAgent } = nudgeMod;
   const SUPERVISOR = 'butchr-story-kan-75';
   const bridge = stubHerdr([SUPERVISOR, subject]);
   const lines = [];
@@ -193,6 +197,14 @@ async function runScenario(nudgeMod, { subject, subjectKey, recordedKey, parent 
     herdrBridge: bridge,
     supervisorFor: (n) => (n === subject ? parent : null),
     recordedKeyFor: (n) => (n === subject ? recordedKey : undefined),
+    // KAN-301 made this seam's default a REFUSAL rather than the composer, so a
+    // harness that reads delivery off a pane now has to ask for the composer by
+    // name. Deliberate, not a red made to go away: this proof is about WHICH
+    // transitions are recognised and WHO is told, and the composer is the only
+    // carrier whose delivery can be confirmed as submitted output (C3).
+    // Production rides the channel; `verify-notifications-never-type.mjs` §1b
+    // asserts that this injection has no counterpart in `daemon/src`.
+    deliver: deliverToAgent,
     log: (...a) => lines.push(a.join(' '))
   });
 

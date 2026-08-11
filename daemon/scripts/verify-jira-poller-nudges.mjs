@@ -80,7 +80,7 @@ const {
   DEGRADED_POLL_INTERVAL_MS
 } = await import(path.join(distDir, 'jira-poll.js'));
 const { snapshotFrom } = await import(path.join(distDir, 'jira.js'));
-const { deliveryFingerprint } = await import(path.join(distDir, 'nudge.js'));
+const { deliveryFingerprint, deliverToAgent } = await import(path.join(distDir, 'nudge.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 const verdict = (ok, yes, no) => {
@@ -222,7 +222,16 @@ function newPoller({ jira, herdr, agents, parents = {}, stateFile, log = [], del
     state: new JiraPollState(stateFile),
     confirmTimeoutMs: 400,
     confirmPollMs: 50,
-    ...(deliver ? { deliver } : {})
+    // KAN-301 made this seam's default a REFUSAL rather than the composer, so a
+    // harness that reads delivery off a pane now has to ask for the composer by
+    // name. This is that ask, and it is deliberate rather than a red made to go
+    // away: what this proof is about is WHO gets told and WHAT the message says,
+    // and the composer is the only carrier whose delivery can be confirmed as
+    // submitted output (C3) — a channel frame is unobservable past the socket.
+    // It is NOT a claim about production's carrier. Production rides the
+    // channel, and `verify-notifications-never-type.mjs` §1b is what asserts
+    // that this injection has no counterpart anywhere in `daemon/src`.
+    deliver: deliver ?? deliverToAgent
   });
 }
 
@@ -510,7 +519,6 @@ console.log(`
   const seenOnDisk = [];
   // Wraps the real primitive rather than replacing it: what is under test is
   // *when* the file was written, not whether the message lands.
-  const { deliverToAgent } = await import(path.join(distDir, 'nudge.js'));
   const stateFile = nextStateFile();
   const spy = async (opts) => {
     const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8')).issues['KAN-79'];
@@ -706,7 +714,13 @@ rule('AC7 — the loop schedules itself, and a slow tick does not overlap the ne
     intervalMs: 120,
     degradedIntervalMs: 400,
     confirmTimeoutMs: 200,
-    confirmPollMs: 20
+    confirmPollMs: 20,
+    // The composer, by name, for the reason given at `newPoller` above — this
+    // section builds its own poller rather than going through that helper, so
+    // it needs the injection too. What it asserts is that the loop TICKS and
+    // DELIVERS without being driven by hand, and it reads the delivery off a
+    // pane; production's carrier is the channel and is not this proof's subject.
+    deliver: deliverToAgent
   });
 
   poller.start();
