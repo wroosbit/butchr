@@ -9,6 +9,7 @@ import { Header } from './src/components/Header.jsx';
 import { WorkspaceHeader } from './src/components/WorkspaceHeader.jsx';
 import { TerminalView } from './src/components/TerminalView.jsx';
 import { ActivationRefusal } from './src/components/ActivationRefusal.jsx';
+import { GuardianPanel } from './src/components/GuardianPanel.jsx';
 
 function SidePanel() {
   const [currentTab, setCurrentTab] = useState(null);
@@ -20,7 +21,7 @@ function SidePanel() {
   const daemonConnected = useDaemonConnection(currentTab);
   
   const {
-    pageStatus, statusError, unsupportedReason, supported, active, attached, detachReason, activateError,
+    pageStatus, statusError, unsupportedReason, guardian, supported, active, attached, detachReason, activateError,
     sessionData, handleToggle, handleReset, handleReconnect, handleOverrideActivate,
     handlePreemptActivate, dismissActivateError, retryStatus
   } = useWorkspaceSession(
@@ -104,6 +105,18 @@ function SidePanel() {
               Current page does not match a supported Workspace Type. Navigate to a valid workspace to open a terminal.
             </div>
           )}
+          {/* WHO IS WATCHING THE FLEET (KAN-284), on the Jira board page only.
+
+              It sits BENEATH the notice above, which is untouched: the board is
+              still not a workspace, still offers no terminal, and this panel
+              renders inside the branch that says so. Displaying is rendering,
+              not binding — invariant 6 is unchanged and `board-page.ts` carries
+              the full argument.
+
+              The daemon decides whether this is a board page; the extension
+              holds no URL pattern of its own, so `guardian` is simply absent on
+              every other page and this renders nothing. */}
+          <GuardianPanel guardian={guardian} style={{ marginTop: '10px' }} />
         </div>
       ) : (
         <>

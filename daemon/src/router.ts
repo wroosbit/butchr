@@ -35,6 +35,8 @@ import type { CarrierVerdict, ChannelCarrier, ChannelRouteOutcome } from './chan
 import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
 import type { ChannelLivenessState } from './channel-liveness.js';
 import type { PendingReport } from './notify.js';
+import type { GuardianState } from './guardian.js';
+import { boardPageFor } from './board-page.js';
 import { licenceFor, sealClaims } from './message-claims.js';
 import {
   operationByTool,
@@ -947,6 +949,28 @@ export interface MessageRouterOptions {
    * be confused with "this daemon does not track that".
    */
   pendingNotifications?: () => PendingReport;
+
+  /**
+   * Who the guardian is, and whether its poke is landing (KAN-284).
+   *
+   * A reader for the same reason `channelLiveness` is one, and with the same
+   * sharper second reason: handing the router the poker itself would put "poke
+   * the guardian now" one typo away from a listing, and a poke lands in a real
+   * agent's context.
+   *
+   * **Fleet-level, and never a per-agent row.** There is exactly one guardian,
+   * and the state a reader needs — that there is none, or that its last poke did
+   * not land — is a fact about the *fleet*. Worse, a field hung off the
+   * guardian's own row could not express the case that matters most: a guardian
+   * that is **not in the listing at all** because it is not running. That is
+   * precisely the state AC3 calls loud.
+   *
+   * Absent when nothing wired it — every `verify-*.mjs` constructing a bare
+   * router is the ordinary case — and never `null`, so "this daemon has no
+   * guardian mechanism" cannot be read as "no guardian is set". Those are
+   * different facts and only the second is a claim about the fleet.
+   */
+  guardian?: () => GuardianState;
 }
 
 /**
@@ -977,7 +1001,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'channelCarrier',
   'channelLiveness',
   'agentRuntimeReport',
-  'pendingNotifications'
+  'pendingNotifications',
+  'guardian'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -1041,6 +1066,8 @@ export class MessageRouter {
   private readonly agentRuntimeReport?: MessageRouterOptions['agentRuntimeReport'];
   /** See {@link MessageRouterOptions.pendingNotifications}. */
   private readonly pendingNotifications?: MessageRouterOptions['pendingNotifications'];
+  /** See {@link MessageRouterOptions.guardian}. */
+  private readonly guardian?: MessageRouterOptions['guardian'];
 
   constructor(
     private registry: WorkspaceRegistry,
@@ -1079,6 +1106,7 @@ export class MessageRouter {
     this.channelLiveness = opts.channelLiveness;
     this.agentRuntimeReport = opts.agentRuntimeReport;
     this.pendingNotifications = opts.pendingNotifications;
+    this.guardian = opts.guardian;
   }
 
   /**
@@ -3036,6 +3064,40 @@ export class MessageRouter {
   }
 
   /**
+   * The `guardian` block for a page that is **not** a workspace, or nothing.
+   *
+   * Two conditions, and both are absences rather than defaults:
+   *
+   *   * **no poker wired** — every bare-router proof, and any embedding without
+   *     one — omits the field, so a client cannot read "this daemon does not
+   *     have the mechanism" as "this fleet has no guardian";
+   *   * **not a board page** — the ordinary case for every other unsupported
+   *     URL a browser tab lands on. A guardian notice on a random page is noise
+   *     attached to a page nobody asked about the fleet from.
+   *
+   * The state itself carries `configured: false` when there is genuinely no
+   * guardian, which is a *third* thing and the loudest of them: it means nothing
+   * is watching this fleet on a timer. The renderer must tell all three apart,
+   * which is why none of them is expressed as an absent field standing in for a
+   * false one.
+   */
+  private guardianForPage(url: unknown): { guardian?: GuardianState & { boardId: string | null; projectKey: string | null } } {
+    if (!this.guardian) return {};
+    const board = boardPageFor(url);
+    if (!board) return {};
+    return {
+      guardian: {
+        ...this.guardian(),
+        // Carried so the display can name the board it is on without the
+        // extension re-parsing the URL — which is the second matcher this whole
+        // design exists to avoid. See `board-page.ts`.
+        boardId: board.boardId,
+        projectKey: board.projectKey
+      }
+    };
+  }
+
+  /**
    * Does an agent exist for this page, and are we attached to it?
    *
    * Two different truths, and conflating them is what made the toggle lie:
@@ -3067,7 +3129,29 @@ export class MessageRouter {
                 disabled.key ? `${disabled.key}` : 'this page'
               )
             }
-          : {})
+          : {}),
+        // THE GUARDIAN, ON THE BOARD PAGE (KAN-284) — AND INVARIANT 6 IS WHY IT
+        // IS HERE RATHER THAN FIVE LINES HIGHER.
+        //
+        // This sits *inside the branch that has already answered `supported:
+        // false`*. The resolution has happened, its verdict is on the response
+        // above, and nothing below can change it: the board page is still not a
+        // workspace, still offers no terminal, and still degrades exactly as it
+        // did before this ticket. **Displaying on a board page is rendering, not
+        // binding**, and the placement is what makes that structural rather than
+        // a promise — there is no path from `boardPageFor` back into
+        // `registry.resolve`.
+        //
+        // KAN-284 names the hazard directly: *"do not 'fix' a display that is
+        // not appearing by making the board resolve to something."* An author
+        // who moved this above the `resolve` call, or who reached for a URL
+        // pattern to make the board a workspace type, would trade the invariant
+        // for a UI nicety and nothing afterwards would show the trade.
+        //
+        // Omitted rather than nulled when no poker is wired, by `boardControl`'s
+        // rule: "this daemon has no guardian mechanism" and "no guardian is set"
+        // are different facts, and only the second is a claim about the fleet.
+        ...this.guardianForPage(data.url)
       });
       return;
     }
@@ -4223,6 +4307,24 @@ export class MessageRouter {
         ? { undeliveredNotifications: this.pendingNotifications() }
         : {}),
       ...(this.channelLiveness ? { channelLiveness: this.channelLiveness() } : {}),
+      // WHO IS WATCHING THIS FLEET, AND WHETHER ITS POKE IS LANDING (KAN-284).
+      //
+      // On this response rather than only on the board page, because this is the
+      // poll a supervisor is already making and *"is anybody watching"* is a
+      // question about the fleet. The board display and this read the same
+      // reader — one state, two surfaces — which is the rule
+      // `carrierFor` exists to enforce elsewhere: a report that derives its own
+      // answer is the copy that goes wrong.
+      //
+      // **Read `proves` before `lastDelivered`.** This record says whether the
+      // poke was *delivered*; it says nothing about whether the fleet is
+      // supervised, and `provesDetail` carries that sentence so no reader has to
+      // have read this comment. A heartbeat proves the loop turns.
+      //
+      // Omitted rather than nulled when no poker is wired, by `boardControl`'s
+      // rule: a daemon without the mechanism must not read as a fleet with no
+      // guardian set. `configured: false` is how the second one is said.
+      ...(this.guardian ? { guardian: this.guardian() } : {}),
       ...(staleness ? { staleness } : {}),
       // Omitted rather than nulled when no sweep has run, by the same rule as
       // `staleness` directly above: absent means "this daemon has reclaimed

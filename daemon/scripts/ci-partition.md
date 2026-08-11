@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 59 |
+| `yes` | 63 |
 | `partial` | 5 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **81** |
+| **total** | **85** |
 
-**64 of 81** run on every pull request.
+**68 of 85** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -78,6 +78,8 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-integration-enablement` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-integration-pluggability` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-io-stall-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './sidepanel.css'; // Just re-use general styles or write inline
 import { IntegrationsSection } from './src/components/IntegrationsSection.jsx';
+import { GuardianCard } from './src/components/GuardianCard.jsx';
 
 function Options() {
   const [defaultAgent, setDefaultAgent] = useState('shell');
@@ -52,6 +53,11 @@ function Options() {
         The Jira credential card used to sit here on its own. It now lives
         inside the Integrations section, under the Jira entry, unchanged.
       */}
+      {/* Who watches the fleet (KAN-284). Above Integrations because it is not
+          one: an integration is something Butchr talks to, and this is a
+          setting about Butchr's own supervision. */}
+      <GuardianCard />
+
       <IntegrationsSection />
     </div>
   );

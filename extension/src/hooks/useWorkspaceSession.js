@@ -25,6 +25,20 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
   // page's integration is switched off. Null for an ordinarily unrecognised
   // URL, which is a different answer and gets the words it always had.
   const [unsupportedReason, setUnsupportedReason] = useState(null);
+  // Who is watching the fleet, when this page is a Jira board (KAN-284).
+  //
+  // Null on every other page and on a daemon with no guardian mechanism, and
+  // those are the same *rendering* decision — say nothing — reached from two
+  // different facts. What must NOT collapse into null is `configured: false`,
+  // which is the daemon telling us there is no guardian at all: that is the
+  // loudest state this feature has and it arrives as a present object.
+  //
+  // **Nothing here decides whether this is a board page.** The daemon attaches
+  // the block or does not; the extension holds no URL pattern of its own,
+  // deliberately, because a second matcher is a second thing to keep in step and
+  // the copy nobody routes on is the one that drifts (KAN-145). See
+  // `daemon/src/board-page.ts`.
+  const [guardian, setGuardian] = useState(null);
   const [active, setActive] = useState(false);
   // Whether this daemon holds a session for the agent. `active` says the agent
   // exists at all — it outlives the daemon, so the two come apart after a
@@ -127,6 +141,12 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
           // A fresh answer from the daemon supersedes any remembered death:
           // if it says we are attached, the terminal is live again.
           if (payload.attached) setDetachReason(null);
+          // A workspace page says nothing about the fleet, so drop any reading
+          // from the board we were on. Without this, navigating from the board
+          // to an issue would leave the last board's guardian block in state —
+          // a stale fact that reads as current, which is this codebase's
+          // most-repeated defect.
+          setGuardian(null);
         } else {
           setPageStatus('unsupported');
           setStatusError(null);
@@ -146,6 +166,10 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
                 }
               : null
           );
+          // The daemon sends this only for a board page, and only when it has a
+          // poker wired. Absent is "say nothing about the fleet here", which is
+          // right for every other unsupported URL a tab lands on.
+          setGuardian(payload.guardian ?? null);
           if (activeTabView === 'info') setActiveTabView('terminal');
         }
       } else if (payload.action === 'error_response') {
@@ -422,6 +446,7 @@ export function useWorkspaceSession(currentTab, activeTabView, setActiveTabView,
     pageStatus,
     statusError,
     unsupportedReason,
+    guardian,
     supported: pageStatus === 'supported',
     active,
     attached,

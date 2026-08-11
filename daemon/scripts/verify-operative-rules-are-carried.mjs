@@ -934,7 +934,7 @@ const RULES = [
     //     `tail`'s status instead. Measured twice on this board in one day, and
     //     once by this ticket's own implementer. An instruction whose standard
     //     idiom silently defeats it is not an instruction.
-    id: 'H-19',
+    id: 'H-22',
     title: 'a proof run after a failed build — or over a stale `dist` — is a verdict about the old build',
     carriedBy: Object.fromEntries(
       ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
@@ -966,11 +966,16 @@ const RULES = [
     id: 'H-21',
     title: 'check the instrument answered the question you asked — filter the CI run by workflow and head',
     // KAN-314, added at `epic/KAN-39`'s review of #136. The third shape of
-    // H-19's failure, and the one that is not about builds: `gh run list
+    // H-22's failure, and the one that is not about builds: `gh run list
     // --limit 1` reads the newest run of ANY workflow, and this repository has
     // three. `epic/KAN-203` deployed on a false green off that row.
     //
-    // DELIBERATELY NOT FOLDED INTO H-19, and not generalised into one rule
+    // (Both references here said H-19 until the merge of 2026-08-11: KAN-284
+    // landed that id first, so KAN-314's entry moved to H-22 and every
+    // reference outside it moved with it, per the `2a24912` precedent recorded
+    // in `rule-inventory.md`.)
+    //
+    // DELIBERATELY NOT FOLDED INTO H-22, and not generalised into one rule
     // about epistemics. The approver's own framing at review — *"a sharp rule
     // about builds beats a vague rule about epistemics"* — is the reason. The
     // shared shape is worth one sentence and no more, because the FIX differs
@@ -1002,6 +1007,68 @@ const RULES = [
         ],
       ])
     ),
+  },
+  {
+    // KAN-284. THE GUARDIAN POKE IS AN OPERATIVE RULE BECAUSE IT ARRIVES
+    // UNANNOUNCED OTHERWISE, AND AN UNANNOUNCED SCHEDULED MESSAGE IS ONE A
+    // MODEL IS RIGHT TO REFUSE.
+    //
+    // KAN-217 is the measurement: a channel probe pushed at a session that had
+    // not been told to expect one was named as probable prompt injection and
+    // declined — correctly, and from outside indistinguishable from a broken
+    // transport. For a guardian that failure is expensive in a way the probe's
+    // was not: the poke fires every thirty minutes, the guardian declines every
+    // one of them on the merits, the delivery record stays green because the
+    // frames really are being delivered, and NOBODY SWEEPS THE FLEET. Every
+    // surface reads healthy throughout. That is the feature shipping silently
+    // dead, which KAN-284's own description names as the risk that decides
+    // whether it is real.
+    //
+    // Carried by all three because the guardian is a POINTER at any existing
+    // agent — the human, 2026-08-11: "pointed to an existing agent, not a whole
+    // new agent" — so an epic, a story or a task can be it, and the poke tells
+    // its recipient the expectation is "in your own brief". A prompt without
+    // this section makes that sentence a promise the brief does not keep, which
+    // is worse than not pointing at it.
+    //
+    // The patterns are the three clauses that carry weight, not the prose
+    // around them: that it is expected and daemon-sent; that it is ADDITIONAL
+    // rather than a replacement for a loop the human separately asked for
+    // (`epic/KAN-203`'s correction, 2026-08-11); and that a delivered poke is
+    // not evidence the sweep was right, which is the limit the recipient has to
+    // hold as much as the board does.
+    // RENUMBERED FROM H-18 TO H-19 ON 2026-08-11, and the collision is the point
+    // rather than an inconvenience. KAN-306 landed its own `H-18` on `origin/main`
+    // while this branch was in flight, which is the fifth such collision and
+    // exactly what `rule-inventory.md` exists to catch — KAN-268 is the ticket
+    // for the fact that detecting it is not preventing it, since the next free
+    // number is read off a file several branches are extending at once and each
+    // author is correct alone. KAN-306 landed first and keeps the number.
+    id: 'H-19',
+    title: 'the guardian poke is expected, is additional, and proves only that it was delivered',
+    carriedBy: {
+      'prompts/epic.md': [
+        /### The guardian poke/,
+        /pokes you every 30 minutes/i,
+        /additional to that work and does not outrank it/i,
+        /retires any other loop you were told to run/i,
+        /says nothing about whether your decisions were right/i,
+      ],
+      'prompts/story.md': [
+        /### The guardian poke/,
+        /pokes you every 30 minutes/i,
+        /additional to that work and does not outrank it/i,
+        /retires any other loop you were told to run/i,
+        /says nothing about whether your decisions were right/i,
+      ],
+      'prompts/task.md': [
+        /### The guardian poke/,
+        /pokes you every 30 minutes/i,
+        /additional to that work and does not outrank it/i,
+        /retires any other loop you were told to run/i,
+        /says nothing about whether your decisions were right/i,
+      ],
+    },
   },
 ];
 
