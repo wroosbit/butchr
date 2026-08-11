@@ -611,6 +611,76 @@ check(
   both.error
 );
 
+// ── KAN-291: THE 404 THAT IS REALLY A DEAD CREDENTIAL ──────────────────────
+//
+// Found by `probe-atlassian-proxy-write.mjs` against real Atlassian, and it was
+// a defect in THIS path — the read path — not in the write KAN-291 added. Jira
+// answers **404, not 401**, for an issue the caller may not see, so a revoked
+// credential produces `gateway=401 site=404` and the 404 branch below used to
+// tell the agent *"The daemon's credential worked; the issue does not exist."*
+// Every clause of that was false, and it is the 2026-08-10 misdiagnosis exactly:
+// a fleet-wide credential outage reported to each agent as its own typo.
+//
+// Both directions are checked, because the fix is a discriminator and a
+// discriminator that only ever says one thing is not one. The signature
+// `gateway=401 site=404` is ALSO what a healthy *classic* token produces for a
+// genuinely missing issue — classic tokens are refused at the gateway by
+// design — so the identity probe is what separates them.
+function injectedWith(issuePathStatus, identityStatus) {
+  const legsFor = (path, status) => [
+    { leg: 'cloud-id', endpoint: 'https://real.atlassian.net/_edge/tenant_info', status: 200 },
+    { leg: 'gateway', endpoint: `https://api.atlassian.com/ex/jira/abc${path}`, status: 401, detail: 'Unauthorized' },
+    { leg: 'site', endpoint: `https://real.atlassian.net${path}`, status, detail: 'Issue does not exist or you do not have permission to see it.' }
+  ];
+  return new JiraIssueTypeService(
+    { load: async () => ({ siteUrl: 'https://real.atlassian.net', email: 'a@b.c', token: FAKE_TOKEN }) },
+    undefined,
+    undefined,
+    () => ({
+      get: async (path) => {
+        const status = path.startsWith('/rest/api/3/myself') ? identityStatus : issuePathStatus;
+        return { status, body: null, legs: legsFor(path, status) };
+      },
+      describe: () => 'injected-404'
+    })
+  );
+}
+
+const deadCred = await injectedWith(404, 401).proxyRead('/rest/api/3/issue/KAN-1?fields=status');
+check(
+  'a 404 whose credential is actually dead is reported as a CREDENTIAL fault',
+  deadCred.ok === false && deadCred.credentialFault === true,
+  JSON.stringify({ status: deadCred.status, credentialFault: deadCred.credentialFault, error: deadCred.error }).slice(0, 400)
+);
+check(
+  'and it does not send the agent to check its issue key',
+  !/credential worked|issue .{0,30}does not exist/i.test(String(deadCred.error)) &&
+    /no longer being accepted/.test(String(deadCred.error)),
+  deadCred.error
+);
+
+// THE OTHER DIRECTION, which is what stops the fix being "call everything a
+// credential fault". A live classic token and an issue that really is missing.
+const liveCred = await injectedWith(404, 200).proxyRead('/rest/api/3/issue/KAN-1?fields=status');
+check(
+  'a 404 whose credential is fine is still reported as a QUERY fault',
+  liveCred.ok === false && liveCred.credentialFault === false,
+  JSON.stringify({ status: liveCred.status, credentialFault: liveCred.credentialFault, error: liveCred.error }).slice(0, 400)
+);
+check(
+  'and it still says the credential worked, because it did',
+  /credential worked/.test(String(liveCred.error)),
+  liveCred.error
+);
+
+// And when the probe itself cannot answer, neither verdict is asserted.
+const unsure = await injectedWith(404, 503).proxyRead('/rest/api/3/issue/KAN-1?fields=status');
+check(
+  'an unconfirmable credential is reported as uncertain rather than guessed',
+  unsure.credentialFault === false && /could not confirm/.test(String(unsure.error)),
+  unsure.error
+);
+
 // The other direction the transport can fail: nothing answered at all.
 const injectedDead = new JiraIssueTypeService(
   { load: async () => ({ siteUrl: 'https://real.atlassian.net', email: 'a@b.c', token: FAKE_TOKEN }) },

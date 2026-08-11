@@ -1079,6 +1079,67 @@ export class JiraClient {
   }
 
   /**
+   * Is this credential still accepted at all? One cheap authenticated read.
+   *
+   * WHY THIS EXISTS — a defect found by KAN-291's probe, in KAN-272's code, on
+   * the **read** path as much as the write one.
+   *
+   * A revoked token against `/rest/api/3/issue/KAN-291` produces
+   * `cloud-id=200 gateway=401 site=404`, because Jira answers **404, not 401**,
+   * for an issue the caller cannot see — it will not tell an unauthenticated
+   * stranger that an issue exists. The final status is therefore 404, and
+   * {@link explainProxyFailure} reads a 404 as a query fault and tells the agent
+   * *"The daemon's credential worked; the issue does not exist."* Every word of
+   * that is wrong, and it is precisely the confident misdiagnosis this file was
+   * written to end: the fleet's credential is dead, every agent is about to hit
+   * it, and each one is being told it mistyped an issue key.
+   *
+   * WHY A PROBE RATHER THAN JUST BELIEVING THE 401 LEG. Because a **classic**
+   * API token legitimately 401s at the gateway and succeeds at the site host —
+   * that fallback is the whole reason `attempt` tries both — so a genuinely
+   * missing issue *also* reads `gateway=401 site=404`. Treating any 401 leg as a
+   * dead credential would send a human to rotate a perfectly good token every
+   * time an agent mistyped a key, which is the same class of confident error
+   * pointing the other way. Only asking the credential a question it can answer
+   * separates them.
+   *
+   * WHY `IDENTITY_PROBE` AND NOT `WORK_PROBE`, WHICH IS WHAT VALIDATION USES
+   * AND WHAT WAS TRIED FIRST. `WORK_PROBE` — `/rest/api/3/project/search` — is
+   * **readable anonymously** on a site that permits anonymous browsing, and
+   * wroosbit.atlassian.net is one. Measured 2026-08-11 with a deliberately
+   * bogus token: `cloud-id=200 gateway=401 site=200`, a clean 200 for a
+   * credential that does not exist. As a liveness check it answers "yes" for
+   * every dead token, which is worse than not checking: it would have made this
+   * whole method a confident second opinion that was always wrong in the same
+   * direction. `/rest/api/3/myself` answered 401 for the same token, because it
+   * is about *who you are* and there is no anonymous answer to that.
+   *
+   * The known ambiguity, stated because `validate` documents it at length: a
+   * *scoped* token holding only `read:jira-work` is also refused by `/myself`.
+   * It does not bite here, and the reason is structural rather than lucky — a
+   * scoped token is accepted **at the gateway**, so its gateway leg succeeds and
+   * this method is never reached. Everything that arrives here already has a
+   * refused gateway leg, which means a classic token or a dead one, and a live
+   * classic token answers `/myself` with a 200.
+   *
+   * It costs one extra request, on a failure path, only when a credential-
+   * bearing leg was refused. Nothing pays for it on the happy path.
+   */
+  public async credentialStillWorks(signal: AbortSignal): Promise<'live' | 'refused' | 'unknown'> {
+    try {
+      const { status } = await this.transport.get(IDENTITY_PROBE, signal);
+      if (status === 200) return 'live';
+      if (status === 401 || status === 403) return 'refused';
+      return 'unknown';
+    } catch {
+      // A dead leg here says nothing about the credential — the network is the
+      // more likely explanation, and claiming either way would be inventing a
+      // diagnosis, which is the habit this file exists to break.
+      return 'unknown';
+    }
+  }
+
+  /**
    * Check, at submit time, whether the credential the user just typed actually
    * works — and if it does not, say precisely which leg refused it and why.
    *
@@ -1845,7 +1906,53 @@ export class JiraIssueTypeService {
       // `JiraClient.proxyWrite` on why an empty body is a success shape here and
       // is still distinguishable from a silent failure.
       if (status >= 200 && status < 300) return { ok: true, status, body: responseBody };
-      return { ok: false, status, legs, ...explainProxyFailure(status, legs, write) };
+
+      const explained = explainProxyFailure(status, legs, write);
+
+      // KAN-291. About to tell an agent that its *query* was at fault — while a
+      // credential-bearing leg was refused. That combination is exactly the
+      // revoked-token-reads-as-404 case in `credentialStillWorks`, and it is
+      // also what a classic token plus a genuinely missing issue looks like.
+      // Ask, rather than guess: the whole cost of getting this wrong is a
+      // fleet-wide outage diagnosed as one agent's typo.
+      const refusedLeg = legs.some(
+        (leg) => leg.leg !== 'cloud-id' && (leg.status === 401 || leg.status === 403)
+      );
+      if (!explained.credentialFault && refusedLeg) {
+        const verdict = await client.credentialStillWorks(controller.signal);
+        if (verdict === 'refused') {
+          return {
+            ok: false,
+            status,
+            legs,
+            credentialFault: true,
+            error:
+              `Atlassian answered ${status} for this ${write ? 'write' : 'read'}, but that is ` +
+              "NOT a fault in your request: the Butchr daemon's own credential is no longer " +
+              'being accepted, confirmed by a second probe just now. Jira answers 404 rather ' +
+              'than 401 for an issue the caller may not see, so a dead credential looks exactly ' +
+              'like a missing issue — it is not. Retrying will not help and neither will ' +
+              'checking your issue key; every agent using this proxy is about to see the same ' +
+              'thing, and a human has to replace the credential in Butchr settings. ' +
+              `${write ? 'Nothing was written. ' : ''}`
+          };
+        }
+        if (verdict === 'unknown') {
+          return {
+            ok: false,
+            status,
+            legs,
+            credentialFault: false,
+            error:
+              `${explained.error} (Butchr could not confirm whether its own credential is still ` +
+              'good — the check for that did not complete — so treat this reading as less ' +
+              'certain than it sounds, and check Butchr settings if it repeats.)',
+            ...(explained.diagnosis ? { diagnosis: explained.diagnosis } : {})
+          };
+        }
+      }
+
+      return { ok: false, status, legs, ...explained };
     } catch (err: any) {
       // No leg completed — the transport rejects rather than resolves for that
       // case, carrying the legs on the error precisely so this is answerable.
