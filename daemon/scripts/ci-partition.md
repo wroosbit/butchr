@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 57 |
+| `yes` | 58 |
 | `partial` | 5 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **79** |
+| **total** | **80** |
 
-**62 of 79** run on every pull request.
+**63 of 80** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -59,6 +59,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-agent-preemption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-resumption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-runtime-seam` | yes | reads files off the checkout and asserts on their contents; node builtins only. |
+| `verify-approval-recorded` | yes | drives `lib/approval-marker.mjs` over fixtures in process, and drives `check-approval-recorded.mjs` as a child against a stub GitHub API bound to 127.0.0.1. No herdr, no live daemon, no credential, no peer, no terminal, and no egress: the only socket it opens is its own loopback stub. |
 | `verify-atlassian-proxy-failure-is-loud` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-atlassian-proxy-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-atlassian-proxy-write-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

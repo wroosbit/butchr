@@ -1,0 +1,214 @@
+// KAN-306: the CI entry point for the approval gate — `approval-recorded`.
+//
+// It reads a live pull request, asks `lib/approval-marker.mjs` whether it
+// carries an approval pinned to the exact commit that would merge, publishes
+// the answer as a commit status named `approval-recorded`, and exits on the
+// verdict.
+//
+// `check-` rather than `verify-`, for the reason `sweep-` and `run-` are not
+// `verify-` either: this file proves no product behaviour of its own. It is a
+// gate over live GitHub state, it needs a token and a network, and it could
+// never run in the CI-runnable set. `verify-approval-recorded.mjs` is the proof
+// that polices it, and that one does run on every pull request.
+//
+// WHY IT PUBLISHES A COMMIT STATUS RATHER THAN BEING A JOB NAMED
+// `approval-recorded`. An approval arrives *after* the push that triggered CI,
+// so a check that only ever evaluates on `pull_request` is red at the moment it
+// is created and has no way to become green — nothing re-runs it when the
+// approver finally comments. The workflow therefore also runs on
+// `issue_comment`, and a workflow triggered by a comment attaches its own check
+// run to the default branch rather than to the pull request head, where branch
+// protection would never see it. A commit status POSTed at the head SHA lands in
+// the right place on every trigger, so there is exactly one context named
+// `approval-recorded` whatever woke it up.
+//
+// THE BOOTSTRAP, STATED BECAUSE IT WILL CONFUSE THE NEXT READER OTHERWISE.
+// GitHub always takes an `issue_comment` workflow from the DEFAULT BRANCH, never
+// from the pull request's branch. So on the pull request that introduces this
+// file, a comment cannot re-trigger it — the file is not on `main` yet. Re-run
+// the workflow by hand there (`gh run rerun <id>`), which re-evaluates against
+// the same head and finds the comment. From the merge onwards the comment
+// trigger works by itself.
+//
+// Usage:
+//   node daemon/scripts/check-approval-recorded.mjs             # in CI
+//   node daemon/scripts/check-approval-recorded.mjs --pr 132    # by hand
+//   node daemon/scripts/check-approval-recorded.mjs --pr 132 --no-status
+//
+// Reads `GITHUB_TOKEN` from the environment and never prints it, echoes it, or
+// passes it as an argument. It is sent in an Authorization header at the point
+// of use and stays there.
+
+import fs from 'fs';
+import { evaluate } from './lib/approval-marker.mjs';
+
+const argv = process.argv.slice(2);
+const arg = (name) => {
+  const i = argv.indexOf(name);
+  return i >= 0 ? argv[i + 1] : null;
+};
+const postStatus = !argv.includes('--no-status');
+
+const API = process.env.GITHUB_API_URL || 'https://api.github.com';
+const REPO = process.env.GITHUB_REPOSITORY || 'wroosbit/butchr';
+const TOKEN = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+const CONTEXT = 'approval-recorded';
+
+async function api(pathname, init = {}) {
+  const res = await fetch(`${API}${pathname}`, {
+    ...init,
+    headers: {
+      accept: 'application/vnd.github+json',
+      'user-agent': 'butchr-approval-recorded',
+      ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}),
+      ...(init.headers ?? {})
+    }
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${init.method ?? 'GET'} ${pathname} → ${res.status}\n${body.slice(0, 400)}`);
+  }
+  return res.json();
+}
+
+/**
+ * Which pull request are we judging, on each of the three events?
+ *
+ * `pull_request` is the ordinary case, and the head SHA comes out of the event
+ * payload rather than out of `GITHUB_SHA` — on a `pull_request` event
+ * `GITHUB_SHA` is the *merge* commit GitHub synthesised, which no approver has
+ * ever seen and which no marker will ever name.
+ */
+async function resolvePullRequest() {
+  const event = process.env.GITHUB_EVENT_NAME;
+  const explicit = arg('--pr');
+  if (explicit) return { number: Number(explicit), why: `--pr ${explicit}` };
+
+  const payload = process.env.GITHUB_EVENT_PATH && fs.existsSync(process.env.GITHUB_EVENT_PATH)
+    ? JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
+    : {};
+
+  if (event === 'pull_request' || event === 'pull_request_target') {
+    return { number: payload.pull_request?.number, why: 'pull_request event' };
+  }
+
+  if (event === 'issue_comment') {
+    // An `issue_comment` fires for issues as well as pull requests, and only a
+    // pull request has this key. An issue comment is not this check's business.
+    if (!payload.issue?.pull_request) return { number: null, why: 'comment on an issue, not a pull request' };
+    return { number: payload.issue.number, why: 'issue_comment event' };
+  }
+
+  if (event === 'push') {
+    // THE PUSH LEG. #126 taught this board that a check green on `pull_request`
+    // can be broken on `push`, so this one is covered rather than excused: on a
+    // push to `main` we ask which pull request the pushed commit came from and
+    // re-judge THAT pull request at ITS head. A squash merge rewrites the
+    // commit, so the pushed SHA is not the SHA any marker names — the PR's own
+    // head is, and that is what is checked. A commit with no pull request
+    // behind it is reported and passes: this gate is about pull requests, and
+    // saying so is better than inventing a verdict about a direct push.
+    const sha = process.env.GITHUB_SHA;
+    const prs = await api(`/repos/${REPO}/commits/${sha}/pulls`);
+    if (!prs.length) return { number: null, why: `no pull request contains ${sha}` };
+    return { number: prs[0].number, why: `pushed commit ${sha?.slice(0, 12)} came from #${prs[0].number}` };
+  }
+
+  return { number: null, why: `unhandled event ${event}` };
+}
+
+async function allComments(number) {
+  const out = [];
+  for (let page = 1; page <= 10; page++) {
+    const batch = await api(`/repos/${REPO}/issues/${number}/comments?per_page=100&page=${page}`);
+    out.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
+const { number, why } = await resolvePullRequest();
+console.log(`repository ${REPO}`);
+console.log(`resolved:   ${why}`);
+
+if (!number) {
+  console.log(`\nnothing to judge — ${why}.`);
+  console.log('Reporting success: this gate judges pull requests, and there is not one here.');
+  process.exit(0);
+}
+
+const pr = await api(`/repos/${REPO}/pulls/${number}`);
+const comments = await allComments(number);
+const headSha = pr.head.sha;
+const headRef = pr.head.ref;
+
+console.log(`pull request #${number} — ${pr.title}`);
+console.log(`head:       ${headSha} (${headRef})`);
+console.log(`comments:   ${comments.length}`);
+console.log('');
+
+const verdict = evaluate({ headSha, headRef, prBody: pr.body, comments });
+
+// `ok` implies `accepted` in `lib/approval-marker.mjs` — every path that leaves
+// `accepted` null also pushes a reason. That is true by construction across two
+// files, which is exactly the kind of invariant that survives until somebody
+// edits one of them. Asserting it here costs nothing and keeps the failure
+// legible: without it, a lib that returns `ok` with no marker crashes on
+// `accepted.approver` BEFORE the status is posted, so the required context
+// never reports at all and the pull request blocks forever on a check that
+// looks like it never ran. Found by deliberately breaking the omission leg and
+// watching this script die instead of going red. Fail closed, and say why.
+if (verdict.ok && !verdict.accepted) {
+  verdict.ok = false;
+  verdict.reasons.push(
+    'the gate returned a passing verdict with no accepted marker attached. That is a ' +
+      'contradiction inside `lib/approval-marker.mjs`, not a fact about this pull request. ' +
+      'Refusing rather than passing, because a gate that cannot say who approved has not ' +
+      'established that anybody did.'
+  );
+}
+
+if (verdict.ok) {
+  console.log('APPROVAL RECORDED');
+  console.log(`  approver: ${verdict.accepted.approver}`);
+  console.log(`  at head:  ${verdict.accepted.sha}`);
+  console.log(`  comment:  ${verdict.accepted.commentId}`);
+  console.log('');
+  console.log('This says a comment naming this exact commit exists, and nothing more. It does');
+  console.log('not establish that the named approver is who posted it — every agent here is the');
+  console.log('same GitHub user, so this check catches omission and staleness, never forgery.');
+} else {
+  console.log('NO APPROVAL RECORDED AT THIS HEAD');
+  console.log('');
+  for (const r of verdict.reasons) console.log(`  - ${r}`);
+}
+
+if (postStatus) {
+  const state = verdict.ok ? 'success' : 'failure';
+  const description = verdict.ok
+    ? `approved at this head by ${verdict.accepted.approver}`.slice(0, 140)
+    : 'no approval marker naming this head — see the job log'.slice(0, 140);
+  try {
+    await api(`/repos/${REPO}/statuses/${headSha}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        state,
+        context: CONTEXT,
+        description,
+        target_url: process.env.GITHUB_RUN_ID
+          ? `${process.env.GITHUB_SERVER_URL}/${REPO}/actions/runs/${process.env.GITHUB_RUN_ID}`
+          : undefined
+      })
+    });
+    console.log(`\nposted commit status ${CONTEXT}=${state} at ${headSha}`);
+  } catch (e) {
+    // A status we could not publish is a gate nobody can see. Fail loudly
+    // rather than exiting green on an unpublished verdict.
+    console.error(`\nFAILED to post the ${CONTEXT} status: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+const failures = verdict.ok ? 0 : 1;
+process.exit(failures ? 1 : 0);
