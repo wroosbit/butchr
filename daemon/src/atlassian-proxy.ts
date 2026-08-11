@@ -437,9 +437,10 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     pathShape: '/rest/api/3/issue/{issueKey}/transitions',
     description:
       'List the workflow transitions available on a Jira issue right now, through the Butchr ' +
-      "daemon's own credential. THIS READS THE TRANSITIONS; IT DOES NOT PERFORM ONE — the " +
-      'daemon holds no write scope and this proxy has no write operation. A failure is loud, ' +
-      'as above.',
+      "daemon's own credential. THIS READS THE TRANSITIONS; IT DOES NOT PERFORM ONE — " +
+      'atlassian_transition_issue is what performs one, and it is offered only when the proxy ' +
+      'is in its write mode. This is the tool that tells you the id to give it. A failure is ' +
+      'loud, as above.',
     inputSchema: {
       type: 'object',
       properties: {

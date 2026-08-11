@@ -387,8 +387,10 @@ function describeLeg(leg: JiraLegResult): string {
  * Which base URL to use is not a free choice. Atlassian's newer *scoped* API
  * tokens are only accepted through the gateway at
  * `api.atlassian.com/ex/jira/{cloudId}`; classic full-permission tokens work
- * against the site host directly. Butchr asks for a scoped, read-only token
- * (`read:jira-work`), so the gateway is the primary path — but a user who
+ * against the site host directly. Butchr asks for a scoped token — 
+ * `read:jira-work`, plus `write:jira-work` only if the operator intends to
+ * enable the write proxy (KAN-291) — so the gateway is the primary path. But a
+ * user who
  * pastes a classic token should not get a mystifying failure, so a 401/403
  * from the gateway retries once against the site host, inside the same
  * deadline.
@@ -962,7 +964,13 @@ export const BOARD_MAX_RESULTS = 100;
 const SEARCH_PATH = '/rest/api/3/search/jql';
 
 /**
- * The read-only Jira client. Three domain operations, plus validation.
+ * The Jira client. Three domain reads, validation, and — since KAN-291 — one
+ * proxied read and one proxied write.
+ *
+ * It stopped being "the read-only Jira client" on 2026-08-11; see the module
+ * header for what replaced that rule and why the premise it rested on is gone.
+ * The write is a single POST made on an agent's behalf and never on the
+ * daemon's own account.
  */
 export class JiraClient {
   constructor(private transport: JiraTransport) {}
