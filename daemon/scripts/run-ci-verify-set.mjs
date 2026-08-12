@@ -38,6 +38,47 @@
 //
 // Pass `--no-sandbox` to run against the real `HOME`. Nothing in CI does.
 //
+// WHY IT ALSO WATCHES THE WORKING TREE
+//
+// KAN-350. The `HOME` sandbox above bounds where a child can reach through the
+// environment, and that is not the same as bounding where it writes.
+// `verify-agent-tree.mjs` resolved its output directory from `import.meta.url`,
+// so no environment variable could have reached it: it wrote into
+// `extension/kan81-render/` on every run, rode along unmentioned in six commits
+// across four unrelated tickets, and made `staleness_check` — which compares
+// mtimes over the whole of `extension/` — report the extension stale each time.
+// KAN-326 moved that one path out of the repository and added
+// `extension/scripts/verify-render-writes-outside-the-tree.mjs` to hold it
+// there. That guard asserts about one script; this one is the general claim,
+// and it is here rather than in a `verify-` script because a property of the
+// harness covers scripts nobody has written yet, on the day they are added, by
+// nobody.
+//
+// WHICH PROPERTY THIS IS, STATED PRECISELY, BECAUSE A WIDER READING IS AVAILABLE
+// AND WRONG:
+//
+//   * It is a DELTA across each child, not a clean-tree assertion. An agent runs
+//     this set immediately before pushing, which is exactly when the tree is
+//     full of its own uncommitted work; a check that demanded a clean tree would
+//     go red on every one of those runs, and an instrument that cries wolf is
+//     the defect this ticket was filed about. The baseline advances after every
+//     child, so each child is blamed for its own writes and never its
+//     predecessor's.
+//   * It therefore does NOT catch a script that writes into the tree and then
+//     deletes what it wrote. That script has still written into the working
+//     tree, and this guard would pass it. Covered by nobody today, and named
+//     here rather than left to be inferred — `verify-ci-set-guards-tree-writes.mjs`
+//     §1 asserts the property that IS implemented, and its header says the same.
+//   * `dist/` and `node_modules/` are excluded, for the reason `staleness_check`
+//     excludes them: a child that runs a build has not committed the defect this
+//     is guarding.
+//
+// The guard is a precondition rather than a nicety: if `git status` cannot be
+// taken at the repository root, the run REFUSES to start rather than running the
+// set with the claim silently unmade. A required check that quietly skips its
+// strongest leg is KAN-241's defect, and this file already takes the same line
+// on a partition that does not parse.
+//
 // Usage:
 //   node daemon/scripts/run-ci-verify-set.mjs [--verbose] [--no-sandbox]
 //   node daemon/scripts/run-ci-verify-set.mjs --list        # print the set, run nothing
@@ -117,6 +158,39 @@ if (missing.length) {
   process.exit(1);
 }
 
+/**
+ * `git status --porcelain` over the whole repository, as a comparable snapshot.
+ *
+ * Returns `null` when git cannot answer — which is what arms or refuses the
+ * guard below, and is never treated as "nothing changed".
+ */
+function treeSnapshot() {
+  const r = spawnSync('git', ['status', '--porcelain'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024
+  });
+  if (r.status !== 0) return null;
+  return (r.stdout ?? '')
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim())
+    .filter((l) => !/(^|\/)(dist|node_modules)\//.test(l));
+}
+
+// Armed before the first child, and a failure to arm stops the run. See the
+// header: a claim this file cannot make is one it must not appear to have made.
+let baseline = treeSnapshot();
+if (baseline === null) {
+  console.error(
+    'the working-tree guard cannot be armed: `git status --porcelain` did not exit 0 at\n' +
+      `  ${REPO_ROOT}\n\n` +
+      'Every child is watched for writes into the working tree (KAN-350), and that check\n' +
+      'needs git. Refusing to run the set rather than running it with the claim unmade.'
+  );
+  process.exit(1);
+}
+
 const results = [];
 for (const r of set) {
   const home = sandbox ? fs.mkdtempSync(path.join(os.tmpdir(), 'kan295-')) : process.env.HOME;
@@ -130,12 +204,31 @@ for (const r of set) {
   });
   const seconds = (Date.now() - started) / 1000;
   const timedOut = run.signal === 'SIGTERM' && seconds * 1000 >= TIMEOUT_MS - 1000;
-  const ok = run.status === 0;
-  results.push({ ...r, ok, status: run.status, signal: run.signal, timedOut, seconds, run });
+
+  // What this child, and only this child, left behind. The baseline advances
+  // below so the next one is not blamed for it.
+  const after = treeSnapshot();
+  const dirtied = after === null ? null : after.filter((l) => !baseline.includes(l));
+  if (after !== null) baseline = after;
+
+  // A child that dirties the tree FAILS even when its own assertions all held —
+  // its exit code is a verdict about what it was testing, never about what it
+  // wrote.
+  const ok = run.status === 0 && dirtied !== null && dirtied.length === 0;
+  results.push({ ...r, ok, status: run.status, signal: run.signal, timedOut, seconds, run, dirtied });
   console.log(
     `${ok ? 'PASS' : 'FAIL'}  ${r.name.padEnd(48)} ${seconds.toFixed(1).padStart(6)}s` +
-      (r.class === 'partial' ? '   (partial — see its header for what CI does not reach)' : '')
+      (r.class === 'partial' ? '   (partial — see its header for what CI does not reach)' : '') +
+      (dirtied === null ? '   (DIRTIED? — git status stopped answering mid-run)' : '') +
+      (dirtied?.length ? `   (WROTE INTO THE WORKING TREE — ${dirtied.length} path(s))` : '')
   );
+  if (dirtied === null || dirtied.length) {
+    console.log(
+      dirtied === null
+        ? '      git status did not exit 0 after this child, so what it wrote is unknown'
+        : dirtied.map((l) => `      ${l}`).join('\n')
+    );
+  }
   if (sandbox) fs.rmSync(home, { recursive: true, force: true });
   if (!ok || verbose) {
     const out = `${run.stdout ?? ''}${run.stderr ?? ''}`.trimEnd();
@@ -230,16 +323,39 @@ console.log(`${results.length - failed.length}/${results.length} passed in ${wal
 console.log('');
 announceTheRest();
 
+const dirtiedTheTree = results.filter((r) => r.dirtied === null || r.dirtied?.length);
+
 if (failed.length) {
   console.log(`\n${failed.length} script(s) FAILED:`);
   for (const r of failed) {
-    console.log(`  - ${r.rel} (exit ${r.status}${r.timedOut ? ', timed out' : ''})`);
+    const why = [
+      r.status === 0 ? null : `exit ${r.status}`,
+      r.timedOut ? 'timed out' : null,
+      r.dirtied === null ? 'tree state unknown' : r.dirtied.length ? `wrote ${r.dirtied.length} path(s)` : null
+    ].filter(Boolean);
+    console.log(`  - ${r.rel} (${why.join(', ')})`);
   }
   console.log(
     '\nA failure here is a proof that no longer holds. Fix the behaviour it names, or —\n' +
       'if the script itself has rotted — repair the script and drive it red again by hand.\n' +
       'Do not quarantine it to get green without a ticket that owns it: the annotation\n' +
       'grammar refuses a quarantine that names nobody.'
+  );
+}
+
+if (dirtiedTheTree.length) {
+  console.log(
+    `\n${dirtiedTheTree.length} script(s) WROTE INTO THE WORKING TREE (KAN-350).\n\n` +
+      'That is a failure whatever the script asserted, and it is not a tidiness rule:\n' +
+      'a file written on every run rides along unmentioned in unrelated commits, and\n' +
+      '`staleness_check` compares mtimes rather than content — so a write under\n' +
+      '`extension/` makes `extension-build` read stale even when the bytes are\n' +
+      'identical, spending the credibility of the one instrument that catches a\n' +
+      'genuinely un-rebuilt extension.\n\n' +
+      'The fix is in the script: send its output outside the repository, the way\n' +
+      '`extension/scripts/verify-agent-tree.mjs` does. Note that a `HOME` sandbox will\n' +
+      'not do it — that defect resolved its path from `import.meta.url`, which no\n' +
+      'environment variable can reach.'
   );
 }
 
