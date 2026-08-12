@@ -1,4 +1,4 @@
-import { AdfConversionError, AdfDoc, confluenceBody, markdownToAdf } from './adf.js';
+import { AdfConversionError, AdfDoc, AdfTarget, confluenceBody, markdownToAdf } from './adf.js';
 import { JIRA_KEY } from './keys.js';
 
 /**
@@ -753,6 +753,7 @@ function markdownBody(
   args: Record<string, any>,
   field: string,
   what: string,
+  target: AdfTarget,
   required = true
 ): { doc: AdfDoc; coercions: string[] } | { absent: true } | { error: string } {
   const raw = typeof args?.[field] === 'string' ? args[field] : '';
@@ -771,7 +772,7 @@ function markdownBody(
     };
   }
   try {
-    const { doc, coercions } = markdownToAdf(raw);
+    const { doc, coercions } = markdownToAdf(raw, target);
     return { doc, coercions };
   } catch (err: any) {
     // `markdownToAdf` throws exactly when it would otherwise have written
@@ -1863,7 +1864,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     build(args) {
       const key = issueKey(args);
       if ('error' in key) return key;
-      const body = markdownBody(args, 'bodyMarkdown', 'the comment text');
+      const body = markdownBody(args, 'bodyMarkdown', 'the comment text', 'jira');
       if ('error' in body) return body;
       if ('absent' in body) return { error: 'bodyMarkdown is required.' };
       return {
@@ -1915,7 +1916,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       if ('error' in key) return key;
       const spent = timeSpent(args);
       if ('error' in spent) return spent;
-      const comment = markdownBody(args, 'comment', 'a note about the work', false);
+      const comment = markdownBody(args, 'comment', 'a note about the work', 'jira', false);
       if ('error' in comment) return comment;
 
       // Jira's worklog `started` is one of its fussiest formats and it rejects
@@ -1999,7 +2000,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         fields.summary = summary.value;
       }
 
-      const description = markdownBody(args, 'description', 'the new description', false);
+      const description = markdownBody(args, 'description', 'the new description', 'jira', false);
       if ('error' in description) return description;
       if (!('absent' in description)) fields.description = description.doc;
 
@@ -2142,7 +2143,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       if ('error' in type) return type;
       const summary = plainLine(args, 'summary', 'the issue summary');
       if ('error' in summary) return summary;
-      const description = markdownBody(args, 'description', 'the issue description', false);
+      const description = markdownBody(args, 'description', 'the issue description', 'jira', false);
       if ('error' in description) return description;
 
       const fields: Record<string, unknown> = {
@@ -2203,7 +2204,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       if ('error' in space) return space;
       const title = plainLine(args, 'title', 'the page title');
       if ('error' in title) return title;
-      const body = markdownBody(args, 'bodyMarkdown', 'the page content');
+      const body = markdownBody(args, 'bodyMarkdown', 'the page content', 'confluence');
       if ('error' in body) return body;
       if ('absent' in body) return { error: 'bodyMarkdown is required.' };
 
@@ -2272,7 +2273,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       if ('error' in page) return page;
       const title = plainLine(args, 'title', 'the page title');
       if ('error' in title) return title;
-      const body = markdownBody(args, 'bodyMarkdown', 'the page content');
+      const body = markdownBody(args, 'bodyMarkdown', 'the page content', 'confluence');
       if ('error' in body) return body;
       if ('absent' in body) return { error: 'bodyMarkdown is required.' };
       const current = numericId(args, 'version', "the page's current version");
@@ -2342,7 +2343,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     build(args) {
       const page = numericId(args, 'pageId', 'a Confluence page');
       if ('error' in page) return page;
-      const body = markdownBody(args, 'bodyMarkdown', 'the comment text');
+      const body = markdownBody(args, 'bodyMarkdown', 'the comment text', 'confluence');
       if ('error' in body) return body;
       if ('absent' in body) return { error: 'bodyMarkdown is required.' };
 
@@ -2408,7 +2409,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     build(args) {
       const page = numericId(args, 'pageId', 'a Confluence page');
       if ('error' in page) return page;
-      const body = markdownBody(args, 'bodyMarkdown', 'the comment text');
+      const body = markdownBody(args, 'bodyMarkdown', 'the comment text', 'confluence');
       if ('error' in body) return body;
       if ('absent' in body) return { error: 'bodyMarkdown is required.' };
       const selection = freeText(args, 'textSelection', '"the sentence you are commenting on"', 500);

@@ -104,26 +104,64 @@ export interface AdfConversion {
 }
 
 /**
- * Which block types may appear inside which container.
+ * Which product's validator this document has to satisfy.
  *
- * Sources, in order of authority: the ADF round-trip probe recorded in the
- * module header for `listItem > blockquote` (the one everybody gets wrong), and
- * the official Atlassian MCP server's own nesting rules for the rest — *"list
- * items cannot contain headings/tables/panels/expands; table cells can contain
- * headings, panels, lists, media, blockquote … but not nested tables"*.
+ * ## "ADF" IS NOT ONE FORMAT, AND THAT WAS MEASURED THE HARD WAY
  *
- * **`listItem` includes `blockquote` and that is the measured entry, not a
- * hopeful one.** It is the exact nesting the markdown converter drops, and the
- * probe shows ADF accepting and returning it unharmed. Getting this line wrong
- * in the cautious direction would have meant coercing away a structure the
- * format supports, which is a quieter version of the same defect.
+ * Jira and Confluence accept **different** ADF, and the difference is exactly
+ * the nesting this ticket is about. Measured 2026-08-12, both against this site
+ * with a real call:
+ *
+ * ```
+ * blockquote inside a listItem  →  Confluence: stored intact
+ *                               →  Jira:       400 {"comment":"INVALID_INPUT"}
+ * ```
+ *
+ * Everything else that was in doubt is accepted by both: a top-level
+ * blockquote, a list nested in a list item, a codeBlock in a list item, and a
+ * blockquote in a *table cell*. So the divergence is one cell of one table, and
+ * a converter that assumed "ADF is ADF" would work perfectly against Confluence
+ * and fail every Jira comment carrying a quoted bullet.
+ *
+ * **It was found by making the call.** Nothing in Atlassian's documentation,
+ * and nothing in the official MCP server's own nesting guidance, distinguishes
+ * the two — that guidance says list items cannot contain
+ * "headings/tables/panels/expands" and does not mention blockquote at all,
+ * which is right for Confluence and wrong for Jira.
  */
-const ALLOWED_CHILDREN: Record<string, readonly string[]> = {
-  doc: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'table', 'rule'],
-  listItem: ['paragraph', 'bulletList', 'orderedList', 'blockquote', 'codeBlock'],
-  blockquote: ['paragraph', 'bulletList', 'orderedList', 'codeBlock'],
-  tableCell: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'rule'],
-  tableHeader: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'rule']
+export type AdfTarget = 'jira' | 'confluence';
+
+/**
+ * Which block types may appear inside which container, per product.
+ *
+ * Sources, in order of authority: **real calls** against both products for
+ * `listItem > blockquote` (see {@link AdfTarget}), and the official Atlassian
+ * MCP server's own stated nesting rules for the rest — *"list items cannot
+ * contain headings/tables/panels/expands; table cells can contain headings,
+ * panels, lists, media, blockquote … but not nested tables"*.
+ *
+ * The two tables differ in **one entry**, and it is written out in full rather
+ * than expressed as a diff from a shared base: a reader asking "what may go in
+ * a Jira list item" should get the answer from one line, not from one line
+ * minus another line somewhere else.
+ */
+const ALLOWED_CHILDREN: Record<AdfTarget, Record<string, readonly string[]>> = {
+  confluence: {
+    doc: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'table', 'rule'],
+    listItem: ['paragraph', 'bulletList', 'orderedList', 'blockquote', 'codeBlock'],
+    blockquote: ['paragraph', 'bulletList', 'orderedList', 'codeBlock'],
+    tableCell: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'rule'],
+    tableHeader: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'rule']
+  },
+  jira: {
+    doc: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'table', 'rule'],
+    // No `blockquote`. This is the measured difference, and the whole reason
+    // this table is keyed by product.
+    listItem: ['paragraph', 'bulletList', 'orderedList', 'codeBlock'],
+    blockquote: ['paragraph', 'bulletList', 'orderedList', 'codeBlock'],
+    tableCell: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'rule'],
+    tableHeader: ['paragraph', 'heading', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'rule']
+  }
 };
 
 /**
@@ -137,6 +175,17 @@ const ALLOWED_CHILDREN: Record<string, readonly string[]> = {
  * and re-parents the children, never discards them.
  */
 const COERCIONS: Record<string, { to: string; why: string }> = {
+  // Jira only — Confluence's table above permits this nesting, so this entry is
+  // never reached for a Confluence document. `unwrap` keeps the blockquote's
+  // own blocks and drops only the quote wrapper, so every word survives and the
+  // bullet still reads as a bullet with a second paragraph under it.
+  'listItem>blockquote': {
+    to: 'unwrap',
+    why:
+      "Jira's ADF validator rejects a blockquote inside a list item (400 INVALID_INPUT), " +
+      'unlike Confluence which accepts it; the quoted text is kept as ordinary blocks in the ' +
+      'same list item'
+  },
   'listItem>heading': {
     to: 'paragraph',
     why: 'ADF list items cannot contain headings; emitted as a bold paragraph with the same text'
@@ -496,12 +545,13 @@ function buildTable(rows: string[][]): AdfNode {
  * how a log stops being written.
  */
 let pendingCoercions: string[] = [];
+let currentTarget: AdfTarget = 'confluence';
 
 function contain(parent: string, blocks: AdfNode[]): AdfNode[] {
-  const allowed = ALLOWED_CHILDREN[parent];
+  const allowed = ALLOWED_CHILDREN[currentTarget][parent];
   if (!allowed) return blocks;
-  return blocks.map((block) => {
-    if (allowed.includes(block.type)) return block;
+  return blocks.flatMap((block) => {
+    if (allowed.includes(block.type)) return [block];
 
     const coercion = COERCIONS[`${parent}>${block.type}`];
     if (!coercion) {
@@ -516,24 +566,35 @@ function contain(parent: string, blocks: AdfNode[]): AdfNode[] {
 
     pendingCoercions.push(`${block.type} inside ${parent}: ${coercion.why}`);
 
+    if (coercion.to === 'unwrap') {
+      // Splice the offending wrapper's children in where it stood, and run them
+      // through the same containment so an unwrapped child that is *itself*
+      // illegal here is handled rather than smuggled in behind its parent.
+      return contain(parent, block.content ?? []);
+    }
+
     if (coercion.to === 'paragraph') {
       // A heading's text survives with a bold mark, so the emphasis it was
       // carrying is not lost either.
-      return paragraph(
-        (block.content ?? []).map((node) => ({
-          ...node,
-          marks: [...(node.marks ?? []), { type: 'strong' }]
-        }))
-      );
+      return [
+        paragraph(
+          (block.content ?? []).map((node) => ({
+            ...node,
+            marks: [...(node.marks ?? []), { type: 'strong' }]
+          }))
+        )
+      ];
     }
 
     // A nested table flattens to quoted paragraphs, one per row.
-    return {
-      type: 'blockquote',
-      content: (block.content ?? []).map((row) =>
-        paragraph([text((row.content ?? []).map(plainText).join(' | '))])
-      )
-    };
+    return [
+      {
+        type: 'blockquote',
+        content: (block.content ?? []).map((row) =>
+          paragraph([text((row.content ?? []).map(plainText).join(' | '))])
+        )
+      }
+    ];
   });
 }
 
@@ -631,9 +692,11 @@ export class AdfConversionError extends Error {}
  * caller is about to POST this document, and a partial write to a page is
  * indistinguishable afterwards from a page somebody edited.
  */
-export function markdownToAdf(markdown: string): AdfConversion {
+export function markdownToAdf(markdown: string, target: AdfTarget = 'confluence'): AdfConversion {
   const outer = pendingCoercions;
+  const outerTarget = currentTarget;
   pendingCoercions = [];
+  currentTarget = target;
   try {
     const blocks = contain('doc', blocksToAdf(scan(markdown)));
     const doc: AdfDoc = {
@@ -658,6 +721,7 @@ export function markdownToAdf(markdown: string): AdfConversion {
     return { doc, coercions: [...pendingCoercions] };
   } finally {
     pendingCoercions = outer;
+    currentTarget = outerTarget;
   }
 }
 

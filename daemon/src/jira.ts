@@ -574,10 +574,20 @@ export class TokenJiraTransport implements JiraTransport {
           // harmless but says something untrue about the request, and this
           // file's whole argument is that a thing which says more than it does
           // is the defect.
-          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {})
+          //
+          // KAN-293: keyed on **whether there is a body**, not on the verb.
+          // It read `method === 'POST'` until a PUT existed, and then sent a
+          // PUT with no `Content-Type` and no body at all — Atlassian answered
+          // **415 Unsupported Media Type** to both of the operations that use
+          // one. Found by `probe-atlassian-proxy-content-writes.mjs` making a
+          // real call, and by nothing else: every pure test in this repository
+          // was green, because the request this builds is only wrong at the far
+          // end. The condition now says what it means, which is also why it
+          // will not need revisiting for the next verb.
+          ...(method !== 'GET' ? { 'Content-Type': 'application/json' } : {})
         },
-        // Serialised here rather than by the caller — see `JiraTransport.post`.
-        ...(method === 'POST' ? { body: JSON.stringify(requestBody ?? {}) } : {}),
+        // Serialised here rather than by the caller — see `JiraTransport.write`.
+        ...(method !== 'GET' ? { body: JSON.stringify(requestBody ?? {}) } : {}),
         signal
       });
     } catch (err: any) {
