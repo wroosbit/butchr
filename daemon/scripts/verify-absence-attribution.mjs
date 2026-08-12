@@ -77,9 +77,37 @@
 //                   still reported; this is the occurrence a stand-down line
 //                   could never have covered (KAN-212)
 //   4. degraded   — a diagnostic that fails reports `undetermined` and NEVER
-//                   the old sentence, and convergence is untouched by it
+//                   the old sentence, and it does not halt the loop
 //   5. parser     — real-shaped Jira JSON through the real `boardPageFrom`:
 //                   an absent assignee parses to null, a present one does not
+//
+// WHAT KAN-342 CHANGED IN THIS SCRIPT, AND WHY IT IS NOT A WEAKENING
+//
+// This script was written when the reconciler stood an agent down for *any*
+// absence from `BOARD_JQL`, so §1 and §4 both asserted on the wording of a
+// stand-down that had already happened. KAN-342 made the stand-down conditional
+// on the board having said something, and on both of these fixtures — an
+// unassigned ticket, and a diagnostic that did not answer — it now says
+// nothing, so no agent is stood down and there is no stand-down line to read.
+//
+// The two sections are therefore reworded rather than relaxed, and each now
+// asserts something strictly stronger than it did:
+//
+//   §1 asserted the new line names the empty assignee instead of denying the
+//      status. It still does — KAN-256's sentence survives intact, moved onto
+//      the line that reports the agent being LEFT ALONE — and §1 additionally
+//      asserts that `stopped` is empty, which it could not have said before.
+//   §4 asserted that a failed diagnostic still let the loop converge on the
+//      diff it had. It no longer does, for stand-downs, and that is KAN-342's
+//      deliberate and stated cost: intent cannot be established from a query
+//      that did not answer. §4 now asserts the half that is unchanged — starts
+//      are untouched, no refusal is recorded, the reason is `undetermined` and
+//      never the old sentence — and pins the half that changed.
+//
+// §1's red build correspondingly needs BOTH repairs removed to reproduce the
+// 2026-08-10 log: KAN-256's attribution AND KAN-342's gate. That is not the
+// section getting weaker; it is two guards now standing between this daemon and
+// that line, and the reconstruction has to get past both to be a reconstruction.
 //
 // Isolation is by $HOME, as in verify-board-reconciler-guard.mjs: no herdr is
 // contacted and no real workspace is touched. This script starts and stops
@@ -188,17 +216,35 @@ rule('1. THE RED — the same fixture, reported the old way and the new way');
 // every stand-down sentence came from a template that took no reason at all. We
 // patch the reason lookup to yield nothing, which is exactly the pre-KAN-256
 // state — there was no reason to look up — and restore the old template text.
+//
+// SINCE KAN-342 THAT IS NOT SUFFICIENT ON ITS OWN, AND THE EXTRA PATCH IS THE
+// SECOND GUARD RATHER THAN A CONVENIENCE.
+//
+// Disabling the attribution now leaves `partitionStandDowns` with no reason for
+// this agent, and no reason is no evidence of intent, so the agent is spared and
+// the reconstruction prints nothing at all. The fallback below puts back the one
+// thing the pre-KAN-256 loop had in place of an attribution: the hardcoded
+// sentence, asserted of every absence unconditionally. That single line
+// reconstructs both repairs' absence at once — which is honest rather than
+// convenient, because KAN-342's gate is built out of KAN-256's attribution and
+// could not have existed before it.
 const redDist = path.join(daemonDir, `dist-kan256-red-${process.pid}`);
 fs.cpSync(distDir, redDist, { recursive: true });
 const redFile = path.join(redDist, 'board-reconcile.js');
 let redSource = fs.readFileSync(redFile, 'utf8');
+const OLD_SENTENCE = 'the board does not have it In Progress or In Review';
 const patches = [
   // Make the new attribution unavailable, as it was before this change...
   ['cycle.absences.push({', 'cycle.absencesDisabled_ForTheRed = true; ({'],
-  // ...put the sentence it replaced back, verbatim from git history...
+  // ...put the sentence it replaced back, verbatim from git history, as the
+  // unconditional answer for every absence. This is the pre-KAN-256 loop: one
+  // hardcoded clause, no condition, and therefore — since the condition is what
+  // KAN-342 reads — no gate either. Both repairs gone, in the one line where
+  // they now both live.
   [
-    '`[board] stood down ${address(agent)}: ${reason?.detail ?? \'no reason was established\'}.`',
-    '`[board] stood down ${address(agent)}: the board does not have it In Progress or In Review.`'
+    'const reason = reasonFor.get(agent.agentName);',
+    `const reason = reasonFor.get(agent.agentName) ?? ` +
+      `{ condition: 'wrong-status', statusName: null, assignee: null, detail: '${OLD_SENTENCE}' };`
   ],
   // ...remove the near-miss report, which did not exist either. Without this
   // the red build would print the new explanation right beside the old false
@@ -208,11 +254,13 @@ const patches = [
   // ...and put the OTHER old sentence back too. Both stand-down lines carried
   // the same false claim, and the `converging:` one is what daemon.log:12736
   // actually recorded during the incident. Patching only the second would leave
-  // the red build printing this change's own fallback wording beside it, which
-  // is not what anybody read that morning.
+  // the red build printing this change's own wording beside it, which is not
+  // what anybody read that morning. The word order differs from the line above
+  // — the key sits inside the clause rather than in front of it — which is why
+  // this is a second patch and not the same string twice.
   [
-    '`${renderedKey(agent.key)} was not returned by the board query, and this cycle ` +\n                    `recorded no reason for that`',
-    '`the board does not have ${renderedKey(agent.key)} In Progress or In Review`'
+    'const detail = `${renderedKey(agent.key)}: ${reason.detail}`;',
+    'const detail = `the board does not have ${renderedKey(agent.key)} In Progress or In Review`;'
   ]
 ];
 const patchReport = [];
@@ -247,7 +295,7 @@ const red = new RedReconciler({
 });
 await red.reconcileOnce();
 
-const { reconciler: green, log: greenLog } = reconcilerFor(INCIDENT());
+const { reconciler: green, log: greenLog, stopped: greenStopped } = reconcilerFor(INCIDENT());
 const greenCycle = await green.reconcileOnce();
 
 // Anchored on the start of the sentence, not on a substring of it: the
@@ -255,7 +303,12 @@ const greenCycle = await green.reconcileOnce();
 // it up and compared the new report against itself.
 const standDown = (lines) => lines.find((l) => l.startsWith('[board] stood down '));
 const oldLine = standDown(redLog);
-const newLine = standDown(greenLog);
+// KAN-342: there is no "stood down" line on this fixture any more, because
+// there is no stand-down. KAN-256's sentence moved onto the line that reports
+// the agent being left alone, and that is the line to compare against the old
+// one — same fixture, same field, and now a different outcome rather than only
+// a different wording.
+const newLine = greenLog.find((l) => l.includes('nothing established that anybody asked it to stop'));
 
 console.log('\n   the board state both runs were given:');
 console.log('     KAN-59 — status "In Progress", assignee: (empty)');
@@ -263,6 +316,10 @@ console.log(`\n   OLD — everything the red build logged about KAN-59 (${redLog
 for (const l of redLog) console.log(`     ${l}`);
 console.log('\n   NEW:');
 console.log(`     ${newLine}`);
+console.log(`\n   OLD — agents stood down: 1 (epic/KAN-59, every cycle, for 45 minutes)`);
+console.log(`   NEW — agents stood down: ${greenStopped.length}   ${JSON.stringify(greenStopped)}`);
+console.log(`   NEW — spared: ${JSON.stringify(greenCycle.spared.map((s) => s.agent.agentName))}` +
+  `  condition: ${greenCycle.spared[0]?.reason.condition}`);
 
 // The old line's specific falsehood: it denies the status, and the status was
 // right. The new line must not deny it, and must name the field that was empty.
@@ -302,18 +359,33 @@ console.log(`   new line denies the status: ${newDeniesStatus}`);
 console.log(`   new line names the empty assignee: ${newNamesAssignee}`);
 console.log(`   new line affirms the correct status: ${newAffirmsStatus}`);
 
+// KAN-342. The wording assertions above are KAN-256's and they still hold; this
+// is the half that was missing, and it is the half the incident was made of. An
+// operator reading a correctly-worded line about a supervisor that is already
+// dead has been told the truth about an outcome that should not have happened.
+const newStoodNothingDown = greenStopped.length === 0 && greenCycle.stopped.length === 0;
+const newSpared = greenCycle.spared.length === 1 &&
+  greenCycle.spared[0].reason.condition === 'no-assignee';
+
+console.log(`\n   new build stood nothing down: ${newStoodNothingDown}`);
+console.log(`   new build spared it as \`no-assignee\`: ${newSpared}`);
+
 verdict(
   patchesApplied &&
     matchesRecord &&
     oldDeniesStatus &&
     !newDeniesStatus &&
     newNamesAssignee &&
-    newAffirmsStatus,
+    newAffirmsStatus &&
+    newStoodNothingDown &&
+    newSpared,
   'the red build reproduced BOTH lines the daemon really logged during the incident, verbatim, ' +
-    'making the false claim on a ticket that was In Progress — and the new one names the empty ' +
-    'assignee instead of denying a status that was correct',
+    'making the false claim on a ticket that was In Progress — and the new build does not stand ' +
+    'the agent down at all, naming the empty assignee as the absence it is rather than denying a ' +
+    'status that was correct',
   patchesApplied
-    ? 'the new line still denies the status, or fails to name the assignee — the defect is live'
+    ? 'the new build still stands the agent down on an empty assignee, still denies the status, ' +
+      'or fails to name the field — the defect is live'
     : `the old sentence could not be located in the built module (${JSON.stringify(patchReport)}) — ` +
       'this section proves nothing and must be repaired rather than deleted'
 );
@@ -406,32 +478,53 @@ verdict(
 
 // ----------------------------------------------------------- 4. degraded --
 
-rule('4. DEGRADED — a diagnostic that fails says so, and never the old sentence');
+rule('4. DEGRADED — a diagnostic that fails says so, withholds the stand-down, and starts anyway');
 
+// KAN-342 changed this section's expected outcome, and the change is the cost
+// this ticket accepted rather than an incidental consequence. The stand-down
+// evidence comes from the diagnostic, so a diagnostic that did not answer
+// cannot establish that anybody asked for one. Before, this fixture stood the
+// agent down with a vaguer sentence; now it does not stand it down.
+//
+// The invariant the original section was protecting is NOT "the loop converges
+// regardless" — it is that **a reporting failure must not stop the loop
+// working**. That still holds where it can: the read succeeded, the diff is
+// real, and everything the board asked to START still starts. So the fixture
+// gains a wanted-but-not-running agent, which is what makes the two halves
+// separable at all; asserting only the stand-down half would have let a failed
+// diagnostic quietly acquire the power to freeze the whole cycle and called it
+// caution.
 const deg = reconcilerFor({
-  board: { ok: true, issues: [] },
+  board: { ok: true, issues: [row('KAN-77', 'Task', 'In Progress')] },
   diagnostic: { ok: false, backOff: true, status: 503, error: 'board search returned HTTP 503' },
   running: [agent('epic', 'KAN-59')]
 });
 const degCycle = await deg.reconciler.reconcileOnce();
-const degLine = deg.log.find((l) => l.includes('stood down'));
+const degLine = deg.log.find((l) => l.includes('nothing established that anybody asked it to stop'));
 
 console.log(`   diagnostic answered: no (HTTP 503)`);
 console.log(`   near misses: ${JSON.stringify(degCycle.nearMisses)}   (null = nobody looked)`);
 console.log(`   condition:   ${degCycle.absences[0]?.reason.condition}`);
 console.log(`\n   the line:\n     ${degLine}`);
-console.log(`\n   converged anyway: ${degCycle.converged} (stopped ${degCycle.stopped.length})`);
+console.log(`\n   refusal:      ${JSON.stringify(degCycle.refusal)}   (null = the cycle was not halted)`);
+console.log(`   started:      ${JSON.stringify(degCycle.started.map((s) => s.agent.agentName))}`);
+console.log(`   stood down:   ${JSON.stringify(degCycle.stopped.map((s) => s.agent.agentName))}`);
+console.log(`   spared:       ${JSON.stringify(degCycle.spared.map((s) => s.agent.agentName))}`);
 
 verdict(
   degCycle.absences[0]?.reason.condition === 'undetermined' &&
     !degLine?.includes('does not have it In Progress or In Review') &&
     degCycle.nearMisses === null &&
-    degCycle.stopped.length === 1,
+    degCycle.stopped.length === 0 &&
+    degCycle.spared.length === 1 &&
+    degCycle.refusal === null &&
+    degCycle.started.length === 1,
   'a failed diagnostic reports an undetermined reason rather than falling back to the false ' +
-    'sentence, reports null rather than an empty near-miss list, and does not stop the loop ' +
-    'converging on the diff it already had',
-  'the degraded path reverted to the old sentence, claimed a clean board it never read, or ' +
-    'let a reporting failure halt convergence'
+    'sentence, reports null rather than an empty near-miss list, withholds a stand-down it ' +
+    'cannot justify — and still starts what the board asked for, so a reporting failure has ' +
+    'not been handed the power to halt the cycle',
+  'the degraded path reverted to the old sentence, claimed a clean board it never read, stood ' +
+    'an agent down on evidence it did not have, or let a reporting failure stop the loop starting'
 );
 
 // ------------------------------------------------------------- 5. parser --

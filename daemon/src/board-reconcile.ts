@@ -147,6 +147,112 @@ import {
  * `epic/KAN-39`, and the collision killed the epic agent's PTY. On a
  * sixty-second timer that is not an incident, it is a recurrence.
  *
+ * AN ABSENT ASSIGNEE PROTECTS TOO — ABSENCE IS NOT INTENT (KAN-342)
+ *
+ * The section above settles `issuetype` completely. {@link BOARD_JQL} reads
+ * **two** fields, and until 2026-08-12 the other one was treated the opposite
+ * way: a missing `issuetype` protected, a missing `assignee` killed. Same file,
+ * same class of absence, opposite outcome — and the principle that resolves it
+ * was already written one section up.
+ *
+ * On 2026-08-12 `KAN-203` sat In Progress with `assignee: null`. This loop
+ * concluded no agent should exist for it and stood the running supervisor down
+ * once every sixty seconds for as long as that lasted. The human restarted it
+ * by hand and was the only instrument that noticed — the guardian that reports
+ * agents dying was the agent being killed. KAN-256 had met the same field two
+ * days earlier and repaired the *sentence*, which was careful, correct work
+ * that left the behaviour exactly where it stood.
+ *
+ * Read off KAN-203's Jira changelog rather than recalled, and it is the whole
+ * of what that changelog can say:
+ *
+ *     2026-08-12T11:05:31Z  assignee  "Wroos Bit" -> null
+ *     2026-08-12T11:24:01Z  assignee  null -> "Wroos Bit"      (18m 30s later)
+ *
+ * Two entries, and the issue has five in its whole history, so **the field was
+ * empty exactly once and for eighteen and a half minutes** — KAN-342 estimates
+ * about forty-five, and the changelog is the better witness. Roughly eighteen
+ * cycles, which fits the eight hand restarts the ticket records better than
+ * forty-five would. **The author reads `Wroos Bit` on both**, which identifies
+ * nobody: every agent reaches Jira through the human's account, and Butchr's
+ * `[authorship]` records cover comments only. That is the same structural hole
+ * KAN-256 hit and it is unchanged — which is exactly why nothing below depends
+ * on who emptied the field, on whether it was deliberate, or on it being put
+ * back.
+ *
+ * THE DISTINCTION, AND IT IS THE WHOLE CHANGE
+ *
+ * **The board expresses intent, and this loop honours it. An absence is not an
+ * expression.** A ticket moved out of In Progress has had a decision made about
+ * it, and standing its agent down is the mechanism working as designed. A
+ * ticket whose assignee field is empty has had no decision made about it at
+ * all. *"Nobody has said who owns this"* and *"somebody has decided this should
+ * stop"* are different states, and they used to produce the same action.
+ *
+ * So a stand-down now requires the board to have **said** something — not the
+ * absence of a row, but the presence of a value that excludes it:
+ *
+ *   - `wrong-status`       the diagnostic answered and the ticket is not In
+ *                          Progress or In Review under any assignee. A status
+ *                          is a decision. STAND DOWN.
+ *   - `assigned-elsewhere` the ticket carries an assignee, compared against
+ *                          this machine's own account id and different. Also a
+ *                          decision, and the partition exists to honour it.
+ *                          STAND DOWN.
+ *   - everything else      no field said anything. LEAVE IT ALONE.
+ *
+ * {@link isIntent} is that list, {@link partitionStandDowns} applies it, and
+ * {@link StandDown} carries a reason whose condition is *narrowed* to the two —
+ * so standing an agent down on `no-assignee` is not something a later author
+ * can do by editing the logic below. The type has to be widened first, in the
+ * open, which is the difference between a decision and a regression.
+ *
+ * WHY THIS IS NOT A SUPERVISOR EXEMPTION, AND WHY :98-110 IS UNTOUCHED
+ *
+ * KAN-221 asked whether supervisors belong outside step 4 and answered no, on
+ * the ground that an exemption *is* a second store of desired state and that a
+ * board which should keep an epic running can already say so. **That argument
+ * is correct, this change agrees with it, and it is left standing above.**
+ * Nothing here says any agent runs regardless of what the board says; it says
+ * the board has to have said it. Supervisors were the visible victims only
+ * because they are the agents nobody else reports on — a task agent whose
+ * ticket loses its assignee is spared by exactly the same branch, and no code
+ * below consults `isSupervisorType` for anything but the wording of a log line.
+ *
+ * A deliberate stop is unaffected in every form it takes: Done, To Do, deleted,
+ * reassigned to another account. Each is a value this loop can read, and each
+ * still stands its agent down within one cycle, supervisor included.
+ *
+ * WHAT IT COSTS, STATED PLAINLY BECAUSE IT IS NOT NOTHING
+ *
+ * The evidence for intent comes from {@link BOARD_DIAGNOSTIC_JQL}, so **a
+ * diagnostic that does not answer now withholds stand-downs**, where before it
+ * only made their log lines vaguer. That is a real behaviour change on a
+ * reporting query's failure path, and it was the hard call here:
+ *
+ *   - **It is not a refusal.** The cycle still reads the board, still starts
+ *     everything the board wants, and still reports. What it withholds is the
+ *     one action that is unrecoverable: an agent's context does not survive its
+ *     pane, and none of it survives the stand-down having been wrong.
+ *   - **The two failure modes do not cost the same.** Withholding leaves an
+ *     agent up that should have gone — visible, harmless, and corrected by the
+ *     next cycle whose diagnostic answers. Acting without evidence killed a
+ *     supervisor every sixty seconds for forty-five minutes, and nothing inside
+ *     the fleet could tell.
+ *   - **The window is narrow.** Both queries share a credential, a transport
+ *     and a timeout, so a cycle where the partitioned query answers and the
+ *     diagnostic does not is a one-off 5xx, a timeout, or a page Jira would not
+ *     certify as complete.
+ *
+ * **The case that is not narrow, named because it is the one that will bite.**
+ * {@link BOARD_DIAGNOSTIC_JQL} is unscoped by project, so an account holding
+ * more than {@link BOARD_MAX_RESULTS} issues In Progress or In Review anywhere
+ * returns a partial page — which `searchBoard` correctly reports as a failed
+ * read — leaving the diagnostic null every cycle, permanently. Stand-downs then
+ * stop happening and the fleet accumulates agents whose tickets are Done. It is
+ * loud (a line per cycle out of `readDiagnostic`) and it fails in the safe
+ * direction, but it is real: filed as KAN-343, not fixed here.
+ *
  * CAPACITY IS NOT DESIRED STATE
  *
  * A desired-on agent that will not fit reports the binding constraint and is
@@ -430,21 +536,133 @@ export interface UnresolvedIssue {
  * asserting the condition it happens to know how to spell.
  */
 export type AbsenceCondition =
-  | 'wrong-status'
+  | IntentCondition
   | 'no-assignee'
-  | 'assigned-elsewhere'
+  | 'assignee-uncompared'
   | 'queries-disagree'
   | 'undetermined';
+
+/**
+ * The conditions in which the board **said** something that excludes a ticket.
+ *
+ * KAN-342, and the list is the whole of the stand-down rule. Both members are a
+ * *value this loop read*: a status that is not In Progress or In Review, or an
+ * assignee account id compared against this machine's own and found different.
+ * Every other member of {@link AbsenceCondition} is an absence — a field that
+ * was empty, a question the diagnostic could not answer, or two searches
+ * contradicting each other — and an absence is not an instruction.
+ *
+ * `assignee-uncompared` is deliberately **not** here, and it is the subtle one.
+ * It means the row carries an assignee that could not be checked against this
+ * machine's account id, because the partitioned query returned no rows to learn
+ * that id from (see {@link deriveAccountId}). *Probably* somebody else's — but
+ * "probably somebody else's" is indistinguishable from `queries-disagree` from
+ * where this code stands, and the state it appears in is the whole fleet's
+ * tickets vanishing from the partitioned query at once, which is the exact
+ * shape of the incident rather than of a deliberate handover.
+ */
+export const INTENT_CONDITIONS = ['wrong-status', 'assigned-elsewhere'] as const;
+
+/** A condition that is a decision rather than an absence. */
+export type IntentCondition = (typeof INTENT_CONDITIONS)[number];
+
+/**
+ * Whether the board expressed an intent, or merely failed to mention a ticket.
+ *
+ * A type predicate rather than a boolean helper, so the narrowing it performs
+ * is the only route to a {@link StandDown} — see that type for what the
+ * narrowing buys over an assertion that a later author can delete.
+ */
+export function isIntent(condition: AbsenceCondition): condition is IntentCondition {
+  return (INTENT_CONDITIONS as readonly string[]).includes(condition);
+}
 
 /** An attributed absence: the condition, and the sentence that states it. */
 export interface AbsenceReason {
   condition: AbsenceCondition;
   /** The status the diagnostic saw, where it saw the issue at all. */
   statusName: string | null;
-  /** Display name of whoever holds it, on `assigned-elsewhere` only. */
+  /** Display name of whoever holds it, where the row carried one. */
   assignee: string | null;
   /** The clause the log prints after the key. Never claims an unchecked fact. */
   detail: string;
+}
+
+/**
+ * A stand-down the board asked for, and the evidence that it did.
+ *
+ * The narrowed `condition` is the point of this type rather than decoration.
+ * The rule *"do not stand an agent down on a missing field"* could have been an
+ * `if` in the loop below, and an `if` is one edit from being deleted by an
+ * author who does not know what it cost to write. This makes the unwanted state
+ * **unconstructible**: the only way to obtain a `StandDown` is to pass a reason
+ * through {@link isIntent}, so reinstating the 2026-08-12 behaviour means
+ * widening {@link INTENT_CONDITIONS} in the open rather than quietly dropping a
+ * guard. The assertion exists as well, in {@link partitionStandDowns}; belt and
+ * braces, in that order.
+ */
+export interface StandDown {
+  agent: RunningAgent;
+  reason: AbsenceReason & { condition: IntentCondition };
+}
+
+/** A running agent left alone because nothing established that anybody meant to stop it. */
+export interface SparedAgent {
+  agent: RunningAgent;
+  reason: AbsenceReason;
+}
+
+/**
+ * Split the stand-down candidates into the ones the board asked for and the
+ * ones it merely did not mention.
+ *
+ * Pure, and a separate stage from {@link computeBoardDiff} on purpose. The diff
+ * is computed from {@link BOARD_JQL} alone and its meaning is unchanged — every
+ * running agent the partitioned query did not return is still a *candidate*.
+ * What is new is that being a candidate is no longer sufficient, and keeping
+ * that as a second function rather than a third argument to the first is what
+ * keeps {@link BOARD_DIAGNOSTIC_JQL}'s promise literally true: the diagnostic
+ * still cannot start anything, still cannot stand anything down, and still
+ * feeds no part of the diff. It can now only **spare**, which is a direction a
+ * second store of desired state cannot be built out of — nothing it says can
+ * make the fleet do something the board did not ask for.
+ *
+ * A candidate with no absence entry at all is spared. That is the same rule,
+ * not a special case: no entry is the least evidence of all.
+ */
+export function partitionStandDowns(
+  candidates: RunningAgent[],
+  absences: Array<{ agentName: string; reason: AbsenceReason }>
+): { standDowns: StandDown[]; spared: SparedAgent[] } {
+  const reasonFor = new Map(absences.map((a) => [a.agentName, a.reason]));
+  const standDowns: StandDown[] = [];
+  const spared: SparedAgent[] = [];
+
+  for (const agent of candidates) {
+    const reason = reasonFor.get(agent.agentName);
+    if (reason && isIntent(reason.condition)) {
+      // The restated `condition` is not redundant and is not a typo: it is
+      // where the predicate's narrowing is spent. A spread alone reconstructs
+      // the wide `AbsenceCondition` and does not typecheck against
+      // {@link StandDown}, which is the guard doing its job at the one line
+      // that could otherwise route around it.
+      standDowns.push({ agent, reason: { ...reason, condition: reason.condition } });
+      continue;
+    }
+    spared.push({
+      agent,
+      reason: reason ?? {
+        condition: 'undetermined',
+        statusName: null,
+        assignee: null,
+        detail:
+          `this cycle recorded no reason for its absence from \`${BOARD_JQL}\` at all, and an ` +
+          `absence nobody has accounted for is the least evidence of intent there is`
+      }
+    });
+  }
+
+  return { standDowns, spared };
 }
 
 /** A ticket In Progress or In Review with nobody in the assignee field. */
@@ -513,11 +731,20 @@ export interface BoardCycle {
    */
   nearMisses: BoardNearMiss[] | null;
   /**
-   * Why the partitioned query did not return each stand-down target — one entry
-   * per agent in `diff.toStop`, in the same order, whether or not the loop was
-   * allowed to act on it.
+   * Why the partitioned query did not return each stand-down candidate — one
+   * entry per agent in `diff.toStop`, in the same order, whether or not the
+   * loop was allowed to act on it.
    */
   absences: Array<{ agentName: string; key: string; reason: AbsenceReason }>;
+  /**
+   * Candidates the loop declined to stand down because nothing established that
+   * anybody meant to stop them (KAN-342).
+   *
+   * Empty and populated are both ordinary. What this must never be is *absent*
+   * from a reader's arithmetic: `diff.toStop` is the candidate set, and
+   * `stopped` plus `spared` is what actually became of it.
+   */
+  spared: SparedAgent[];
 }
 
 export interface BoardReconcilerOptions {
@@ -753,6 +980,15 @@ export function fleetProjects(board: JiraBoardIssue[], running: RunningAgent[]):
  * wrong is not its prose but that no code anywhere had established which
  * condition failed. This is that code, and it is testable without a daemon.
  *
+ * **Since KAN-342 the condition it returns also decides an action**, and that is
+ * worth meeting here rather than discovering downstream. This function was
+ * written to choose a *sentence*; {@link partitionStandDowns} now reads the same
+ * discriminant to choose whether the agent lives. Nothing about the branches
+ * changed for that — they were already required to name only what they had
+ * checked, which is exactly the property a decision needs — but a new branch
+ * added here is now a stand-down rule as well as a log line, and it has to be
+ * added to {@link INTENT_CONDITIONS} or left out of it deliberately.
+ *
  * `diagnostic` is null when the diagnostic query was not run or did not answer,
  * and that case returns `undetermined` rather than falling back to the old
  * sentence. **The fallback is the bug.** A loop that says "not In Progress or In
@@ -813,7 +1049,29 @@ export function explainAbsence(
     };
   }
 
-  if (accountId && row.assigneeAccountId === accountId) {
+  if (!accountId) {
+    // The row carries an assignee and there is nothing to compare it against:
+    // the partitioned query returned no rows this cycle, so this machine's own
+    // account id could not be learned from it. Until KAN-342 this fell through
+    // to `assigned-elsewhere` with a clause admitting the inference — a
+    // conclusion drawn from an absence, wearing the same name as one drawn from
+    // a comparison, and now the difference decides whether an agent lives.
+    return {
+      condition: 'assignee-uncompared',
+      statusName: row.statusName,
+      assignee: row.assigneeDisplayName,
+      detail:
+        `it is ${status} on the board and assigned to ` +
+        `${row.assigneeDisplayName ?? row.assigneeAccountId}, but this cycle's partitioned ` +
+        `query returned no rows at all, so this machine's own Jira account id could not be ` +
+        `learned from it and that assignee could not be compared against it. It is probably ` +
+        `somebody else's ticket; from here that is indistinguishable from the two searches ` +
+        `disagreeing, and a whole board vanishing from \`${BOARD_JQL}\` at once is what the ` +
+        `incident looked like rather than what a handover looks like (KAN-342)`
+    };
+  }
+
+  if (row.assigneeAccountId === accountId) {
     // Status right, assignee right, and the partitioned query still did not
     // return it. Nothing about the ticket explains that, so the line must not
     // pretend something does — the two searches disagreed, and saying so is the
@@ -836,13 +1094,9 @@ export function explainAbsence(
     statusName: row.statusName,
     assignee: row.assigneeDisplayName,
     detail:
-      `it is ${status} on the board but assigned to ${who}, not to this machine's Jira ` +
-      `account, so it is not this fleet's business however it is statused` +
-      (accountId
-        ? ''
-        : ` — though note this cycle's partitioned query returned no rows, so this machine's ` +
-          `own account id could not be learned from it and "not this machine's" is inferred ` +
-          `from that absence rather than compared`)
+      `it is ${status} on the board but assigned to ${who}, compared against this machine's ` +
+      `own Jira account id and different, so it is not this fleet's business however it is ` +
+      `statused`
   };
 }
 
@@ -852,7 +1106,12 @@ export function describeBoardDiff(diff: BoardDiff): string {
     `${diff.desired.length} desired`,
     `${diff.unchanged.length} already right`,
     `${diff.toStart.length} to start`,
-    `${diff.toStop.length} to stop`
+    // Not "to stop". Since KAN-342 the board not returning a running agent
+    // makes it a candidate and nothing more — whether it is actually stood down
+    // depends on the board having said something, which this pure function has
+    // no way to know. A count that said "to stop" here would be a number the
+    // cycle then contradicts.
+    `${diff.toStop.length} stand-down candidate(s)`
   ];
   if (diff.unresolved.length) parts.push(`${diff.unresolved.length} unresolved`);
   if (diff.protectedByUnresolved.length) {
@@ -979,7 +1238,8 @@ export class BoardReconciler {
       stopped: [],
       converged: false,
       nearMisses: null,
-      absences: []
+      absences: [],
+      spared: []
     };
 
     if (mode === 'off') {
@@ -1069,16 +1329,26 @@ export class BoardReconciler {
       );
     }
 
-    this.report(diff, mode, cycle);
+    // ------------------------------------------------------ absence or intent --
+    //
+    // KAN-342. `diff.toStop` is every running agent the partitioned query did
+    // not return, which is a question rather than an answer: the board may have
+    // said "stop", or it may have said nothing at all. This is where the two
+    // are separated, and it is the only gate between a candidate and a killed
+    // pane. See the header section AN ABSENT ASSIGNEE PROTECTS TOO.
+    const { standDowns, spared } = partitionStandDowns(diff.toStop, cycle.absences);
+    cycle.spared = spared;
+
+    this.report(diff, mode, cycle, standDowns);
 
     if (mode !== 'converge') return cycle;
-    if (!diff.toStop.length && !diff.toStart.length) return cycle;
+    if (!standDowns.length && !diff.toStart.length) return cycle;
 
     cycle.converged = true;
 
     // Stand-downs first: everything here is desired-off, so doing it now is not
     // a sacrifice for room — it just happens to leave room. See the header.
-    for (const agent of diff.toStop) {
+    for (const { agent, reason } of standDowns) {
       let stood: DeactivateOutcome;
       try {
         stood = await this.opts.deactivate(agent);
@@ -1090,10 +1360,9 @@ export class BoardReconciler {
       // incident: this is the line that appears when the agent is already gone,
       // so it is where an operator starts. It carried the same unconditional
       // sentence as the line above and was wrong in exactly the same way.
-      const reason = cycle.absences.find((a) => a.agentName === agent.agentName)?.reason;
       this.opts.log(
         stood.success
-          ? `[board] stood down ${address(agent)}: ${reason?.detail ?? 'no reason was established'}.`
+          ? `[board] stood down ${address(agent)}: ${reason.detail}.`
           : `[board] could not stand down ${address(agent)}: ${stood.error ?? 'no reason given'}`
       );
     }
@@ -1190,9 +1459,21 @@ export class BoardReconciler {
   }
 
   /** Say what the cycle sees, whether or not it is allowed to act on it. */
-  private report(diff: BoardDiff, mode: BoardMode, cycle: BoardCycle): void {
+  private report(
+    diff: BoardDiff,
+    mode: BoardMode,
+    cycle: BoardCycle,
+    standDowns: StandDown[]
+  ): void {
     const verb = mode === 'converge' ? 'converging' : 'would converge';
-    this.opts.log(`[board] ${describeBoardDiff(diff)}.`);
+    this.opts.log(
+      `[board] ${describeBoardDiff(diff)}` +
+      (cycle.spared.length
+        ? `, of which ${standDowns.length} the board asked to stop and ${cycle.spared.length} ` +
+          `it did not mention`
+        : '') +
+      `.`
+    );
 
     for (const issue of diff.unresolved) {
       this.opts.log(
@@ -1229,27 +1510,40 @@ export class BoardReconciler {
       );
     }
 
-    const reasonFor = new Map(cycle.absences.map((a) => [a.agentName, a.reason]));
-    for (const agent of diff.toStop) {
+    // One line per stand-down candidate, exactly as before — but the candidates
+    // are now two populations and the line says which. Nothing was *added* to
+    // this loop's output: a line that used to announce an action announces a
+    // refusal to act instead, where the board never asked for one (KAN-342).
+    for (const { agent, reason } of standDowns) {
       const supervisor = agent.type ? this.opts.isSupervisorType?.(agent.type) === true : false;
       // Never the old unconditional sentence. `explainAbsence` always returns a
       // reason — `undetermined` when it could not establish one — so there is no
       // branch here that names a condition nobody checked.
-      const reason = reasonFor.get(agent.agentName);
+      //
       // Through the helper, and not only for consistency: these are the lines in
       // the file that name a key *outside* an address, and they are what tells a
       // reader which ticket to go and fix. `agent` is a RunningAgent, so its key
       // can be the pane spelling.
-      const detail = reason
-        ? `${renderedKey(agent.key)}: ${reason.detail}`
-        : `${renderedKey(agent.key)} was not returned by the board query, and this cycle ` +
-          `recorded no reason for that`;
+      const detail = `${renderedKey(agent.key)}: ${reason.detail}`;
       this.opts.log(
         supervisor
           ? `[board] ${verb}: STAND DOWN SUPERVISOR ${address(agent)} — ${detail}. ` +
             `Supervisors are not exempt from this rule (KAN-221); to keep one running, its ` +
             `ticket has to say so.`
           : `[board] ${verb}: stop ${address(agent)} — ${detail}.`
+      );
+    }
+    // The spared. No supervisor variant, deliberately: the loud line above
+    // exists because an agent nobody else reports on is about to be destroyed,
+    // and nothing is being destroyed here. Special-casing a type in a line that
+    // reports *inaction* would be the visibility-instead-of-behaviour trade
+    // KAN-221 made and KAN-342 is here to undo.
+    for (const { agent, reason } of cycle.spared) {
+      this.opts.log(
+        `[board] ${address(agent)} is running and \`${this.jql}\` did not return it, but ` +
+        `nothing established that anybody asked it to stop — ${renderedKey(agent.key)}: ` +
+        `${reason.detail}. Leaving it running: this loop honours what the board says, and an ` +
+        `absent field has not said anything (KAN-342, condition \`${reason.condition}\`).`
       );
     }
   }

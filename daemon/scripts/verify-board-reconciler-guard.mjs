@@ -88,9 +88,12 @@
 //                   not. The fleet either side, from the real census.
 //   2. guarded    — same fleet, Jira read fails: nothing started, nothing
 //                   stopped, and the refusal names the failed read
-//   3. guardless  — THE RED. The same scenario against a copy of the built
-//                   module with the guard patched out, so a failed read yields
-//                   an empty list the way it would have before: the fleet goes
+//   3. guardless  — THE RED. The same scenario against copies of the built
+//                   module with the guards patched out. 3a removes this
+//                   ticket's guard alone and the fleet SURVIVES — KAN-342 put a
+//                   second, independent stop on the same path. 3b removes both
+//                   and a failed read yields an empty list the way it would
+//                   have before: the fleet goes
 //   4. partial    — a truncated search page is a failed read, not a small board
 //   5. unresolved — a board row with no issue type starts nothing AND protects
 //                   the agent on that key from stand-down
@@ -316,6 +319,7 @@ function cleanup() {
   }
   fs.rmSync(scratch, { recursive: true, force: true });
   fs.rmSync(guardlessDist, { recursive: true, force: true });
+  fs.rmSync(defencelessDist, { recursive: true, force: true });
 }
 process.on('exit', cleanup);
 
@@ -453,6 +457,43 @@ fs.writeFileSync(guardlessFile, guardlessSource);
 const patchesApplied = patchReport.every((p) => p.hits === 1);
 const { BoardReconciler: GuardlessReconciler } = await import(guardlessFile);
 
+// ------------------------------------------- and 3b's, which needs one more --
+//
+// KAN-342 put a SECOND, independent stop between a failed read and a dead
+// fleet, and it was found by this section going green when it should have been
+// red: with only the failed-read guard removed, the fleet now survives. A
+// failed read leaves the diagnostic unanswered too, so every stand-down
+// candidate is `undetermined` — no evidence that anybody asked for it — and
+// `partitionStandDowns` spares the lot.
+//
+// That is worth watching rather than asserting, so §3 now runs both builds. The
+// build below removes the second guard as well, and it is the one that
+// reproduces the pre-KAN-221 catastrophe; the build above is what shows the two
+// guards are independent.
+//
+// The patch restores the pre-KAN-342 rule at its source: every stand-down
+// candidate carries an intent, so every one is stood down. It is applied to the
+// reason lookup rather than to `isIntent` for a reason worth recording, because
+// patching `isIntent` LOOKS equivalent and is not — on this path the diagnostic
+// block throws (a guardless build reaches `deriveAccountId` with no `issues`
+// field, which is unreachable in the real one), the loop clears `cycle.absences`
+// as designed, and `isIntent` is then never consulted at all. A patch there
+// leaves the fleet standing and reports it as "the guard held".
+const defencelessDist = path.join(daemonDir, `dist-defenceless-${process.pid}`);
+fs.cpSync(guardlessDist, defencelessDist, { recursive: true });
+const defencelessFile = path.join(defencelessDist, 'board-reconcile.js');
+const INTENT_GATE = 'const reason = reasonFor.get(agent.agentName);';
+const defencelessSource = fs.readFileSync(defencelessFile, 'utf8');
+const intentGateHits = defencelessSource.split(INTENT_GATE).length - 1;
+fs.writeFileSync(
+  defencelessFile,
+  defencelessSource.split(INTENT_GATE).join(
+    `const reason = reasonFor.get(agent.agentName) ?? { condition: 'wrong-status', ` +
+    `statusName: null, assignee: null, detail: 'the board does not have it In Progress or In Review' };`
+  )
+);
+const { BoardReconciler: DefencelessReconciler } = await import(defencelessFile);
+
 console.log(`fake herdr: ${path.join(shimDir, 'herdr')}`);
 console.log(`HOME for this run: ${fakeHome}`);
 console.log(`guardless build: ${guardlessDist}`);
@@ -531,28 +572,49 @@ verdict(
 
 // ----------------------------------------------------------- 3. guardless --
 
-rule('3. GUARDLESS — THE RED: the same failed read, with the guard patched out');
+rule('3. GUARDLESS — THE RED: the same failed read, with the guard(s) patched out');
 
 console.log('   patches applied to the built module:');
 for (const p of patchReport) console.log(`     ${p.hits} × ${JSON.stringify(p.from)}`);
+console.log(`     ${intentGateHits} × ${JSON.stringify(INTENT_GATE)}   (3b only)`);
 
+// 3a — only the failed-read guard removed. Since KAN-342 this is NOT enough to
+// destroy the fleet, and that is the finding rather than a caveat: a failed read
+// leaves the diagnostic unanswered as well, so nothing establishes that the
+// board asked for any of these agents to stop, and they are spared. Two
+// independent guards, and this is what independence looks like from outside.
 await stageFleet([['epic', 'KAN-902'], ['task', 'KAN-901'], ['task', 'KAN-903']]);
-const before3 = showFleet('\n   fleet before');
-const cycle3 = await reconciler(failedRead, { Class: GuardlessReconciler, quiet: true }).reconcileOnce();
-const after3 = showFleet('\n   fleet after');
+const before3a = showFleet('\n   3a — fleet before (failed-read guard removed, KAN-342 gate intact)');
+const cycle3a = await reconciler(failedRead, { Class: GuardlessReconciler, quiet: true }).reconcileOnce();
+const after3a = showFleet('   3a — fleet after');
+console.log(`\n   3a  stopped: ${cycle3a.stopped.length}   spared: ${cycle3a.spared.length}` +
+  `   condition(s): ${JSON.stringify([...new Set(cycle3a.spared.map((s) => s.reason.condition))])}`);
 
-console.log(`\n   started: ${cycle3.started.length}   stopped: ${cycle3.stopped.length}`);
+// 3b — both removed. This is the pre-KAN-221 build, and the one section 2 is
+// actually preventing.
+await stageFleet([['epic', 'KAN-902'], ['task', 'KAN-901'], ['task', 'KAN-903']]);
+const before3b = showFleet('\n   3b — fleet before (both guards removed)');
+const cycle3b = await reconciler(failedRead, { Class: DefencelessReconciler, quiet: true }).reconcileOnce();
+const after3b = showFleet('   3b — fleet after');
+console.log(`\n   3b  started: ${cycle3b.started.length}   stopped: ${cycle3b.stopped.length}`);
 
 verdict(
   patchesApplied &&
-    cycle3.stopped.length === before3.length &&
-    after3.length === 0,
-  `without the guard the identical failed read tore down all ${before3.length} agent(s) — ` +
-    `that is what section 2 is preventing, watched rather than asserted`,
-  patchesApplied
-    ? 'the guardless build did not tear the fleet down, so section 2 proves nothing about the guard'
-    : `the guard could not be located in the built module (${JSON.stringify(patchReport)}) — ` +
-      'this section did not test what it claims to'
+    intentGateHits === 1 &&
+    after3a.length === before3a.length &&
+    cycle3a.stopped.length === 0 &&
+    cycle3b.stopped.length === before3b.length &&
+    after3b.length === 0,
+  `with BOTH guards out the identical failed read tore down all ${before3b.length} agent(s) — ` +
+    `that is what section 2 is preventing, watched rather than asserted — and with only the ` +
+    `failed-read guard out all ${before3a.length} survived, because KAN-342's gate refuses a ` +
+    `stand-down nothing asked for. The two are independent`,
+  patchesApplied && intentGateHits === 1
+    ? 'the doubly-patched build did not tear the fleet down, so section 2 proves nothing about ' +
+      'the guard — or the singly-patched build DID, which would mean KAN-342\'s gate is not ' +
+      'reached on the failed-read path after all'
+    : `a guard could not be located in the built module (${JSON.stringify(patchReport)}, ` +
+      `intent gate ×${intentGateHits}) — this section did not test what it claims to`
 );
 
 // ------------------------------------------------------------- 4. partial --

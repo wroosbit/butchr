@@ -51,6 +51,8 @@ const {
   findNearMisses,
   deriveAccountId,
   explainAbsence,
+  isIntent,
+  partitionStandDowns,
   fleetProjects,
   projectOf
 } = await import(path.join(distDir, 'board-reconcile.js'));
@@ -155,7 +157,13 @@ const show = (label, rows, render) => {
 };
 
 show('WOULD START', diff.toStart, (a) => `${a.type}/${a.key}  (${a.issueTypeName}, ${a.statusName})`);
-show('WOULD STOP', diff.toStop, (a) => `${a.type}/${a.key}`);
+// Not "WOULD STOP". Since KAN-342 the board failing to return a running agent
+// makes it a *candidate* and nothing more — the loop stands it down only where
+// the board said something, and section 6 below is where each candidate's
+// condition is read. Printing this list under the old label would have this
+// report claiming an action the daemon it is reporting on would not take.
+show('stand-down CANDIDATES (see §6 for what would actually happen to each)',
+  diff.toStop, (a) => `${a.type}/${a.key}`);
 show('already right', diff.unchanged, (a) => `${a.type}/${a.key}`);
 show('unresolved board rows', diff.unresolved, (i) => `${i.key}: ${i.reason}`);
 show('spared by an unresolved row', diff.protectedByUnresolved, (a) => `${a.type}/${a.key}`);
@@ -244,13 +252,31 @@ if (!diagnosticOutcome.ok) {
 
   // And what the loop would say about each stand-down it is contemplating —
   // the attributed reason, on real data, rather than the old one-size sentence.
+  // Since KAN-342 the same condition also decides whether the stand-down happens
+  // at all, so this section reads it through the product's own `isIntent` rather
+  // than restating the rule: a copy of the list here would be a second store of
+  // it, and this file is a report rather than a place decisions live.
   if (diff.toStop.length) {
-    rule('6. WHY — the reason each stand-down would give, attributed');
+    rule('6. WHY — the condition each candidate carries, and what the loop would do');
+    const { standDowns, spared } = partitionStandDowns(
+      diff.toStop,
+      diff.toStop.map((a) => ({
+        agentName: a.agentName,
+        reason: explainAbsence(a.key, diagnostic, accountId)
+      }))
+    );
     for (const a of diff.toStop) {
       const reason = explainAbsence(a.key, diagnostic, accountId);
       console.log(`\n     ${a.type}/${a.key}`);
       console.log(`       condition: ${reason.condition}`);
+      console.log(`       verdict:   ${isIntent(reason.condition)
+        ? 'STAND DOWN — the board said so'
+        : 'LEAVE IT RUNNING — nothing established that anybody asked it to stop (KAN-342)'}`);
       console.log(`       says:      ${reason.detail}`);
     }
+    console.log(
+      `\n   → of ${diff.toStop.length} candidate(s): ${standDowns.length} would be stood down, ` +
+      `${spared.length} left running.`
+    );
   }
 }
