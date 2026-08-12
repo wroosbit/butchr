@@ -31,7 +31,7 @@ import {
 import { ResumeCause } from './resume.js';
 import { nudgeResumedAgent } from './nudge.js';
 import { senderTagFor, withSenderTag } from './provenance.js';
-import type { CarrierVerdict, ChannelCarrier, ChannelRouteOutcome } from './channel.js';
+import type { CarrierVerdict, ChannelCarrier, ChannelMeta, ChannelRouteOutcome } from './channel.js';
 import type { ChannelSelfCheckReport } from './channel-selfcheck.js';
 import type { ChannelLivenessState } from './channel-liveness.js';
 import type { PendingReport } from './notify.js';
@@ -856,7 +856,12 @@ export interface MessageRouterOptions {
   channelRoute?: (
     address: { type: string; key: string },
     content: string,
-    meta?: unknown
+    /**
+     * String values only (KAN-319). `unknown` here until this ticket, which is
+     * what let a producer hand the carrier a boolean the client would silently
+     * drop; see `ChannelMeta` in channel.ts for what that cost.
+     */
+    meta?: ChannelMeta
   ) => ChannelRouteOutcome;
   /**
    * What one agent's startup channel self-check found (KAN-248, T5 of KAN-150).

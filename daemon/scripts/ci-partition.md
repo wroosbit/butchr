@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 64 |
+| `yes` | 65 |
 | `partial` | 5 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **86** |
+| **total** | **87** |
 
-**69 of 86** run on every pull request.
+**70 of 87** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -68,6 +68,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-channel-emission-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-launch-flag` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-liveness` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-channel-meta-renderable` | yes | reads `daemon/src` as text and imports the built daemon modules in process, under a private $HOME in os.tmpdir(). No live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-channel-registration-loss` | yes | sections 1 and 2 import the built daemon modules and assert against them in process. Section 3 STARTS TWO REAL DAEMONS from the built dist, SIGKILLs the first, and spawns a real dist/mcp.js as the surviving agent, all under a private $HOME in os.tmpdir(); it needs no herdr, no credential, no peer, no terminal and no network, which is what makes it unattended-runnable. It is not, and never was, a "no live daemon" script — that clause was carried here by the shared boilerplate and was simply false, contradicting this file's own header four lines up (KAN-309; the general case is KAN-308's). Because it runs real processes it is subject to scheduling, so the one observation whose window a fast machine can close — the identity map immediately after a restart — is taken with the agent SIGSTOPped rather than by winning a race for it. |
 | `verify-channel-selfcheck` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-spawn-verdict` | yes | imports the built daemon modules, stages its own $HOME and its own unix socket in temporary directories, and needs no herdr, no pty, no network and no CrabCast. Section 3 creates and removes two probe workspaces under the workspaces root, per path and never by reverting a directory. |
