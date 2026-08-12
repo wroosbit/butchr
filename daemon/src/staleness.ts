@@ -208,6 +208,182 @@ function newestFile(root: string, skip: Set<string> = SKIP_DIRS): NewestFile | n
   return bestMtime < 0 ? null : { relPath: bestPath, mtimeMs: bestMtime, scanned };
 }
 
+// --- what a build actually reads --------------------------------------------
+
+/**
+ * The inputs of one build, stated as an **exhaustive** classification of the
+ * package directory beside it.
+ *
+ * `extension-build` used to compare `extension/dist` against the newest file
+ * anywhere under `extension/`. That tree also holds `extension/scripts/` —
+ * verify scripts and render harnesses, which run *against* a build and are
+ * never compiled into one — so editing one reported a stale extension build
+ * with a remedy no rebuild could satisfy, and which asks the operator for a
+ * `chrome://extensions` reload no agent can perform (KAN-305). The noise was
+ * not the cost: while that item was red for a verify script, **a genuinely
+ * stale build was indistinguishable from it**, which is the single thing this
+ * check exists to prevent.
+ *
+ * Narrowing to a list of inputs alone would trade that lying red for a lying
+ * green, which is worse: a directory added later and genuinely read by the
+ * build would simply never be scanned, and the item would report fresh over a
+ * `dist` that was behind it. So the classification covers **every** entry under
+ * `root` — anything matching neither list makes the item `unknown` and names
+ * itself, rather than being silently assumed harmless.
+ *
+ * That last part is why this is data rather than a comment above a path. A
+ * comment saying "inputs are src plus the entry points" is re-opened by the
+ * next directory added under `extension/` and nobody finds out; an entry that
+ * satisfies neither list here cannot pass through the check quietly. It stays
+ * a runtime classification rather than a type because what it is about — which
+ * files exist on disk — is not something the compiler can be shown.
+ */
+interface BuildInputs {
+  /** Package directory, relative to the repo root, classified exhaustively. */
+  root: string;
+  /** Entry names, or `*.ext` / `prefix*` patterns over them, the build reads. */
+  inputs: readonly string[];
+  /** Entries the build does not read, each with the reason it does not. */
+  notInputs: readonly { readonly entry: string; readonly because: string }[];
+}
+
+/**
+ * `tsc` with `daemon/tsconfig.json`, whose `include` is exactly `src/**`.
+ *
+ * Confirmed rather than assumed (KAN-305 asked): `rootDir` is `src`, `outDir`
+ * is `dist`, and nothing else under `daemon/` is compiled. The five entries
+ * that are not inputs were each read before being written down here.
+ */
+const DAEMON_BUILD_INPUTS: BuildInputs = {
+  root: 'daemon',
+  inputs: ['src', 'tsconfig.json', 'package.json', 'package-lock.json'],
+  notInputs: [
+    { entry: 'dist', because: 'the output this check judges' },
+    {
+      entry: 'node_modules',
+      because: 'installed rather than authored — an npm install would otherwise read as an edit'
+    },
+    {
+      entry: 'scripts',
+      because: 'verify and probe scripts; they import dist/ and are never compiled into it'
+    },
+    { entry: 'bin', because: 'launchers that exec dist/ at run time; tsc never reads them' },
+    { entry: 'systemd', because: 'unit files installed by hand, outside any build' },
+    { entry: 'typecheck', because: 'a separate tsconfig that emits nothing into dist/' },
+    { entry: '.*', because: 'dotfiles — tooling and editor state, never a build input here' }
+  ]
+};
+
+/**
+ * `vite build` with `extension/vite.config.js`.
+ *
+ * The three `rollupOptions.input` entries are `sidepanel.html`, `options.html`
+ * and `agents.html` at this root; each pulls in its sibling `.jsx`, and
+ * `sidepanel.html` its sibling `.css` — hence the patterns rather than six
+ * filenames, so that adding a fourth entry point is an input by default and
+ * fails toward the red. `public/` is Vite's publicDir and is copied verbatim
+ * into `dist/` (`manifest.json`, the icons, the service worker), so it is as
+ * much a build input as anything imported.
+ */
+const EXTENSION_BUILD_INPUTS: BuildInputs = {
+  root: 'extension',
+  inputs: ['src', 'public', '*.html', '*.jsx', '*.css', 'vite.config.js', 'package.json', 'package-lock.json'],
+  notInputs: [
+    { entry: 'dist', because: 'the output this check judges' },
+    {
+      entry: 'node_modules',
+      because: 'installed rather than authored — an npm install would otherwise read as an edit'
+    },
+    {
+      entry: 'scripts',
+      because:
+        'verify scripts, render harnesses and screenshot drivers; they run against a build and no ' +
+        'import from extension/src reaches them (KAN-305)'
+    },
+    { entry: '.*', because: 'dotfiles — tooling and editor state, never a build input here' }
+  ]
+};
+
+/** Exact name, `*.suffix`, or `prefix*`. Deliberately not a glob library. */
+function matchesEntry(name: string, pattern: string): boolean {
+  if (pattern.startsWith('*.')) return name.endsWith(pattern.slice(1));
+  if (pattern.endsWith('*')) return name.startsWith(pattern.slice(0, -1));
+  return name === pattern;
+}
+
+interface ClassifiedEntries {
+  /** Entry names that feed the build. */
+  inputs: string[];
+  /** Entry names matching neither list — this check cannot judge them. */
+  unclassified: string[];
+}
+
+function classifyEntries(rootAbs: string, spec: BuildInputs): ClassifiedEntries {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(rootAbs, { withFileTypes: true });
+  } catch {
+    return { inputs: [], unclassified: [] };
+  }
+  const inputs: string[] = [];
+  const unclassified: string[] = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    if (spec.inputs.some((p) => matchesEntry(name, p))) inputs.push(name);
+    else if (spec.notInputs.some((n) => matchesEntry(name, n.entry))) continue;
+    // An entry holding no files at all contributes no timestamp, so it cannot
+    // make a build stale whatever it turns out to be — and a doubt that cannot
+    // change the verdict is a false alarm, which is the defect this whole
+    // change is about. The live install has carried an empty, untracked
+    // `extension/sidepanel/` since July. It is reported the moment it gains a
+    // file, which is the moment it could matter.
+    else if (!entry.isDirectory() || newestFile(path.join(rootAbs, name)) !== null) {
+      unclassified.push(name);
+    }
+  }
+  return { inputs: inputs.sort(), unclassified: unclassified.sort() };
+}
+
+/**
+ * The newest file among a set of entries under `rootAbs`.
+ *
+ * `relPath` comes back relative to `rootAbs` so the evidence reads as a path
+ * somebody can open: `extension/src/components/StalenessBanner.jsx`, not a
+ * fragment of one.
+ */
+function newestAmong(rootAbs: string, names: string[]): NewestFile | null {
+  let best: { relPath: string; mtimeMs: number } | null = null;
+  let scanned = 0;
+  for (const name of names) {
+    const abs = path.join(rootAbs, name);
+    let isDir: boolean;
+    let mtimeMs: number;
+    try {
+      const stat = fs.statSync(abs);
+      isDir = stat.isDirectory();
+      mtimeMs = stat.mtimeMs;
+    } catch {
+      continue; // declared but absent; an input set is a declaration, not an audit
+    }
+    const found = isDir ? newestFile(abs) : { relPath: '', mtimeMs, scanned: 1 };
+    if (!found) continue;
+    scanned += found.scanned;
+    if (!best || found.mtimeMs > best.mtimeMs) {
+      best = {
+        relPath: found.relPath ? `${name}/${found.relPath}` : name,
+        mtimeMs: found.mtimeMs
+      };
+    }
+  }
+  return best ? { ...best, scanned } : null;
+}
+
+/** The input set, for the report line where the next reader meets it. */
+function describeInputs(spec: BuildInputs, classified: ClassifiedEntries): string {
+  const not = spec.notInputs.map((n) => n.entry).join(', ');
+  return `inputs: ${classified.inputs.join(', ') || '(none)'} — not inputs: ${not}`;
+}
+
 // --- the three (and a half) checks ------------------------------------------
 
 /**
@@ -355,23 +531,28 @@ function checkBuild(
   id: 'daemon-build' | 'extension-build',
   label: string,
   repoRoot: string,
-  srcRel: string,
+  spec: BuildInputs,
   distRel: string,
   remedy: string,
   now: number,
   note?: string
 ): StalenessItem {
   const base = { id, label, ...(note ? { note } : {}) };
-  const srcDir = path.join(repoRoot, srcRel);
+  const rootAbs = path.join(repoRoot, spec.root);
   const distDir = path.join(repoRoot, distRel);
 
-  const src = newestFile(srcDir);
+  const classified = classifyEntries(rootAbs, spec);
+  const inputSet = describeInputs(spec, classified);
+
+  const src = newestAmong(rootAbs, classified.inputs);
   if (!src) {
     return {
       ...base,
       state: 'unknown',
-      headline: `no sources found in ${srcRel}`,
-      detail: `Nothing readable under ${srcDir}, so there is no source timestamp to compare a build against.`
+      headline: `no build inputs found under ${spec.root}`,
+      detail:
+        `Nothing readable at the declared inputs of ${spec.root} (${inputSet}), so there is no source ` +
+        'timestamp to compare a build against.'
     };
   }
 
@@ -382,33 +563,63 @@ function checkBuild(
       state: 'stale',
       headline: `${distRel} has never been built`,
       detail:
-        `${distDir} is missing or empty, while ${srcRel} has ${src.scanned} files, the newest being ` +
-        `${srcRel}/${src.relPath} (${ageOf(src.mtimeMs, now)} old). Nothing here can be running current code.`,
+        `${distDir} is missing or empty, while ${spec.root} has ${src.scanned} input files, the newest being ` +
+        `${spec.root}/${src.relPath} (${ageOf(src.mtimeMs, now)} old). Nothing here can be running current ` +
+        `code. Judged against ${inputSet}.`,
       remedy
     };
   }
 
+  // A demonstrated gap outranks an incomplete classification: `stale` is a
+  // claim backed by two mtimes, and it stays the verdict even when some entry
+  // beside the inputs has yet to be classified below.
   const lagMs = src.mtimeMs - dist.mtimeMs;
   if (lagMs > BUILD_SKEW_TOLERANCE_MS) {
     return {
       ...base,
       state: 'stale',
-      headline: `${distRel} is older than ${srcRel}`,
+      headline: `${distRel} is older than ${spec.root}'s build inputs`,
       detail:
-        `${srcRel}/${src.relPath} was modified ${ageOf(src.mtimeMs, now)} ago, ${describeAge(lagMs)} after the ` +
-        `newest file in ${distRel} (${dist.relPath}, ${ageOf(dist.mtimeMs, now)} old). The build does not ` +
-        'contain that change.',
+        `${spec.root}/${src.relPath} was modified ${ageOf(src.mtimeMs, now)} ago, ${describeAge(lagMs)} after ` +
+        `the newest file in ${distRel} (${dist.relPath}, ${ageOf(dist.mtimeMs, now)} old). The build does not ` +
+        `contain that change. Judged against ${inputSet}.`,
       remedy
+    };
+  }
+
+  // Nothing is behind anything — but an entry classified neither way means the
+  // input set may be incomplete, and an incomplete input set is exactly how a
+  // stale build reports fresh. Say so rather than pass it off as freshness.
+  if (classified.unclassified.length) {
+    const names = classified.unclassified.map((n) => `${spec.root}/${n}`).join(', ');
+    return {
+      ...base,
+      state: 'unknown',
+      headline: `${spec.root} holds ${classified.unclassified.length} entr${
+        classified.unclassified.length === 1 ? 'y' : 'ies'
+      } this check cannot classify`,
+      detail:
+        `${distRel} is newer than every declared input (${inputSet}), but ${names} ${
+          classified.unclassified.length === 1 ? 'is' : 'are'
+        } declared neither an input nor a non-input. If the build reads ${
+          classified.unclassified.length === 1 ? 'it' : 'them'
+        }, this item would report fresh over a ${distRel} that was behind ${
+          classified.unclassified.length === 1 ? 'it' : 'them'
+        }.`,
+      remedy:
+        `Classify ${names} in the BuildInputs for '${id}' in daemon/src/staleness.ts — as an input, or as a ` +
+        'notInput with the reason it is not one.'
     };
   }
 
   return {
     ...base,
     state: 'fresh',
-    headline: `${distRel} is newer than every source`,
+    headline: `${distRel} is newer than every build input`,
     detail:
       `${distRel} was last written ${ageOf(dist.mtimeMs, now)} ago (${dist.relPath}); the newest of the ` +
-      `${src.scanned} files in ${srcRel} is ${src.relPath}, ${ageOf(src.mtimeMs, now)} old.`
+      `${src.scanned} input files under ${spec.root} is ${src.relPath}, ${ageOf(src.mtimeMs, now)} old. ` +
+      `Judged against ${inputSet}.`
   };
 }
 
@@ -481,7 +692,7 @@ export function getStalenessReport(options: StalenessOptions): StalenessReport {
         'daemon-build',
         'daemon build',
         options.repoRoot,
-        'daemon/src',
+        DAEMON_BUILD_INPUTS,
         'daemon/dist',
         'cd daemon && npm run build && restart the daemon',
         now
@@ -493,7 +704,7 @@ export function getStalenessReport(options: StalenessOptions): StalenessReport {
         'extension-build',
         'extension build',
         options.repoRoot,
-        'extension',
+        EXTENSION_BUILD_INPUTS,
         'extension/dist',
         'cd extension && npm run build, then reload the extension at chrome://extensions',
         now,
