@@ -24,11 +24,21 @@
 //
 // This script asserts about ONE script's output path. It is not a sweep: a
 // different `verify-*` script writing into the working tree would pass this
-// file untouched, and nothing in the tree owns that general claim today.
-// KAN-350 is filed for it and linked `Relates` to KAN-326. Until that lands,
-// the general claim is covered by nobody, and saying so here is the point —
-// two scripts that are each honest about their scope can still leave a hole
-// between them.
+// file untouched.
+//
+// WHO COVERS THAT NOW: KAN-350, which landed after this file and closed the
+// hole this paragraph used to name. `run-ci-verify-set.mjs` takes `git status
+// --porcelain` around every child and fails the one that leaves a delta, so the
+// general claim is a property of the harness rather than of any script — and
+// `daemon/scripts/verify-ci-set-guards-tree-writes.mjs` is what holds that
+// guard to account. This file is not thereby redundant: §1 and §2 below assert
+// about the shipped default output PATH, which the harness guard cannot see —
+// a script that never runs, or that is moved out of the CI set, would still
+// pass the harness by writing nothing.
+//
+// What neither covers, stated so nobody reads the pair as complete: a script
+// that writes into the tree and then DELETES what it wrote. It has still
+// written into the working tree; both guards pass it.
 //
 // It also does not assert that the child wrote NOTHING else anywhere. §1
 // checks the path the child reports and that a file is really at it; §2 checks
