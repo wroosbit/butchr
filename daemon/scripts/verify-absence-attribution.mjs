@@ -177,9 +177,14 @@ function reconcilerFor({ board, diagnostic, running, mode = 'converge' }) {
   const stopped = [];
   const reconciler = new BoardReconciler({
     jira: {
+      // On the PARTITIONED query being the exact constant, not on the
+      // diagnostic being one: KAN-343 scopes the diagnostic by project at call
+      // time, so its JQL carries a `project IN (…)` prefix and matching on
+      // `BOARD_DIAGNOSTIC_JQL` verbatim would silently hand the diagnostic call
+      // the partitioned answer. `BOARD_JQL` has no call-time variation.
       async searchBoard(jql) {
-        if (jql === BOARD_DIAGNOSTIC_JQL) return diagnostic;
-        return board;
+        if (jql === BOARD_JQL) return board;
+        return diagnostic;
       }
     },
     runningAgents: () => running,
@@ -283,7 +288,8 @@ const redLog = [];
 const red = new RedReconciler({
   jira: {
     async searchBoard(jql) {
-      return jql === BOARD_DIAGNOSTIC_JQL ? redFixture.diagnostic : redFixture.board;
+      // See reconcilerFor above for why this pins the partitioned side (KAN-343).
+      return jql === BOARD_JQL ? redFixture.board : redFixture.diagnostic;
     }
   },
   runningAgents: () => redFixture.running,

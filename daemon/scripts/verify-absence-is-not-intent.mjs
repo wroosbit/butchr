@@ -158,8 +158,18 @@ async function cycleOf({ board, diagnostic, running, Class = BoardReconciler, su
   const started = [];
   const reconciler = new Class({
     jira: {
+      // Dispatched on the PARTITIONED query being the exact known constant,
+      // and everything else being the diagnostic — not the other way round.
+      // KAN-343 scopes the diagnostic by project at call time, so its JQL is
+      // no longer `BOARD_DIAGNOSTIC_JQL` verbatim and a stub matching on that
+      // would have handed the diagnostic call the partitioned answer. That
+      // failure is silent and it runs the dangerous way: §1's epic would come
+      // back absent from both queries, `explainAbsence` would return
+      // `wrong-status`, and the section would report a stand-down as though the
+      // fix had regressed. `BOARD_JQL` has no such call-time variation, so
+      // pinning that side is strictly stronger as well as stable.
       async searchBoard(jql) {
-        return jql === BOARD_DIAGNOSTIC_JQL ? diagnostic : board;
+        return jql === BOARD_JQL ? board : diagnostic;
       }
     },
     runningAgents: () => running,
