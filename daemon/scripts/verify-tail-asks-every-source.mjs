@@ -360,7 +360,24 @@ rule('7. THE COMPOSITION — a spurious empty read must not read as "no dialog"'
 // seen it fail. The reachable version of the same defect is §2's geometry with
 // a caller-chosen small N, which is `butchr_tail_agent`'s whole surface.
 {
-  const DIALOG = 'Loading development channels\n  I am using this for local development';
+  // A REALISTIC DIALOG RATHER THAN ITS TWO HEADLINE PHRASES (KAN-340). This
+  // stood in as `'Loading development channels\n  I am using this for local
+  // development'` — enough for a matcher that tested the whole frame for either
+  // phrase, and not enough once the watcher started asking WHICH dialog is live.
+  // It decides that positionally, from the confirm line a dialog paints last, so
+  // a fixture without one is a frame no real pane produces. The scaffolding was
+  // always incidental here — this section is about `tailAgent`'s composition at
+  // the seam, not about the dialog — and a fixture that matches the measured
+  // rendering (see verify-startup-dialog-discrimination.mjs) is strictly better
+  // scaffolding for that.
+  const DIALOG = [
+    'WARNING: Loading development channels',
+    '',
+    '  ❯ 1. I am using this for local development',
+    '    2. Exit',
+    '',
+    '  Enter to confirm · Esc to cancel'
+  ].join('\n');
   setPane({ rows: 200, content: DIALOG });
   clearFaults();
 
