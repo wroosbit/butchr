@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 65 |
+| `yes` | 66 |
 | `partial` | 5 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **87** |
+| **total** | **88** |
 
-**70 of 87** run on every pull request.
+**71 of 88** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -53,6 +53,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-absence-attribution` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-activate-requires-agent` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-activation-records-real-parentage` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-adf-conversion` | yes | imports the built converter and asserts against it in process; no live daemon, no herdr, no credential, no network, no terminal. |
 | `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Every section that ASSERTS derives from stated facts, so no verdict here moves with the load, the disk pressure or the free memory of the host. |
 | `verify-agent-connection-identity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-power-controls` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
