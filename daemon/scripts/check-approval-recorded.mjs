@@ -242,6 +242,18 @@ if (verdict.ok) {
   console.log('NO APPROVAL RECORDED AT THIS HEAD');
   console.log('');
   for (const r of verdict.reasons) console.log(`  - ${r}`);
+
+  // KAN-321. Printed as its own block as well as inside the reasons, because
+  // this is the refusal most likely to be read as the gate malfunctioning: the
+  // comment visibly contains the line, and the reader has to be told in one
+  // place that it was seen, understood, and refused for being a quotation.
+  if (verdict.quotedMarkers?.length) {
+    console.log('');
+    console.log('QUOTED MARKERS SEEN AND NOT COUNTED');
+    for (const m of verdict.quotedMarkers) {
+      console.log(`  - comment ${m.commentId}: ${m.sha} BY ${m.approver} — inside ${m.quotedAs}`);
+    }
+  }
 }
 
 if (postStatus) {
