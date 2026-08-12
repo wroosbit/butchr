@@ -245,13 +245,62 @@ import {
  *     certify as complete.
  *
  * **The case that is not narrow, named because it is the one that will bite.**
- * {@link BOARD_DIAGNOSTIC_JQL} is unscoped by project, so an account holding
+ * {@link BOARD_DIAGNOSTIC_JQL} was unscoped by project, so an account holding
  * more than {@link BOARD_MAX_RESULTS} issues In Progress or In Review anywhere
- * returns a partial page — which `searchBoard` correctly reports as a failed
+ * returned a partial page — which `searchBoard` correctly reports as a failed
  * read — leaving the diagnostic null every cycle, permanently. Stand-downs then
- * stop happening and the fleet accumulates agents whose tickets are Done. It is
- * loud (a line per cycle out of `readDiagnostic`) and it fails in the safe
- * direction, but it is real: filed as KAN-343, not fixed here.
+ * stop happening and the fleet accumulates agents whose tickets are Done. It
+ * was filed as KAN-343 and it is the section below.
+ *
+ * WHAT KAN-343 FOUND, AND WHY THE QUERY WAS THE SMALLER HALF (2026-08-12)
+ *
+ * The paragraph above called that failure *loud*, and the word was doing work it
+ * had not earned. **"Fails safe" and "fails visibly" are different claims and
+ * only the first was true here** (`epic/KAN-203`). Post-KAN-342 a broken
+ * diagnostic leaves agents *running* rather than killing them — the safe
+ * direction, and **the direction nobody notices**: a fleet that fails to shrink
+ * looks exactly like a fleet nobody asked to shrink, until capacity fills and
+ * the machine degrades, which is KAN-258's incident shape arriving by a new
+ * road.
+ *
+ * So KAN-343's first question was not *how do we stop the query truncating* but
+ * **when the diagnostic stops answering, who finds out, by what route, and would
+ * they have been looking?** The answer, read off this file rather than assumed:
+ * one line per cycle out of {@link BoardReconciler.readDiagnostic} into
+ * `daemon.log`, and nothing else. `boardControlReport` deliberately carried no
+ * cycle state, `butchr_list_agents` carried no board health, and no ticket is
+ * ever written. **That is the same defect as :111's loud supervisor stand-down
+ * logged into a place nobody reads** — in review it looks as though somebody was
+ * told. Two fixes follow, and they are not the same size:
+ *
+ *   1. **The evidence channel now discloses itself** — {@link BoardHealth},
+ *      published through `board-control.ts` onto the `butchr_list_agents`
+ *      response beside `censusUnreadableRecordsTotal` and
+ *      `undeliveredNotifications`, which are the fields this daemon already uses
+ *      to say *what it could not do*. That is the fix. It carries
+ *      `consecutiveFailures`, because **one** failed diagnostic is the narrow
+ *      window the section above priced in and **ninety** is stand-downs having
+ *      been off for an hour and a half, and no log line distinguishes those.
+ *   2. **The diagnostic is scoped by project** — {@link scopedDiagnosticJql} —
+ *      which closes the named mechanism. This is a smaller claim than it looks
+ *      and deliberately so: it is **not a new trade-off**, it moves a filter
+ *      that already existed one hop upstream. {@link findNearMisses} has
+ *      discarded every row outside {@link fleetProjects} since KAN-256; asking
+ *      Jira for what this loop already keeps is not a narrowing of the answer.
+ *
+ * **Why (2) cannot lose a row (1) needs**, because the direction it would fail
+ * in is the dangerous one — a diagnostic missing a candidate's row returns
+ * `wrong-status`, which is an intent, which is a stand-down. Every stand-down
+ * candidate is in `diff.toStop`, `toStop ⊆ running` by construction in
+ * {@link computeBoardDiff}, every member of it passed {@link inJurisdiction} and
+ * therefore has a Jira-shaped key, and {@link fleetProjects} adds the project of
+ * **every running agent**. So a candidate's project is in the scope by
+ * construction, not by luck. The containment is asserted rather than trusted —
+ * `verify-diagnostic-evidence-visible.mjs` §4.
+ *
+ * An empty scope runs the query unscoped, which is the honest degradation: an
+ * empty scope means no board rows and no running agents, so there is no
+ * candidate to explain and nothing is at stake.
  *
  * CAPACITY IS NOT DESIRED STATE
  *
@@ -462,6 +511,52 @@ export const BOARD_JQL =
  * put at roughly 25 GETs a minute, and KAN-256 sanctions it by name.
  */
 export const BOARD_DIAGNOSTIC_JQL = 'status IN ("In Progress", "In Review")';
+
+/**
+ * {@link BOARD_DIAGNOSTIC_JQL}, narrowed to the projects this fleet is in.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NOT A NEW TRADE-OFF (KAN-343)
+ * ---------------------------------------------------------------------------
+ *
+ * The unscoped query asks the whole account, and `BOARD_MAX_RESULTS` is 100, so
+ * an account holding more than a hundred issues In Progress or In Review
+ * **anywhere** — other people's projects, other machines' fleets, Jira's own
+ * `SAM1` sample project — gets a partial page every cycle, forever. `searchBoard`
+ * correctly reports a partial page as a failed read, and since KAN-342 a
+ * diagnostic that does not answer withholds every stand-down. So a number nobody
+ * in this repository controls silently switches off half the reconciler.
+ *
+ * **The scope is not a narrowing of the answer, because the answer was already
+ * being narrowed.** {@link findNearMisses} has filtered its rows through
+ * {@link fleetProjects} since KAN-256, for the reason recorded there: unfiltered,
+ * `SAM1`'s four permanently-unassigned tickets are four log lines a minute
+ * forever, and a report that cries wolf 5,760 times a day buries the occurrence
+ * that matters. Measured on the live board 2026-08-12: ten rows came back, four
+ * of them `SAM1`, and all four were discarded here. This asks Jira not to send
+ * them.
+ *
+ * **The one thing it must not do is lose a row {@link explainAbsence} needs**,
+ * because that failure runs the wrong way: a candidate whose row is missing gets
+ * `wrong-status`, which {@link isIntent} calls a decision, which is a
+ * stand-down. It cannot. See the header section WHAT KAN-343 FOUND for the
+ * containment argument in full — the short form is that
+ * {@link fleetProjects} takes the project of every *running* agent, and every
+ * stand-down candidate is a running agent with a Jira-shaped key.
+ *
+ * **An empty set returns the query unscoped rather than `project IN ()`**, which
+ * is not a fallback so much as the same rule at zero: an empty scope means no
+ * board rows and no running agents, so there is no candidate to explain, no near
+ * miss to report, and nothing at stake in the difference.
+ *
+ * Sorted, so the string a stub matches on and the string a log line prints are
+ * stable across cycles rather than dependent on Set insertion order.
+ */
+export function scopedDiagnosticJql(base: string, projects: Set<string>): string {
+  if (projects.size === 0) return base;
+  const list = [...projects].sort().map((project) => `"${project}"`).join(', ');
+  return `project IN (${list}) AND ${base}`;
+}
 
 /**
  * How long between cycles.
@@ -745,6 +840,82 @@ export interface BoardCycle {
    * `stopped` plus `spared` is what actually became of it.
    */
   spared: SparedAgent[];
+}
+
+/**
+ * Whether the evidence channel every stand-down depends on is answering.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS A UNION AND NOT FOUR OPTIONAL FIELDS (KAN-343)
+ * ---------------------------------------------------------------------------
+ *
+ * *"The diagnostic answered, and here is why it failed"* is a sentence this
+ * daemon must not be able to say, and a record of four nullable fields can say
+ * it — a refactor that forgets to clear `detail` on the success path produces a
+ * healthy cycle carrying a stale failure reason, which reads to a supervisor as
+ * a fleet whose stand-downs are off when they are not. Splitting on `answered`
+ * makes that state **unconstructible** rather than merely wrong, which is the
+ * same trade {@link StandDown} makes one type up and for the same reason: an
+ * assertion is one edit from being deleted by an author who does not know what
+ * it cost.
+ *
+ * `consecutiveFailures: 0` is a literal type on the answering branch, so a
+ * cycle cannot report success and a failure streak together either.
+ *
+ * **`consecutiveFailures` is the field that carries the whole point.** KAN-342
+ * accepted the cost of withholding stand-downs on the argument that the window
+ * is narrow — *"a one-off 5xx, a timeout, or a page Jira would not certify as
+ * complete"* — and that argument is sound for **one** cycle and false for
+ * ninety. Nothing in a log line distinguishes those two, because each cycle
+ * writes the same sentence and the difference is only visible to somebody
+ * counting them.
+ */
+export type BoardDiagnosticHealth =
+  | { answered: true; consecutiveFailures: 0 }
+  | {
+      answered: false;
+      /** Cycles in a row, ending with the most recent, whose diagnostic did not answer. */
+      consecutiveFailures: number;
+      /** ISO timestamp of the first cycle in the current run of failures. */
+      failingSince: string;
+      /** `searchBoard`'s own words, so a partial page is distinguishable from a 503. */
+      detail: string;
+    };
+
+/** A stand-down the loop declined to perform, and the condition it declined on. */
+export interface WithheldStandDown {
+  agentName: string;
+  type: string | null;
+  key: string;
+  condition: AbsenceCondition;
+}
+
+/**
+ * What the last completed cycle can say about its own evidence.
+ *
+ * This is the KAN-343 fix. It exists to be **read somewhere a supervisor already
+ * looks** — `board-control.ts` puts it on the `butchr_list_agents` response,
+ * beside `censusUnreadableRecordsTotal` and `undeliveredNotifications`, which
+ * are the two fields this daemon already uses to disclose what it could not do.
+ *
+ * The reconciler's own log said all of this before and says all of it still. The
+ * defect was never that the information did not exist; it is that its only
+ * route out was a line in `daemon.log`, which is the same trade as :111's loud
+ * supervisor stand-down — logged deliberately, into a place nobody was reading,
+ * so that in review it looks as though somebody was told.
+ *
+ * `agents` is every candidate left running, both populations together, each
+ * carrying its condition — `undetermined` is the diagnostic being silent,
+ * `no-assignee` is KAN-342 working exactly as designed on a field somebody
+ * emptied. A reader needs to tell those apart, so the condition travels rather
+ * than a count.
+ */
+export interface BoardHealth {
+  diagnostic: BoardDiagnosticHealth;
+  /** Empty is an ordinary answer and means the loop withheld nothing. */
+  agents: WithheldStandDown[];
+  /** ISO timestamp of the cycle this describes. */
+  at: string;
 }
 
 export interface BoardReconcilerOptions {
@@ -1149,6 +1320,21 @@ export class BoardReconciler {
   private timer: NodeJS.Timeout | null = null;
   private cycling = false;
   private stopped = false;
+  /**
+   * The last completed cycle's health, or null when none has completed.
+   *
+   * Null is a third answer and not a tidier zero: the first cycle is one
+   * interval away by design (see {@link start}), so for the first minute of a
+   * daemon's life *"the diagnostic is fine"* and *"nobody has asked yet"* are
+   * different facts, and a reader deciding whether stand-downs are working must
+   * not be handed the first when the second is true. Same rule as
+   * {@link BoardCycle.nearMisses}.
+   */
+  private lastHealth: BoardHealth | null = null;
+  /** Consecutive cycles whose diagnostic did not answer; reset by any that does. */
+  private diagnosticFailures = 0;
+  /** When the current run of failures began. Null exactly when the count is 0. */
+  private diagnosticFailingSince: string | null = null;
 
   constructor(private readonly opts: BoardReconcilerOptions) {
     this.jql = opts.jql ?? BOARD_JQL;
@@ -1305,11 +1491,28 @@ export class BoardReconciler {
     // lines later would be a guard that only covered the failure somebody had
     // already thought of. Reporting degrades; convergence continues.
     let diagnostic: JiraBoardIssue[] | null = null;
+    // Null exactly when this cycle ended up with usable evidence. KAN-343
+    // counts *cycles that produced none*, which is deliberately wider than
+    // *queries that failed*: a read that answered and then threw on the way to
+    // `cycle.absences` leaves the loop in the identical state — every candidate
+    // `undetermined`, every stand-down withheld — and a streak that only
+    // counted query failures would report a healthy evidence channel while the
+    // fleet stopped shrinking, which is this ticket's whole defect wearing the
+    // other failure's clothes.
+    let diagnosticFailure: string | null = null;
     try {
-      diagnostic = await this.readDiagnostic();
+      // Computed here rather than inside `readDiagnostic` because it is the
+      // same set twice: the scope the query is asked in, and the scope
+      // `findNearMisses` filters by. Deriving it once is what makes the
+      // server-side filter provably the client-side one rather than a second
+      // rule that has to be kept in step (KAN-343).
+      const projects = fleetProjects(outcome.issues, running);
+      const read = await this.readDiagnostic(projects);
+      if ('issues' in read) diagnostic = read.issues;
+      else diagnosticFailure = read.failure;
       const accountId = deriveAccountId(outcome.issues);
       if (diagnostic) {
-        cycle.nearMisses = findNearMisses(diagnostic, fleetProjects(outcome.issues, running));
+        cycle.nearMisses = findNearMisses(diagnostic, projects);
       }
       for (const agent of diff.toStop) {
         cycle.absences.push({
@@ -1322,12 +1525,14 @@ export class BoardReconciler {
       // Deliberately not a refusal: the diff above is untouched and still
       // correct, so the loop goes on to act on it with worse log lines.
       cycle.absences.length = 0;
+      diagnosticFailure = `the diagnostic reporting threw: ${e?.message ?? String(e)}`;
       this.opts.log(
         `[board] the diagnostic reporting failed: ${e?.message ?? String(e)}. Convergence is ` +
         `unaffected and proceeds on the diff already computed; stand-down lines this cycle ` +
         `will report an undetermined reason rather than guessing one.`
       );
     }
+    this.noteDiagnostic(diagnosticFailure);
 
     // ------------------------------------------------------ absence or intent --
     //
@@ -1338,6 +1543,22 @@ export class BoardReconciler {
     // pane. See the header section AN ABSENT ASSIGNEE PROTECTS TOO.
     const { standDowns, spared } = partitionStandDowns(diff.toStop, cycle.absences);
     cycle.spared = spared;
+
+    // KAN-343. Published, not merely logged — see {@link BoardHealth}. Recorded
+    // here rather than after the acting below because it describes what this
+    // cycle *decided*, and a stand-down that then failed to take effect is
+    // already `stopped[].outcome`'s business; folding the two would make one
+    // field answer two questions badly.
+    this.lastHealth = {
+      diagnostic: this.diagnosticHealth(),
+      agents: spared.map(({ agent, reason }) => ({
+        agentName: agent.agentName,
+        type: agent.type,
+        key: renderedKey(agent.key),
+        condition: reason.condition
+      })),
+      at: new Date().toISOString()
+    };
 
     this.report(diff, mode, cycle, standDowns);
 
@@ -1439,23 +1660,81 @@ export class BoardReconciler {
    * improvement able to halt convergence, which is a strictly worse daemon than
    * the one that had no diagnostic.
    */
-  private async readDiagnostic(): Promise<JiraBoardIssue[] | null> {
+  private async readDiagnostic(
+    projects: Set<string>
+  ): Promise<{ issues: JiraBoardIssue[] } | { failure: string }> {
+    // Scoped to the projects this fleet is in (KAN-343). See
+    // {@link scopedDiagnosticJql} for why this cannot lose a row
+    // {@link explainAbsence} needs, and why it is not a narrowing of the answer.
+    const jql = scopedDiagnosticJql(this.diagnosticJql, projects);
     try {
-      const outcome = await this.opts.jira.searchBoard(this.diagnosticJql, this.maxResults);
-      if (outcome.ok) return outcome.issues;
+      const outcome = await this.opts.jira.searchBoard(jql, this.maxResults);
+      if (outcome.ok) return { issues: outcome.issues };
       this.opts.log(
         `[board] the diagnostic query could not be read: ${outcome.error}. Convergence is ` +
         `unaffected — this query never starts or stops anything — but stand-down lines this ` +
-        `cycle cannot name which condition a missing ticket failed, and will say so.`
+        `cycle cannot name which condition a missing ticket failed, and will say so. ` +
+        `Query: ${jql}`
       );
-      return null;
+      return { failure: outcome.error };
     } catch (e: any) {
+      const detail = e?.message ?? String(e);
       this.opts.log(
-        `[board] the diagnostic query threw: ${e?.message ?? String(e)}. Convergence is ` +
+        `[board] the diagnostic query threw: ${detail}. Convergence is ` +
         `unaffected; stand-down lines this cycle will report an undetermined reason.`
       );
-      return null;
+      return { failure: detail };
     }
+  }
+
+  /**
+   * Advance the failure streak by one cycle's outcome.
+   *
+   * `detail` is null when the cycle ended with usable evidence, and **any**
+   * such cycle resets the run to zero — the streak is *consecutive* failures
+   * rather than a total, because the question a reader has is "are stand-downs
+   * working right now", not "have they ever not been". A total that never came
+   * down would make a daemon that had one bad minute a week ago
+   * indistinguishable from one whose diagnostic has been dead since boot, which
+   * is the distinction this field exists to draw.
+   */
+  private noteDiagnostic(detail: string | null): void {
+    if (detail === null) {
+      this.diagnosticFailures = 0;
+      this.diagnosticFailingSince = null;
+      return;
+    }
+    if (this.diagnosticFailures === 0) this.diagnosticFailingSince = new Date().toISOString();
+    this.diagnosticFailures++;
+    this.lastDiagnosticDetail = detail;
+  }
+
+  /** The last diagnostic failure's own words; only read while a streak is live. */
+  private lastDiagnosticDetail = '';
+
+  private diagnosticHealth(): BoardDiagnosticHealth {
+    if (this.diagnosticFailures === 0) return { answered: true, consecutiveFailures: 0 };
+    return {
+      answered: false,
+      consecutiveFailures: this.diagnosticFailures,
+      // Non-null whenever the count is non-zero, by `noteDiagnostic`'s own
+      // arithmetic — the two move together and nothing else writes either.
+      failingSince: this.diagnosticFailingSince ?? new Date().toISOString(),
+      detail: this.lastDiagnosticDetail
+    };
+  }
+
+  /**
+   * What the last completed cycle can say about its own evidence, or null when
+   * none has completed.
+   *
+   * Public because this is the KAN-343 fix: `daemon.ts` hands it to
+   * `board-control.ts`, which puts it on the `butchr_list_agents` response.
+   * A getter rather than a field so that a caller cannot hold a reference that
+   * silently stops updating — the object is replaced each cycle, never mutated.
+   */
+  public health(): BoardHealth | null {
+    return this.lastHealth;
   }
 
   /** Say what the cycle sees, whether or not it is allowed to act on it. */
@@ -1474,6 +1753,25 @@ export class BoardReconciler {
         : '') +
       `.`
     );
+
+    // KAN-343. The log said the diagnostic had failed; it could not say *for how
+    // long*, because each cycle wrote the same sentence and the difference was
+    // visible only to somebody counting them. One failure is the narrow window
+    // KAN-342 priced in. A run of them is stand-downs being off, and the run is
+    // the fact worth reading. This is still a log line and still not the fix —
+    // `health` on the `butchr_list_agents` response is — but a reader who does
+    // reach the log should not have to do the arithmetic by hand.
+    const health = this.lastHealth;
+    if (health && !health.diagnostic.answered && health.diagnostic.consecutiveFailures > 1) {
+      this.opts.log(
+        `[board] the diagnostic has not answered for ${health.diagnostic.consecutiveFailures} ` +
+        `consecutive cycles, since ${health.diagnostic.failingSince}. No agent can be stood ` +
+        `down while that lasts (KAN-342), so the fleet will not shrink and the capacity gate ` +
+        `will start refusing real work. This is reported on the butchr_list_agents response ` +
+        `as boardControl.health — go and read it there rather than counting these lines ` +
+        `(KAN-343). Last reason: ${health.diagnostic.detail}`
+      );
+    }
 
     for (const issue of diff.unresolved) {
       this.opts.log(

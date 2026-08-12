@@ -1477,9 +1477,23 @@ function boardReconcileMode(): BoardMode {
  * constructions above it need it, and hoisting is what lets this stay next to
  * the reconciler it describes rather than being hauled to the top of the file
  * away from its reason.
+ *
+ * KAN-343 added the health argument, and it reads `boardReconciler` — declared
+ * *below* this function — for the same hoisting reason and with the same
+ * safety: the routers above capture this as a callback and nothing calls it
+ * until a `list_agents` request arrives over a socket that starts listening
+ * hundreds of lines further down, long after the const is initialised. The
+ * alternative was a second holder of the reconciler's state, which is the one
+ * thing the mode argument above exists to avoid.
+ *
+ * **Dropping that argument compiles**, because `boardControlReport` defaults it
+ * to null — so the health would be computed every cycle and published as null
+ * forever, with every assertion in
+ * `verify-diagnostic-evidence-visible.mjs` §2 still green. That is the KAN-145
+ * shape exactly, and §2's last check reads this call site as text for it.
  */
 function reportBoardControl(agents: AddressableAgent[]): BoardControlReport {
-  return boardControlReport(boardReconcileMode(), agents);
+  return boardControlReport(boardReconcileMode(), agents, boardReconciler.health());
 }
 
 const boardReconciler = new BoardReconciler({

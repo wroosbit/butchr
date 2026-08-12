@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 70 |
+| `yes` | 72 |
 | `partial` | 7 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **94** |
+| **total** | **96** |
 
-**77 of 94** run on every pull request.
+**79 of 96** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -81,6 +81,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-diagnostic-evidence-visible` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no network, no terminal. Section 5 additionally shells out to the repo's own `tsc`, as verify-absence-is-not-intent.mjs §5 does. |
 | `verify-doc-constant-pins` | yes | reads `docs/*.md` and `daemon/src/*.ts` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

@@ -1,4 +1,5 @@
 import {
+  BoardHealth,
   BoardMode,
   BOARD_CYCLE_MS,
   RunningAgent,
@@ -114,6 +115,37 @@ export interface BoardControlReport {
    * disappears rather than being corrected.
    */
   controlled: Record<string, string>;
+  /**
+   * Whether the last cycle could establish intent, and what it withheld for
+   * want of it — or null when no cycle has completed yet (KAN-343).
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THE "WHAT IT DELIBERATELY DOES NOT CARRY" RULE ABOVE DOES NOT COVER THIS
+   * ---------------------------------------------------------------------------
+   *
+   * The module header refuses to carry *whether the board currently wants a
+   * given agent running*, on the ground that a cached yes/no from up to a minute
+   * ago is a fact the user cannot act on, dressed as one they can. **That
+   * argument is correct and this field does not contradict it**, because it
+   * answers a different question and the staleness runs the other way.
+   *
+   * "Does the board want KAN-222 running" changes with a drag of a card, so a
+   * minute-old answer is worthless. "Has the evidence stand-downs depend on been
+   * unreadable for the last ninety cycles" is a fact about a *run* of cycles;
+   * it cannot be derived from mode and jurisdiction, no fresher reading of it
+   * exists anywhere, and a minute-old copy of it is as good as a live one.
+   *
+   * **It is here rather than in a log line because that is the entire ticket.**
+   * Post-KAN-342 a diagnostic that does not answer withholds every stand-down,
+   * which fails in the safe direction and — the half that cost KAN-343 its
+   * existence — **the invisible one**: a fleet that stops shrinking looks
+   * exactly like a fleet nobody asked to shrink, until capacity fills. The only
+   * thing that said so was one line per cycle in `daemon.log`, which is the same
+   * trade as board-reconcile.ts:111's loud supervisor stand-down — logged
+   * deliberately, where nobody was reading, so that in review it reads as though
+   * somebody had been told.
+   */
+  health: BoardHealth | null;
 }
 
 /** An agent from any of the page's lists: enough to place it in jurisdiction. */
@@ -135,11 +167,13 @@ export interface AddressableAgent {
  */
 export function boardControlReport(
   mode: BoardMode,
-  agents: AddressableAgent[]
+  agents: AddressableAgent[],
+  health: BoardHealth | null = null
 ): BoardControlReport {
   const types = boardWorkspaceTypes();
   return {
     mode,
+    health,
     cycleSeconds: Math.round(BOARD_CYCLE_MS / 1000),
     jurisdictionTypes: [...types],
     // `renderedKey` rather than `agent.key`, and it is the same helper
