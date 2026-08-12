@@ -194,8 +194,15 @@ export interface ChannelStartupResult {
  * copy nobody runs in production is the one that stays right.
  */
 export interface ChannelStartupWorld {
-  /** The agent's pane as text; `null` when it could not be read at all. */
-  readPane: () => string | null;
+  /**
+   * The agent's pane as text; `null` when it could not be read at all.
+   *
+   * `Promise`-returning since KAN-283, because `AgentRuntime.tailAgent` is — a
+   * runtime that answers over a socket cannot serve a tail synchronously. The
+   * three meanings are unchanged: text, `''` for a pane that was read and is
+   * empty, and `null` for no reading at all.
+   */
+  readPane: () => Promise<string | null>;
   /** Send one Enter to the agent's pane. Throwing is reported, not fatal. */
   pressEnter: () => void;
   /** Now, in epoch ms. Injected so a harness need not sleep in real time. */
@@ -265,7 +272,7 @@ export async function superviseChannelStartup(opts: {
     // THE PANE IS READ FIRST AND EXACTLY ONCE PER PASS, so the dialog test and
     // the prompt test are answered by the same frame. Asking twice would allow a
     // pass that saw no dialog and no prompt to disagree with itself.
-    const pane = world.readPane();
+    const pane = await world.readPane();
     paneReads += 1;
     if (pane === null) {
       paneFailures += 1;

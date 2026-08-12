@@ -866,7 +866,7 @@ if (LIVE) {
       row('events caught by the live loop', JSON.stringify(second.events));
 
       for (const agent of AGENTS) {
-        const tail = bridge.tailAgent(agent.key, agent.type, 40);
+        const tail = await bridge.tailAgent(agent.key, agent.type, 40);
         console.log(`\n  ${agent.agentName}'s real terminal:\n`);
         console.log((tail.text ?? tail.error ?? '(no output)').split('\n').map((l) => `    ${l}`).join('\n'));
       }

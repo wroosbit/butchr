@@ -75,7 +75,7 @@ export async function waitForAgentReady(
 ): Promise<boolean> {
   const deadline = monotonicNow() + AGENT_READY_TIMEOUT_MS;
   for (;;) {
-    const tail = herdrBridge.tailAgent(key, type, 40);
+    const tail = await herdrBridge.tailAgent(key, type, 40);
     if (tail.success && typeof tail.text === 'string') {
       const text = tail.text.toLowerCase();
       if (AGENT_READY_MARKERS.some((marker) => text.includes(marker.toLowerCase()))) return true;
@@ -354,7 +354,7 @@ export async function deliverToAgent(opts: {
   let lastError: string | undefined;
   // What the pane already showed before this send. Anything at or below this
   // is somebody else's message, or an earlier copy of this one.
-  const before = readLandedCount(herdrBridge, type, key, message);
+  const before = await readLandedCount(herdrBridge, type, key, message);
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     let sent: { success: boolean; error?: string };
@@ -406,13 +406,13 @@ export async function deliverToAgent(opts: {
  * worth something: before it, a `0` could come from a pane the tail never
  * really saw, and no amount of care at this layer could have told.
  */
-function readLandedCount(
+async function readLandedCount(
   herdrBridge: AgentRuntime,
   type: string,
   key: string,
   message: string
-): number {
-  const tail = herdrBridge.tailAgent(key, type, DELIVERY_TAIL_LINES);
+): Promise<number> {
+  const tail = await herdrBridge.tailAgent(key, type, DELIVERY_TAIL_LINES);
   return tail.success && typeof tail.text === 'string' ? landedCount(tail.text, message) : 0;
 }
 
@@ -428,7 +428,12 @@ async function confirmDelivered(
 ): Promise<boolean> {
   const deadline = monotonicNow() + timeoutMs;
   for (;;) {
-    if (readLandedCount(herdrBridge, type, key, message) > before) return true;
+    // THE `await` IS LOAD-BEARING AND ITS ABSENCE WOULD BE SILENT (KAN-283).
+    // `readLandedCount` returns a Promise now, and `Promise > number` is
+    // `false` for every value of both — so a missing `await` here would make
+    // this loop poll until it timed out, every time, and report every delivery
+    // unconfirmed while the message had in fact landed. Nothing would throw.
+    if ((await readLandedCount(herdrBridge, type, key, message)) > before) return true;
     if (monotonicNow() >= deadline) return false;
     await delay(pollMs);
   }
