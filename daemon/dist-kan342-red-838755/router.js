@@ -1,0 +1,4081 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { isSupervisorType } from './registry.js';
+import { coreMcpServerDefinitions } from './launchers.js';
+// `HerdrSession` stays the FIRST name in this import, on the line directly
+// below the brace. `verify-agent-runtime-seam.mjs` §1 reverts the runtime seam
+// by textually replacing `import {\n  HerdrSession,` here, and anything between
+// the brace and that name — another import, or a comment like this one —
+// silently defeats the revert. The proof then reports the required check as red
+// when its whole point is that the check is green and blind. Caught by that
+// script during KAN-324, twice; hence this note being out here rather than in
+// there.
+import { addressFromAgentName, agentNameFor, typeFromAgentName, workspaceDirFor } from './herdr.js';
+import { readWorkState } from './work-state.js';
+import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
+import { sameSupervisorOfRecord, toSupervisorOfRecord } from './agent-registry.js';
+import { nudgeResumedAgent } from './nudge.js';
+import { senderTagFor, withSenderTag } from './provenance.js';
+import { boardPageFor } from './board-page.js';
+import { licenceFor, sealClaims } from './message-claims.js';
+import { operationByTool, proxyReport, refuseProxyCall, refuseWriteOutsideCaller, selectedProxyMode } from './atlassian-proxy.js';
+// KAN-298. The same shape doing the same job for a second integration — and a
+// reader checking "does LaunchDarkly have a write policy too" should meet the
+// answer here: there is no `refuseLdWriteOutsideCaller` to import, because
+// there is no LaunchDarkly write to bound. See `launchdarkly-proxy.ts`'s header.
+import { ldOperationByTool, ldProxyReport, refuseLdProxyCall, selectedLdProxyMode } from './launchdarkly-proxy.js';
+import { renderedKey } from './keys.js';
+import { addressOf, describeCandidate, describeFleetPriorities, noVictimReason, preemptionOffer, selectVictim } from './priority.js';
+import { getStalenessReport } from './staleness.js';
+import { sweepWorkspaces, lastReclaimSummary, reclaimWorkspace, formatBytes } from './reclaim.js';
+import { capacityReason, capacityRefusal, describeCapacity, readCapacity, summarizeCapacity } from './capacity.js';
+/**
+ * The addressing convention shared by every agent-targeted action: a key is
+ * required, a type is optional but must be meaningful when present. Returns
+ * the complaint, or null when the address is usable.
+ */
+/**
+ * The capacity numbers as they go over the wire.
+ *
+ * Flat and named rather than nested, because the caller most likely to read
+ * this is a language model deciding whether to staff another agent, and the
+ * fields it needs — `headroom`, `atCapacity`, `summary` — should not be at the
+ * end of a path. `summary` is the same figures in a sentence: a caller that
+ * ignores every number still cannot ignore that one.
+ */
+function capacityDto(c) {
+    return {
+        cap: c.cap,
+        running: c.running,
+        supervisors: c.supervisors,
+        headroom: c.headroom,
+        atCapacity: c.atCapacity,
+        capBoundBy: c.capBoundBy,
+        headroomBoundBy: c.headroomBoundBy,
+        // The one sentence a UI with a single line to spare can render. Sent on
+        // every capacity payload rather than only on refusals, because the panel
+        // that has to explain a refused toggle should not have to parse the reason
+        // out of a paragraph of derivation.
+        reason: capacityReason(c),
+        cores: c.machine.cores,
+        // Reported, not gated on (KAN-201). Kept on the wire because it is the
+        // number a human feels, and because a reader comparing it against
+        // cpuBusyCores can see for themselves how far the two diverge — which is
+        // the evidence that retired it.
+        load1: Math.round(c.machine.load1 * 100) / 100,
+        cpuBusyCores: Math.round(c.cpuBusyCores * 100) / 100,
+        cpuBusySource: c.cpuBusySource,
+        cpuBusyWindowSeconds: c.cpuBusyWindowSeconds === null ? null : Math.round(c.cpuBusyWindowSeconds),
+        // The stall veto (KAN-218), which is not a count and so has no
+        // `headroomBy…` companion. `stallPercent: null` is the one reading a caller
+        // must not read as "fine": it means this machine has no /proc/pressure and
+        // nothing at all is bounding I/O saturation. `stalled` is therefore sent
+        // separately from the figure rather than inferred from it.
+        stallPercent: c.stallPercent === null ? null : Math.round(c.stallPercent * 100) / 100,
+        stallSource: c.stallSource,
+        stallIoPercent: typeof c.stall?.ioFullPercent === 'number'
+            ? Math.round(c.stall.ioFullPercent * 100) / 100
+            : null,
+        stallMemoryPercent: typeof c.stall?.memoryFullPercent === 'number'
+            ? Math.round(c.stall.memoryFullPercent * 100) / 100
+            : null,
+        stallRefusePercent: c.stallRefusePercent,
+        stalled: c.stalled,
+        // What the three counting terms allowed before the veto. Equal to
+        // `headroom` unless `stalled`, and the pair is what makes the veto's effect
+        // legible instead of looking like a machine that happened to be full.
+        headroomBeforeStall: c.headroomBeforeStall,
+        totalMb: Math.round(c.machine.totalBytes / (1024 * 1024)),
+        availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
+        agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
+        agentCores: c.cost.cores,
+        // Where the two cost figures came from (KAN-56): 'override', 'measured',
+        // 'restored' or 'seed', plus the sample's metadata when a measurement was
+        // consulted. A caller deciding whether to trust the cap can see whether
+        // anyone measured it.
+        agentMemorySource: c.costSource.residentBytes,
+        agentCoresSource: c.costSource.cores,
+        // Starts already admitted that no instrument has priced (KAN-258). Sent
+        // whether or not it fired — `count: 0` is the ordinary steady-state answer
+        // — because a caller cannot otherwise tell a machine with no starts in
+        // flight from a build where this term does not exist. That distinction is
+        // the whole of what a reader needs to know this gate is protecting them.
+        unobservedStarts: {
+            count: c.unobservedStarts.count,
+            cores: Math.round(c.unobservedStarts.cores * 100) / 100,
+            memoryMb: Math.round(c.unobservedStarts.bytes / (1024 * 1024)),
+            chargedCores: c.unobservedStarts.cost.cores,
+            chargedMemoryMb: Math.round(c.unobservedStarts.cost.residentBytes / (1024 * 1024)),
+            because: c.unobservedStarts.because
+        },
+        // Null in the ordinary case. Set when the per-agent estimate implied more
+        // CPU than the machine reported in use, so `headroomByCpu` below divided by
+        // `used` rather than by `agentCores` (KAN-204). Both numbers travel, so a
+        // reader can check the contradiction and re-derive the headroom figure.
+        // `cap` and `capByCpu` are never affected — see capacity.ts's header.
+        liveCoresBound: c.liveCoresBound
+            ? {
+                published: c.liveCoresBound.published,
+                used: Math.round(c.liveCoresBound.used * 1000) / 1000,
+                agentTrees: c.liveCoresBound.agentTrees,
+                impliedFleetCores: Math.round(c.liveCoresBound.impliedFleetCores * 100) / 100,
+                busyCores: Math.round(c.liveCoresBound.busyCores * 100) / 100
+            }
+            : null,
+        measuredAt: c.measured ? new Date(c.measured.sampledAt).toISOString() : null,
+        measuredWindowSeconds: c.measured ? Math.round(c.measured.windowSeconds) : null,
+        // Task-agent trees only, since KAN-276. It was every claude tree on the
+        // machine, which made it a count of one population sitting next to a cost
+        // for another — a reading of `running: 0` with `measuredAgentTrees: 3` was
+        // how the contamination was finally spotted, and this field now cannot
+        // report that combination.
+        measuredAgentTrees: c.measured ? c.measured.agentTrees : null,
+        // What is held back for supervisors, and what it was worked out from
+        // (KAN-276). Always present, `count: 0` when no supervisor is running.
+        supervisorReserve: {
+            count: c.supervisorReserve.count,
+            perSupervisorMb: Math.round(c.supervisorReserve.perSupervisorBytes / (1024 * 1024)),
+            reservedMb: Math.round(c.supervisorReserve.bytes / (1024 * 1024)),
+            source: c.supervisorReserve.source
+        },
+        capByCpu: c.capByCpu,
+        capByMemory: c.capByMemory,
+        headroomByCap: c.headroomByCap,
+        headroomByCpu: c.headroomByCpu,
+        headroomByMemory: c.headroomByMemory,
+        summary: summarizeCapacity(c)
+    };
+}
+function invalidAddress(key, type) {
+    if (typeof key !== 'string' || !key.trim())
+        return 'Missing or invalid key';
+    if (type !== undefined && (typeof type !== 'string' || !type.trim())) {
+        return 'Invalid type: expected a non-empty string';
+    }
+    return null;
+}
+/**
+ * How many stood-down agents `list_agents` will carry. The registry compacts
+ * at 500 records, so this is bounded already — the cap is about the 2s poll,
+ * not about the log. Anything beyond it is *counted* rather than dropped
+ * silently: see `standbyTotal`.
+ */
+const STANDBY_LIMIT = 25;
+/**
+ * The refusal for an integration id this daemon does not know. Names the
+ * known ids so a typo'd caller learns the vocabulary from the error itself.
+ */
+function unknownIntegration(integration) {
+    return `Unknown integration: ${integration || '(none given)'}. Known integrations: jira, launchdarkly.`;
+}
+/**
+ * The refusal for a page — or a type — whose integration is switched off.
+ *
+ * A Jira URL failing as "unsupported URL" when the user has merely turned
+ * Atlassian off is a lie, and an expensive one: it sends someone looking for a
+ * pattern bug that is not there. Disabled integrations keep their patterns for
+ * exactly this, never for matching, so the refusal can name the real cause and
+ * the fix. KAN-91 renders this verbatim.
+ */
+function integrationDisabled(name, what) {
+    return (`The ${name} integration is switched off, so ${what} does not open a workspace. ` +
+        `Turn ${name} back on in Butchr's settings to activate it again. ` +
+        `Agents that are already running are unaffected.`);
+}
+/**
+ * An integration's workspace types, as `list_integrations` reports them.
+ *
+ * `resolution` says how a page becomes this type: `url-matched` types own URL
+ * patterns; the pattern-less ones are reached only by refining a URL match
+ * against what the integration knows the entity really is (see
+ * atlassian-integration.ts on why a Story's URL is byte-identical to a Task's).
+ * Derived from the config rather than declared, which is the meaning this
+ * field has always carried.
+ *
+ * Ordered by descending priority — epic, story, task for Jira — which is the
+ * order the settings page has always rendered and the order the scale reads
+ * in. Registration order is deliberately not used: it is the order that
+ * matters to URL matching, and a UI list is not the place to expose it.
+ */
+function providedTypesOf(integration) {
+    return [...integration.workspaceTypes]
+        .sort((a, b) => b.priority - a.priority)
+        .map((config) => ({
+        type: config.type,
+        name: config.name,
+        resolution: (config.urlPatterns.length > 0
+            ? 'url-matched'
+            : 'refined-from-issue-type'),
+        priority: config.priority,
+        supervisor: !!config.supervisor
+    }));
+}
+/**
+ * An integration's MCP servers, in the shape above — and the one place that
+ * decides how much of a server definition is safe to send to a UI.
+ *
+ * THE RULE: a definition carrying `env` is reported as its **name only**.
+ *
+ * WHY, AND WHY THE TEST IS STRUCTURAL. A server provider is a closure over its
+ * integration (see `McpServerProvider`), so it can build a definition out of
+ * the stored credential — that is what a credential is *for* here. The daemon
+ * cannot detect a secret by looking at the value: a `CredentialAdapter` never
+ * hands back the secret, by design, so there is nothing to compare a string
+ * against. What is left is where a credential can arrive, and the house
+ * convention is `env` — an environment variable the agent's MCP client sets,
+ * not a plaintext argv parameter (integration.ts says exactly this about why
+ * Butchr writes per-workspace 0600-sourced config rather than registering a
+ * vendor server globally). So `env` is treated as the mark of a
+ * credential-configured definition and closes the whole definition down to its
+ * name, and `env` itself — keys as well as values — is never reported at all.
+ *
+ * That is deliberately blunt in the safe direction. A definition with a
+ * perfectly innocuous `env` loses its command line here, which costs a line of
+ * display; the opposite mistake costs a token in a settings page.
+ *
+ * THE LIMIT, STATED SO THE NEXT AUTHOR KEEPS THE CONVENTION: an integration
+ * that baked a token into `args` instead — `--header "Authorization: Bearer …"`
+ * is a real MCP pattern — would defeat this, because nothing here can tell that
+ * string from a URL. If you write such a definition, do not rely on this
+ * function to notice: give it an `env` (which is where it belongs and which
+ * this rule already covers).
+ *
+ * Today's definitions were checked against this before it was written.
+ * Atlassian's carries no token and no `env` at all — the official Atlassian MCP
+ * is a remote endpoint and mcp-remote does its own OAuth (see
+ * atlassian-integration.ts) — so its command and args are reported in full.
+ * LaunchDarkly provides no servers yet, and the core `butchr` server is
+ * `process.execPath` plus a path to the daemon's own mcp.js.
+ *
+ * KAN-145 had to carry a workspace's identity into its own MCP server process
+ * and deliberately did **not** use `env` for it, so this rule is untouched and
+ * no exemption was carved for the core server. The identity rides in `args`
+ * (`--workspace-type task --workspace-key KAN-1`) because it is provably not a
+ * secret — it is the ticket key, already rendered on every surface — and
+ * because putting it in `env` would have closed `butchr`'s command line down to
+ * its name here for no security reason at all. A plumbing change must not be
+ * allowed to buy itself a loosened security rule; see `withWorkspaceIdentity`
+ * in launchers.ts for the full argument. Note that what this function is handed
+ * for the settings page is `coreMcpServerDefinitions()` — the unstamped
+ * definition, since "what every agent gets" has no one workspace to name.
+ */
+function describeMcpServers(defs) {
+    return Object.entries(defs).map(([name, definition]) => {
+        // KAN-157 added `pathPrefix` and `unusable`, and neither loosens the rule
+        // above. `unusable` is the daemon's own sentence about a server that cannot
+        // start, so it is reported whether or not detail is withheld — a withheld
+        // definition that is also dead must still be able to say the second thing.
+        const unusable = definition.unusable ? { unusable: definition.unusable } : {};
+        if (definition.env && Object.keys(definition.env).length > 0) {
+            return { name, detailWithheld: true, ...unusable };
+        }
+        return {
+            name,
+            command: definition.command,
+            args: [...definition.args],
+            // Directories, composed by the daemon rather than supplied whole by the
+            // integration — the argument for why that is safe to render is on
+            // `McpServerDefinition.pathPrefix`, beside the field itself.
+            ...(definition.pathPrefix?.length ? { pathPrefix: [...definition.pathPrefix] } : {}),
+            ...unusable
+        };
+    });
+}
+/**
+ * What this integration would give every spawning agent.
+ *
+ * "Would": reported whether or not the integration is switched on, exactly as
+ * `providedTypes` is and for the same reason — a switch is only a choice if
+ * what it turns on is legible before it is flipped. The registry is what
+ * actually gates them (enabled, and configured where there is a credential);
+ * this is the settings page's description of them, not the assembly.
+ */
+function providedMcpServersOf(integration) {
+    return describeMcpServers(integration.mcpServers?.() ?? {});
+}
+/**
+ * The option names, listed once so the constructor can reject anything else.
+ *
+ * This exists for the callers TypeScript never sees. Every `verify-*.mjs` in
+ * `daemon/scripts` constructs a real router, and a plain `.mjs` object literal
+ * gets no excess-property check — so `{ capacitySrc: … }` would be accepted,
+ * silently ignored, and the proof would go on measuring the real machine while
+ * reporting a verdict about an injected one. Naming the slots removes the
+ * *positional* hazard for everybody; this removes the *spelling* hazard for
+ * the callers that are not typechecked.
+ *
+ * Keep it in step with `MessageRouterOptions`. The `satisfies` clause makes
+ * that mechanical rather than a matter of discipline: a field added to the
+ * interface and not to this array is a compile error, and a name here that is
+ * not a field of the interface is too.
+ */
+const MESSAGE_ROUTER_OPTION_NAMES = [
+    'jira',
+    'install',
+    'agentRegistry',
+    'launchdarkly',
+    'capacitySource',
+    'boardControl',
+    'channelRoute',
+    'channelSelfCheck',
+    'channelCarrier',
+    'channelLiveness',
+    'agentRuntimeReport',
+    'pendingNotifications',
+    'guardian',
+    'prWatch'
+];
+export class MessageRouter {
+    registry;
+    promptLoader;
+    herdrBridge;
+    send;
+    broadcast;
+    activePtyListeners = new Map();
+    /** See {@link MessageRouterOptions.jira}. */
+    jira;
+    /** See {@link MessageRouterOptions.install}. */
+    install;
+    /** See {@link MessageRouterOptions.agentRegistry}. */
+    agentRegistry;
+    /** See {@link MessageRouterOptions.launchdarkly}. */
+    launchdarkly;
+    /** See {@link MessageRouterOptions.capacitySource}. */
+    capacitySource;
+    /**
+     * When this router started each agent, and whether the fleet census has ever
+     * reported it (KAN-258).
+     *
+     * The capacity gate divides figures that describe *settled* agents, so it
+     * cannot see one it started three seconds ago; this is the record that lets
+     * it charge for them anyway. See capacity.ts's `unobservedStartsAmong` for
+     * which of these end up being charged — the rule lives there, next to the
+     * measurement whose staleness it is about, rather than here.
+     *
+     * `seen` is what makes the pruning exact instead of a race. An entry is
+     * dropped only once the census has reported that agent *and* it has since
+     * gone — never merely because it is absent, which is the state every start
+     * is in for its first moments and is precisely the state this term exists to
+     * charge for. Dropping on absence would have reintroduced the defect through
+     * the cleanup.
+     */
+    startLedger = new Map();
+    /** See {@link MessageRouterOptions.boardControl}. */
+    boardControl;
+    /** See {@link MessageRouterOptions.channelRoute}. */
+    channelRoute;
+    /** See {@link MessageRouterOptions.channelSelfCheck}. */
+    channelSelfCheck;
+    /** See {@link MessageRouterOptions.channelCarrier}. */
+    channelCarrier;
+    /** See {@link MessageRouterOptions.channelLiveness}. */
+    channelLiveness;
+    /** See {@link MessageRouterOptions.agentRuntimeReport}. */
+    agentRuntimeReport;
+    /** See {@link MessageRouterOptions.pendingNotifications}. */
+    pendingNotifications;
+    /** See {@link MessageRouterOptions.guardian}. */
+    guardian;
+    /** See {@link MessageRouterOptions.prWatch}. */
+    prWatch;
+    constructor(registry, promptLoader, herdrBridge, send, broadcast = send, opts = {}) {
+        this.registry = registry;
+        this.promptLoader = promptLoader;
+        this.herdrBridge = herdrBridge;
+        this.send = send;
+        this.broadcast = broadcast;
+        // Loud on a name nobody declared. TypeScript already refuses a misspelled
+        // field in a checked caller; this is the same refusal for the `.mjs`
+        // proofs, which are the callers that actually got burned. Throwing beats
+        // ignoring because the failure mode being replaced was *being ignored*: an
+        // option that silently does not arrive leaves the proof asserting against
+        // production defaults while it reports on an injected world.
+        const unknown = Object.keys(opts).filter((key) => !MESSAGE_ROUTER_OPTION_NAMES.includes(key));
+        if (unknown.length > 0) {
+            throw new TypeError(`MessageRouter: unknown option${unknown.length > 1 ? 's' : ''} ${unknown
+                .map((key) => `'${key}'`)
+                .join(', ')}. Known options: ${MESSAGE_ROUTER_OPTION_NAMES.join(', ')}.`);
+        }
+        this.jira = opts.jira;
+        this.install = opts.install;
+        this.agentRegistry = opts.agentRegistry;
+        this.launchdarkly = opts.launchdarkly;
+        this.capacitySource = opts.capacitySource ?? readCapacity;
+        this.boardControl = opts.boardControl;
+        this.channelRoute = opts.channelRoute;
+        this.channelSelfCheck = opts.channelSelfCheck;
+        this.channelCarrier = opts.channelCarrier;
+        this.channelLiveness = opts.channelLiveness;
+        this.agentRuntimeReport = opts.agentRuntimeReport;
+        this.pendingNotifications = opts.pendingNotifications;
+        this.guardian = opts.guardian;
+        this.prWatch = opts.prWatch;
+    }
+    /**
+     * Write an activation down before it is acknowledged.
+     *
+     * Called on every successful activate, but only appends when it would change
+     * something: re-attaching to an agent already recorded as activated is a
+     * no-op, and the sidepanel re-activates often enough that recording each one
+     * would fill the log with restatements of the same intent.
+     */
+    rememberActivated(incoming) {
+        if (!this.agentRegistry)
+            return;
+        const current = this.agentRegistry.intents().get(incoming.agentName);
+        // A parent already recorded is not un-recorded by a request that simply
+        // does not know one. The sidepanel calls `activate` every time a human
+        // opens the agent's Jira tab, and those calls carry no caller identity —
+        // so without this, looking at a supervised agent's ticket would quietly
+        // orphan it, and the Agents page's org chart would lose the edge between
+        // one visit and the next. Only an activation that *names* a supervisor
+        // changes who the supervisor is; nothing here invents one.
+        const record = {
+            ...incoming,
+            activatedBy: incoming.activatedBy ?? current?.record.activatedBy ?? null
+        };
+        if (current?.event === 'activated' &&
+            current.record.workDir === record.workDir &&
+            current.record.url === record.url &&
+            current.record.defaultAgent === record.defaultAgent &&
+            // Part of the comparison, not merely part of the record: an agent first
+            // activated parentless — by a human, from the sidepanel — and later
+            // re-activated by the supervisor that adopted it would otherwise match on
+            // the three fields above, be treated as a restatement, and never have its
+            // parent written down at all.
+            sameSupervisorOfRecord(current.record.activatedBy, record.activatedBy)) {
+            return;
+        }
+        this.agentRegistry.recordActivated(record);
+    }
+    /**
+     * Who activated this agent, as far as the daemon can honestly tell.
+     *
+     * Two sources, in order. An explicit `activatedBy` is restoration: boot-time
+     * reconciliation re-runs an activation somebody else originally made, and it
+     * passes the parentage it read out of the registry so a reboot does not
+     * orphan a fleet that had parents before the power went out. Otherwise the
+     * answer is the caller's own identity, which the butchr MCP attaches to every
+     * request it makes (`workspaceType`/`workspaceKey`, mcp.ts) — so a story
+     * agent staffing a task is recorded as that task's supervisor by the ordinary
+     * act of staffing it, with nothing new for it to remember to send.
+     *
+     * A request carrying neither has no supervisor of record and gets `null`: the
+     * sidepanel and the Agents page are humans, and a human activation has no
+     * parent. Nothing is invented for it.
+     *
+     * An agent that activates itself is nobody's child either. Recording that
+     * would make it its own supervisor, and the notifier would then send it
+     * bulletins about itself — the self-nudge loop the storm guards exist to
+     * prevent, seeded at the point where the fact is first written down.
+     */
+    supervisorOfRecord(data, agent) {
+        const claimed = toSupervisorOfRecord(data?.activatedBy) ??
+            toSupervisorOfRecord({ type: data?.workspaceType, key: data?.workspaceKey });
+        if (!claimed)
+            return null;
+        if (agentNameFor(claimed.type, claimed.key) === agentNameFor(agent.type, agent.key)) {
+            console.warn(`[Router] Ignoring a self-referential supervisor of record: ` +
+                `${claimed.type}/${claimed.key} cannot have activated itself.`);
+            return null;
+        }
+        return claimed;
+    }
+    /**
+     * Write a stand-down down, so reconciliation leaves this agent alone.
+     *
+     * This is the half of the registry that makes it *intent* rather than
+     * history: without it, boot-time restoration would resurrect every agent
+     * anyone had ever run. Recorded even when the teardown failed — the caller
+     * asked for the agent to be gone, and that is the intent to honour.
+     *
+     * Everything the last activation knew is carried onto the stand-down, and
+     * that is not tidiness. `AgentRecord` is the argument list of an activation,
+     * and `defaultAgent` is one of its arguments: an agent recorded without it
+     * and then switched back on resolves to the `shell` launcher (see
+     * launchers.ts) and comes back as a bare bash prompt wearing the name of a
+     * Claude agent. Before KAN-38 nothing switched a stood-down agent back on, so
+     * the loss was invisible; the moment the Agents page offers an On button it
+     * is the ordinary path. The url and workDir travel for the same reason —
+     * they are how it comes back as what it was rather than as something new.
+     */
+    rememberDeactivated(type, key, workDir, preemption) {
+        if (!this.agentRegistry)
+            return;
+        const agentName = agentNameFor(type, key);
+        const previous = this.agentRegistry.intents().get(agentName)?.record;
+        this.agentRegistry.recordDeactivated({
+            agentName,
+            type,
+            // The registry's spelling of the key, when it has one. `agentName` is
+            // built from a lower-cased key, so an agent addressed from a census —
+            // which is how the Agents page addresses one — arrives here as
+            // `kan-38`, and recording that would quietly replace a key spelled the
+            // way its Jira issue is. `preemptionCandidates` already prefers the
+            // registry's spelling for the same reason: this key is about to be
+            // shown to a person next to a ticket that is spelled KAN-38.
+            key: previous?.key ?? key,
+            // The caller's own answer wins — it is looking at the live session —
+            // and the registry's is the fallback for the by-key paths that have no
+            // session to read one from.
+            workDir: workDir ?? previous?.workDir ?? '',
+            // Carried forward for the same reason the rest of the argument list is:
+            // a stood-down agent is still somebody's, and the Agents page draws its
+            // standby and preempted rows in the same tree as the running ones. This
+            // is preservation, not invention — the parentage is whatever the last
+            // activation recorded, and a stand-down learns nothing new about it.
+            activatedBy: previous?.activatedBy ?? null,
+            ...(previous?.url ? { url: previous.url } : {}),
+            ...(previous?.defaultAgent ? { defaultAgent: previous.defaultAgent } : {}),
+            ...(previous?.mcpServers ? { mcpServers: previous.mcpServers } : {})
+        }, preemption);
+    }
+    /**
+     * Reclaim a stood-down agent's dependencies, and never at the cost of the
+     * stand-down itself.
+     *
+     * **Why stand-down is the trigger, and not the Jira transition.** The human's
+     * ask was for cleanup to happen by itself rather than when somebody remembers,
+     * and the story's hardest constraint is *never reclaim from a live agent*. A
+     * ticket moving to Done says nothing about whether an agent is still working
+     * in that workspace — KAN-79's poller reads only the issues of agents that
+     * are **live** (`jira-poll.ts`), so Done arrives at precisely the moment the
+     * exclusion would have to refuse. Stand-down is the same moment in practice —
+     * a close-out transitions the ticket and deactivates the agent — and it is the
+     * one at which the safety condition is true **by construction** rather than by
+     * inference.
+     *
+     * **Called after the teardown is confirmed, never before.** Reclaiming
+     * underneath a process that is still running is the failure this whole story
+     * guards, so every call site below sits behind its own `success`.
+     *
+     * Three things it will not do:
+     *
+     *   - **Not on a preemption.** A preemption is an interruption, not a finish:
+     *     the agent is expected back, usually within the hour, and
+     *     `butchr_list_agents` lists it as work owed. Deleting its tree would
+     *     charge an involuntary stand-down a reinstall that a voluntary one is
+     *     choosing to pay. The `preemption` record is what tells the two apart.
+     *   - **Not while anything is still live in that directory.** `terminateSession`
+     *     returning success is our own account of the teardown; this asks herdr,
+     *     through the same `surveyAgents()` census `list_agents` and
+     *     `reclaim_sweep` are built from, so the exclusion and the fleet a
+     *     supervisor is looking at cannot disagree. Fails **closed**: a herdr that
+     *     did not answer establishes nothing, so nothing is deleted.
+     *   - **Not at the expense of the stand-down.** The caller asked for the agent
+     *     to be gone; disk is a side effect. Every failure below is caught,
+     *     logged, and reported — `deactivate` still succeeds.
+     *
+     * The report rides the response *and* the `agent_deactivated_event`, because a
+     * stand-down that silently shrank a workspace is the surprise this epic keeps
+     * deleting. Note `bytes` is honest but easily misread: since KAN-262 these
+     * trees are hard-linked from a shared store, so a reclaim that frees ~nothing
+     * on `df` is the mechanism working rather than failing — `reclaim.ts`'s header
+     * carries the full account.
+     */
+    reclaimForStandDown(args) {
+        const { type, key, preemption } = args;
+        if (preemption) {
+            return {
+                status: 'skipped',
+                paths: [],
+                bytes: 0,
+                reason: 'this stand-down is a preemption — the agent is expected back, so its workspace is left as it was',
+                headline: 'Nothing reclaimed: preempted agents keep their dependencies'
+            };
+        }
+        // The session's own answer first, then what the last activation recorded —
+        // the by-key path can stand down an agent whose session this daemon never
+        // held, and the registry is the only thing that still knows where it lived.
+        const workDir = args.workDir ||
+            this.agentRegistry?.intents().get(agentNameFor(type, key))?.record.workDir ||
+            '';
+        if (!workDir) {
+            return {
+                status: 'skipped',
+                paths: [],
+                bytes: 0,
+                reason: 'no workspace directory is recorded for this agent, so there is nothing to reclaim from',
+                headline: 'Nothing reclaimed: no workspace directory on record'
+            };
+        }
+        const live = this.liveWorkspaceCheck(workDir);
+        if (live) {
+            return { status: 'skipped', paths: [], bytes: 0, reason: live, headline: `Nothing reclaimed: ${live}` };
+        }
+        try {
+            const result = reclaimWorkspace(workDir, { dryRun: false });
+            const paths = result.removed.map((r) => r.path);
+            return {
+                status: 'reclaimed',
+                paths,
+                bytes: result.bytes,
+                ...(result.skipped.length > 0 ? { skipped: result.skipped } : {}),
+                headline: paths.length > 0
+                    ? `Reclaimed ${formatBytes(result.bytes)} in ${paths.length} node_modules from ${type}/${key}`
+                    : `Nothing left to reclaim in ${type}/${key}`
+            };
+        }
+        catch (e) {
+            // The stand-down is what was asked for. This is reported and logged, and
+            // it does not travel any further than this return.
+            const error = `Reclaim after stand-down failed for ${type}/${key}: ${e?.message ?? String(e)}`;
+            console.error('[MessageRouter]', error);
+            return { status: 'failed', paths: [], bytes: 0, error, headline: 'Reclaim failed; the stand-down stands' };
+        }
+    }
+    /**
+     * Whether anything is still running in `workDir` — the reason to refuse, or
+     * null when the directory is genuinely nobody's.
+     *
+     * Compared by resolved path, so a symlinked workspace cannot dodge the check
+     * by being spelled differently in the census than it is on disk. That is the
+     * same rule `sweepWorkspaces` applies to its own `liveWorkDirs`, and it is
+     * applied here rather than shared because the two are asking about different
+     * things: the sweep asks *which of these many*, this asks *is this one*.
+     *
+     * It reads herdr twice — once for `reachable`, which `surveyAgents` does not
+     * return, and once inside it. That is deliberate and it is not a hot path: a
+     * stand-down happens on human or supervisor time, and the alternative is a
+     * guard that cannot tell "nothing is running" from "nobody answered". Those
+     * two must not be the same answer when the consequence is a delete.
+     */
+    liveWorkspaceCheck(workDir) {
+        const { reachable } = this.herdrBridge.listHerdrAgentsChecked();
+        if (!reachable) {
+            return 'herdr did not answer, so nothing could be established about what is still running';
+        }
+        const { agents, unbackedPanes } = this.surveyAgents();
+        const resolve = (dir) => {
+            try {
+                return fs.realpathSync(dir);
+            }
+            catch {
+                return path.resolve(dir);
+            }
+        };
+        const target = resolve(workDir);
+        // Panes with a bare shell behind them count, for `handleReclaimSweep`'s
+        // reason: somebody may be sitting in front of one, mid-`npm install`.
+        const occupants = [...agents.map((a) => a.workDir), ...unbackedPanes.map((p) => p.workDir)];
+        for (const dir of occupants) {
+            if (typeof dir !== 'string' || !dir)
+                continue;
+            if (resolve(dir) === target)
+                return 'an agent is still live in this workspace';
+        }
+        return null;
+    }
+    /** The staleness report, or undefined when this router has no install context. */
+    staleness(force = false) {
+        if (!this.install)
+            return undefined;
+        return getStalenessReport({ ...this.install, force });
+    }
+    handle(data) {
+        // Responses echo the request's `id` so a transport can correlate them.
+        // Chrome's messages carry no id; their replies go out on the default
+        // channel, which is what the extension already listens to.
+        const respond = (msg) => this.send(data.id !== undefined ? { ...msg, id: data.id } : msg);
+        // Fire-and-forget actions only reply when a caller asked to be
+        // correlated, so Chrome doesn't get an ack per keystroke.
+        const ack = (msg) => {
+            if (data.id !== undefined)
+                this.send({ ...msg, id: data.id });
+        };
+        // Resolution reaches the network now, so the handlers that use it are
+        // async. A rejected handler promise would otherwise escape the try/catch
+        // the daemon wraps this call in and surface as an unhandled rejection,
+        // leaving the caller waiting on a response that never comes.
+        const guard = (p, action) => p.catch((err) => {
+            console.error(`Handler error in ${action}:`, err?.message ?? String(err));
+            respond({
+                action: `${action}_response`,
+                success: false,
+                error: err?.message ?? String(err)
+            });
+        });
+        switch (data.action) {
+            case 'reset':
+                void guard(this.handleReset(data, respond), 'reset');
+                break;
+            case 'reset_by_key':
+                this.handleResetByKey(data, respond);
+                break;
+            case 'activate':
+                void guard(this.handleActivate(data, respond), 'activate');
+                break;
+            case 'activate_by_key':
+                void guard(this.handleActivateByKey(data, respond), 'activate');
+                break;
+            case 'deactivate':
+                this.handleDeactivate(data, respond);
+                break;
+            case 'deactivate_by_key':
+                this.handleDeactivateByKey(data, respond);
+                break;
+            case 'send_to_agent':
+                this.handleSendToAgent(data, respond);
+                break;
+            case 'tail_agent':
+                void guard(this.handleTailAgent(data, respond), 'tail_agent');
+                break;
+            case 'agent_status':
+                this.handleAgentStatus(data, respond);
+                break;
+            case 'status':
+                void guard(this.handleStatus(data, respond), 'status');
+                break;
+            case 'list_agents':
+                this.handleListAgents(data, respond);
+                break;
+            case 'agent_runtime_report':
+                this.handleAgentRuntimeReport(respond);
+                break;
+            case 'staleness_check':
+                this.handleStalenessCheck(data, respond);
+                break;
+            case 'reclaim_sweep':
+                this.handleReclaimSweep(data, respond);
+                break;
+            case 'capacity':
+                this.handleCapacity(data, respond);
+                break;
+            case 'agent_work_state':
+                this.handleAgentWorkState(data, respond);
+                break;
+            case 'atlassian_proxy_status':
+                void guard(this.handleAtlassianProxyStatus(respond), 'atlassian_proxy_status');
+                break;
+            case 'atlassian_proxy_call':
+                void guard(this.handleAtlassianProxyCall(data, respond), 'atlassian_proxy_call');
+                break;
+            case 'launchdarkly_proxy_status':
+                void guard(this.handleLaunchDarklyProxyStatus(respond), 'launchdarkly_proxy_status');
+                break;
+            case 'launchdarkly_proxy_call':
+                void guard(this.handleLaunchDarklyProxyCall(data, respond), 'launchdarkly_proxy_call');
+                break;
+            case 'jira_credential_status':
+                void guard(this.handleJiraCredentialStatus(respond), 'jira_credential_status');
+                break;
+            case 'set_jira_credential':
+                void guard(this.handleSetJiraCredential(data, respond), 'set_jira_credential');
+                break;
+            case 'clear_jira_credential':
+                void guard(this.handleClearJiraCredential(respond), 'clear_jira_credential');
+                break;
+            case 'integration_credential_status':
+                void guard(this.handleIntegrationCredentialStatus(data, respond), 'integration_credential_status');
+                break;
+            case 'set_integration_credential':
+                void guard(this.handleSetIntegrationCredential(data, respond), 'set_integration_credential');
+                break;
+            case 'clear_integration_credential':
+                void guard(this.handleClearIntegrationCredential(data, respond), 'clear_integration_credential');
+                break;
+            case 'set_integration_enabled':
+                void guard(this.handleSetIntegrationEnabled(data, respond), 'set_integration_enabled');
+                return;
+            case 'list_integrations':
+                void guard(this.handleListIntegrations(respond), 'list_integrations');
+                break;
+            case 'pty_init':
+                this.handlePtyInit(data, respond);
+                break;
+            case 'pty_input':
+                this.handlePtyInput(data, ack);
+                break;
+            case 'pty_resize':
+                this.handlePtyResize(data, ack);
+                break;
+            default:
+                console.warn('Unknown action:', data.action);
+                respond({
+                    action: 'error_response',
+                    success: false,
+                    error: `Unknown action: ${data.action}`
+                });
+        }
+    }
+    /**
+     * Whether the machine can carry another agent, checked before spawning one.
+     *
+     * Only consulted when a *new* agent would be created: re-attaching to an
+     * agent that is already running costs the machine nothing, and refusing that
+     * would be refusing to look at work already in flight. The caller's own
+     * `getSessionByAddress` miss is not enough to establish that, because the
+     * session map dies with the daemon while the herdr pane does not — so
+     * `alreadyRunning` asks herdr, and every re-attach after a daemon restart
+     * skips the gate. Without it the panel could not get back to agents it was
+     * already supervising, and precisely when the machine was busiest.
+     *
+     * An override is honoured — a cap that cannot be exceeded on purpose is a
+     * cap people work around — but it is recorded rather than waved through.
+     * Someone reading the log later should be able to see that the machine was
+     * over-staffed deliberately, and what the numbers were at the time.
+     *
+     * Supervisor activations are never refused at all — see the exemption
+     * below, which is where the capacity model's "supervisors are not part of
+     * the limit" decision is actually honoured.
+     */
+    capacityGate(request) {
+        const { what, type, key, agentName, priority, override, preempt } = request;
+        const pass = (capacity) => ({
+            capacity,
+            refusal: null,
+            overrode: null,
+            preemptable: null,
+            preempted: null
+        });
+        const { agents } = this.surveyAgents();
+        if (agents.some((a) => a.agentName === agentName)) {
+            // Already alive and already counted. Starting nothing costs nothing.
+            return pass(this.capacityOf(agents));
+        }
+        const capacity = this.capacityOf(agents);
+        // Supervisors pass unconditionally (KAN-57). The capacity model already
+        // decided they are not part of the limit: they are neither counted in
+        // `running` nor charged a slot (see capacity.ts's header for the KAN-41
+        // argument), so a load- or headroom-bound refusal here was refusing an
+        // agent whose cost the model had already declined to charge. It was also
+        // a lockout in practice — desktop baseline load alone could pin the live
+        // term at 0 indefinitely, which meant epic and story agents
+        // could never start or auto-restore without a manual override. They are
+        // higher priority by construction (priority.ts) and always-on by intent,
+        // so the gate has nothing to ration for them: no refusal, and therefore
+        // no override to record and no preemption to offer. Task activations
+        // below are untouched, and supervisors still appear in every capacity
+        // report as `supervisors`.
+        if (isSupervisorType(type))
+            return pass(capacity);
+        if (!capacity.atCapacity)
+            return pass(capacity);
+        // Everything running that this activation could conceivably displace, and
+        // the one it would take. `victim` is null in the ordinary case — a task
+        // agent on a board of task agents outranks nothing, and neither does
+        // anything at all when the only things running are epic or story agents.
+        const candidates = this.preemptionCandidates(agents, agentName);
+        // A stall is not a slot shortage, so no stand-down can relieve it (KAN-218).
+        //
+        // Preemption's bargain is that destroying one agent's work frees a slot the
+        // incoming agent then takes. That holds for the count term exactly, and the
+        // block below already accepts that it holds only approximately for cpu and
+        // memory — it proceeds unconditionally after a successful stand-down rather
+        // than re-running the gate, because "the kernel has not yet reclaimed the
+        // memory" and refusing after killing an agent is the worst outcome
+        // available.
+        //
+        // For a stall the bargain fails outright. `full avg10` is a decaying
+        // ten-second average of time the machine spent making no progress, so it
+        // cannot drop inside this call however many agents are stood down, and the
+        // condition it reports — a disk that is failing, or a machine thrashing on
+        // swap — is not one that a freed slot addresses. Preempting here would
+        // destroy an agent's work and then start a new agent onto the same stalled
+        // machine, which is strictly worse than either refusing or admitting.
+        //
+        // So a stall-bound refusal offers no victim and takes none. `override:
+        // true` still works and is still recorded with these figures: an operator
+        // who can see the machine may know something the gate does not.
+        const stallBound = capacity.headroomBoundBy === 'stall';
+        const victim = stallBound ? null : selectVictim(candidates, priority);
+        const derivation = describeCapacity(capacity);
+        const offer = (v) => ({
+            agentName: v.agentName,
+            type: v.type,
+            key: v.key,
+            priority: v.priority,
+            herdrStatus: v.herdrStatus,
+            incomingPriority: priority,
+            offer: preemptionOffer(v, priority)
+        });
+        if (preempt && victim) {
+            const at = new Date().toISOString();
+            const preemption = {
+                byAgentName: agentName,
+                byType: type,
+                byKey: key,
+                byPriority: priority,
+                priority: victim.priority,
+                herdrStatus: victim.herdrStatus,
+                derivation
+            };
+            // Through the ordinary stand-down path rather than a teardown of its own.
+            // KAN-21's `deactivate_by_key` already handles every case this needs —
+            // a live session, an agent that outlived its daemon, and one that has
+            // already died — and answers honestly about which it found. Preemption
+            // reusing it means there is one way an agent stops, not two.
+            let standDown = null;
+            this.handleDeactivateByKey({ key: victim.key, type: victim.type ?? undefined, preemption }, (msg) => {
+                standDown = msg;
+            });
+            if (!standDown?.success) {
+                // Nothing was freed, so nothing may start. Refusing here is the
+                // important half: proceeding would leave the machine over capacity
+                // *and* have announced a preemption that did not happen.
+                const error = `Refusing to activate ${what}: standing down ${addressOf(victim)} to make room ` +
+                    `failed (${standDown?.error ?? 'no reason given'}), so no capacity was freed.\n` +
+                    derivation;
+                console.error(`[capacity] preemption aborted: ${error}`);
+                return { capacity, refusal: error, overrode: null, preemptable: offer(victim), preempted: null };
+            }
+            console.warn(`[capacity] preemption: ${what} (priority ${priority}) stood down ` +
+                `${describeCandidate(victim)} at ${at}\n${derivation}`);
+            this.broadcast({
+                action: 'agent_preempted_event',
+                at,
+                victim: offer(victim),
+                by: { agentName, type, key, priority },
+                capacity: capacityDto(capacity)
+            });
+            // Re-surveyed rather than reused: the caller is about to be told what the
+            // machine looks like, and it is not the machine that refused a moment ago.
+            //
+            // The activation now proceeds unconditionally, and that is deliberate.
+            // Only the count term responds to a stand-down immediately — the load
+            // average is a one-minute mean and the kernel has not yet reclaimed the
+            // memory — so re-running the whole gate here would sometimes refuse
+            // *after* destroying an agent's work, which is the worst of both
+            // outcomes. A slot was freed on purpose; the machine is strictly better
+            // off than it was a moment ago, and it is about to look it.
+            const after = this.capacityOf(this.surveyAgents().agents);
+            return {
+                capacity: after,
+                refusal: null,
+                overrode: null,
+                preemptable: null,
+                preempted: { at, victim: offer(victim), derivation }
+            };
+        }
+        if (!override) {
+            // Both branches name what is running and what it is worth. Losing a slot
+            // is survivable; not being able to see who you lost it to is not.
+            // `noVictimReason` would be false here: on a stalled machine there may
+            // well be something below this priority, and saying there is not would
+            // send the reader to check an ordering that is not what refused them.
+            // The reason no victim is offered is that a stand-down cannot help.
+            const whyNoVictim = stallBound
+                ? 'No stand-down is offered: a stalled machine is not short of a slot, so freeing one ' +
+                    'would destroy an agent\'s work without making room. Wait for the stall to clear ' +
+                    '(the figure above is a 10-second average, so give it at least that long), fix what ' +
+                    'is stalling the machine, or pass override: true to start anyway.'
+                : victim
+                    ? preemptionOffer(victim, priority)
+                    : noVictimReason(candidates, priority);
+            const refusal = `${capacityRefusal(capacity, what)}\n${whyNoVictim}`;
+            return {
+                capacity,
+                refusal,
+                overrode: null,
+                preemptable: victim ? offer(victim) : null,
+                preempted: null
+            };
+        }
+        const at = new Date().toISOString();
+        console.warn(`[capacity] override: starting ${what} past capacity at ${at}\n${derivation}`);
+        this.broadcast({
+            action: 'capacity_override_event',
+            what,
+            at,
+            capacity: capacityDto(capacity)
+        });
+        return {
+            capacity,
+            refusal: null,
+            overrode: { at, derivation },
+            preemptable: victim ? offer(victim) : null,
+            preempted: null
+        };
+    }
+    /**
+     * Everything running that could be considered for a stand-down.
+     *
+     * The same filter the capacity model uses, for the same reason it exists
+     * there: a list that counted the daemon's own bare shell would offer to kill
+     * it, and a list that disagreed with `running` would offer to free a slot
+     * that was never occupied.
+     *
+     * Supervisors — epic and story agents — are deliberately *included*. An
+     * epic agent can never be selected: nothing outranks priority 3 and the
+     * comparison is strictly-greater, and leaving supervisors in is what makes
+     * that a fact about the ordering rather than a special case somebody has to
+     * remember. (Standing one down would not free a fleet slot anyway — they
+     * are never counted against the cap — but the ordering, not that, is what
+     * protects them.)
+     */
+    preemptionCandidates(agents, exclude) {
+        const intents = this.agentRegistry?.intents();
+        const candidates = [];
+        for (const entry of agents) {
+            if (!this.countsAsAgent(entry))
+                continue;
+            if (exclude && entry.agentName === exclude)
+                continue;
+            const intent = intents?.get(entry.agentName);
+            candidates.push({
+                agentName: entry.agentName,
+                type: entry.type,
+                // The registry's key when it has one, because an agent resolved from
+                // its name alone carries the lower-cased form the name was built from
+                // — and this key is about to be shown to a person next to a Jira issue
+                // that is spelled KAN-10.
+                key: intent?.record.key ?? entry.key,
+                priority: this.registry.priorityFor(entry.type),
+                herdrStatus: entry.herdrStatus,
+                activatedAt: intent?.event === 'activated' ? intent.at : null
+            });
+        }
+        return candidates;
+    }
+    /**
+     * The resume cause for an activation nobody labelled one.
+     *
+     * An agent whose last stand-down was a preemption is being *resumed* when it
+     * is switched back on, whatever the caller thinks it is doing — and it must
+     * be told so, or it comes back with its whole conversation restored and no
+     * turn to take. That is KAN-21's idle-forever failure, reached by a route
+     * KAN-21 never had: nobody rebooted anything, a person just turned a switch
+     * back on.
+     *
+     * An explicit cause always wins; only boot-time reconciliation sets one.
+     */
+    resumeCauseFor(agentName, explicit) {
+        if (explicit)
+            return explicit;
+        return this.agentRegistry?.preemptionFor(agentName) ? 'preempted' : undefined;
+    }
+    /**
+     * Tell a just-resumed agent to carry on, without making the caller wait.
+     *
+     * Fire-and-forget on purpose: the nudge waits up to two minutes for the
+     * agent's prompt to appear, and an activate that blocked on that would time
+     * out in every client. The response has already gone; this is the part that
+     * happens afterwards, and its outcome lands in the daemon log.
+     *
+     * Scheduled onto a later turn rather than merely un-awaited, which is not
+     * fussiness. The first thing the nudge does is read the agent's pane, and
+     * `herdr agent read` is an `execSync` with a five-second ceiling — starting it
+     * inside this call would run it *before* the handler reaches `respond`, and
+     * the user would watch a toggle hang on a message it is not waiting for.
+     *
+     * Only when a conversation actually came back. The other branch started with
+     * the degraded-resume prompt on its command line and is already working.
+     */
+    nudgeIfResumed(session, defaultAgent) {
+        if (!session.resume || session.resumedConversation !== true)
+            return;
+        const cause = session.resume;
+        setTimeout(() => {
+            void nudgeResumedAgent({
+                herdrBridge: this.herdrBridge,
+                type: session.type,
+                key: session.key,
+                cause,
+                defaultAgent,
+                log: (...args) => console.log(...args)
+            });
+        }, 0);
+    }
+    /**
+     * Whether herdr has a live runtime behind this exact agent name.
+     *
+     * The same predicate reconciliation uses (`filter(a => a.agentRuntime)`) and
+     * for the same reason: herdr keeps a name registration for any pane it ever
+     * started an agent into, so the name answering is not evidence of an agent.
+     * See the `staleRecord` branch of `HerdrBridge.spawnSession`.
+     */
+    hasLiveHerdrAgent(agentName) {
+        return this.herdrBridge
+            .listHerdrAgents()
+            .some((agent) => agent.name === agentName && agent.agentRuntime !== null);
+    }
+    /**
+     * A live agent sharing this key under a *different* type, or undefined.
+     *
+     * Keys are shared across types by design, so this is a question with a real
+     * answer rather than an anomaly detector — `epic/KAN-39` and `task/KAN-39`
+     * are both nameable addresses. What makes the pair interesting is that both
+     * being live at once is the (key, type) collision KAN-83 exists to prevent.
+     */
+    liveAgentAtKeyOfOtherType(type, key) {
+        for (const agent of this.herdrBridge.listHerdrAgents()) {
+            if (agent.agentRuntime === null)
+                continue;
+            const address = addressFromAgentName(agent.name);
+            if (!address)
+                continue;
+            if (address.key.toLowerCase() !== key.toLowerCase())
+                continue;
+            if (address.type === type)
+                continue;
+            return agent.name;
+        }
+        return undefined;
+    }
+    /**
+     * Whether starting a *new* agent here would be a start nobody asked for.
+     *
+     * KAN-196. Both arms below are about the same event, which happened on
+     * 2026-08-05T00:57 and then recurred on every reboot for two days:
+     * `butchr-task-kan-39` — an artifact stood down at the 2026-08-03 cutover,
+     * which KAN-39's description says must never run again — was started by a URL
+     * activation, which wrote `activated` into the durable registry and thereby
+     * *revoked its stand-down*. From then on boot-time reconciliation restored it
+     * every time, correctly: `AgentRegistry.expected()` reads the last event per
+     * agent, and the last event said `activated`.
+     *
+     * So the restore path is not the defect. It consulted the stand-down and
+     * honoured it — 274 of the 274 agents whose last event is `deactivated` stay
+     * down across a reboot. The defect is that a stand-down can be revoked by an
+     * activation nobody intended, silently, and that nothing downstream can tell
+     * the difference between that and a person switching an agent back on.
+     *
+     * Two things had to be true at once for it to happen, and this guard denies
+     * each of them separately:
+     *
+     *   1. **The type was a guess.** `WorkspaceRegistry.resolve` refines a Jira
+     *      issue URL by asking Jira what kind of issue it is, and lands on `task`
+     *      when that question cannot be answered — which the journal records it
+     *      doing for KAN-39, seven seconds before the spawn:
+     *      `jira: issue-type lookup for KAN-39 failed (… timed out); falling back
+     *      to the default workspace type`. So the daemon started `task/KAN-39`
+     *      while `epic/KAN-39` was live, which is invariant 5's collision, whose
+     *      failure mode is killing the epic agent's PTY.
+     *   2. **Nobody asked.** The activation came from the sidepanel's automatic
+     *      re-attach, whose own comment says it "reuses the herdr pane rather
+     *      than starting anything". It sends a plain `activate`, which starts
+     *      things — the sentence claimed more than the mechanism covered. The
+     *      panel now says `reattachOnly` when it means it, and this is where that
+     *      word is honoured.
+     *
+     * Deliberate starts are untouched: the On switch, Reconnect, [Start anyway],
+     * [Stand down … and start], and every `activate_by_key` caller (the Agents
+     * page and the MCP tool, which name the type instead of guessing it) all
+     * reach this with `reattachOnly` unset, and arm 2 only fires when the address
+     * is both recorded stood-down *and* about to collide with a live sibling.
+     * Turning an ordinary stood-down agent back on from its own page is the case
+     * this must not break, and it does not: with no live agent at its key, arm 2
+     * has nothing to refuse.
+     */
+    unintendedStart(type, key, agentName, reattachOnly) {
+        if (reattachOnly && !this.hasLiveHerdrAgent(agentName)) {
+            return {
+                refusedBy: 'reattach-only',
+                error: `Nothing to re-attach to: herdr has no live agent named ${agentName}. ` +
+                    `This request was the panel re-attaching to an agent it believed was already ` +
+                    `running, and re-attaching is the whole of what it is allowed to do — starting ` +
+                    `one here would be a start nobody asked for. Use the On switch to start it.`
+            };
+        }
+        const intent = this.agentRegistry?.intents().get(agentName);
+        if (intent?.event !== 'deactivated')
+            return undefined;
+        const sibling = this.liveAgentAtKeyOfOtherType(type, key);
+        if (!sibling)
+            return undefined;
+        return {
+            refusedBy: 'stood-down-collision',
+            error: `Refusing to start ${type}/${key}: it was deliberately stood down at ${intent.at}, ` +
+                `and ${sibling} is live under the same key right now — so starting it would both ` +
+                `revoke that stand-down and put two agents on one key, which is the collision ` +
+                `(key, type) addressing exists to prevent. This activation resolved its type from ` +
+                `a URL, and a URL cannot tell a Jira Task from an Epic; if the type is right, say ` +
+                `so explicitly from the Agents page, which activates by (type, key).`
+        };
+    }
+    /**
+     * The step that makes an activate response a statement about the world
+     * rather than about our own intentions.
+     *
+     * Returns the complaint when success cannot honestly be claimed, and
+     * `undefined` when the agent has been confirmed to exist. Both activate
+     * handlers call it in the same place — after herdr's own errors have been
+     * dealt with, before anything is recorded, broadcast or answered — so there
+     * is exactly one point at which the two of them decide they succeeded.
+     *
+     * A confirmed-absent agent takes its session down with it. That is not a
+     * retry (see the ticket's out-of-scope list) and not a cleanup: it is the
+     * difference between a failure a caller can act on and one it is locked out
+     * of, because a session left active is the one the next activate would
+     * reuse. An unverifiable answer changes nothing — see abandonSession.
+     */
+    async confirmActivation(session, agentName) {
+        // Existence means a live runtime for every launcher but `shell` — a name
+        // registration over a dead pane must not verify (KAN-58). Sessions that
+        // reached this point were built by initPty, which sets the field; an
+        // unset one gets the strict reading rather than the lenient one.
+        const presence = await this.herdrBridge.confirmAgentPresent(agentName, session.expectsRuntime ?? true);
+        if (presence.present)
+            return undefined;
+        console.error(`[Router] Refusing to report ${agentName} activated: ${presence.error}`);
+        if (presence.reason === 'absent') {
+            this.herdrBridge.abandonSession(session.sessionId, presence.error);
+        }
+        return presence.error;
+    }
+    async handleActivate(data, respond) {
+        const resolved = await this.registry.resolve(data.url);
+        if (!resolved) {
+            // Only after resolution has genuinely failed: a disabled integration's
+            // patterns are diagnosis, never matching, so this can never turn a
+            // refusal into an activation.
+            const disabled = this.registry.disabledMatch(data.url);
+            respond({
+                action: 'activate_response',
+                success: false,
+                error: disabled
+                    ? integrationDisabled(disabled.integration.name, disabled.key ? `${disabled.key}` : 'this page')
+                    : 'Unsupported URL. No matching Workspace Type found.',
+                ...(disabled
+                    ? {
+                        refusedBy: 'integration-disabled',
+                        integration: disabled.integration.id,
+                        integrationName: disabled.integration.name,
+                        ...(disabled.key ? { key: disabled.key } : {})
+                    }
+                    : {})
+            });
+            return;
+        }
+        const { config, key } = resolved;
+        const renderedPrompt = this.promptLoader.loadAndRender(config.promptTemplateFile, {
+            KEY: key,
+            URL: data.url
+        });
+        const agentName = agentNameFor(config.type, key);
+        const mcpServers = this.mcpServersForSpawn();
+        // By (key, type), never by key alone: workspace keys are shared across
+        // types by design, so a key-only match here would hand this activation a
+        // live agent of another type — whose PTY the confirmation-failure path
+        // would then kill (KAN-83).
+        let session = this.herdrBridge.getSessionByAddress(key, config.type);
+        let gate = null;
+        if (!session) {
+            // Before the capacity gate, because this is not a question about whether
+            // the machine can hold another agent — it is whether anybody asked for
+            // one. See unintendedStart. Only the URL path checks this: the by-key
+            // callers state the type rather than deriving it from a page.
+            const unintended = this.unintendedStart(config.type, key, agentName, data.reattachOnly === true);
+            if (unintended) {
+                console.warn(`[Router] ${unintended.error}`);
+                respond({
+                    action: 'activate_response',
+                    success: false,
+                    type: config.type,
+                    key,
+                    url: data.url,
+                    error: unintended.error,
+                    refusedBy: unintended.refusedBy
+                });
+                return;
+            }
+            gate = this.capacityGate({
+                what: `${config.type}/${key}`,
+                type: config.type,
+                key,
+                agentName,
+                priority: config.priority,
+                override: data.override,
+                preempt: data.preempt
+            });
+            if (gate.refusal) {
+                respond({
+                    action: 'activate_response',
+                    success: false,
+                    type: config.type,
+                    key,
+                    url: data.url,
+                    // `error` is the whole refusal, for the log and for MCP callers.
+                    // `refusedBy`, `reason` and `derivation` are the same thing split
+                    // into the pieces a UI can lay out — the sidepanel showed none of
+                    // this and the user met a dead switch. See KAN-36.
+                    error: gate.refusal,
+                    refusedBy: 'capacity',
+                    reason: capacityReason(gate.capacity),
+                    derivation: describeCapacity(gate.capacity),
+                    capacity: capacityDto(gate.capacity),
+                    priority: config.priority,
+                    // Named, so the panel can offer a button that says whose work it
+                    // ends. Absent when there is nothing this activation outranks.
+                    ...(gate.preemptable ? { preemption: gate.preemptable } : {})
+                });
+                return;
+            }
+            // A preempted agent switched back on is resuming interrupted work, not
+            // starting it. See resumeCauseFor.
+            const resume = this.resumeCauseFor(agentName);
+            session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, mcpServers, resume);
+            if (!session.spawnError)
+                this.nudgeIfResumed(session, data.defaultAgent);
+        }
+        if (session.spawnError) {
+            respond({
+                action: 'activate_response',
+                success: false,
+                type: config.type,
+                key,
+                url: data.url,
+                error: session.spawnError
+            });
+            return;
+        }
+        const unconfirmed = await this.confirmActivation(session, agentName);
+        if (unconfirmed) {
+            respond({
+                action: 'activate_response',
+                success: false,
+                type: config.type,
+                key,
+                url: data.url,
+                error: unconfirmed,
+                verified: false
+            });
+            return;
+        }
+        // Only now. The durable registry is the record of which agents *should* be
+        // running, and writing an activation into it before the agent is known to
+        // exist would have list_agents report the failure as an agent that
+        // silently stopped, indefinitely, until a human stood down something that
+        // was never started.
+        this.rememberActivated({
+            agentName,
+            type: config.type,
+            key,
+            workDir: session.workDir,
+            url: data.url,
+            defaultAgent: data.defaultAgent,
+            mcpServers: Object.keys(mcpServers),
+            activatedBy: this.supervisorOfRecord(data, { type: config.type, key })
+        });
+        // Before the broadcast, so the next capacity question — which a listener
+        // may ask the moment it hears this — already charges for this agent
+        // (KAN-258).
+        this.recordStart(agentName);
+        this.broadcast({
+            action: 'agent_activated_event',
+            type: config.type,
+            key,
+            sessionId: session.sessionId,
+            status: session.status,
+            workDir: session.workDir
+        });
+        respond({
+            action: 'activate_response',
+            success: true,
+            type: config.type,
+            key,
+            url: data.url,
+            sessionId: session.sessionId,
+            status: session.status,
+            workDir: session.workDir,
+            createdAt: session.createdAt.toISOString(),
+            mcpServers: Object.keys(mcpServers),
+            priority: config.priority,
+            // Not decoration: it is the difference between this response and the one
+            // KAN-23 was filed about. `true` means the agent was found in herdr's
+            // census before this was sent, and success is never reported without it.
+            verified: true,
+            ...(session.resume ? { resume: session.resume, resumedConversation: session.resumedConversation } : {}),
+            ...(gate?.preempted ? { preempted: gate.preempted } : {}),
+            ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
+        });
+    }
+    async handleActivateByKey(data, respond) {
+        const { type, key, defaultAgent } = data;
+        // A key alone does not determine a URL: the registry maps URLs to keys,
+        // not the other way round. Callers who know the page URL pass it; for
+        // callers who don't, the session simply has no url. Never invent one —
+        // a fabricated link is worse than no link.
+        const url = typeof data.url === 'string' && data.url.trim() ? data.url.trim() : undefined;
+        // The url is advisory: an explicit key always wins. A disagreement is
+        // worth a log line but not a rejection — the caller may legitimately be
+        // binding an agent to a page the registry doesn't recognise.
+        if (url) {
+            const resolved = await this.registry.resolve(url);
+            if (resolved && resolved.key !== key) {
+                console.warn(`activate_by_key: url ${url} resolves to key ${resolved.key}, but key ${key} was given; using ${key}`);
+            }
+        }
+        // Prefer the registered config so a type's prompt file and MCP servers
+        // come from one place. An unregistered type still works on the old
+        // convention — callers may address a type this daemon doesn't know.
+        const config = this.registry.get(type);
+        // An unregistered type is ordinarily allowed through on the old convention
+        // — callers may address a type this daemon does not know. But a type that
+        // is unregistered *because its integration is switched off* is a refusal
+        // with a reason, not an unknown.
+        if (!config) {
+            const disabled = this.registry.disabledIntegrationForType(type);
+            if (disabled) {
+                respond({
+                    action: 'activate_response',
+                    success: false,
+                    type,
+                    key,
+                    error: integrationDisabled(disabled.name, `${type}/${key}`),
+                    refusedBy: 'integration-disabled',
+                    integration: disabled.id,
+                    integrationName: disabled.name
+                });
+                return;
+            }
+        }
+        const promptTemplateFile = config?.promptTemplateFile ?? `prompts/${type}.md`;
+        // Not read off the config: MCP servers belong to the integrations, not to
+        // the type, so an unregistered type gets the same servers as a registered
+        // one and the old `?? ['atlassian', 'butchr']` fallback — a second copy of
+        // the hardcoded table — has nothing left to stand in for.
+        const mcpServers = this.mcpServersForSpawn();
+        const priority = this.registry.priorityFor(type);
+        const agentName = agentNameFor(type, key);
+        // By (key, type), never by key alone. This was KAN-83's collision:
+        // activating type B with a key a live type-A agent held reused A's
+        // session, failed runtime confirmation against B's agent name, and the
+        // failure path's abandonSession killed A's PTY — a healthy, unrelated
+        // agent destroyed by someone else's activation.
+        let session = this.herdrBridge.getSessionByAddress(key, type);
+        let gate = null;
+        if (!session) {
+            // Before the prompt is even rendered: the cheapest refusal is the one
+            // that happens before any work is done for an agent that will not exist.
+            gate = this.capacityGate({
+                what: `${type}/${key}`,
+                type,
+                key,
+                agentName,
+                priority,
+                override: data.override,
+                preempt: data.preempt
+            });
+            if (gate.refusal) {
+                respond({
+                    action: 'activate_response',
+                    success: false,
+                    type,
+                    key,
+                    url,
+                    error: gate.refusal,
+                    refusedBy: 'capacity',
+                    reason: capacityReason(gate.capacity),
+                    derivation: describeCapacity(gate.capacity),
+                    capacity: capacityDto(gate.capacity),
+                    priority,
+                    ...(gate.preemptable ? { preemption: gate.preemptable } : {})
+                });
+                return;
+            }
+            const renderedPrompt = this.promptLoader.loadAndRender(promptTemplateFile, {
+                KEY: key,
+                URL: url ?? ''
+            });
+            // An explicit `resume` is set only by boot-time reconciliation, never by
+            // a client: it changes what the agent is told when there is nothing to
+            // continue, and an ordinary activation is not an interrupted one. What a
+            // client *can* produce without saying so is the re-activation of an agent
+            // it previously preempted, which is an interrupted one — resumeCauseFor
+            // is where that is recognised rather than trusted to the caller.
+            const explicit = data.resume === 'reboot' || data.resume === 'daemon-restart' ? data.resume : undefined;
+            const resume = this.resumeCauseFor(agentName, explicit);
+            session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, mcpServers, resume);
+            // Reconciliation nudges its own restores, in sequence and with the
+            // stagger it needs; it passes an explicit cause, which is how the two are
+            // told apart. A preemption resume has nobody else to do it.
+            if (!explicit && !session.spawnError)
+                this.nudgeIfResumed(session, defaultAgent);
+        }
+        // A spawn herdr refused is the one case where activate can say for certain
+        // that no agent exists, and an error herdr handed us must never be
+        // answered with success: true. It is not the whole of the question, which
+        // is why confirmActivation follows: herdr can also report success and
+        // leave no agent behind, and that case is answered by looking rather than
+        // by trusting.
+        if (session.spawnError) {
+            respond({
+                action: 'activate_response',
+                success: false,
+                type,
+                key,
+                url,
+                error: session.spawnError
+            });
+            return;
+        }
+        const unconfirmed = await this.confirmActivation(session, agentName);
+        if (unconfirmed) {
+            respond({
+                action: 'activate_response',
+                success: false,
+                type,
+                key,
+                url,
+                error: unconfirmed,
+                verified: false
+            });
+            return;
+        }
+        // After confirmation, for the reason handleActivate gives.
+        this.rememberActivated({
+            agentName,
+            type,
+            key,
+            workDir: session.workDir,
+            url,
+            defaultAgent,
+            mcpServers: Object.keys(mcpServers),
+            activatedBy: this.supervisorOfRecord(data, { type, key })
+        });
+        // See handleActivate: recorded before the broadcast (KAN-258).
+        this.recordStart(agentName);
+        this.broadcast({
+            action: 'agent_activated_event',
+            type,
+            key,
+            sessionId: session.sessionId,
+            status: session.status
+        });
+        respond({
+            action: 'activate_response',
+            success: true,
+            type,
+            key,
+            url: session.url,
+            sessionId: session.sessionId,
+            status: session.status,
+            workDir: session.workDir,
+            priority,
+            // See handleActivate: success is never sent without having looked.
+            verified: true,
+            // Only present on a restore. `false` means the agent came up with the
+            // degraded-resume prompt and is already working; `true` means it was
+            // handed its old conversation and is sitting at an empty prompt, which
+            // is the case that needs a nudge. See daemon.ts's reconciliation.
+            ...(session.resume ? { resume: session.resume, resumedConversation: session.resumedConversation } : {}),
+            // What this activation cost somebody else. Reported to the caller as well
+            // as broadcast, so an MCP client that started an agent by preemption
+            // learns whose work it interrupted from the same response.
+            ...(gate?.preempted ? { preempted: gate.preempted } : {}),
+            ...(gate?.overrode ? { capacityOverride: { ...gate.overrode, capacity: capacityDto(gate.capacity) } } : {})
+        });
+    }
+    handleDeactivate(data, respond) {
+        if (!data.sessionId) {
+            respond({
+                action: 'deactivate_response',
+                success: false,
+                error: 'Missing sessionId'
+            });
+            return;
+        }
+        // Read before the teardown: terminateSession marks the session terminated,
+        // after which getSession still answers but the address is what we need and
+        // it does not change. Recorded either way — see rememberDeactivated.
+        const session = this.herdrBridge.getSession(data.sessionId);
+        const { success, error } = this.herdrBridge.terminateSession(data.sessionId);
+        if (session)
+            this.rememberDeactivated(session.type, session.key, session.workDir);
+        // Only once the teardown is confirmed. This path carries no `preemption` —
+        // it is the by-session stand-down, and the capacity gate stands its victims
+        // down by key — so a stand-down that arrives here is a voluntary one.
+        const reclaim = success && session
+            ? this.reclaimForStandDown({ type: session.type, key: session.key, workDir: session.workDir })
+            : undefined;
+        respond({
+            action: 'deactivate_response',
+            success,
+            sessionId: data.sessionId,
+            ...(reclaim ? { reclaim } : {}),
+            ...(error ? { error } : {})
+        });
+    }
+    handleDeactivateByKey(data, respond) {
+        const { key } = data;
+        // The address's type half, honoured when the caller states it — the
+        // sidepanel and the preemption path both do. Without it a key shared
+        // across types would stand down whichever type's session was created
+        // first, not the one the caller meant (KAN-83). A caller that names no
+        // type gets the key-only match it asked for: deliberately type-agnostic,
+        // for clients addressing an agent whose type they never knew.
+        const requestedType = typeof data.type === 'string' && data.type.trim() ? data.type.trim() : undefined;
+        // Set only by the capacity gate, never by a client: it is the record of why
+        // this stand-down was not the agent's own idea. See PreemptionRecord.
+        const preemption = data.preemption;
+        const session = this.herdrBridge.getSessionByAddress(key, requestedType);
+        if (session) {
+            const { success, error } = this.herdrBridge.terminateSession(session.sessionId);
+            this.rememberDeactivated(session.type, session.key, session.workDir, preemption);
+            // Behind `success`, for the reason the broadcast below is: reclaiming
+            // underneath an agent whose teardown could not be confirmed is exactly
+            // the failure the live-agent exclusion exists to prevent.
+            const reclaim = success
+                ? this.reclaimForStandDown({
+                    type: session.type,
+                    key: session.key,
+                    workDir: session.workDir,
+                    preemption
+                })
+                : undefined;
+            // Not broadcast when the teardown could not be confirmed: the event is
+            // what the Agents page and the sidepanel act on, and announcing an agent
+            // deactivated while it may still be running is the same false claim this
+            // ticket is about, arriving as an event instead of as a response.
+            if (success) {
+                this.broadcast({
+                    action: 'agent_deactivated_event',
+                    type: session.type,
+                    key: session.key,
+                    sessionId: session.sessionId,
+                    ...(preemption ? { preempted: true } : {}),
+                    ...(reclaim ? { reclaim } : {})
+                });
+            }
+            respond({
+                action: 'deactivate_response',
+                success,
+                ...(reclaim ? { reclaim } : {}),
+                // The address, so a caller that asked about several agents can tell
+                // which one this answers for. A fleet list can — the Agents page shows
+                // every agent at once, and a bare `success: false` there is a failure
+                // it cannot attribute to a row.
+                type: session.type,
+                key: session.key,
+                sessionId: session.sessionId,
+                ...(preemption ? { preempted: true } : {}),
+                ...(error ? { error } : {})
+            });
+            return;
+        }
+        // No session, but the agent may well be alive: the session map dies with
+        // the daemon and the herdr pane does not. Close it through the fallback
+        // rather than telling the caller an obviously-running agent is gone.
+        const result = this.herdrBridge.closeAgentByKey(key, requestedType);
+        // The type comes from the agent herdr just closed, or — when herdr has no
+        // such agent — from the registry.
+        //
+        // That second source is not a nicety. An agent that has already died cannot
+        // be resolved through herdr at all, so without it the one case where a
+        // human most needs to say "stop expecting this" would record nothing, and
+        // the next boot would resurrect an agent someone had explicitly given up
+        // on. Standing down something that is already gone has to work, because
+        // that is exactly when it is asked for.
+        //
+        // A caller that already knows the type says so and is believed first — the
+        // capacity gate does, having just picked this agent out of a census.
+        const closedType = requestedType ??
+            (result.agentName ? typeFromAgentName(result.agentName, key) : undefined) ??
+            this.registeredTypeFor(key);
+        if (closedType)
+            this.rememberDeactivated(closedType, key, undefined, preemption);
+        // Standing down an agent that has already died is not a failure — it is the
+        // request working. There was no pane to close, and the thing actually being
+        // asked for ("stop expecting this agent back") is the registry write, which
+        // succeeded. Reporting `success: false` there tells a supervisor its
+        // stand-down did not take, inviting it either to retry forever or to
+        // conclude the agent is still owed a slot; the next boot would then be the
+        // first anyone learns the intent was recorded all along.
+        //
+        // Only when herdr *answered* though. An unreachable herdr also fails to
+        // close the pane, and calling that "already gone" would report an agent
+        // stood down while it is still running.
+        const goneAlready = !result.success && Boolean(closedType) && this.herdrBridge.listHerdrAgentsChecked().reachable;
+        // The agent is gone — either herdr just closed it, or it was already dead
+        // and herdr said so. Both are stand-downs with the teardown confirmed, and
+        // both are workspaces with nothing running in them. The workDir comes off
+        // the registry inside the helper: this path never held a session to read
+        // one from, which is the whole reason `rememberDeactivated` falls back the
+        // same way one line above.
+        const reclaim = (result.success || goneAlready) && closedType
+            ? this.reclaimForStandDown({ type: closedType, key, preemption })
+            : undefined;
+        if (result.success || goneAlready) {
+            this.broadcast({
+                action: 'agent_deactivated_event',
+                type: closedType,
+                key,
+                ...(preemption ? { preempted: true } : {}),
+                ...(reclaim ? { reclaim } : {})
+            });
+        }
+        respond({
+            action: 'deactivate_response',
+            key,
+            ...(closedType ? { type: closedType } : {}),
+            success: result.success || goneAlready,
+            ...(preemption ? { preempted: true } : {}),
+            ...(reclaim ? { reclaim } : {}),
+            // "…so it will not be restored" is what this said until KAN-196, and it
+            // promised more than the record provides. What a `deactivated` record
+            // actually buys is that `AgentRegistry.expected()` omits this agent, so
+            // boot-time reconciliation leaves it down — measured, and it holds: 274
+            // of the 274 agents whose last event is `deactivated` stayed down across
+            // both of the reboots this ticket was filed about. What it does not buy
+            // is permanence. Any later `activated` record overwrites it, because the
+            // registry is intent and the last word wins; `task/KAN-39` came back for
+            // two days on exactly that route. So the sentence now names the guarantee
+            // it has rather than the one a reader would like it to have, and points
+            // at the thing that can undo it.
+            ...(goneAlready
+                ? {
+                    alreadyGone: true,
+                    note: 'No agent was running. Its stand-down is recorded, so restoring the fleet ' +
+                        'will not bring it back. Only an explicit activation will — and that ' +
+                        'overwrites this record, so a stand-down meant to be permanent needs ' +
+                        'nothing to activate this agent again.'
+                }
+                : {}),
+            ...(result.error && !goneAlready ? { error: result.error } : {})
+        });
+    }
+    /**
+     * Type a message into a running agent's terminal. The delivery is
+     * asynchronous (there is a settle delay between the interrupt and the
+     * text), so every outcome — including a rejection we never expect — has to
+     * be turned back into a response; the caller is blocked on one.
+     *
+     * WHOSE VOICE THE RECIPIENT HEARS (KAN-149)
+     *
+     * The message is delivered by *typing it*, so without a tag it arrives
+     * indistinguishable from the human at the keyboard — which is how an epic
+     * agent came to tell the human they had rejected a tool call they had never
+     * seen. So the sender is stamped on, here, at the last point the daemon still
+     * knows who asked.
+     *
+     * **The tag comes from `workspaceType`/`workspaceKey`, which the butchr MCP
+     * attaches to every request it makes off its own argv (mcp.ts) — never from
+     * anything in `message`.** That is the property worth protecting: a body
+     * claiming `[from epic/KAN-39]` changes the delivered text and cannot change
+     * the leading tag, because the leading tag is a statement about the request
+     * rather than about the text. It is the same identity `supervisorOfRecord`
+     * already trusts to record parentage, read the same way.
+     *
+     * A caller the daemon cannot identify is tagged as unidentified rather than
+     * left bare — see `senderTagFor`. Nothing this handler delivers is ever
+     * untagged, which is what lets an agent read an untagged message as the
+     * human's own typing.
+     */
+    handleSendToAgent(data, respond) {
+        const { key, type, message, intent } = data;
+        const fail = (error) => respond({ action: 'send_to_agent_response', success: false, error });
+        const badAddress = invalidAddress(key, type);
+        if (badAddress) {
+            fail(badAddress);
+            return;
+        }
+        if (typeof message !== 'string' || !message.trim()) {
+            fail('Missing or invalid message');
+            return;
+        }
+        const want = intent === undefined ? 'steer' : intent;
+        if (want !== 'steer' && want !== 'stop-now') {
+            fail(`Invalid intent '${String(intent)}': expected 'steer' or 'stop-now'`);
+            return;
+        }
+        const tag = senderTagFor({ type: data?.workspaceType, key: data?.workspaceKey });
+        const tagged = withSenderTag(tag, message);
+        // ONE ADDRESS, BOTH CARRIERS. Resolved before the transport is chosen, so a
+        // bare key cannot mean one agent over the channel and another over the
+        // composer — see `HerdrBridge.resolveAddress` for why that would be the
+        // worst way for a transport to become visible. A key that resolves to
+        // nothing is unaddressable on either carrier and fails here, exactly as it
+        // failed before this ticket.
+        let address;
+        try {
+            address = this.herdrBridge.resolveAddress(key, type);
+        }
+        catch (e) {
+            fail(e?.message ?? String(e));
+            return;
+        }
+        // THE ROUTING DECISION, MADE HERE AND NOWHERE ELSE (design §5.1).
+        //
+        // AC 4 of KAN-150 is "no partial migration", and §5.1 is explicit that it is
+        // satisfied "not by having one mechanism, but by removing the guess": an
+        // agent never chooses its transport and never infers it. Every input to this
+        // decision is something only the daemon knows — whether emission is switched
+        // on, and whether this recipient holds a live connection — and none of it is
+        // reachable from a sender.
+        //
+        // `intent` is NOT a transport selector, and the distinction is the one thing
+        // in this handler worth reading twice. A sender says what it *needs*; the
+        // daemon says what carries it. `stop-now` is a requirement about the
+        // recipient's current work, and §4 measured that only one carrier can meet
+        // it: a channel event is acted on at the turn boundary and therefore cannot
+        // stop an agent now, while the composer's Ctrl+C kills the call outright.
+        // §5.1 lists that as the fifth retained composer case and calls it "a genuine
+        // capability, not a concession" — so a router that always preferred the
+        // channel would quietly delete the fleet's only stop-now signal, which is
+        // precisely the loss §5.1 says we would otherwise take "without noticing".
+        //
+        // The sender still never names a carrier, never learns which one exists for
+        // its recipient, and reads the transport off the response rather than
+        // deriving it. That is §5.1's rule intact.
+        const channelOutcome = want === 'stop-now'
+            ? null
+            : this.channelRoute?.(address, tagged, {
+                sender: tag,
+                workspaceType: address.type,
+                workspaceKey: address.key
+            }) ?? null;
+        if (channelOutcome?.routed) {
+            // C1 is the write to that connection; C2 is that the identity map held a
+            // live one to write to. C3 and C4 are not this carrier's to make, and
+            // `sealClaims` refuses them rather than trusting this call site — see
+            // message-claims.ts.
+            const claims = sealClaims('channel', {
+                transportAccepted: true,
+                sessionPresent: true,
+                enteredTranscript: 'not-measured',
+                modelRead: 'not-measured'
+            }, {
+                transportAccepted: `the frame was written to connection ${channelOutcome.connectionId}`,
+                sessionPresent: `KAN-243's identity map resolved a live connection (${channelOutcome.connectionId}) for ` +
+                    `${address.type}/${address.key}`,
+                enteredTranscript: '',
+                modelRead: ''
+            });
+            respond({
+                action: 'send_to_agent_response',
+                // `success` is C1 and says so in `claims`. Kept because `mcp.ts` flags a
+                // tool error on it and older readers key off it; it is no longer the
+                // only thing a caller has, which was the whole defect.
+                success: true,
+                key,
+                type: address.type,
+                transport: 'channel',
+                transportChosenBecause: `a live channel connection (${channelOutcome.connectionId}) is registered for ` +
+                    `${address.type}/${address.key}, and this send is a steer rather than a stop-now`,
+                connectionId: channelOutcome.connectionId,
+                intent: want,
+                claims,
+                licenses: licenceFor('channel', claims),
+                // The recipient's turn was NOT cancelled — §4 measured a channel event
+                // waiting for the turn boundary. Said explicitly because it is the one
+                // behavioural difference a caller most needs and cannot see.
+                interrupted: false,
+                sender: tag,
+                delivered: tagged
+            });
+            return;
+        }
+        // A STEER IS REFUSED RATHER THAN DELIVERED BY CTRL+C (KAN-274).
+        //
+        // `intent: 'steer'` is defined as *the recipient can finish what it is doing
+        // first*. Delivering one by composer interrupt contradicts that definition,
+        // and until this ticket it did so **silently**: a registration dropped by a
+        // daemon restart left the agent looking exactly like one on a channel — its
+        // `list_agents` row said `transport: "channel"` — and the sender learned the
+        // truth from `interrupted: true` in the response, after the interrupt had
+        // landed. A routine deploy therefore manufactured a cancelled tool call in an
+        // idle supervisor, which on the recipient's side renders as a refusal nobody
+        // made.
+        //
+        // **Narrow on purpose, and every part of the narrowing is load-bearing.**
+        // Only `registration-lost` refuses — the state where the durable registry
+        // expects this agent to hold a connection and it holds none. A blanket
+        // refusal on `no-connection` would break every send to a pane or a
+        // human-activated workspace that never had a channel, and would break the
+        // whole fleet the day somebody pulls the kill switch. `channel-disabled` and
+        // `selfcheck-failed` are *decided* states that are already reported, so the
+        // composer is the intended carrier there and nothing is refused.
+        //
+        // **`stop-now` never reaches here**, because `channelOutcome` is not even
+        // computed for it: taking the recipient's work is what `stop-now` is for, and
+        // it remains the fleet's only way to do so. That is also the escape hatch —
+        // a sender that means to interrupt says so, explicitly and on the record,
+        // rather than doing it by accident.
+        if (channelOutcome?.routed === false && channelOutcome.reason === 'registration-lost') {
+            respond({
+                action: 'send_to_agent_response',
+                success: false,
+                key,
+                type: address.type,
+                transport: 'unregistered',
+                transportChosenBecause: channelOutcome.detail,
+                intent: want,
+                // NOTHING WAS SENT, and the claims say so rather than leaving a reader to
+                // infer it from `success`. That inference is the exact defect KAN-150
+                // recorded — `success` read as delivery — and a refusal is the one case
+                // where getting it wrong is cheapest to prevent.
+                claims: sealClaims('composer', {
+                    transportAccepted: false,
+                    sessionPresent: 'not-measured',
+                    enteredTranscript: false,
+                    // NOT `false`, though nothing was sent and no model can have read it.
+                    // C4 is unobservable on the composer, and `sealClaims` refuses a
+                    // boolean for it — correctly: the rule is about what the carrier can
+                    // establish, and a refusal is not a licence to start asserting on a
+                    // claim nothing here can see. The basis carries the plain fact.
+                    modelRead: 'not-measured'
+                }, {
+                    transportAccepted: 'nothing was written to any carrier: the channel had no registration to write to, ' +
+                        'and this send was a steer, which is not permitted to interrupt',
+                    sessionPresent: 'not asked — the refusal happened before any pane was resolved, so this says ' +
+                        'nothing about whether the agent is up. It almost certainly is: a lost ' +
+                        'registration is about the link, not the agent',
+                    enteredTranscript: 'nothing was sent',
+                    modelRead: 'nothing was sent'
+                }),
+                interrupted: false,
+                error: `Refused: ${address.type}/${address.key} holds no channel registration, and a steer ` +
+                    `must not be delivered by interrupting it. ${channelOutcome.detail}. ` +
+                    `WHAT TO DO: wait and retry — it re-registers by itself within seconds of the daemon ` +
+                    `being reachable, and butchr_list_agents shows transport 'channel' again when it has. ` +
+                    `If this cannot wait, send it with intent 'stop-now', which takes the composer and ` +
+                    `WILL destroy the tool call it is running. If it is news rather than a steer, a comment ` +
+                    `on its Jira ticket reaches it within a minute and costs it no interrupt.`,
+                sender: tag,
+                delivered: tagged
+            });
+            return;
+        }
+        // THE COMPOSER, and why it was chosen. §5.1 asks for a closed set of cases
+        // rather than a vague fallback, so the reason is assembled from the actual
+        // decision rather than described in general terms.
+        const composerBecause = want === 'stop-now'
+            ? 'this send asked to stop the recipient now, and only the composer interrupt can do that — ' +
+                'a channel event waits for the turn boundary (design §4, §5.1 case 5)'
+            : !this.channelRoute
+                ? 'this daemon has no channel carrier wired in, so the composer is the only carrier'
+                : channelOutcome?.reason === 'channel-disabled'
+                    ? 'channel emission is switched off fleet-wide, so nothing was written to any connection' +
+                        (channelOutcome.switchPath ? ` (switch: ${channelOutcome.switchPath})` : '')
+                    : channelOutcome?.reason === 'selfcheck-failed'
+                        // KAN-248. Named as its own cause rather than folded into
+                        // `no-connection`, because it sends the reader somewhere
+                        // different: the recipient IS reachable and its channel loop did
+                        // not prove out, so the thing to read is its `channel` row in
+                        // butchr_list_agents rather than its connection.
+                        ? `${address.type}/${address.key} failed its startup channel self-check and is ` +
+                            'degraded to the composer; butchr_list_agents carries the outcome and the ' +
+                            "client version on that agent's row"
+                        : channelOutcome?.reason === 'no-connection'
+                            ? `no live channel connection is registered for ${address.type}/${address.key}`
+                            : channelOutcome?.reason === 'socket-closed'
+                                ? "the recipient's channel connection closed before the frame could be written"
+                                : 'no channel route was available';
+        this.herdrBridge.sendToAgent(key, tagged, type).then(
+        // `sender` and `delivered` go back to the caller so it can see what its
+        // recipient will actually read. A sender that cannot see its own tag has
+        // no way to notice that the daemon thinks it is somebody else — and the
+        // agent-facing tool description promises the tag, so the response is
+        // where that promise is either kept or visibly broken.
+        (result) => {
+            // C3 IS THE INTERESTING ONE, AND IT IS SILENCE RATHER THAN A NEGATIVE.
+            //
+            // `HerdrBridge.sendToAgent` answers whether the keystrokes were typed —
+            // Ctrl+C, text, Enter — which is C1. Whether the text was *submitted*
+            // is C3, and only `deliverToAgent` establishes that, by reading the pane
+            // above the composer marker (nudge.ts). This handler deliberately does
+            // not call it: confirmation costs a 20s wait and, on failure, a SECOND
+            // Ctrl+C at an agent that has already lost one turn.
+            //
+            // That trade-off is a decision, so it is recorded as `not-measured`
+            // rather than resolved into a boolean. This is the exact spot where the
+            // old `success: true` was read as delivery — KAN-150's defect 1 — and
+            // the fix is not a better verb, it is the admission that nothing here
+            // looked.
+            const claims = sealClaims('composer', {
+                transportAccepted: result.success === true,
+                sessionPresent: result.success === true,
+                enteredTranscript: 'not-measured',
+                modelRead: 'not-measured'
+            }, {
+                transportAccepted: result.success
+                    ? "herdr accepted the keystrokes for the recipient's pane"
+                    : `herdr refused the send: ${result.error ?? 'no reason given'}`,
+                sessionPresent: result.success
+                    ? 'herdr resolved a live pane for this address and typed into it'
+                    : `herdr could not reach a pane for ${address.type}/${address.key}`,
+                enteredTranscript: 'nothing here read the pane. `butchr_tail_agent` is what shows whether the Enter took; ' +
+                    'the Enter can be lost and strand the text at the composer (nudge.ts, KAN-79)',
+                modelRead: ''
+            });
+            respond({
+                action: 'send_to_agent_response',
+                ...result,
+                key,
+                type: address.type,
+                transport: 'composer',
+                transportChosenBecause: composerBecause,
+                intent: want,
+                claims,
+                licenses: licenceFor('composer', claims),
+                // The cost, stated as a fact rather than left in the tool description.
+                // A composer send opens with a Ctrl+C, so on this carrier the
+                // recipient's turn — and any tool call in it — is gone.
+                interrupted: result.success === true,
+                sender: tag,
+                delivered: tagged
+            });
+        }, (err) => fail(err?.message ?? String(err)));
+    }
+    /**
+     * The tail of an agent's terminal — how a supervisor finds out *why* an
+     * agent is in the state it reports, without attaching to its pane.
+     */
+    async handleTailAgent(data, respond) {
+        const { key, type, lines } = data;
+        const fail = (error) => respond({ action: 'tail_agent_response', success: false, error });
+        const badAddress = invalidAddress(key, type);
+        if (badAddress) {
+            fail(badAddress);
+            return;
+        }
+        if (lines !== undefined && (typeof lines !== 'number' || !Number.isFinite(lines))) {
+            fail('Invalid lines: expected a number');
+            return;
+        }
+        try {
+            // THE `await` IS INSIDE THE `try`, WHICH IS THE WHOLE POINT OF NOT
+            // SIMPLIFYING THIS (KAN-283). `tailAgent` is `Promise`-returning now, so
+            // a rejection is only catchable here if it is awaited *within* the block
+            // — `try { respond({...spread}) }` around an un-awaited call would spread
+            // a Promise's own enumerable properties (there are none), answer
+            // `success: undefined` with no `text`, and leave the rejection unhandled.
+            // The client would read that as a failed read of a pane nobody looked at.
+            const tail = await this.herdrBridge.tailAgent(key, type, lines);
+            respond({
+                action: 'tail_agent_response',
+                key,
+                ...tail
+            });
+        }
+        catch (err) {
+            fail(err?.message ?? String(err));
+        }
+    }
+    /**
+     * Everything the sidepanel's Info tab shows, by address. A daemon restart
+     * empties the session map while the herdr pane keeps running, so a missing
+     * session degrades to herdr's own view (`sessionless: true`) rather than
+     * failing — an agent that outlived its daemon is exactly the one a
+     * supervisor most needs to inspect.
+     */
+    handleAgentStatus(data, respond) {
+        const { key, type } = data;
+        const fail = (error) => respond({ action: 'agent_status_response', success: false, error });
+        const badAddress = invalidAddress(key, type);
+        if (badAddress) {
+            fail(badAddress);
+            return;
+        }
+        try {
+            const session = this.herdrBridge.getSessionByAddress(key, type);
+            if (session) {
+                respond({
+                    action: 'agent_status_response',
+                    success: true,
+                    sessionless: false,
+                    agentName: agentNameFor(session.type, session.key),
+                    ...this.toAgentDto(session, this.herdrBridge.listHerdrStatuses())
+                });
+                return;
+            }
+            const described = this.herdrBridge.describeAgent(key, type);
+            respond({
+                action: 'agent_status_response',
+                success: true,
+                sessionless: true,
+                agentName: described.agentName,
+                sessionId: null,
+                type: described.type,
+                key,
+                // Read from the durable registry, not invented — see {@link
+                // recordedUrlFor} and the longer note on the same field in
+                // `surveyAgents`. This is the Info tab, so it is where a human meets a
+                // stranded agent first.
+                url: this.recordedUrlFor(described.agentName) ?? null,
+                createdAt: null,
+                status: null,
+                workDir: described.workDir,
+                herdrStatus: described.herdrStatus
+            });
+        }
+        catch (err) {
+            fail(err?.message ?? String(err));
+        }
+    }
+    async handleReset(data, respond) {
+        const resolved = await this.registry.resolve(data.url);
+        if (!resolved) {
+            const disabled = this.registry.disabledMatch(data.url);
+            respond({
+                action: 'reset_response',
+                success: false,
+                error: disabled
+                    ? integrationDisabled(disabled.integration.name, disabled.key ? `${disabled.key}` : 'this page')
+                    : 'Unsupported URL'
+            });
+            return;
+        }
+        const { config, key } = resolved;
+        // By (key, type): the URL resolved to a typed workspace, and this reset is
+        // about to delete that workspace's directory — tearing down a same-key
+        // agent of another type instead would destroy a bystander (KAN-83).
+        const session = this.herdrBridge.getSessionByAddress(key, config.type);
+        // Same ordering rule as handleResetByKey: the agent goes first, whether we
+        // reach it through the session map or the herdr-list fallback.
+        //
+        // And the outcome is reported, as handleResetByKey already did. This path
+        // discarded it entirely, so a reset whose agent could not be closed —
+        // leaving it running in a directory about to be deleted — was answered
+        // exactly like one that went cleanly. `success` still describes the
+        // workspace delete, which is what reset is; `agentClosed` is the separate
+        // fact, and a caller that cannot see it cannot know to go looking.
+        const closed = session
+            ? this.herdrBridge.terminateSession(session.sessionId)
+            : this.herdrBridge.closeAgentByKey(key, config.type);
+        // A reset destroys the workspace as well as the agent, so it is the most
+        // deliberate stand-down there is. Restoring it on the next boot would
+        // recreate an agent whose working directory was deliberately deleted.
+        this.rememberDeactivated(config.type, key);
+        const { success, error } = this.herdrBridge.resetWorkspace(config.type, key);
+        respond({
+            action: 'reset_response',
+            success,
+            agentClosed: closed.success,
+            ...(closed.error ? { agentError: closed.error } : {}),
+            ...(error ? { error } : {})
+        });
+    }
+    handleResetByKey(data, respond) {
+        const { type, key } = data;
+        // By (key, type), for handleReset's reason: reset destroys type/key's
+        // workspace, so type/key's agent is the only one it may touch (KAN-83).
+        const session = this.herdrBridge.getSessionByAddress(key, type);
+        // Tear the agent down *before* resetWorkspace deletes the directory it is
+        // running in. Without a session the agent is still reachable through the
+        // herdr-list fallback, and skipping that left the agent alive in a cwd
+        // that no longer exists.
+        const { success: agentClosed, error: agentError } = session
+            ? this.herdrBridge.terminateSession(session.sessionId)
+            : this.herdrBridge.closeAgentByKey(key, type);
+        // Same reasoning as handleReset: the workspace is about to be deleted, so
+        // this agent must not be brought back by reconciliation.
+        this.rememberDeactivated(type, key, session?.workDir);
+        // The workspace still goes away even if no agent was there to close —
+        // reset's job is to leave nothing behind. Unless the target isn't ours to
+        // delete, in which case `resetError` says which path was refused and why.
+        const { success, error: resetError } = this.herdrBridge.resetWorkspace(type, key);
+        // Broadcast event so UI can update
+        this.broadcast({
+            action: 'agent_reset_event',
+            type,
+            key,
+            success,
+            agentClosed
+        });
+        respond({
+            action: 'reset_response',
+            success,
+            agentClosed,
+            ...(agentError ? { agentError } : {}),
+            // A refusal outranks the agent's complaint: it is the reason the reset
+            // did not happen, and the caller needs to see the path that was rejected.
+            ...(success ? {} : { error: resetError ?? agentError ?? `No workspace directory for ${type}/${key}` })
+        });
+    }
+    toAgentDto(session, statuses) {
+        return {
+            sessionId: session.sessionId,
+            type: session.type,
+            key: session.key,
+            // The session's own url wins; the registry answers when it has none
+            // (KAN-346). A session adopted from a runtime's census has no url by
+            // construction — CrabCast has no field for one — so without this
+            // fallback the restart repair would hand back an addressable session
+            // bound to nothing. See {@link recordedUrlFor}: this is a read of what
+            // the activation wrote down, never a url derived from the key.
+            url: session.url ?? this.recordedUrlFor(agentNameFor(session.type, session.key)),
+            createdAt: session.createdAt.toISOString(),
+            status: session.status,
+            workDir: session.workDir,
+            herdrStatus: statuses.get(agentNameFor(session.type, session.key)) ?? 'unknown'
+        };
+    }
+    /**
+     * The `guardian` block for a page that is **not** a workspace, or nothing.
+     *
+     * Two conditions, and both are absences rather than defaults:
+     *
+     *   * **no poker wired** — every bare-router proof, and any embedding without
+     *     one — omits the field, so a client cannot read "this daemon does not
+     *     have the mechanism" as "this fleet has no guardian";
+     *   * **not a board page** — the ordinary case for every other unsupported
+     *     URL a browser tab lands on. A guardian notice on a random page is noise
+     *     attached to a page nobody asked about the fleet from.
+     *
+     * The state itself carries `configured: false` when there is genuinely no
+     * guardian, which is a *third* thing and the loudest of them: it means nothing
+     * is watching this fleet on a timer. The renderer must tell all three apart,
+     * which is why none of them is expressed as an absent field standing in for a
+     * false one.
+     */
+    guardianForPage(url) {
+        if (!this.guardian)
+            return {};
+        const board = boardPageFor(url);
+        if (!board)
+            return {};
+        return {
+            guardian: {
+                ...this.guardian(),
+                // Carried so the display can name the board it is on without the
+                // extension re-parsing the URL — which is the second matcher this whole
+                // design exists to avoid. See `board-page.ts`.
+                boardId: board.boardId,
+                projectKey: board.projectKey
+            }
+        };
+    }
+    /**
+     * Does an agent exist for this page, and are we attached to it?
+     *
+     * Two different truths, and conflating them is what made the toggle lie:
+     * `active` is the agent's own existence, which is herdr's and survives a
+     * daemon restart; `attached` is whether *this* daemon holds a session for
+     * it, which is ephemeral and dies with the process. A missing session used
+     * to answer `active: false` for an agent that was demonstrably still
+     * working, so a session miss now asks herdr before calling anything Off.
+     */
+    async handleStatus(data, respond) {
+        const resolved = await this.registry.resolve(data.url);
+        if (!resolved) {
+            // `supported: false` either way — the page is not a workspace right now
+            // — but when the reason is a switched-off integration rather than an
+            // unrecognised URL, say so, so the sidepanel can offer the toggle
+            // instead of a shrug.
+            const disabled = this.registry.disabledMatch(data.url);
+            respond({
+                action: 'status_response',
+                success: true,
+                supported: false,
+                ...(disabled
+                    ? {
+                        refusedBy: 'integration-disabled',
+                        integration: disabled.integration.id,
+                        integrationName: disabled.integration.name,
+                        reason: integrationDisabled(disabled.integration.name, disabled.key ? `${disabled.key}` : 'this page')
+                    }
+                    : {}),
+                // THE GUARDIAN, ON THE BOARD PAGE (KAN-284) — AND INVARIANT 6 IS WHY IT
+                // IS HERE RATHER THAN FIVE LINES HIGHER.
+                //
+                // This sits *inside the branch that has already answered `supported:
+                // false`*. The resolution has happened, its verdict is on the response
+                // above, and nothing below can change it: the board page is still not a
+                // workspace, still offers no terminal, and still degrades exactly as it
+                // did before this ticket. **Displaying on a board page is rendering, not
+                // binding**, and the placement is what makes that structural rather than
+                // a promise — there is no path from `boardPageFor` back into
+                // `registry.resolve`.
+                //
+                // KAN-284 names the hazard directly: *"do not 'fix' a display that is
+                // not appearing by making the board resolve to something."* An author
+                // who moved this above the `resolve` call, or who reached for a URL
+                // pattern to make the board a workspace type, would trade the invariant
+                // for a UI nicety and nothing afterwards would show the trade.
+                //
+                // Omitted rather than nulled when no poker is wired, by `boardControl`'s
+                // rule: "this daemon has no guardian mechanism" and "no guardian is set"
+                // are different facts, and only the second is a claim about the fleet.
+                ...this.guardianForPage(data.url)
+            });
+            return;
+        }
+        const base = {
+            action: 'status_response',
+            success: true,
+            supported: true,
+            type: resolved.config.type,
+            key: resolved.key
+        };
+        // By (key, type): the page resolved to a typed workspace, and answering
+        // with a same-key session of another type would report a different
+        // agent's attachment as this page's (KAN-83).
+        const session = this.herdrBridge.getSessionByAddress(resolved.key, resolved.config.type);
+        if (session) {
+            const agent = this.toAgentDto(session, this.herdrBridge.listHerdrStatuses());
+            respond({
+                ...base,
+                active: true,
+                attached: true,
+                sessionId: agent.sessionId,
+                status: agent.status,
+                workDir: agent.workDir,
+                createdAt: agent.createdAt,
+                herdrStatus: agent.herdrStatus
+            });
+            return;
+        }
+        // The registry knows this page's type, so the agent can be named exactly
+        // rather than resolved by suffix. Not-found is the ordinary answer here,
+        // not a failure: it is precisely the case where the agent really is gone.
+        let described;
+        try {
+            described = this.herdrBridge.describeAgent(resolved.key, resolved.config.type);
+        }
+        catch {
+            described = undefined;
+        }
+        if (!described) {
+            respond({ ...base, active: false, attached: false });
+            return;
+        }
+        respond({
+            ...base,
+            active: true,
+            attached: false,
+            // Session-only fields stay absent — there is no session to describe,
+            // and herdr knows nothing about sessionId, createdAt or pty status.
+            // workDir is included only when herdr actually reported a cwd.
+            ...(described.workDir !== null ? { workDir: described.workDir } : {}),
+            herdrStatus: described.herdrStatus
+        });
+    }
+    // --- The Atlassian proxy (KAN-272) ---------------------------------------
+    //
+    // Two actions, and the split between them is load-bearing. `..._status`
+    // reports what is being served; `..._call` serves it. **The status action is
+    // not a permission check and must never be treated as one** — it is what
+    // `mcp.ts` uses to decide what to advertise, and the advertisement is
+    // advisory. An agent started while the proxy was on keeps the tools in its
+    // list after it is switched off, so the refusal in the call handler is the
+    // only gate there is. One gate, in the daemon, exactly as `channel.ts` puts
+    // the channel gate there and only there.
+    /**
+     * What this daemon's Atlassian proxy is serving, and against which account.
+     *
+     * Answers even when off, and answers **fully** when off: the mode, the reason
+     * it is off, and an empty operation list. A status that went quiet when the
+     * feature was off would leave `mcp.ts` unable to tell "off" from "this daemon
+     * is too old to have a proxy", and those two want different behaviour from an
+     * older client.
+     */
+    async handleAtlassianProxyStatus(respond) {
+        const decision = selectedProxyMode();
+        const credential = this.jira
+            ? (() => {
+                const status = this.jira.status();
+                return {
+                    configured: status.configured === true,
+                    ...(typeof status.siteUrl === 'string' ? { siteUrl: status.siteUrl } : {}),
+                    ...(typeof status.email === 'string' ? { email: status.email } : {}),
+                    ...(typeof status.storage === 'string' ? { storage: status.storage } : {})
+                };
+            })()
+            : { configured: false };
+        respond({
+            action: 'atlassian_proxy_status_response',
+            success: true,
+            // Distinct from `mode: 'off'`: a daemon with no Jira service at all cannot
+            // proxy anything however the switch is set, and saying so is different
+            // from saying somebody turned it off.
+            available: !!this.jira,
+            report: proxyReport(decision, credential)
+        });
+    }
+    /**
+     * Make one Atlassian read on an agent's behalf — or refuse, loudly.
+     *
+     * THE ORDER OF THE CHECKS IS THE DESIGN. The switch is consulted before the
+     * tool is looked up, so a daemon with the proxy off gives the same refusal
+     * for every tool name and reveals nothing about which operations exist. The
+     * path is built after that, from validated arguments, by the operation's own
+     * `build` — `data` never supplies a path and there is no operation that would
+     * accept one.
+     *
+     * WHAT ATTRIBUTION IS WORTH HERE, STATED BECAUSE IT WILL BE READ AS MORE.
+     * `workspaceType`/`workspaceKey` are stamped into every request body by
+     * `mcp.ts` from its own argv, and the audit line below names them. That makes
+     * a proxied read **attributable** — which agent asked, for what, and what came
+     * back — and it is emphatically **not authentication**: anything that can
+     * reach the daemon's socket can claim any identity, exactly as
+     * `agent-connections.ts` decision 4 records for `hello`. The trust boundary is
+     * still the socket's filesystem permission and this handler does not move it.
+     * The line is worth writing anyway: the blast radius KAN-272 asks to be
+     * written down is "any agent can read as far as the daemon can", and an
+     * unattributed read makes that radius unobservable as well as wide.
+     */
+    async handleAtlassianProxyCall(data, respond) {
+        const tool = typeof data?.tool === 'string' ? data.tool : '';
+        const args = data?.args && typeof data.args === 'object' ? data.args : {};
+        // The claimed identity, kept structured as well as rendered: the audit line
+        // wants the rendering and `refuseWriteOutsideCaller` wants the fields. Both
+        // are claims — see the docblock above on what attribution is worth here, and
+        // note that a write policy built on it bounds accident and not malice.
+        const callerIdentity = typeof data?.workspaceType === 'string' &&
+            typeof data?.workspaceKey === 'string' &&
+            data.workspaceType &&
+            data.workspaceKey
+            ? { type: data.workspaceType, key: renderedKey(data.workspaceKey) }
+            : null;
+        const caller = callerIdentity
+            ? `${callerIdentity.type}/${callerIdentity.key}`
+            : 'unidentified caller';
+        const fail = (error, extra = {}) => {
+            console.log(`atlassian-proxy: ${caller} → ${tool || '(no tool)'} REFUSED — ${error.split('.')[0]}`);
+            respond({ action: 'atlassian_proxy_call_response', success: false, error, ...extra });
+        };
+        if (!this.jira) {
+            fail('This daemon has no Jira support, so it cannot proxy Atlassian reads.');
+            return;
+        }
+        const decision = selectedProxyMode();
+        const refusal = refuseProxyCall(decision.mode, tool);
+        if (refusal) {
+            fail(refusal.error, { reason: refusal.reason, mode: decision.mode });
+            return;
+        }
+        // Non-null by construction: `refuseProxyCall` returns a refusal for every
+        // tool it cannot find, so reaching here means it found this one.
+        const operation = operationByTool(tool);
+        const built = operation.build(args);
+        if ('error' in built) {
+            fail(built.error, { reason: 'bad-arguments' });
+            return;
+        }
+        // KAN-291: who may be written to, checked before anything is sent. It runs
+        // after `build` so that a malformed key is reported as a malformed key
+        // rather than as somebody else's ticket, and it returns null for every read
+        // — the table's `writesTo` is what says which is which, so a write added
+        // without one cannot slip past this line by being new.
+        const writeRefusal = refuseWriteOutsideCaller(operation, args, callerIdentity);
+        if (writeRefusal) {
+            fail(writeRefusal.error, { reason: writeRefusal.reason, mode: decision.mode });
+            return;
+        }
+        // KAN-292: an operation makes one request or a fan-out the TABLE declared,
+        // and this is where the two are made one shape. Nothing a caller sent
+        // decides how many requests there are or which product each goes to — see
+        // `ProxyRequest` — so what follows is a loop over a list this file did not
+        // choose the length of.
+        const requests = 'requests' in built
+            ? built.requests
+            : [
+                {
+                    // A bare `{ path }` means the operation's first declared product,
+                    // which for everything that predates Confluence is `jira`.
+                    product: built.product ?? operation.products[0] ?? 'jira',
+                    path: built.path,
+                    ...('body' in built ? { body: built.body } : {})
+                }
+            ];
+        const startedAt = Date.now();
+        const outcomes = [];
+        for (const request of requests) {
+            const outcome = operation.method === 'GET'
+                ? await this.jira.proxyRead(request.path, request.product)
+                : // KAN-293: the verb and the product both come from the operation
+                    // table and the request it built. Until this slice the write leg
+                    // hard-coded POST and the Jira product, which was true of the one
+                    // write that existed and would have sent every Confluence write to
+                    // Jira's gateway base.
+                    await this.jira.proxyWrite(operation.method, request.path, request.body, request.product);
+            outcomes.push({ request, outcome });
+            // A fan-out stops at its first failure rather than pressing on. Half an
+            // answer presented as an answer is the failure mode this whole module was
+            // written against, and `atlassian_search`'s two legs are not independent
+            // questions — one of them failing means the result is not what its shape
+            // claims.
+            if (!outcome.ok)
+                break;
+        }
+        const elapsed = Date.now() - startedAt;
+        // The last outcome is the failing one when anything failed (the loop broke
+        // there), and otherwise the last success.
+        const outcome = outcomes[outcomes.length - 1].outcome;
+        const auditPath = outcomes.map(({ request }) => request.path).join(' + ');
+        // THE AUDIT LINE. A path, never a credential — auth travels in a header and
+        // `TokenJiraTransport` scrubs every on-the-wire form of the token out of
+        // anything it builds, so there is nothing token-shaped in `built.path` by
+        // construction. Logged for refusals and successes alike: a log that records
+        // only what worked cannot answer "what has this credential been used for",
+        // which is the question an audit line exists for.
+        //
+        // KAN-291 ADDS THE BODY, AND FOR A WRITE THAT IS THE WHOLE POINT OF THE
+        // LINE. A path answers "what was read"; for a write it answers only "which
+        // issue", and "which issue was changed" without "changed to what" is not an
+        // audit record of a change. It is safe to log by construction rather than by
+        // filtering: the body is built by the operation table from arguments matched
+        // against a regex, so for the one write that exists it is exactly
+        // `{"transition":{"id":"31"}}` and can carry nothing an agent supplied
+        // beyond those digits. That property is asserted in
+        // `verify-atlassian-proxy-write-scope.mjs`; if a later slice adds a write
+        // whose body carries user content, this line is one of the places that has
+        // to be reconsidered rather than inherited.
+        const writtenBody = outcomes.find(({ request }) => request.body !== undefined)?.request.body;
+        const bodyForLog = writtenBody !== undefined ? ` ${JSON.stringify(writtenBody)}` : '';
+        console.log(`atlassian-proxy: ${caller} → ${tool} ${operation.method} ${auditPath}${bodyForLog} → ` +
+            (outcome.ok
+                ? `${outcome.status} (${elapsed}ms)`
+                : `FAILED${outcome.status ? ` ${outcome.status}` : ''} (${elapsed}ms) ` +
+                    `${outcome.credentialFault ? '[credential fault — the fleet is affected]' : '[query fault]'}`));
+        if (!outcome.ok) {
+            respond({
+                action: 'atlassian_proxy_call_response',
+                success: false,
+                error: outcome.error,
+                credentialFault: outcome.credentialFault,
+                ...(outcome.status !== undefined ? { status: outcome.status } : {}),
+                ...(outcome.diagnosis ? { diagnosis: outcome.diagnosis } : {}),
+                ...(outcome.legs ? { legs: outcome.legs } : {})
+            });
+            return;
+        }
+        // KAN-292: two operations reshape what came back before the agent sees it,
+        // and both had to. `transform` is given only non-secret credential facts —
+        // see `ProxyTransformContext`, which cannot carry a token by shape. A
+        // transform that throws is a bug in this daemon rather than in the agent's
+        // request, so it is reported as one instead of being allowed to look like
+        // Atlassian refusing something.
+        let responseBody = outcome.body;
+        if (operation.transform) {
+            const credential = this.jira.status();
+            // `CredentialStatus` is an open record of `string | boolean`, so the two
+            // fields wanted here are narrowed to strings rather than asserted: a
+            // `siteUrl` that somehow arrived as a boolean should reach the transform
+            // as absent, not as `true`.
+            const asText = (value) => (typeof value === 'string' ? value : undefined);
+            try {
+                responseBody = operation.transform(
+                // Every outcome here is a success — the loop above breaks on the
+                // first failure and the `!outcome.ok` branch returned before this.
+                outcomes.map(({ outcome: o }) => (o.ok ? o.body : undefined)), { siteUrl: asText(credential.siteUrl), email: asText(credential.email) });
+            }
+            catch (err) {
+                fail(`${tool} reached Atlassian successfully, but the Butchr daemon failed to assemble the ` +
+                    `answer: ${err?.message ?? String(err)}. This is a defect in the daemon and not in ` +
+                    'your request — nothing about your arguments would change it. The underlying read ' +
+                    'did succeed, so the data exists; report this rather than retrying.', { reason: 'transform-failed' });
+                return;
+            }
+        }
+        respond({
+            action: 'atlassian_proxy_call_response',
+            success: true,
+            status: outcome.status,
+            // Named `body` rather than spread, so a Jira field called `success` or
+            // `error` cannot overwrite this envelope's own verdict.
+            body: responseBody,
+            // What actually happened, for a reader of the transcript who wants to
+            // know which credential answered without asking the daemon a second
+            // question. Non-secret: a path and a method.
+            via: {
+                tool,
+                method: operation.method,
+                path: auditPath,
+                products: requests.map((r) => r.product),
+                ...(operation.transform ? { reshapedByDaemon: true } : {}),
+                servedBy: 'butchr-daemon'
+            }
+        });
+    }
+    // --- The LaunchDarkly proxy (KAN-298) ------------------------------------
+    //
+    // Two actions, split exactly as the Atlassian proxy's are, and for the same
+    // reason: `..._status` reports what is being served and `..._call` serves it.
+    // **The status action is not a permission check and must never be treated as
+    // one** — it is what `mcp.ts` uses to decide what to advertise, and the
+    // advertisement is advisory. The refusal in the call handler is the only gate.
+    //
+    // WHAT IS ABSENT HERE, AND IT IS THE POINT: there is no write branch. The
+    // Atlassian handler below carries `refuseWriteOutsideCaller` because it has a
+    // write to bound; this one has nothing to bound because
+    // `launchdarkly-proxy.ts` has no operation whose method is not GET, enforced
+    // by that module's `method: 'GET'` type rather than by this handler's
+    // vigilance. A LaunchDarkly write cannot be added without widening that union,
+    // and this comment is one of the places whoever does that has to come back to.
+    /**
+     * What this daemon's LaunchDarkly proxy is serving, and against what.
+     *
+     * Answers even when off, and answers **fully** when off — the mode, the reason
+     * it is off, and an empty operation list — so `mcp.ts` can tell "off" from
+     * "this daemon is too old to have a LaunchDarkly proxy". Those two want
+     * different behaviour from an older client.
+     */
+    async handleLaunchDarklyProxyStatus(respond) {
+        const decision = selectedLdProxyMode();
+        const credential = this.launchdarkly
+            ? (() => {
+                const status = this.launchdarkly.status();
+                return {
+                    configured: status.configured === true,
+                    ...(typeof status.storage === 'string' ? { storage: status.storage } : {})
+                };
+            })()
+            : { configured: false };
+        respond({
+            action: 'launchdarkly_proxy_status_response',
+            success: true,
+            // Distinct from `mode: 'off'`: a daemon with no LaunchDarkly support at
+            // all cannot proxy anything however the switch is set, and saying so is
+            // different from saying somebody turned it off.
+            available: !!this.launchdarkly,
+            report: ldProxyReport(decision, credential)
+        });
+    }
+    /**
+     * Make one LaunchDarkly read on an agent's behalf — or refuse, loudly.
+     *
+     * THE ORDER OF THE CHECKS IS THE DESIGN, and it is the Atlassian handler's
+     * order. The switch is consulted before the tool is looked up, so a daemon
+     * with the proxy off gives the same refusal for every tool name and reveals
+     * nothing about which operations exist. The path is built after that, from
+     * validated arguments, by the operation's own `build` — `data` never supplies
+     * a path or a query string, and there is no operation that would accept one.
+     *
+     * WHAT ATTRIBUTION IS WORTH HERE, STATED BECAUSE IT WILL BE READ AS MORE.
+     * `workspaceType`/`workspaceKey` are stamped into every request body by
+     * `mcp.ts` from its own argv, and the audit line below names them. That makes
+     * a proxied read **attributable** — which agent asked, and for what — and it
+     * is emphatically **not authentication**: anything that can reach the daemon's
+     * socket can claim any identity. The trust boundary is still the socket's
+     * filesystem permission.
+     *
+     * Nothing here is load-bearing for safety in the way the Atlassian handler's
+     * caller check is, because nothing reachable through this handler can change
+     * anything. The audit line is worth writing anyway: the blast radius is "any
+     * agent can read as far as the daemon's LaunchDarkly credential can", and an
+     * unattributed read makes that radius unobservable as well as wide.
+     */
+    async handleLaunchDarklyProxyCall(data, respond) {
+        const tool = typeof data?.tool === 'string' ? data.tool : '';
+        const args = data?.args && typeof data.args === 'object' ? data.args : {};
+        const caller = typeof data?.workspaceType === 'string' &&
+            typeof data?.workspaceKey === 'string' &&
+            data.workspaceType &&
+            data.workspaceKey
+            ? `${data.workspaceType}/${renderedKey(data.workspaceKey)}`
+            : 'unidentified caller';
+        const fail = (error, extra = {}) => {
+            console.log(`launchdarkly-proxy: ${caller} → ${tool || '(no tool)'} REFUSED — ${error.split('.')[0]}`);
+            respond({ action: 'launchdarkly_proxy_call_response', success: false, error, ...extra });
+        };
+        if (!this.launchdarkly) {
+            fail('This daemon has no LaunchDarkly support, so it cannot proxy LaunchDarkly reads.');
+            return;
+        }
+        const decision = selectedLdProxyMode();
+        const refusal = refuseLdProxyCall(decision.mode, tool);
+        if (refusal) {
+            fail(refusal.error, { reason: refusal.reason, mode: decision.mode });
+            return;
+        }
+        // Non-null by construction: `refuseLdProxyCall` returns a refusal for every
+        // tool it cannot find, so reaching here means it found this one.
+        const operation = ldOperationByTool(tool);
+        const built = operation.build(args);
+        if ('error' in built) {
+            fail(built.error, { reason: 'bad-arguments' });
+            return;
+        }
+        const startedAt = Date.now();
+        const outcome = await this.launchdarkly.proxyRead(built.path, operation.beta === true);
+        const elapsed = Date.now() - startedAt;
+        // THE AUDIT LINE. A path, never a credential — auth travels in a header and
+        // the path is built by the operation table from arguments matched against a
+        // regex or an allowlist, so there is nothing token-shaped in it by
+        // construction. Logged for refusals and successes alike: a log that records
+        // only what worked cannot answer "what has this credential been used for",
+        // which is the question an audit line exists for.
+        //
+        // No body is logged and there is no branch for one, because no operation
+        // sends one. If that ever changes, this is a line that has to be
+        // reconsidered rather than inherited — see the Atlassian handler, which had
+        // to grow exactly that.
+        console.log(`launchdarkly-proxy: ${caller} → ${tool} ${operation.method} ${built.path} → ` +
+            (outcome.ok
+                ? `${outcome.status} (${elapsed}ms)`
+                : `FAILED${outcome.status ? ` ${outcome.status}` : ''} (${elapsed}ms) ` +
+                    `${outcome.credentialFault ? '[credential fault — the fleet is affected]' : '[query or entitlement fault]'}`));
+        if (!outcome.ok) {
+            respond({
+                action: 'launchdarkly_proxy_call_response',
+                success: false,
+                error: outcome.error,
+                credentialFault: outcome.credentialFault,
+                ...(outcome.status !== undefined ? { status: outcome.status } : {}),
+                ...(outcome.diagnosis ? { diagnosis: outcome.diagnosis } : {}),
+                ...(outcome.legs ? { legs: outcome.legs } : {})
+            });
+            return;
+        }
+        respond({
+            action: 'launchdarkly_proxy_call_response',
+            success: true,
+            status: outcome.status,
+            // Named `body` rather than spread, so a LaunchDarkly field called
+            // `success` or `error` cannot overwrite this envelope's own verdict.
+            body: outcome.body,
+            // What actually happened, for a reader of the transcript who wants to know
+            // which credential answered without asking the daemon a second question.
+            // Non-secret: a path and a method.
+            via: { tool, method: operation.method, path: built.path, servedBy: 'butchr-daemon' }
+        });
+    }
+    // --- Integration credentials ---------------------------------------------
+    //
+    // A token's whole journey is: settings UI → native messaging → here →
+    // CredentialStore. It never travels back. These handlers answer with
+    // configured/not-configured and a validation verdict, never with the value,
+    // so there is nothing for the extension to retain even by accident.
+    //
+    // Two generations of surface share these bodies. The legacy `jira_credential_*`
+    // actions predate integrations being plural and stay exactly as they were;
+    // the `*_integration_credential {integration}` actions are the generalized
+    // form KAN-87's settings UI speaks. Same handlers, different response action
+    // names — so the two surfaces cannot drift apart.
+    async handleJiraCredentialStatus(respond) {
+        await this.jiraCredentialStatus(respond, 'jira_credential_status_response', {});
+    }
+    async jiraCredentialStatus(respond, action, extra) {
+        if (!this.jira) {
+            respond({ action, ...extra, success: true, available: false, configured: false });
+            return;
+        }
+        // `storageTarget` runs a keyring probe, which is why this handler is async
+        // now. It is what lets the settings page say where the token will land
+        // before the user types it, rather than after it has already gone.
+        respond({
+            action,
+            ...extra,
+            success: true,
+            available: true,
+            ...this.jira.status(),
+            storageTarget: await this.jira.storageTarget()
+        });
+    }
+    async handleSetJiraCredential(data, respond) {
+        await this.submitJiraCredential(data, respond, 'set_jira_credential_response', {});
+    }
+    async submitJiraCredential(data, respond, action, extra) {
+        const fail = (error) => respond({ action, ...extra, success: false, valid: false, error });
+        if (!this.jira) {
+            fail('This daemon has no Jira credential support.');
+            return;
+        }
+        const siteUrl = typeof data.siteUrl === 'string' ? data.siteUrl.trim() : '';
+        const email = typeof data.email === 'string' ? data.email.trim() : '';
+        const token = typeof data.token === 'string' ? data.token : '';
+        if (!siteUrl || !email || !token) {
+            fail('Site URL, account email and API token are all required.');
+            return;
+        }
+        // Normalise before storing: a trailing slash would double up in every
+        // request path, and a bare hostname needs a scheme to be fetchable.
+        const normalisedSite = (/^https?:\/\//i.test(siteUrl) ? siteUrl : `https://${siteUrl}`)
+            .replace(/\/+$/, '');
+        let parsed;
+        try {
+            parsed = new URL(normalisedSite);
+        }
+        catch {
+            fail('That does not look like a valid site URL.');
+            return;
+        }
+        if (parsed.pathname !== '/' && parsed.pathname !== '') {
+            fail('Enter just the site address, e.g. https://yoursite.atlassian.net');
+            return;
+        }
+        const result = await this.jira.setCredential({
+            siteUrl: parsed.origin,
+            email,
+            token
+        });
+        // Note what is *not* here: the token, and any echo of the request. The
+        // response carries a verdict, the non-secret site/account, and the record
+        // of which endpoints were tried — every field of which is built from a URL,
+        // a status code, or Atlassian's own response text, and each of those is
+        // scrubbed of every encoded form of the token before it leaves the
+        // transport.
+        //
+        // The log gets the diagnosis and the leg trail, not just "rejected". The
+        // whole reason this ticket exists is that a rejection which says only that
+        // it happened cannot be acted on — and that is as true of the log as of
+        // the UI.
+        console.log(`jira: credential submitted for ${email} @ ${parsed.origin} — ` +
+            (result.valid
+                ? `valid, stored in ${result.storage}`
+                : `rejected (${result.diagnosis ?? 'unknown'})`) +
+            (result.legs?.length
+                ? `; legs: ${result.legs
+                    .map((l) => `${l.leg}=${l.failure ?? l.status}${l.traceId ? ` trace:${l.traceId}` : ''}`)
+                    .join(' ')}`
+                : ''));
+        respond({
+            action,
+            ...extra,
+            success: true,
+            valid: result.valid,
+            ...(result.error ? { error: result.error } : {}),
+            ...(result.diagnosis ? { diagnosis: result.diagnosis } : {}),
+            ...(result.legs?.length ? { legs: result.legs } : {}),
+            ...(result.note ? { note: result.note } : {}),
+            ...(result.accountName ? { accountName: result.accountName } : {}),
+            ...(result.storage ? { storage: result.storage } : {}),
+            status: this.jira.status()
+        });
+    }
+    async handleClearJiraCredential(respond) {
+        await this.clearJiraCredential(respond, 'clear_jira_credential_response', {});
+    }
+    async clearJiraCredential(respond, action, extra) {
+        if (!this.jira) {
+            respond({ action, ...extra, success: false, error: 'unsupported' });
+            return;
+        }
+        await this.jira.clearCredential();
+        console.log('jira: credential cleared');
+        respond({
+            action,
+            ...extra,
+            success: true,
+            status: this.jira.status()
+        });
+    }
+    // --- the generalized {integration} forms ----------------------------------
+    async handleIntegrationCredentialStatus(data, respond) {
+        const action = 'integration_credential_status_response';
+        const integration = typeof data.integration === 'string' ? data.integration : '';
+        if (integration === 'jira') {
+            await this.jiraCredentialStatus(respond, action, { integration });
+            return;
+        }
+        if (integration === 'launchdarkly') {
+            if (!this.launchdarkly) {
+                respond({ action, integration, success: true, available: false, configured: false });
+                return;
+            }
+            respond({
+                action,
+                integration,
+                success: true,
+                available: true,
+                ...this.launchdarkly.status(),
+                storageTarget: await this.launchdarkly.storageTarget()
+            });
+            return;
+        }
+        respond({ action, success: false, error: unknownIntegration(integration) });
+    }
+    async handleSetIntegrationCredential(data, respond) {
+        const action = 'set_integration_credential_response';
+        const integration = typeof data.integration === 'string' ? data.integration : '';
+        if (integration === 'jira') {
+            await this.submitJiraCredential(data, respond, action, { integration });
+            return;
+        }
+        if (integration === 'launchdarkly') {
+            const fail = (error) => respond({ action, integration, success: false, valid: false, error });
+            if (!this.launchdarkly) {
+                fail('This daemon has no LaunchDarkly credential support.');
+                return;
+            }
+            const token = typeof data.token === 'string' ? data.token : '';
+            if (!token) {
+                fail('An API token is required.');
+                return;
+            }
+            const result = await this.launchdarkly.setCredential({ token });
+            // Same shape of log line as the Jira submission below: verdict,
+            // diagnosis, and the leg trail as status codes and trace ids — never the
+            // token, and never LaunchDarkly's response text, which belongs to the
+            // (scrubbed) response rather than the log.
+            console.log(`launchdarkly: credential submitted — ` +
+                (result.valid
+                    ? `valid, stored in ${result.storage}`
+                    : `rejected (${result.diagnosis ?? 'unknown'})`) +
+                (result.legs?.length
+                    ? `; legs: ${result.legs
+                        .map((l) => `${l.leg}=${l.failure ?? l.status}${l.traceId ? ` trace:${l.traceId}` : ''}`)
+                        .join(' ')}`
+                    : ''));
+            respond({
+                action,
+                integration,
+                success: true,
+                valid: result.valid,
+                ...(result.error ? { error: result.error } : {}),
+                ...(result.diagnosis ? { diagnosis: result.diagnosis } : {}),
+                ...(result.legs?.length ? { legs: result.legs } : {}),
+                ...(result.storage ? { storage: result.storage } : {}),
+                status: this.launchdarkly.status()
+            });
+            return;
+        }
+        respond({ action, success: false, valid: false, error: unknownIntegration(integration) });
+    }
+    async handleClearIntegrationCredential(data, respond) {
+        const action = 'clear_integration_credential_response';
+        const integration = typeof data.integration === 'string' ? data.integration : '';
+        if (integration === 'jira') {
+            await this.clearJiraCredential(respond, action, { integration });
+            return;
+        }
+        if (integration === 'launchdarkly') {
+            if (!this.launchdarkly) {
+                respond({ action, integration, success: false, error: 'unsupported' });
+                return;
+            }
+            await this.launchdarkly.clearCredential();
+            console.log('launchdarkly: credential cleared');
+            respond({
+                action,
+                integration,
+                success: true,
+                status: this.launchdarkly.status()
+            });
+            return;
+        }
+        respond({ action, success: false, error: unknownIntegration(integration) });
+    }
+    /**
+     * The MCP servers a spawning agent gets: every configured integration's,
+     * plus Butchr's own.
+     *
+     * This is the whole of the "which servers?" decision, and it is made in one
+     * place for both activation paths. It replaced a hardcoded if-chain in
+     * launchers.ts that resolved bare server names — so the Atlassian server's
+     * definition lived in a launcher module that had no idea it was Jira's, and
+     * adding a platform meant editing that chain.
+     *
+     * Core last, deliberately: `butchr` is the daemon's own server and an
+     * integration must not be able to displace it by declaring a server of the
+     * same name. The resulting key order — integrations in registration order,
+     * then core — is also the order the old chain produced, so the `.mcp.json`
+     * this writes is byte-identical to the one it wrote before.
+     */
+    mcpServersForSpawn() {
+        return {
+            ...(this.registry ? this.registry.mcpServerDefinitions() : {}),
+            ...coreMcpServerDefinitions()
+        };
+    }
+    /**
+     * The integrations surface the settings UI renders: one row per
+     * integration, each with its provided workspace types and a non-secret
+     * credential summary.
+     *
+     * Backed by the real `Integration` objects the registry holds (KAN-85) —
+     * the two-row table this handler used to build by hand is gone, and a third
+     * integration appears here by being registered in daemon.ts rather than by
+     * being restated.
+     *
+     * KAN-87's fields keep their shapes exactly; the additions are `enabled` and
+     * `providedMcpServers`, and `name` now reads "Atlassian" for the row whose
+     * id is still `jira` (see atlassian-integration.ts for why the identity did
+     * not move). KAN-91 renders the toggle from `enabled` beside what the row
+     * says it provides.
+     *
+     * KAN-106 fills `providedMcpServers` out from bare names to `ProvidedMcpServer`
+     * objects and adds `coreMcpServers` beside the list. The core servers are
+     * deliberately *not* a row and not attributed to any integration: `butchr` is
+     * the daemon's own, every agent gets it whatever is switched on, and a
+     * settings page that listed it under Atlassian would be teaching the reader
+     * something false about what the switch does. Sent as a sibling of
+     * `integrations` so the page can say "and every agent also gets these"
+     * without inventing the fact itself.
+     */
+    async handleListIntegrations(respond) {
+        // Test constructions pass no registry; an empty list degrades exactly like
+        // the rest of this handler's absent-collaborator cases.
+        const integrations = this.registry ? this.registry.integrations() : [];
+        // Every storage probe runs a keyring lookup; in parallel so the settings
+        // page pays one probe's latency, not the sum.
+        const targets = await Promise.all(integrations.map((integration) => integration.credential ? integration.credential.storageTarget() : Promise.resolve(undefined)));
+        respond({
+            action: 'list_integrations_response',
+            success: true,
+            // The daemon's own, named as such. Resolved through the same describer as
+            // the integrations' so one rule governs what a settings page may see.
+            coreMcpServers: describeMcpServers(coreMcpServerDefinitions()),
+            integrations: integrations.map((integration, i) => ({
+                id: integration.id,
+                name: integration.name,
+                // What it provides, whether or not it is switched on — a disabled
+                // integration contributes nothing, but the toggle has to be rendered
+                // next to what turning it on would give you.
+                providedTypes: providedTypesOf(integration),
+                providedMcpServers: providedMcpServersOf(integration),
+                // "Does this daemon support a credential for it?" — which is what an
+                // integration having a credential adapter means.
+                available: !!integration.credential,
+                enabled: integration.enabled,
+                credential: integration.credential
+                    ? integration.credential.status()
+                    : { configured: false },
+                ...(targets[i] ? { storageTarget: targets[i] } : {})
+            }))
+        });
+    }
+    /**
+     * Turn an integration on or off — KAN-91's contract, shaped like the
+     * credential actions beside it: `{ integration, enabled }` in,
+     * `<action>_response` with the same `integration` echoed back out.
+     *
+     * One action carrying the desired state rather than an enable/disable pair,
+     * because a toggle sends what it now is. The response carries the integration
+     * row's own fields so the UI can re-render from this answer without a second
+     * round trip.
+     *
+     * Disabling is always allowed, even with agents of that integration's types
+     * running: they keep the `.mcp.json` already written into their workspaces
+     * and are left strictly alone. Only new activations are refused, and they are
+     * refused legibly — see `integrationDisabled`. Standing a fleet down before a
+     * toggle could be flipped would be a worse rule than the house one, which is
+     * that the Off control warns and lets the human proceed.
+     */
+    async handleSetIntegrationEnabled(data, respond) {
+        const action = 'set_integration_enabled_response';
+        const integrationId = typeof data.integration === 'string' ? data.integration : '';
+        if (typeof data.enabled !== 'boolean') {
+            respond({
+                action,
+                integration: integrationId,
+                success: false,
+                error: '`enabled` must be true or false.'
+            });
+            return;
+        }
+        const integration = this.registry
+            ? this.registry.integrations().find((i) => i.id === integrationId)
+            : undefined;
+        if (!integration) {
+            respond({ action, success: false, error: unknownIntegration(integrationId) });
+            return;
+        }
+        this.registry.setEnabled(integrationId, data.enabled);
+        const running = this.agentsOfIntegration(integration);
+        console.log(`integrations: ${integrationId} ${data.enabled ? 'enabled' : 'disabled'}` +
+            (!data.enabled && running.length
+                ? `; ${running.length} running agent(s) of its types left untouched: ${running.join(', ')}`
+                : ''));
+        respond({
+            action,
+            integration: integrationId,
+            success: true,
+            enabled: integration.enabled,
+            name: integration.name,
+            providedTypes: providedTypesOf(integration),
+            providedMcpServers: providedMcpServersOf(integration),
+            // Named, not counted: a human turning Atlassian off deserves to see
+            // which agents go on running under a type that no longer resolves.
+            ...(running.length ? { runningAgentsUnaffected: running } : {})
+        });
+    }
+    /** Agent names currently running under one of an integration's types. */
+    agentsOfIntegration(integration) {
+        const types = new Set(integration.workspaceTypes.map((config) => config.type));
+        try {
+            return this.herdrBridge
+                .listHerdrAgents()
+                .map((agent) => agent.name)
+                .filter((name) => {
+                const address = addressFromAgentName(name);
+                return !!address && types.has(address.type);
+            });
+        }
+        catch {
+            // Nothing here is worth failing a toggle over; the census is a courtesy.
+            return [];
+        }
+    }
+    /**
+     * "Is the thing I am looking at the thing that was merged?" — on demand.
+     *
+     * The audience is as much an agent as a human: an agent that verifies its
+     * work against this daemon is verifying whatever was last built, and this is
+     * how it can find that out before believing its own acceptance proof.
+     */
+    /**
+     * Which runtime is serving, for an operator who must never have to guess
+     * (KAN-278 criterion 3).
+     *
+     * The report is not recomputed here. It is the object `createAgentRuntime`
+     * returned beside the runtime it built, carried through unchanged — so this
+     * answer cannot drift from the runtime actually serving, which a second read
+     * of the environment could.
+     *
+     * When nothing wired one, this says so rather than defaulting to a cheerful
+     * `herdr`. A router with no report is a router that was constructed by
+     * something other than `daemon.ts`, and reporting the default there would be
+     * describing a decision nobody took.
+     */
+    handleAgentRuntimeReport(respond) {
+        if (!this.agentRuntimeReport) {
+            respond({
+                action: 'agent_runtime_report_response',
+                success: false,
+                error: 'This router was constructed without an agent-runtime report, so which runtime is ' +
+                    'serving is not something it can answer. Only `daemon.ts` wires one.'
+            });
+            return;
+        }
+        respond({
+            action: 'agent_runtime_report_response',
+            success: true,
+            runtime: this.agentRuntimeReport
+        });
+    }
+    handleStalenessCheck(data, respond) {
+        const report = this.staleness(data?.force === true);
+        if (!report) {
+            respond({
+                action: 'staleness_check_response',
+                success: false,
+                error: 'This daemon was started without install context; staleness cannot be checked.'
+            });
+            return;
+        }
+        respond({ action: 'staleness_check_response', success: true, ...report });
+    }
+    /**
+     * Reclaim `node_modules` from every workspace with no live agent in it.
+     *
+     * **The live-agent exclusion is derived here, from the running fleet**, and
+     * that is the whole reason this handler exists rather than the sweep reading
+     * the filesystem for itself. `surveyAgents()` is the same census
+     * `list_agents` is built from, so the set of workspaces this refuses to touch
+     * and the set of agents a supervisor is looking at are one answer to one
+     * question. The 2026-08-04 manual pass excluded its five running workspaces
+     * by hand and that is exactly what must not happen again: a list written down
+     * is a list that goes stale between being written and being used.
+     *
+     * `unbackedPanes` are excluded too, though they are not agents. A pane with a
+     * bare shell in it is something a person is plausibly sitting in front of,
+     * possibly mid-`npm install`, and the cost of being wrong in that direction
+     * is one workspace's worth of bytes left on disk.
+     *
+     * Defaults to a dry run — see `sweepWorkspaces`. `dryRun: false` is the only
+     * thing that deletes, and a caller has to mean it.
+     */
+    handleReclaimSweep(data, respond) {
+        const { agents, unbackedPanes } = this.surveyAgents();
+        const liveWorkDirs = [
+            ...agents.map((a) => a.workDir),
+            ...unbackedPanes.map((p) => p.workDir)
+        ].filter((dir) => typeof dir === 'string' && dir.length > 0);
+        const dryRun = data?.dryRun !== false;
+        try {
+            const sweep = sweepWorkspaces({ liveWorkDirs, dryRun });
+            respond({ action: 'reclaim_sweep_response', success: true, ...sweep });
+        }
+        catch (e) {
+            const error = `Reclaim sweep failed: ${e?.message ?? String(e)}`;
+            console.error('[MessageRouter]', error);
+            respond({ action: 'reclaim_sweep_response', success: false, error });
+        }
+    }
+    /**
+     * Everything running, from herdr's view unioned with our own.
+     *
+     * The session map is emptied by a daemon restart while the herdr panes keep
+     * running, so a list built from sessions alone answers "nothing is running"
+     * for a board full of working agents — and that is the reading a supervisor
+     * acts on. herdr is therefore the source of existence here, exactly as it
+     * already is for `agent_status`, `deactivate` and `reset`; sessions only add
+     * what herdr cannot know (session id, bound url, creation time).
+     *
+     * An entry counts as an agent when *either* test passes: this daemon holds a
+     * live session for it, or herdr reports an agent runtime behind its pane.
+     * What fails both is a `butchr-*` name with a bare shell behind it and no
+     * session of ours — nothing to message, tail or supervise. Those are kept
+     * out of `agents`, because a supervisor counting the list must get a number
+     * it can act on, and reported under `unbackedPanes`, because silently
+     * dropping them would repeat the mistake this handler exists to fix.
+     */
+    handleListAgents(data, respond) {
+        const { agents, unbackedPanes, staleSessions, census } = this.surveyAgents();
+        // Agents that should be here and are not. Computed from the same census the
+        // list is built from, so the two can never disagree about what is running.
+        const missingAgents = this.missingAgents(agents, staleSessions);
+        // Agents a person switched off. From the same census for the same reason:
+        // an agent that is running must never be offered an On button.
+        const { standby, total: standbyTotal } = this.standbyAgents(agents);
+        // Descriptor headroom, reported where someone looking at agents will see
+        // it. On KAN-24 the herdr server's fd usage was invisible until spawning
+        // broke, and the only way to learn it was to read /proc by hand. Expressed
+        // in panes because that is the unit the reader can act on — "room for 12
+        // more agents" is a decision, "62000 descriptors" is trivia.
+        const usage = readFdUsage();
+        // CPU and memory headroom, for the same reason and in the same place. A
+        // supervisor reading this list is about to decide whether to staff another
+        // agent; this is the number that decision needs.
+        const capacity = this.capacityOf(agents);
+        // Staleness rides along on the poll the Agents page is already making, so
+        // the banner can appear without a second request and without the page
+        // having to know when to ask. The report is cached for 15s inside
+        // getStalenessReport, so a 2s poll does not mean a 2s git invocation.
+        const staleness = this.staleness();
+        // What the last reclaim sweep took, in the same response and for the same
+        // reason as staleness: it is the poll a supervisor is already making, so
+        // the fact arrives without anybody having to know to ask for it. A reclaim
+        // nobody can see after the fact is a reclaim that surprises somebody later
+        // (KAN-259). Null until a sweep has run in this daemon's lifetime.
+        const reclaim = lastReclaimSummary();
+        const preempted = this.preemptedAgents();
+        // Whether the board can undo what this page's buttons do (KAN-222). Every
+        // list below carries a control the reconciler is capable of reversing —
+        // Off on a running row, On on the other three — so all four are handed to
+        // the reporter together. Asking about only the running ones would leave
+        // the On buttons making a promise the loop can break, which is the same
+        // defect this field exists to remove, moved one list down.
+        //
+        // Every list goes in exactly as it is read, and the spelling is not this
+        // method's business (KAN-225).
+        //
+        // It used to be. Running agents were mapped through `recordedKeyFor` here
+        // first, because a running agent's `key` came out of a pane name and is
+        // therefore lower-cased, and the board's answer is a sentence telling
+        // somebody which ticket to move. **The `?? agent.key` that mapping needed
+        // was the defect.** `recordedKeyFor` returns nothing for an agent the
+        // durable registry never recorded — a `sessionless` herdr agent that
+        // outlived this daemon, or one it never started — and that is exactly the
+        // agent whose key is the pane spelling, so the fallback handed `kan-500`
+        // downstream to be printed at a human as the ticket to go and move.
+        //
+        // The correction now lives at the boundary that renders the key, in
+        // `board-control.ts`, where it needs no lookup and therefore has nothing to
+        // miss: everything that passes the jurisdiction filter is, upper-cased,
+        // exactly how Jira spells a key. Re-adding a hop here would put a second
+        // spelling rule in front of that one.
+        const boardControl = this.boardControl?.([
+            ...agents,
+            ...missingAgents,
+            ...standby,
+            ...preempted
+        ]);
+        respond({
+            action: 'list_agents_response',
+            success: true,
+            agents,
+            unbackedPanes,
+            // Always present, even when empty: a caller that has to distinguish "no
+            // agents are missing" from "this daemon does not track that" cannot do it
+            // from an absent field. Empty array means the fleet is whole.
+            missingAgents,
+            // What the census could not read, beside the list it qualifies (KAN-324).
+            //
+            // **`agents` above is a count, and this is what says whether that count
+            // is whole.** The runtime's census answers a shorter list with nothing
+            // marking it short whenever a registry row could not be read — since
+            // CrabCast's KAN-302 an unreadable row makes their daemon skip rather
+            // than refuse to start, so `agents: []` is byte-for-byte what an empty
+            // fleet reads. Measured on this machine at the time of writing:
+            // `configuredAgents: 0` with `unreadableRecordsTotal: 1`.
+            //
+            // Adjacent to the count rather than in a log line, for the reason the
+            // whole ticket exists: a disclosure nobody reads is the same as no
+            // disclosure, and the caller deciding what the fleet *is* is reading
+            // this response. Same rule as `missingAgents` above — always present,
+            // never absent.
+            //
+            // **`null` is not `0` and a client must not render it as one.** `0` says
+            // the census was taken and skipped nothing, which is what makes the agent
+            // count trustworthy. `null` says no disclosure reached this daemon — the
+            // census could not be taken, or the peer is below read-path contract v4 —
+            // and the count above may be short with nothing here to say so.
+            censusUnreadableRecordsTotal: census.unreadableRecordsTotal,
+            censusUnreadableRecords: census.unreadableRecords,
+            // Work that was taken off the machine to make room for something more
+            // important, and has not been put back. Always present, empty when
+            // nothing is owed — a caller distinguishing "nothing was preempted" from
+            // "this daemon does not track that" cannot do it from an absent field.
+            //
+            // It is a queue of decisions still owed rather than a log of events: the
+            // moment one of these is re-activated it leaves the list. Nothing here
+            // restarts them, deliberately — a preemption queue is a scheduler and
+            // this ticket said so.
+            preemptedAgents: preempted,
+            // Where the Agents page's On button gets its candidates. Always present
+            // and empty rather than absent, by the same rule as the two lists above:
+            // "nothing is switched off" and "this daemon does not track that" are
+            // different answers and a client cannot tell them apart from a missing
+            // field. `standbyTotal` is the unclipped count — a list that silently
+            // stopped at STANDBY_LIMIT would read as "that is all of them".
+            standbyAgents: standby,
+            standbyTotal,
+            capacity: capacityDto(capacity),
+            // What each running agent is worth, and therefore what a would-be
+            // activation would have to outrank. Sent alongside the capacity figures
+            // because "there is no room" and "there is no room *for you*" became
+            // different answers with KAN-37, and a supervisor deciding whether to
+            // staff something needs both.
+            priorities: this.preemptionCandidates(agents).map((c) => ({
+                agentName: c.agentName,
+                type: c.type,
+                key: c.key,
+                priority: c.priority,
+                herdrStatus: c.herdrStatus
+            })),
+            // Omitted rather than nulled when this daemon has no reconciler behind
+            // it, so that "no board reconciler here" cannot be mistaken for "the
+            // reconciler says nothing controls this". See the constructor parameter.
+            ...(boardControl ? { boardControl } : {}),
+            // WHEN A CHANNEL FRAME LAST REACHED A MODEL (KAN-252), on the poll a
+            // supervisor is already making. Omitted rather than nulled by the same
+            // rule as `boardControl`: a daemon with no probe wired must not be
+            // readable as a fleet whose channel has never been proved.
+            //
+            // It sits beside the per-agent `channel` rows deliberately. Those say
+            // whether each agent's loop was proved as far as its *client*; this says
+            // whether anything got past the client into a *model*, which is the leg
+            // none of those rows can see.
+            // NEWS THE DAEMON COULD NOT DELIVER (KAN-301), and the one field on this
+            // response that answers a question about *absence*.
+            //
+            // The board's most-repeated failure, in `epic/KAN-39`'s words: "an agent
+            // that did NOT get the news must be distinguishable from one that got it
+            // and had nothing to do." Dropping pane insertion is what made that
+            // question askable — a Ctrl+C always landed, so there was nothing to
+            // report — and it is what makes answering it mandatory rather than nice.
+            //
+            // `pending` is recoverable and retried on every sweep; `abandoned` is
+            // Butchr saying plainly that it gave up and that those agents were never
+            // told. The abandoned count is never reset, because a counter that returns
+            // to zero is the same silence in a tidier costume.
+            //
+            // Omitted rather than nulled when no store is wired, by the same rule as
+            // `boardControl` above: "this daemon holds no notifications" and "this
+            // daemon cannot tell you" are different answers.
+            ...(this.pendingNotifications
+                ? { undeliveredNotifications: this.pendingNotifications() }
+                : {}),
+            // KAN-304. Whether anything is being observed about the fleet's pull
+            // requests at all, and since when it last could be.
+            ...(this.prWatch ? { prWatch: this.prWatch() } : {}),
+            ...(this.channelLiveness ? { channelLiveness: this.channelLiveness() } : {}),
+            // WHO IS WATCHING THIS FLEET, AND WHETHER ITS POKE IS LANDING (KAN-284).
+            //
+            // On this response rather than only on the board page, because this is the
+            // poll a supervisor is already making and *"is anybody watching"* is a
+            // question about the fleet. The board display and this read the same
+            // reader — one state, two surfaces — which is the rule
+            // `carrierFor` exists to enforce elsewhere: a report that derives its own
+            // answer is the copy that goes wrong.
+            //
+            // **Read `proves` before `lastDelivered`.** This record says whether the
+            // poke was *delivered*; it says nothing about whether the fleet is
+            // supervised, and `provesDetail` carries that sentence so no reader has to
+            // have read this comment. A heartbeat proves the loop turns.
+            //
+            // Omitted rather than nulled when no poker is wired, by `boardControl`'s
+            // rule: a daemon without the mechanism must not read as a fleet with no
+            // guardian set. `configured: false` is how the second one is said.
+            ...(this.guardian ? { guardian: this.guardian() } : {}),
+            ...(staleness ? { staleness } : {}),
+            // Omitted rather than nulled when no sweep has run, by the same rule as
+            // `staleness` directly above: absent means "this daemon has reclaimed
+            // nothing", which is a different answer from any summary it could carry.
+            ...(reclaim ? { reclaim } : {}),
+            ...(usage ? {
+                herdrHealth: {
+                    pid: usage.pid,
+                    openFds: usage.openFds,
+                    softLimit: usage.softLimit,
+                    headroomPanes: usage.headroomPanes,
+                    fdPressure: Math.round(usage.ratio * 100) / 100,
+                    ...(isFdPressureHigh(usage) ? {
+                        warning: `herdr server is using ${Math.round(usage.ratio * 100)}% of its open-file soft limit ` +
+                            `(${usage.openFds}/${usage.softLimit}); room for about ${usage.headroomPanes} more panes ` +
+                            `at ${PTMX_FDS_PER_PANE} descriptors each. Close idle agents.`
+                    } : {})
+                }
+            } : {})
+        });
+    }
+    /** `butchr_capacity`: how many more agents this machine can carry. */
+    handleCapacity(data, respond) {
+        const { agents } = this.surveyAgents();
+        const capacity = this.capacityOf(agents);
+        const candidates = this.preemptionCandidates(agents);
+        respond({
+            action: 'capacity_response',
+            success: true,
+            ...capacityDto(capacity),
+            derivation: describeCapacity(capacity),
+            // At capacity the next question is always "then what would I have to
+            // stand down?", and answering it here saves a caller from working the
+            // ordering out for itself — or, worse, guessing at it.
+            priorities: candidates.map((c) => ({
+                agentName: c.agentName,
+                type: c.type,
+                key: c.key,
+                priority: c.priority,
+                herdrStatus: c.herdrStatus
+            })),
+            fleetPriorities: describeFleetPriorities(candidates)
+        });
+    }
+    /**
+     * Agents stood down to make room, in the shape a client renders.
+     *
+     * Reported until they are re-activated. Restarting them is out of scope by
+     * the ticket's own words — a preemption queue is a scheduler — so what this
+     * buys is that the decision is *owed to someone* rather than lost: the epic
+     * and story agents that supervise see it on every poll and can move the
+     * ticket back to To Do, and a human sees whose work is waiting.
+     */
+    preemptedAgents() {
+        if (!this.agentRegistry)
+            return [];
+        return this.agentRegistry.preempted().map((entry) => ({
+            agentName: entry.agentName,
+            type: entry.record.type,
+            key: entry.record.key,
+            workDir: entry.record.workDir,
+            url: entry.record.url ?? null,
+            // The preemption record already holds who took the slot; this is the
+            // other party — who is owed the decision about putting the work back.
+            activatedBy: entry.record.activatedBy ?? null,
+            at: entry.at,
+            priority: entry.preemption.priority,
+            herdrStatusWhenPreempted: entry.preemption.herdrStatus,
+            by: {
+                agentName: entry.preemption.byAgentName,
+                type: entry.preemption.byType,
+                key: entry.preemption.byKey,
+                priority: entry.preemption.byPriority
+            },
+            reason: `Stood down at ${entry.at} to free capacity for ` +
+                `${entry.preemption.byType}/${entry.preemption.byKey} ` +
+                `(priority ${entry.preemption.byPriority} against this agent's ` +
+                `${entry.preemption.priority}). Its work was interrupted, not finished. ` +
+                `Re-activating it resumes the conversation it was stopped in; until then ` +
+                `its ticket should not read In Progress.`,
+            derivation: entry.preemption.derivation
+        }));
+    }
+    /**
+     * The agent census, shared by `list_agents` and by everything that needs to
+     * know how many agents are already running before starting another.
+     *
+     * herdr is the source of existence, not our session map — see
+     * handleListAgents for why. Split out so the capacity check counts exactly
+     * what the list reports; two answers to "how many agents are running" is one
+     * answer too many.
+     */
+    /**
+     * The capacity model applied to a census: task agents in `running`,
+     * epic and story agents counted separately as `supervisors` (reported,
+     * never charged — see capacity.ts).
+     *
+     * Every capacity answer in this daemon goes through here, so `running` means
+     * the same thing in the refusal, in `list_agents` and in `butchr_capacity`.
+     * KAN-34 passed `agents.length` at each call site and the then-single board
+     * manager was silently one of them — on a 4-core machine that was half the
+     * budget spent on the supervisor, and the user could never start a second
+     * task agent.
+     */
+    /**
+     * Whether a `list_agents` entry costs an agent's worth of machine.
+     *
+     * Not everything the list reports does. The daemon used to open a bare shell
+     * for itself — the `default/workspace` session KAN-25 removed — and it
+     * appeared in this list because we held a session for it, which is the right
+     * answer to "what can I attach to" and the wrong one to "what is this machine
+     * carrying". On a 4-core box it was silently occupying one of two slots. The
+     * daemon no longer starts anything for itself, but herdr hosts more than
+     * Butchr and the distinction still has to be drawn.
+     *
+     * The test is whether the entry is a workspace type this daemon starts agents
+     * into, or whether herdr can see an agent runtime behind the pane. Either is
+     * enough; a registered type does not wait for herdr to notice a freshly
+     * spawned agent, and a runtime catches anything the registry has not heard of.
+     *
+     * Shared by the capacity count and the preemption candidate list, so an agent
+     * that occupies a slot is exactly an agent that can be asked to give it up.
+     */
+    countsAsAgent(entry) {
+        const registered = entry.type !== null && this.registry.get(entry.type) !== undefined;
+        return registered || entry.agentRuntime !== null;
+    }
+    capacityOf(agents) {
+        let fleet = 0;
+        let supervisors = 0;
+        const live = new Set();
+        for (const entry of agents) {
+            if (!this.countsAsAgent(entry))
+                continue;
+            live.add(entry.agentName);
+            if (isSupervisorType(entry.type))
+                supervisors++;
+            else
+                fleet++;
+        }
+        // Reconcile the start ledger against the census, in the one order that is
+        // safe: mark first, drop second. See `startLedger` for why absence alone
+        // must never drop an entry.
+        for (const [name, entry] of this.startLedger) {
+            if (live.has(name))
+                entry.seen = true;
+            else if (entry.seen)
+                this.startLedger.delete(name);
+        }
+        this.boundStartLedger();
+        return this.capacitySource(fleet, supervisors, [...this.startLedger.values()].map((e) => e.at));
+    }
+    /**
+     * Record that an agent was started, for the capacity gate's starts-in-flight
+     * term (KAN-258). Called on the success path of both activation routes.
+     */
+    recordStart(agentName) {
+        this.startLedger.set(agentName, { at: Date.now(), seen: false });
+        this.boundStartLedger();
+    }
+    /**
+     * A leak guard, and named as one so nobody reads it as policy.
+     *
+     * An entry whose agent never reaches the census — an activation that
+     * succeeded onto a pane that then died — is never marked `seen` and so is
+     * never dropped by the reconciliation above. It stops being *charged* on its
+     * own, because `unobservedStartsAmong` ignores anything older than the
+     * current measurement window; this only stops the map growing without bound
+     * on a daemon that runs for weeks. The oldest go first, which is also the
+     * order in which they stopped mattering.
+     */
+    boundStartLedger() {
+        const LIMIT = 256;
+        if (this.startLedger.size <= LIMIT)
+            return;
+        const oldest = [...this.startLedger.entries()].sort((a, b) => a[1].at - b[1].at);
+        for (const [name] of oldest.slice(0, this.startLedger.size - LIMIT)) {
+            this.startLedger.delete(name);
+        }
+    }
+    /**
+     * The workspace type the registry has on file for a key, when it is
+     * unambiguous. Used to address an agent that no longer exists anywhere else —
+     * see handleDeactivateByKey. Two registered agents sharing a key differ only
+     * by type, which is precisely what this cannot guess, so it declines rather
+     * than picking one.
+     */
+    /**
+     * Whether an empty pane is evidence that this agent died.
+     *
+     * For everything Claude-shaped, yes: the runtime is the agent, and its
+     * absence is the death. For a `shell` workspace it is the opposite — there
+     * was never a runtime to lose, and a bare prompt is the delivered product.
+     * Unknown agents are assumed to have a runtime, so a name we cannot place
+     * still gets watched rather than quietly excused.
+     */
+    expectsRuntime(agentName) {
+        return this.agentRegistry?.intents().get(agentName)?.record.defaultAgent !== 'shell';
+    }
+    registeredTypeFor(key) {
+        if (!this.agentRegistry)
+            return undefined;
+        const lower = key.toLowerCase();
+        const matches = Array.from(this.agentRegistry.intents().values()).filter((intent) => intent.event === 'activated' && intent.record.key.toLowerCase() === lower);
+        return matches.length === 1 ? matches[0].record.type : undefined;
+    }
+    /**
+     * The gap between what the registry says should be running and what herdr
+     * actually has.
+     *
+     * The comparison is against the *census*, not against the session map: an
+     * agent that survived a daemon restart has no session of ours and is
+     * nonetheless perfectly alive, and calling it missing would be the same
+     * false alarm KAN-9 and KAN-28 already fixed at other layers.
+     */
+    missingAgents(agents, staleSessions) {
+        if (!this.agentRegistry)
+            return [];
+        const alive = new Set(agents.map((a) => a.agentName));
+        const missing = [];
+        for (const [agentName, intent] of this.agentRegistry.intents()) {
+            if (intent.event !== 'activated')
+                continue;
+            if (alive.has(agentName))
+                continue;
+            missing.push({
+                agentName,
+                type: intent.record.type,
+                key: intent.record.key,
+                workDir: intent.record.workDir,
+                url: intent.record.url ?? null,
+                activatedBy: intent.record.activatedBy ?? null,
+                since: intent.at,
+                // Both cases are "not running", but they are not the same event and a
+                // reader acting on this deserves the difference: an agent that never
+                // came back, versus one that was running under this daemon and died
+                // while we held its session. The second is a crash we witnessed.
+                reason: staleSessions?.has(agentName)
+                    ? 'The registry records this agent as active and this daemon still holds a session ' +
+                        'for it, but herdr has no agent by that name: it started and then died. ' +
+                        'It is not running.'
+                    : 'The registry records this agent as active, but herdr has no agent by that name ' +
+                        'and this daemon holds no session for it. It is not running.'
+            });
+        }
+        return missing;
+    }
+    /**
+     * Agents a person switched off, that could be switched back on.
+     *
+     * Three filters, each removing a different kind of thing nobody means by
+     * "turn it back on":
+     *
+     *   - still running — the stand-down failed, or it was started again since.
+     *     Offering On for something already on is how a control starts lying.
+     *   - preempted — reported separately, with the name of what took its slot.
+     *     One agent, one switch: a row in two lists is a row that can be pressed
+     *     twice.
+     *   - no workspace on disk — `reset` records a stand-down too, and the
+     *     directory it deleted is the whole difference between "stopped" and
+     *     "finished with". Re-activating one of those would create an empty
+     *     workspace and start an agent in it with nothing to continue.
+     *
+     * Newest first, because the thing you just switched off is the thing you are
+     * most likely to want back.
+     */
+    standbyAgents(agents) {
+        if (!this.agentRegistry)
+            return { standby: [], total: 0 };
+        const alive = new Set(agents.map((a) => a.agentName));
+        const standby = [];
+        for (const [agentName, intent] of this.agentRegistry.intents()) {
+            if (intent.event !== 'deactivated')
+                continue;
+            if (intent.preemption)
+                continue;
+            if (alive.has(agentName))
+                continue;
+            const workDir = intent.record.workDir;
+            if (!workDir || !fs.existsSync(workDir))
+                continue;
+            standby.push({
+                agentName,
+                type: intent.record.type,
+                key: intent.record.key,
+                workDir,
+                url: intent.record.url ?? null,
+                defaultAgent: intent.record.defaultAgent ?? null,
+                activatedBy: intent.record.activatedBy ?? null,
+                since: intent.at,
+                reason: 'Switched off deliberately. Its workspace is still on disk, so switching it back ' +
+                    'on resumes the conversation it was stopped in rather than starting a new one.'
+            });
+        }
+        standby.sort((a, b) => b.since.localeCompare(a.since));
+        return { standby: standby.slice(0, STANDBY_LIMIT), total: standby.length };
+    }
+    /**
+     * What an agent would lose if it were switched off now.
+     *
+     * Answered from the address rather than from a path the caller supplies: this
+     * runs git in the directory it is given, and a client-supplied path would be
+     * a client choosing where the daemon executes subprocesses. The workspace is
+     * derived from type and key by the same function that creates it.
+     *
+     * Never fails the request. A check that could not be performed comes back
+     * `checked: false` with the reason, because a UI that renders an error as
+     * "nothing to lose" is worse than one that never asked.
+     */
+    handleAgentWorkState(data, respond) {
+        const { key, type } = data;
+        const badAddress = invalidAddress(key, type);
+        if (badAddress) {
+            respond({ action: 'agent_work_state_response', success: false, error: badAddress });
+            return;
+        }
+        // The live session knows where it actually is; the registry remembers for
+        // the agents that outlived their session; the convention is the fallback,
+        // and is what `initPty` would have used anyway.
+        //
+        // By (key, type) when the caller gives a type — a same-key session of
+        // another type is a different agent in a different directory, and its
+        // work state would answer for the wrong workspace (KAN-83). With no type
+        // there is only the key to go by, and the key-only match is the best
+        // available answer rather than a collision.
+        const session = this.herdrBridge.getSessionByAddress(key, type);
+        const recorded = typeof type === 'string'
+            ? this.agentRegistry?.intents().get(agentNameFor(type, key))?.record.workDir
+            : undefined;
+        const workDir = session?.workDir ||
+            (recorded && recorded.length ? recorded : undefined) ||
+            (typeof type === 'string' ? workspaceDirFor(type, key) : '');
+        respond({
+            action: 'agent_work_state_response',
+            success: true,
+            type: type ?? null,
+            key,
+            ...readWorkState(workDir)
+        });
+    }
+    /**
+     * `missingAgents`, for callers outside a request — the daemon's periodic
+     * sweep. Public because the sweep runs on a timer rather than in response to
+     * a client, and must ask the same question the list answers.
+     */
+    findMissingAgents() {
+        return this.surveyFleet().missing;
+    }
+    /**
+     * Both halves of what the periodic sweep needs, from one census.
+     *
+     * The sweep asks two questions — what is gone, and what is each survivor
+     * doing — and they have to be asked of the same instant. Two calls would put
+     * a `herdr agent list` between them, which is long enough for an agent to
+     * appear in one answer and not the other: an agent reported both alive and
+     * lost in the same tick would nudge its supervisor about a death that had not
+     * happened.
+     */
+    surveyFleet() {
+        const { agents, staleSessions } = this.surveyAgents();
+        return { agents, missing: this.missingAgents(agents, staleSessions) };
+    }
+    /**
+     * The supervisor of record for an agent, read back off the durable registry.
+     *
+     * Public because the notifier is not a request handler: the sweep runs on a
+     * timer and has no client, and it must resolve parentage through the same
+     * registry the activation wrote it to rather than keeping a second copy.
+     */
+    supervisorFor(agentName) {
+        return this.agentRegistry?.intents().get(agentName)?.record.activatedBy ?? null;
+    }
+    /**
+     * The key as the registry spells it, when it has one.
+     *
+     * An agent *name* is built from a lower-cased key, so an agent addressed from
+     * a census comes back as `kan-98` — and a notice that names `task/kan-98` is
+     * read by a supervisor sitting next to a ticket spelled KAN-98.
+     * `rememberDeactivated` prefers the registry's spelling for exactly this
+     * reason, and a message a person or an agent will read deserves it more.
+     */
+    recordedKeyFor(agentName) {
+        return this.agentRegistry?.intents().get(agentName)?.record.key;
+    }
+    /**
+     * The page this agent was bound to, as the durable registry recorded it at
+     * activation — the half of KAN-346 that is not the runtime's to fix.
+     *
+     * ## Why this is a read and not a new write
+     *
+     * `url` was already being persisted. `rememberActivated` has written
+     * `AgentRecord.url` on every activation since the registry existed, and
+     * `reconcile.ts` reads it back to restore a fleet after a power cut. **What
+     * was missing was this direction**: every row `list_agents` and
+     * `agent_status` built for an agent with no session hardcoded `url: null`,
+     * and the comment above it called that honesty — *"no url the agent was
+     * bound to … filling them in to match the attached shape would be a
+     * fabrication."* That reasoning is right about a session fact and wrong about
+     * this one. **A url is not a session fact.** It is an argument of the
+     * activation, it is on disk, it survives the daemon that recorded it, and
+     * reporting it is a read rather than an invention.
+     *
+     * `activatedBy` on the very same row is the precedent and says so in its own
+     * comment: *"the registry outlives the session map, which is the whole reason
+     * an agent that survived a daemon restart still knows who staffed it."* The
+     * same sentence is true of `url` and nobody had written it down.
+     *
+     * ## What it still refuses to do
+     *
+     * Answer for an agent the registry never recorded. `undefined` here means
+     * *nothing was written down*, and callers render that as `null` — the same
+     * answer they gave before, for the one population where it was the true one.
+     * Nothing is derived from the key, and no url is constructed: an agent
+     * activated without one had none, and `handleActivateByKey` is explicit that
+     * *"a fabricated link is worse than no link."*
+     *
+     * ## Both runtimes, and that is the point
+     *
+     * This is not CrabCast-specific. A `HerdrBridge` fleet that outlives its
+     * daemon reports the same `url: null` on the same row and has always done so;
+     * it is merely less visible there, because the sidepanel re-activates on
+     * sight and a spawned session carries the browser's own url within seconds.
+     * Fixing it here fixes it for the runtime that heals and the runtime that
+     * does not.
+     */
+    recordedUrlFor(agentName) {
+        return this.agentRegistry?.intents().get(agentName)?.record.url;
+    }
+    surveyAgents() {
+        const census = this.herdrBridge.listHerdrAgentsChecked();
+        const { reachable, agents: herdrAgents } = census;
+        const byName = new Map(herdrAgents.map(a => [a.name, a]));
+        const statuses = new Map(herdrAgents.map(a => [a.name, a.herdrStatus]));
+        const agents = [];
+        const attached = new Set();
+        /**
+         * Sessions this daemon still holds for agents herdr no longer has.
+         *
+         * A session is our record that we *started* something; it is not evidence
+         * that the thing is still alive, and it outlives the agent whenever the
+         * pane dies without us tearing it down — which is precisely what a crashed
+         * or killed agent looks like. Listing one as running is how a dead agent
+         * keeps a ticket reading In Progress with nothing behind it: the silent
+         * loss this whole ticket exists to remove, reintroduced one layer up.
+         */
+        const staleSessions = new Set();
+        for (const session of this.herdrBridge.listActiveSessions()) {
+            const agentName = agentNameFor(session.type, session.key);
+            attached.add(agentName);
+            // herdr is the authority on whether an agent exists — but only when it
+            // answered. An unreachable herdr returns an empty census, and treating
+            // that silence as "they are all dead" would condemn a perfectly healthy
+            // fleet, so in that case we keep trusting the session map.
+            //
+            // Two different deaths, and only one of them is unconditional. A name
+            // herdr has never heard of is gone, full stop. A name it *has* with no
+            // runtime behind it is a pane whose agent exited — dead too, except for
+            // a `shell` workspace, where a bare prompt and no runtime is the entire
+            // point. Calling one of those missing would be a false alarm about
+            // something working exactly as asked.
+            if (reachable) {
+                const record = byName.get(agentName);
+                const dead = !record || (!record.agentRuntime && this.expectsRuntime(agentName));
+                if (dead) {
+                    staleSessions.add(agentName);
+                    continue;
+                }
+            }
+            const dto = this.toAgentDto(session, statuses);
+            agents.push({
+                sessionless: false,
+                agentName,
+                sessionId: dto.sessionId,
+                type: dto.type,
+                key: dto.key,
+                url: dto.url ?? null,
+                createdAt: dto.createdAt,
+                status: dto.status,
+                workDir: dto.workDir,
+                herdrStatus: dto.herdrStatus,
+                agentRuntime: byName.get(agentName)?.agentRuntime ?? null,
+                supervisor: isSupervisorType(dto.type),
+                // Through the same helper the notifier resolves parentage with, so
+                // the row the page nests by and the supervisor a nudge is delivered to
+                // can never be two different answers to one question.
+                activatedBy: this.supervisorFor(agentName),
+                ...this.channelStateOf(dto.type, dto.key)
+            });
+        }
+        const unbackedPanes = [];
+        for (const record of herdrAgents) {
+            if (attached.has(record.name))
+                continue;
+            const address = addressFromAgentName(record.name);
+            if (!address)
+                continue; // Not one of ours; herdr hosts more than Butchr.
+            if (!record.agentRuntime) {
+                unbackedPanes.push({
+                    agentName: record.name,
+                    type: address.type,
+                    key: address.key,
+                    workDir: record.workDir,
+                    herdrStatus: record.herdrStatus,
+                    reason: 'herdr reports no agent running in this pane and this daemon holds no session for it'
+                });
+                continue;
+            }
+            // Session-only fields are null, not invented. There is no session id to
+            // report and no creation time we saw — filling those in to match the
+            // attached shape would be a fabrication.
+            //
+            // **`url` LEFT THIS LIST AT KAN-346, and the reason is that it was never
+            // a session-only field.** It is an argument of the activation, written to
+            // the durable registry at the time and read back by `reconcile.ts` to
+            // restore a fleet after a power cut — so answering `null` here was not
+            // refusing to invent, it was declining to read something already on disk.
+            // `activatedBy`, two lines below, has always been read that way and gives
+            // the reason in as many words. See {@link recordedUrlFor}; an agent the
+            // registry never recorded still answers `null`, which is the population
+            // that sentence was actually true of.
+            agents.push({
+                sessionless: true,
+                agentName: record.name,
+                sessionId: null,
+                type: address.type,
+                key: address.key,
+                url: this.recordedUrlFor(record.name) ?? null,
+                createdAt: null,
+                status: null,
+                workDir: record.workDir,
+                herdrStatus: record.herdrStatus,
+                agentRuntime: record.agentRuntime,
+                supervisor: isSupervisorType(address.type),
+                // Not a session-only field, so not null-by-construction here: the
+                // registry outlives the session map, which is the whole reason an
+                // agent that survived a daemon restart still knows who staffed it.
+                activatedBy: this.supervisorFor(record.name),
+                // NOT null-by-construction either, and this is the row where it most
+                // often says `unchecked` — a sessionless agent is one that outlived a
+                // daemon restart, and the daemon that restarted took its verdict with
+                // it. The reader answers `unchecked` honestly rather than this row
+                // pretending the question does not apply to it.
+                ...this.channelStateOf(address.type, address.key)
+            });
+        }
+        return { agents, unbackedPanes, staleSessions, census };
+    }
+    /**
+     * One agent's channel row (KAN-248, T5), or nothing when this daemon cannot say.
+     *
+     * Returns a spreadable fragment rather than a value so that "no reader wired
+     * in" is an ABSENT key rather than a null one. That distinction is the whole
+     * reason this is not a one-liner at each call site: a client reading `null`
+     * must be able to conclude *"this daemon checked and found no verdict"*, and
+     * it can only do that if a daemon which cannot check says nothing at all.
+     */
+    channelStateOf(type, key) {
+        if (!this.channelSelfCheck || !type)
+            return {};
+        const report = this.channelSelfCheck({ type, key });
+        // THE CARRIER IS ASKED OF THE THING THAT ROUTES, NOT DERIVED A SECOND TIME
+        // (KAN-274). This used to read `report.transport`, or the literal `'channel'`
+        // when there was no report — the self-check verdict alone, with nothing
+        // asking whether a connection existed. The row therefore said
+        // `transport: "channel"` for every agent that had outlived a daemon restart,
+        // while a send to one of them took the composer and Ctrl+C'd it. Measured on
+        // 2026-08-11: four agents in that state for 291 seconds, and the row's own
+        // `detail` named the missing condition in prose — "when one is registered" —
+        // while the field ignored it.
+        //
+        // `channelCarrier` is absent on a daemon wired without one, and the verdict
+        // then falls back to the report exactly as before.
+        const verdict = this.channelCarrier?.({ type, key }, report?.transport === 'composer') ?? null;
+        if (!report) {
+            return {
+                channel: {
+                    outcome: 'unchecked',
+                    // Unchecked still says nothing about the carrier — `carrierFor` does,
+                    // and on an agent that holds a live registration it still answers
+                    // `channel`, which is what it always should have meant.
+                    transport: verdict?.transport ?? 'channel',
+                    proved: false,
+                    clientName: null,
+                    clientVersion: null,
+                    clientVersionVerified: null,
+                    checkedAt: null,
+                    elapsedMs: null,
+                    detail: 'no startup channel self-check has run for this agent — most often because it ' +
+                        'outlived the daemon that would have checked it, or because it was spawned while ' +
+                        'channel emission was off. Unchecked is not failed. ' +
+                        (verdict
+                            ? `Its next steer takes: ${verdict.transport} — ${verdict.detail}. `
+                            : '') +
+                        'Re-activating it runs the check.'
+                }
+            };
+        }
+        return {
+            channel: {
+                outcome: report.outcome,
+                // The verdict wins over the report's own field, and can only ever be
+                // *worse* than it: `carrierFor` is handed this report's degradation as
+                // an input, so a `composer` verdict stays `composer` and a `channel`
+                // one becomes `unregistered` when the connection behind it has gone.
+                transport: verdict?.transport ?? report.transport,
+                proved: report.proved,
+                clientName: report.clientName,
+                clientVersion: report.clientVersion,
+                clientVersionVerified: report.clientVersionVerified,
+                checkedAt: report.checkedAt,
+                elapsedMs: report.elapsedMs,
+                detail: verdict && verdict.transport !== report.transport
+                    ? `${report.detail} — but its next steer takes: ${verdict.transport}. ${verdict.detail}`
+                    : report.detail
+            }
+        };
+    }
+    /**
+     * The session id a PTY request names, when it named one at all.
+     *
+     * `null` covers both a missing id and a non-string one, so the refusal below
+     * can tell "you sent no session" from "you sent a session I do not have"
+     * without any caller having to trust the shape of the wire.
+     */
+    ptySessionId(data) {
+        return typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : null;
+    }
+    /**
+     * The refusal a PTY request gets when it names a session this daemon does not
+     * hold.
+     *
+     * It says which id, what that means, and what to do instead — because the
+     * caller is a program, and a program that is only told "no" will retry the
+     * same id forever. The alternative this replaces was worse than a bad error
+     * message: the daemon used to substitute an arbitrary session, or spawn a
+     * `default/workspace` shell, and answer as though the request had been
+     * honoured. See KAN-25.
+     */
+    unknownPtySession(action, sessionId) {
+        const named = sessionId === null
+            ? `${action} arrived without a sessionId`
+            : `${action} names session '${sessionId}', which this daemon does not have`;
+        return (`${named}. A PTY session id is only valid for the daemon process that issued it, ` +
+            'and this one is not among them — most likely it was issued by a previous daemon ' +
+            'and the client has not re-resolved since. Ask for the workspace again (status, then ' +
+            'activate) and use the session id that comes back; retrying this one cannot succeed.');
+    }
+    handlePtyInit(data, respond) {
+        const sessionId = this.ptySessionId(data);
+        const session = sessionId === null ? undefined : this.herdrBridge.getSession(sessionId);
+        if (sessionId === null || session === undefined) {
+            respond({
+                action: 'pty_init_response',
+                success: false,
+                sessionId,
+                error: this.unknownPtySession('pty_init', sessionId)
+            });
+            return;
+        }
+        respond({
+            action: 'pty_init_response',
+            success: true,
+            sessionId,
+            buffer: session.ptyBuffer
+        });
+        const oldCleanup = this.activePtyListeners.get(sessionId);
+        if (oldCleanup)
+            oldCleanup();
+        // Streamed output is unsolicited: it must not carry the pty_init id, or
+        // a correlating transport would try to answer a request already closed.
+        const cleanup = this.herdrBridge.registerDataListener(sessionId, (ptyData) => {
+            this.send({
+                action: 'pty_output',
+                sessionId,
+                data: ptyData
+            });
+        });
+        // Only absent if the session went away between the lookup above and here,
+        // which cannot happen synchronously — but nothing is registered on a guess.
+        if (cleanup)
+            this.activePtyListeners.set(sessionId, cleanup);
+    }
+    handlePtyInput(data, ack) {
+        const sessionId = this.ptySessionId(data);
+        // The most dangerous of the three to answer approximately: keystrokes sent
+        // to a session picked on the client's behalf land in some other agent's
+        // terminal, and get executed there.
+        if (!this.herdrBridge.writePty(sessionId ?? undefined, data.data)) {
+            ack({
+                action: 'pty_input_response',
+                success: false,
+                sessionId,
+                error: this.unknownPtySession('pty_input', sessionId)
+            });
+            return;
+        }
+        ack({ action: 'pty_input_response', success: true, sessionId });
+    }
+    handlePtyResize(data, ack) {
+        const sessionId = this.ptySessionId(data);
+        if (!this.herdrBridge.resizePty(sessionId ?? undefined, data.cols, data.rows)) {
+            ack({
+                action: 'pty_resize_response',
+                success: false,
+                sessionId,
+                error: this.unknownPtySession('pty_resize', sessionId)
+            });
+            return;
+        }
+        ack({ action: 'pty_resize_response', success: true, sessionId });
+    }
+    cleanup() {
+        this.activePtyListeners.forEach(unsub => unsub());
+        this.activePtyListeners.clear();
+    }
+}

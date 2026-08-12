@@ -239,7 +239,7 @@ nothing else. A fleet running a custom interval is briefed wrongly right now.
   contradictory required reds with no edit that satisfies both. Loud beats
   silent, but a designed deadlock is not the deliverable.
 
-**Filed as KAN-348**, linked `Relates` to KAN-347.
+**Filed as KAN-351**, linked `Relates` to KAN-347.
 
 **The general lesson, which is bigger than the instance:** a document-content
 assertion should pin **what must be said**, not **the current value of what is
@@ -316,5 +316,5 @@ edits them, and nothing mechanical will say so. That is the honest edge of it.
 
 ## Filed from this work
 
-- **KAN-348** — H-19 pins the guardian-poke cadence to a literal `30 minutes`
+- **KAN-351** — H-19 pins the guardian-poke cadence to a literal `30 minutes`
   that a constant owns. `Relates` to KAN-347.
