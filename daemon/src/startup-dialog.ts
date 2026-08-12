@@ -189,6 +189,28 @@ export type StartupDialogVerdict =
   | { kind: 'dev-channels'; confirmation: DevChannelsConfirmation }
   | { kind: 'foreign'; dialog: string; measured: boolean }
   | { kind: 'ambiguous'; dialogs: readonly string[] }
+  /**
+   * Our prose is on the pane and no confirm line delimits it, so which dialog
+   * is *live* cannot be decided — and a key is not pressed.
+   *
+   * **THIS IS THE FALSE NEGATIVE OF THE POSITIONAL GUARD, AND IT IS NAMED
+   * RATHER THAN FOLDED INTO `none` FOR ONE REASON: `none` IS SILENT.** The
+   * narrowing in this file can only fail in this direction — it refuses where
+   * the old whole-frame match would have answered — and the cost of refusing is
+   * the brick KAN-246 exists to prevent, an agent that never reaches its
+   * prompt. That is the right way round (a false negative here is loud, a false
+   * positive grants a folder) but only if somebody is told, so this verdict
+   * exists to carry a specific sentence into the log instead of a shrug.
+   *
+   * Reachable two ways, and the caller treats them the same because it cannot
+   * tell them apart from one frame: a dialog caught **mid-paint**, where the
+   * confirm line has not been written yet and the next poll will have it; and
+   * Claude Code **restyling** `Enter to confirm`, where no poll ever will and
+   * every channel-enabled agent wedges until this file is updated. So the
+   * watcher keeps polling rather than giving up on the first frame, and the
+   * deadline is what separates them.
+   */
+  | { kind: 'undelimited' }
   | { kind: 'none' };
 
 /**
@@ -277,7 +299,12 @@ function assertNever(value: never): never {
  */
 export function classifyStartupDialog(pane: string): StartupDialogVerdict {
   const region = liveDialogRegion(pane);
-  if (region === null) return { kind: 'none' };
+  if (region === null) {
+    // No confirm line anywhere. If our own prose is nonetheless on the pane,
+    // that is the one case this file can get wrong in the wedging direction, and
+    // it says so rather than answering `none`. See StartupDialogVerdict.
+    return DEV_CHANNELS_MARKERS.test(pane) ? { kind: 'undelimited' } : { kind: 'none' };
+  }
 
   const identified = identifyDialogs(region);
   switch (identified.count) {

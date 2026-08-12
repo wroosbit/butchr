@@ -274,6 +274,8 @@ export async function superviseChannelStartup(opts: {
   let atPrompt = false;
   let sawConnection = false;
   let sawDialog = false;
+  /** So a recurring mid-paint frame does not become the log. See the branch below. */
+  let undelimitedLogged = false;
 
   const done = (
     outcome: ChannelStartupOutcome,
@@ -334,6 +336,25 @@ export async function superviseChannelStartup(opts: {
         `development-channels dialog(s) were answered before it appeared.`;
       world.log(`[ChannelStartup] ${who}: REFUSING TO ANSWER — ${detail}`);
       return done('foreign-dialog', null, detail);
+    } else if (dialog !== null && dialog.kind === 'undelimited') {
+      // OUR PROSE, NO CONFIRM LINE. Not answered — which dialog is live cannot be
+      // decided from this frame — but NOT given up on either: the ordinary cause
+      // is a dialog caught mid-paint, and the next poll has the rest of it.
+      // Logged once, because a mid-paint frame can recur and this must not
+      // become the log.
+      dialogOnScreen = true;
+      sawDialog = true;
+      if (!undelimitedLogged) {
+        undelimitedLogged = true;
+        world.log(
+          `[ChannelStartup] ${who}: the development-channels prose is on the pane but no ` +
+          `'Enter to confirm' line delimits it, so which dialog is live cannot be decided ` +
+          `and NOTHING WAS PRESSED. Ordinarily this is a dialog caught mid-paint and the ` +
+          `next poll clears it. If this run ends in 'dialog-unanswered', suspect that ` +
+          `Claude Code has restyled the confirm line — every channel-enabled agent wedges ` +
+          `until DEV_CHANNELS_MARKERS/CONFIRM_LINE in startup-dialog.ts are re-measured.`
+        );
+      }
     } else if (dialog !== null && dialog.kind === 'dev-channels') {
       dialogOnScreen = true;
       sawDialog = true;

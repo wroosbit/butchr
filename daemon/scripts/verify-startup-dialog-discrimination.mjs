@@ -262,6 +262,42 @@ say('=== 5. A pane with no dialog is `none`, and a healthy session is untouched 
 }
 
 say('');
+say('=== 5b. Our prose with NO confirm line is `undelimited`, and it is LOUD ===');
+say('    This is the only direction the positional guard can fail in: it refuses');
+say('    where the old whole-frame match would have answered. Refusing wedges an');
+say('    agent, so it must never be silent — `none` would have been.');
+{
+  const midPaint = 'WARNING: Loading development channels\n  Channels: server:butchr';
+  check(classifyStartupDialog(midPaint).kind === 'undelimited', 'classified undelimited');
+  const { result, pressed, logs } = await drive([midPaint]);
+  check(pressed.length === 0, 'NOTHING was pressed', pressed.length);
+  check(
+    logs.some((l) => l.includes('no') && l.includes('Enter to confirm')),
+    'and the log names the missing confirm line and what to suspect',
+    logs
+  );
+  check(
+    result.outcome === 'dialog-unanswered',
+    'a frame that never resolves ends as the brick, with the REVERT beside it',
+    result.outcome
+  );
+  check(
+    logs.some((l) => l.includes('REVERT')),
+    'REVERT instruction present'
+  );
+
+  // AND THE ORDINARY CAUSE RECOVERS, which is why this does not give up on the
+  // first frame the way a foreign dialog does.
+  const { result: r2, pressed: p2 } = await drive([
+    midPaint,
+    DEV_CHANNELS_PANE,
+    AT_PROMPT_PANE
+  ]);
+  check(p2.length === 1, 'a mid-paint frame followed by the full dialog IS answered', p2.length);
+  check(r2.outcome === 'ready', 'and reaches ready', r2.outcome);
+}
+
+say('');
 say('=== 6. Two real dev-channels dialogs in sequence, which is the shipped path ===');
 {
   const { result, pressed } = await drive([
