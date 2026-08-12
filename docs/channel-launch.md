@@ -16,7 +16,7 @@ contract moves" below says what that looks like from here.
 | | |
 |---|---|
 | **Switch off** (the shipped state) | The launcher composes the command Butchr has always composed, byte for byte. No flag, no dialog, no watcher. |
-| **Switch on** | Both arms of the `||` carry `--dangerously-load-development-channels server:butchr`. Claude Code raises a blocking full-screen dialog per invocation; **the daemon answers it** and then waits for the agent's MCP server to register. |
+| **Switch on** | Both arms of the `||` carry `--dangerously-load-development-channels server:butchr`. Claude Code raises a blocking full-screen dialog per invocation; **the daemon answers that one dialog and no other** (see [Which dialog gets answered](#which-dialog-gets-answered)) and then waits for the agent's MCP server to register. |
 | **The revert** | `echo '{"enabled": false}' > ~/.local/share/butchr/channel.json`. Immediate, no restart, no deploy. |
 
 The switch is KAN-244's, not a new one — see [Why one switch](#why-one-switch).
@@ -63,6 +63,39 @@ whenever dev channels are named and channels are live for the account. (The
 its acceptance, which is what makes the absence here evidence rather than a
 failure to find it.) So it cannot be pre-accepted in config the way folder trust
 is by `trustClaudeWorkspace`. Something has to press Enter, every time, forever.
+
+### Which dialog gets answered
+
+**Only the development-channels one, and that is enforced by the type system
+rather than by care (KAN-340).** The workspace-trust dialog is answered by the
+same keystroke and presents the identical affordance — measured under a real PTY
+on 2.1.228, both captures are in `verify-startup-dialog-discrimination.mjs`:
+
+```
+❯ 1. I am using this for local development        ❯ 1. Yes, I trust this folder
+  2. Exit                                           2. No, exit
+Enter to confirm · Esc to cancel                  Enter to confirm · Esc to cancel
+```
+
+So nothing about a dialog's *shape* distinguishes them, and pressing Enter at the
+wrong one grants read, edit and execute in a directory nobody vetted.
+`daemon/src/startup-dialog.ts` makes that unreachable in two independent ways:
+
+* **Only the live dialog is classified.** A dialog's confirm line is the last
+  thing it paints, so the box currently waiting for a key is the one whose
+  `Enter to confirm` is last in the frame. Everything above it is scrollback and
+  is never matched. This matters because the `||` runs `claude` twice: the first
+  one's dialog can still be in the 140-line pane read when the second paints
+  something else, and the pre-KAN-340 whole-frame match answered exactly that.
+* **Enter is unreachable without a classification.** `pressEnter` takes a
+  `DevChannelsConfirmation`, branded with a symbol `startup-dialog.ts` does not
+  export — so it can only be obtained from `classifyStartupDialog` having named
+  the live dialog as ours. A frame naming two dialogs classifies `ambiguous` and
+  is never answered.
+
+A foreign dialog ends supervision with outcome `foreign-dialog` and a log line
+beginning `REFUSING TO ANSWER`. The agent then waits for a human, which is the
+correct outcome: a trust decision is not the daemon's to take.
 
 **2. It is a second dangerous flag on top of one we already run.** The fleet
 already launches with `--permission-mode bypassPermissions`. A channel means

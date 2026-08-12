@@ -92,21 +92,28 @@
 import type { AgentAddress, AgentConnectionRegistry } from './agent-connections.js';
 import { describeAddress } from './agent-connections.js';
 import { CHANNEL_SWITCH_PATH } from './channel.js';
+import { classifyStartupDialog, type DevChannelsConfirmation } from './startup-dialog.js';
 
 /**
  * The dialog, as it appears on the pane.
  *
- * Both alternatives are strings from Claude Code's own `DevChannelsDialog` — its
- * panel title and its confirm-button label — and they are the two KAN-217's
- * probe matched against a real pane, re-read out of the 2.1.226 binary rather
- * than carried forward on trust.
+ * **THE MATCH THIS NAMES NOW LIVES IN `startup-dialog.ts`, AND SO DOES THE
+ * REASON (KAN-340).** This pattern was tested against the whole 140-line pane
+ * read, which answers *"is this text anywhere on screen?"* rather than *"is the
+ * box waiting for a key the dev-channels one?"* — and the launcher's `||` makes
+ * those come apart, because the first `claude`'s dialog can still be in the
+ * window when the second paints a **workspace-trust** dialog over it. Pressing
+ * Enter there trusts a folder. See that file for the positional fix and for what
+ * it leaves uncovered.
  *
- * **Deliberately not matching the bare flag name.** `--dangerously-load-`
- * `development-channels` appears in the launch command itself, and a pattern
- * that matched it would fire on any pane that ever echoed the command line —
- * pressing Enter at a session that is running fine rather than at a dialog.
- * Every alternative here is prose the dialog renders and the command line does
- * not contain.
+ * It is kept, exported, and no longer consulted by this module, because it is the
+ * pattern `probe-channel-launch.mjs` and `docs/channel-launch.md` name by this
+ * symbol; deleting it would break a probe to make a point. It remains correct as
+ * a description of the dialog's prose — it was never wrong about that, only about
+ * where it was allowed to look.
+ *
+ * @deprecated Use `classifyStartupDialog` — a match here is not permission to
+ * press a key, and this cannot tell a live dialog from scrollback.
  */
 export const DEV_CHANNELS_DIALOG_PATTERN =
   /Loading development channels|I am using this for local development/;
@@ -167,7 +174,18 @@ export type ChannelStartupOutcome =
   | 'dialog-unanswered'
   | 'no-prompt'
   | 'no-connection'
-  | 'unreadable-pane';
+  | 'unreadable-pane'
+  /**
+   * A dialog was on the pane and it was NOT ours, so nothing was pressed
+   * (KAN-340).
+   *
+   * Distinct from `dialog-unanswered`, which is our dialog that we failed to
+   * clear — a bug or an outage on our side. This one is the watcher working
+   * correctly and declining, and it sends an operator somewhere else entirely:
+   * a workspace-trust box is waiting on a **human**, and the agent will sit
+   * there until one arrives however long the daemon watches.
+   */
+  | 'foreign-dialog';
 
 export interface ChannelStartupResult {
   outcome: ChannelStartupOutcome;
@@ -203,8 +221,20 @@ export interface ChannelStartupWorld {
    * empty, and `null` for no reading at all.
    */
   readPane: () => Promise<string | null>;
-  /** Send one Enter to the agent's pane. Throwing is reported, not fatal. */
-  pressEnter: () => void;
+  /**
+   * Send one Enter to the agent's pane. Throwing is reported, not fatal.
+   *
+   * **The argument is the permission, not the payload (KAN-340).**
+   * {@link DevChannelsConfirmation} is branded with a symbol `startup-dialog.ts`
+   * does not export, so the only way to obtain one is to have had
+   * `classifyStartupDialog` say the pane's *live* dialog is the dev-channels one.
+   * An implementation is free to ignore the value — the production one does, it
+   * has a pane to type at and nothing to decide — but no caller can construct a
+   * call without the classification. That is the difference between a rule about
+   * pressing Enter and a rule that cannot be broken: pressing Enter at an
+   * unclassified pane is a compile error rather than a review comment.
+   */
+  pressEnter: (confirmation: DevChannelsConfirmation) => void;
   /** Now, in epoch ms. Injected so a harness need not sleep in real time. */
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -274,9 +304,37 @@ export async function superviseChannelStartup(opts: {
     // pass that saw no dialog and no prompt to disagree with itself.
     const pane = await world.readPane();
     paneReads += 1;
+    // WHAT IS ON THE PANE IS DECIDED ONCE, HERE, AND THE VERDICT IS WHAT THE
+    // REST OF THE PASS BRANCHES ON (KAN-340). `classifyStartupDialog` reads only
+    // the dialog that is currently waiting for a key — see startup-dialog.ts for
+    // why a whole-frame match was answering a different question — and its
+    // `dev-channels` case is the only one carrying a value `pressEnter` will
+    // accept.
+    const dialog = pane === null ? null : classifyStartupDialog(pane);
+
     if (pane === null) {
       paneFailures += 1;
-    } else if (DEV_CHANNELS_DIALOG_PATTERN.test(pane)) {
+    } else if (dialog !== null && (dialog.kind === 'foreign' || dialog.kind === 'ambiguous')) {
+      // NOT OURS, SO NOTHING IS PRESSED — and this is a terminal state rather
+      // than something to poll through. A trust dialog does not clear itself and
+      // no amount of waiting makes it ours; continuing to loop would spend three
+      // minutes to reach a worse-worded version of the same conclusion, while
+      // this returns immediately and tells an operator what is actually on their
+      // screen.
+      const what =
+        dialog.kind === 'foreign'
+          ? `the ${dialog.dialog} dialog` +
+            (dialog.measured ? '' : ' (matched on unmeasured wording — see startup-dialog.ts)')
+          : `a frame carrying markers for ${dialog.dialogs.join(' and ')}`;
+      const detail =
+        `${what} is on the pane, not the development-channels one, so NOTHING WAS PRESSED ` +
+        `and this agent will not reach its prompt until a human answers it. Auto-confirming ` +
+        `here would have answered a question nobody asked this daemon to answer — a trust ` +
+        `dialog grants read, edit and execute in the workspace. ${dialogsAnswered} ` +
+        `development-channels dialog(s) were answered before it appeared.`;
+      world.log(`[ChannelStartup] ${who}: REFUSING TO ANSWER — ${detail}`);
+      return done('foreign-dialog', null, detail);
+    } else if (dialog !== null && dialog.kind === 'dev-channels') {
       dialogOnScreen = true;
       sawDialog = true;
       if (dialogsAnswered >= MAX_DIALOG_ANSWERS) {
@@ -293,7 +351,10 @@ export async function superviseChannelStartup(opts: {
           `answering with Enter`
         );
         try {
-          world.pressEnter();
+          // The confirmation is the one this pass produced, for this frame. It
+          // cannot outlive the pass or be reused on the next one: there is no
+          // variable holding it, and the next iteration classifies again.
+          world.pressEnter(dialog.confirmation);
           // COUNTED ONLY WHEN THE SEND SUCCEEDED, which is what keeps
           // `dialogsAnswered` a count of Enters herdr accepted rather than of
           // dialogs this happened to notice. It also means a herdr that is not
