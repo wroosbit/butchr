@@ -120,6 +120,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-workspace-deps-are-shared` | yes | reads files off the checkout and asserts on their contents; node builtins only. |
 | `verify-workspace-reclaim` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-tree` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-render-writes-outside-the-tree` | yes | it spawns `verify-agent-tree.mjs`, which needs only the extension's own node_modules and its own vite build; no live daemon, no herdr, no credential, no peer, no terminal. It runs the real script with the real argv the runner gives it, so what is under test is the shipped default and not a path this file constructs. |
 
 ## `partial` — runs in CI and asserts a real subset — named sections need something CI has not got
 

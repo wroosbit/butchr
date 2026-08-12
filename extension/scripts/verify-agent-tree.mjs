@@ -35,9 +35,12 @@
 //
 // Exit code 0 means every assertion below held. It writes tree.html — static
 // markup, no scripts, screenshottable by anything — and prints the tree, the
-// control census, and the visible text.
+// control census, and the visible text. The default outDir is a temp directory
+// outside the repository and the run prints the full path; see the comment on
+// `outDir` below for why that default is load-bearing.
 
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { build } from 'vite';
@@ -45,7 +48,37 @@ import react from '@vitejs/plugin-react';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(scriptDir, '..');
-const outDir = process.argv[2] ?? path.join(extensionDir, 'kan81-render');
+
+// KAN-326: the default output is OUTSIDE the repository, and that is the point
+// rather than a tidiness preference.
+//
+// It used to default to `extension/kan81-render/`, and the consequence was not
+// a stray file — it was two working instruments losing their credibility:
+//
+//   * Every run rewrites tree.html, because the render prints elapsed time
+//     ("activated 8d 9h ago") from a fixed synthetic fixture against the live
+//     clock. The fleet in it is invented, so the file witnesses nothing; it is
+//     simply guaranteed to differ from any earlier run, at roughly one diff per
+//     hour elapsed, forever. It rode along in six commits across four unrelated
+//     tickets on that mechanism alone.
+//   * `staleness_check` compares MTIMES, not content (`daemon/src/staleness.ts`,
+//     `checkBuild`), and scans all of `extension/` for the newest file. So a
+//     write here makes `extension-build` read stale even when the bytes are
+//     identical — which is why freezing the fixture's clock would have fixed the
+//     diffs and left the false stale exactly where it was. Only moving the write
+//     out of the tree fixes both.
+//
+// `run-ci-verify-set.mjs` sandboxes HOME for every child, and that sandbox
+// cannot reach this: the old path was resolved from `import.meta.url`, so it
+// pointed into the working tree no matter what the environment said. Anyone
+// running the CI set before pushing — the ordinary act, not an unusual one —
+// picked the file up.
+//
+// Pass an explicit outDir to put the render wherever you want it, including
+// back inside the repository if you have a reason to.
+// `verify-render-writes-outside-the-tree.mjs` is what holds this default to
+// account.
+const outDir = process.argv[2] ?? path.join(os.tmpdir(), 'butchr-kan81-render');
 
 // ---------------------------------------------------------------------------
 // The synthetic fleet
