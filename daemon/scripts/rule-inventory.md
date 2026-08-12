@@ -115,7 +115,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-16` — KAN-242 — the brief is a snapshot: the commit it came from, and it does not outrank `origin/main`
 - `H-17` — KAN-252 — the channel liveness probe is named in the brief, with its ask and declining held open
 - `H-18` — KAN-306 — the approval marker: head-pinned, signed, required — and blind to forgery by construction
-- `H-19` — KAN-284 — the guardian poke is expected, is additional, and proves only that it was delivered
+- `H-19` — KAN-284, cadence unpinned by KAN-351 — the guardian poke is expected, is additional, is on an operator-set interval the brief does not name, and proves only that it was delivered
 - `H-20` — KAN-314 — prefer the type to the assertion where the choice exists — scoped, not absolute
 - `H-21` — KAN-314 — check the instrument answered the question you asked — filter the CI run by workflow and head
 - `H-22` — KAN-314 — a proof run after a failed build, or over a stale `dist`, is a verdict about the old build

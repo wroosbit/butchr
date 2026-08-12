@@ -60,10 +60,22 @@
 //   - **Any constant not in `GUARDED`.** There is no discovery here. A new
 //     constant described in prose is unguarded until somebody adds a row.
 //   - **`prompts/*.md`, `README.md`, source docblocks, Confluence, Jira.**
-//     `docs/` only. The guardian-poke cadence is the known live instance
-//     outside that boundary — `DEFAULT_POKE_INTERVAL_MS` in `guardian.ts`
-//     against "pokes you every 30 minutes" in all three prompts — and it is
-//     deliberately not pinned here. See `docs/doc-constant-drift.md`.
+//     `docs/` only. The guardian-poke cadence used to be the known live
+//     instance outside that boundary — `DEFAULT_POKE_INTERVAL_MS` in
+//     `guardian.ts` against "pokes you every 30 minutes" in all three prompts.
+//     KAN-351 resolved that pair by DELETING IT rather than pinning it: the
+//     prompts no longer name an interval, so there is no prose left for the
+//     constant to drift from and nothing here to guard. Note which way that
+//     cuts — it removed one instance and did not widen this script's scope, so
+//     `prompts/` is still unguarded ground for the NEXT constant somebody
+//     quotes there. See `docs/doc-constant-drift.md`, F-1.
+//     **The source docblocks in `guardian.ts` and `daemon.ts` still say
+//     "thirty minutes", and `mcp.ts` still says "defaults to 30 minutes".**
+//     Those are unguarded by construction and were left alone deliberately:
+//     they sit beside the declaration, where a reader moving the constant has
+//     them on screen, and none of them is asserted by a required check — so
+//     neither half of the F-1 shape applies. That is a judgement, not a
+//     measurement.
 //   - **Abbreviations and prefixes.** §5 finds a mention by the constant's
 //     *name* or its *full* literal value. `docs/crabcast-runtime.md` says
 //     "`CRABCAST_PIN` still reads `8d7348f`" — a seven-character prefix — and

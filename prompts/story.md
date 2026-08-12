@@ -607,10 +607,21 @@ the message that makes this one expected.
 
 ### The guardian poke
 
-**If you are Butchr's guardian, the daemon pokes you every 30 minutes**, over
-the channel, and this paragraph is what makes that message expected rather than
-suspicious. It is tagged `[butchr daemon]`, it names itself a *guardian sweep
-poke*, and it asks you to run your supervision sweep once and then stop.
+**If you are Butchr's guardian, the daemon pokes you on a schedule it holds
+itself**, over the channel, and this paragraph is what makes that message
+expected rather than suspicious. It is tagged `[butchr daemon]`, it names itself
+a *guardian sweep poke*, and it asks you to run your supervision sweep once and
+then stop.
+
+**The interval is an operator setting, and this brief deliberately does not name
+it.** There is a default, it is clamped between a floor and a ceiling, and
+`butchr_guardian` reports what this fleet actually runs — so that tool is the
+answer to *"how often"*, and any number written here would be true only of a
+fleet that never overrode it. Until 2026-08-12 this paragraph read *"every 30
+minutes"*, which was one constant's default value wearing a standing rule's
+clothes. What makes the poke expected is that it is **scheduled and
+daemon-sent**, and that is the whole of what you need: you never act on the
+cadence, and you cannot observe it.
 
 **Being the guardian is a role laid on an agent that already has a ticket — it
 is not a job and not a workspace.** The setting is a *pointer* at an existing

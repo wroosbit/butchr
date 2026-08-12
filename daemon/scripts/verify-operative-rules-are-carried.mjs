@@ -1065,12 +1065,39 @@ const RULES = [
     // this section makes that sentence a promise the brief does not keep, which
     // is worse than not pointing at it.
     //
-    // The patterns are the three clauses that carry weight, not the prose
-    // around them: that it is expected and daemon-sent; that it is ADDITIONAL
-    // rather than a replacement for a loop the human separately asked for
-    // (`epic/KAN-203`'s correction, 2026-08-11); and that a delivered poke is
-    // not evidence the sweep was right, which is the limit the recipient has to
-    // hold as much as the board does.
+    // The patterns are the clauses that carry weight, not the prose around
+    // them: that the poke is expected and daemon-sent; that its cadence is an
+    // operator setting rather than a number the brief can promise; that it is
+    // ADDITIONAL rather than a replacement for a loop the human separately
+    // asked for (`epic/KAN-203`'s correction, 2026-08-11); and that a delivered
+    // poke is not evidence the sweep was right, which is the limit the
+    // recipient has to hold as much as the board does.
+    //
+    // KAN-351 TOOK THE CADENCE OUT OF THIS ENTRY, AND THE REASON IS THE ENTRY'S
+    // OWN SHAPE RATHER THAN A DISLIKE OF NUMBERS. Until 2026-08-12 the second
+    // pattern read `/pokes you every 30 minutes/i` — a literal that
+    // `DEFAULT_POKE_INTERVAL_MS` in `daemon/src/guardian.ts` owns. That pins a
+    // *value* where every other pattern here pins a *rule*, and it fails in
+    // both directions at once (`docs/doc-constant-drift.md`, F-1). Move the
+    // constant and leave the prompts, and nothing notices: the whole fleet is
+    // briefed with a false number. Move the constant and CORRECT the prompts,
+    // and this required check goes red at the contributor who fixed the lie —
+    // whose cheapest way out is to put the lie back. That second half is not a
+    // prediction; it was reproduced on `6fc28d9` before the repair, three reds
+    // for three corrected prompts, and the run is in KAN-351's PR body.
+    //
+    // The repair is not a looser pattern for the number (`/every \d+ minutes/`
+    // would still let a wrong number sit unnoticed, and still pins a shape the
+    // rule does not need). The prompts stopped naming an interval at all, which
+    // is the honest sentence anyway: `config.intervalMs` is operator-settable
+    // and clamped, so "every 30 minutes" was true of the default and of no
+    // fleet that overrode it. THE PAIR IS GONE RATHER THAN GUARDED — there is
+    // now no prompt sentence for the constant to drift from, which is why this
+    // needed no new pin and why `verify-doc-constant-pins.mjs` still stops at
+    // `docs/`. What the entry asserts instead is the invariant that survives
+    // any cadence: the poke is scheduled, it comes from the daemon, and how
+    // often is a setting you read with `butchr_guardian` rather than a fact the
+    // brief carries.
     // RENUMBERED FROM H-18 TO H-19 ON 2026-08-11, and the collision is the point
     // rather than an inconvenience. KAN-306 landed its own `H-18` on `origin/main`
     // while this branch was in flight, which is the fifth such collision and
@@ -1083,21 +1110,24 @@ const RULES = [
     carriedBy: {
       'prompts/epic.md': [
         /### The guardian poke/,
-        /pokes you every 30 minutes/i,
+        /the daemon pokes you on a schedule/i,
+        /interval is an operator setting/i,
         /additional to that work and does not outrank it/i,
         /retires any other loop you were told to run/i,
         /says nothing about whether your decisions were right/i,
       ],
       'prompts/story.md': [
         /### The guardian poke/,
-        /pokes you every 30 minutes/i,
+        /the daemon pokes you on a schedule/i,
+        /interval is an operator setting/i,
         /additional to that work and does not outrank it/i,
         /retires any other loop you were told to run/i,
         /says nothing about whether your decisions were right/i,
       ],
       'prompts/task.md': [
         /### The guardian poke/,
-        /pokes you every 30 minutes/i,
+        /the daemon pokes you on a schedule/i,
+        /interval is an operator setting/i,
         /additional to that work and does not outrank it/i,
         /retires any other loop you were told to run/i,
         /says nothing about whether your decisions were right/i,

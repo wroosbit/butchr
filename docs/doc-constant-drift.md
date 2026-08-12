@@ -245,6 +245,63 @@ nothing else. A fleet running a custom interval is briefed wrongly right now.
 assertion should pin **what must be said**, not **the current value of what is
 said**. Every one of H-19's other four patterns does exactly that.
 
+##### Resolved by KAN-351, 2026-08-12 — the pair was deleted, not guarded
+
+Everything above stands as written; this is what happened to it. The audit is
+dated and stays that way, so read the finding as the state on 2026-08-12 and
+this note as its outcome.
+
+**Part 2 was reproduced first, on `6fc28d9`**, because a defect argued from
+inspection is a claim and not an observation: move `DEFAULT_POKE_INTERVAL_MS`
+to 45 minutes, correct all three prompts to say 45, and
+`verify-operative-rules-are-carried.mjs` exits 1 with three reds — one per
+prompt, each `no match for /pokes you every 30 minutes/i`. The required check
+punishing the correction is not a prediction. The run is in KAN-351's PR body.
+
+**The decision — should the prompts name an interval at all? No.** Not a looser
+pattern, and not a pin. Three reasons, in the order they decided it:
+
+1. **An agent cannot use the number.** The poke is *"neither settable nor
+   inspectable by you"*, by that section's own words. Nothing an agent does
+   with the brief changes if the cadence is 30 minutes or 45 — it finishes what
+   it is doing and sweeps. A number that no reader acts on is carrying risk for
+   no work.
+2. **It is not true, and was not true before the constant moved.**
+   `config.intervalMs` is operator-settable and clamped between
+   `MIN_POKE_INTERVAL_MS` and `MAX_POKE_INTERVAL_MS`, so *"every 30 minutes"*
+   described the default and every fleet that overrode it was briefed wrongly —
+   the over-claim named above, live rather than latent. `butchr_guardian`
+   reports the real interval, so the reader who does need it has a route that
+   is right by construction.
+3. **`/pokes you every \d+ minutes/i` fixes the wrong half.** It unblocks the
+   correction — part 2 — and leaves part 1 exactly where it was: a prompt
+   reading 45 while the constant reads 30 satisfies it perfectly. It buys the
+   lesser of the two failures and keeps a sentence nobody needs.
+
+**So H-19 now asserts the invariant that survives any cadence:**
+`/the daemon pokes you on a schedule/i` — expected, scheduled, daemon-sent —
+and `/interval is an operator setting/i`, which is the honest replacement for
+the number rather than a softer version of it. Five patterns, none pinning a
+value.
+
+**What that leaves uncovered, stated because deleting a pair is quieter than
+guarding one.** Nothing now connects `DEFAULT_POKE_INTERVAL_MS` to any prompt,
+which is correct — there is no claim left to keep true. It is *not* a general
+solution for `prompts/`: this script's scope is unchanged, `prompts/` remains
+outside it, and the next constant somebody quotes in a prompt is unguarded
+exactly as this one was. The reason to prefer deletion here is that the
+sentence was not earning its place; where a prompt genuinely must quote a
+value, that is a pin's job and this note is not a precedent against one.
+
+**Not touched, and deliberately:** the docblocks in `daemon/src/guardian.ts` and
+`daemon/src/daemon.ts` that say *"thirty minutes"*, and `mcp.ts`'s *"defaults to
+30 minutes"* in the `butchr_guardian` tool description. They sit beside the
+declaration or describe the default as a default, and none is asserted by a
+required check, so neither half of the F-1 shape applies to them. `mcp.ts` is
+the closest call of the three — it is read by agents, not by contributors — and
+it survives because it says *defaults to*, which stays true when the operator
+overrides it.
+
 #### F-2 — H-13 pins the "what nobody has measured" list, and says so itself
 
 `verify-operative-rules-are-carried.mjs`, entry **H-13**, asserts against all
@@ -317,4 +374,7 @@ edits them, and nothing mechanical will say so. That is the honest edge of it.
 ## Filed from this work
 
 - **KAN-351** — H-19 pins the guardian-poke cadence to a literal `30 minutes`
-  that a constant owns. `Relates` to KAN-347.
+  that a constant owns. `Relates` to KAN-347. **Done 2026-08-12**: resolved by
+  deleting the pair rather than guarding it — the prompts no longer name an
+  interval and H-19 asserts the rule instead of the value. See *Resolved by
+  KAN-351* under F-1.
