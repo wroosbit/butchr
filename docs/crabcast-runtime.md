@@ -216,9 +216,53 @@ it is a **durability** question — persist Butchr's session records, or
 reconstruct what is reconstructible from the census on connect — and explicitly
 **not** a synchrony one. Their census row does carry a `sessionId` of their own
 (`CensusRow.sessionId`), so partial reconstruction is available and `url` is not.
-**Nobody covers this yet.** Naming it is this ticket's contribution to it;
-KAN-283 does not fix it, and a cutover should not read *"gate 1 is done"* as
-progress on it.
+
+#### KAN-346 closed it, by **both** routes rather than either — and found a third defect on the way
+
+The two halves stayed separate, exactly as the ticket demanded they might not:
+
+| field | fixed by | where it lives |
+| --- | --- | --- |
+| `sessionId` | reconstruction from their census — `CrabCastRuntime.adoptFromCensus` | `crabcast-runtime.ts` |
+| `url` | a read of the durable registry — `MessageRouter.recordedUrlFor` | `router.ts` |
+
+**Neither falls out of the other, and that is asserted rather than assumed**
+(`verify-crabcast-session-restore.mjs` §4): the runtime never touches the agent
+registry and the router never adopts, so an adopted session carries a
+`sessionId` and no `url`, and the router supplies the `url` from what the
+activation wrote to disk. The red drive bears it out — removing adoption leaves
+the `url` assertions green and vice versa.
+
+**`url` needed no new write.** `rememberActivated` has persisted
+`AgentRecord.url` since the registry existed and `reconcile.ts` reads it back
+after a power cut. What was missing was the read on the *reporting* path: every
+row for an agent with no session hardcoded `url: null` and called that honesty.
+It is honest about a session fact and wrong about this one — a url is an
+argument of the activation, not a property of a session, and `activatedBy` on
+the same row had always been read that way.
+
+**The third defect was not in the ticket and is worse than what was.** An agent
+CrabCast *starts* comes back under CrabCast's own pane name —
+`crabcast-<key>-<hash>`, measured against a live peer at `6f47df7d` — which
+`addressFromAgentName` cannot parse, so `list_agents` skipped the row and the
+agent was **absent from the fleet listing entirely** rather than listed as
+stranded. `censusRecords` now derives the name from the row's path, which is the
+address (their north star 3) and the exact inverse of what this adapter spawns
+with. Nothing changes for a foreign pane, because herdr already names those
+`butchr-<type>-<key>` — which is why the flip lost sessions and not names.
+
+**What adoption deliberately does not rescue: `census.foreign`.** A foreign pane
+carries no `sessionId`, so nothing addresses its pty; adopting one would hand
+the extension a terminal that renders forever. **That is also the whole answer
+to why the 10:58Z flip stranded everything**: every agent alive at that moment
+had been started by herdr, so CrabCast held all of them as foreign panes and
+none as its own — visible in `fixtures/crabcast-owned-running-census.json`,
+where `agents` holds only what CrabCast started. Nothing here would have rescued
+that fleet and nothing could have. It rescues the fleet a CrabCast daemon
+*started*, which is the fleet that exists after a cutover rather than during
+one — so **the first flip is still a one-way door for live conversations**, and
+that is a cutover-sequencing fact rather than something code on this side can
+close.
 
 ---
 

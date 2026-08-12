@@ -108,6 +108,21 @@ interface CensusRow {
   agentRuntime: string | null;
   state: string | null;
   workDir: string | null;
+  /**
+   * When CrabCast's own session for this agent was created. Read for
+   * {@link CrabCastRuntime.adoptFromCensus}, which must not invent one:
+   * `HerdrSession.createdAt` is required, and stamping the adoption moment
+   * onto it would report an agent that has been working for hours as seconds
+   * old. `null` when the row carried none, and a row without it is not adopted.
+   */
+  createdAt: string | null;
+  /**
+   * `config.launcher` — the binary CrabCast was told to start. Read for
+   * `expectsRuntime`, which is false for `shell` alone: a bare pane with no
+   * runtime behind it is the delivered product there, and calling it dead is
+   * the KAN-58 false alarm.
+   */
+  launcher: string | null;
 }
 
 /** A census reading, with the timestamp that makes its staleness legible. */
@@ -1224,14 +1239,46 @@ export class CrabCastRuntime implements AgentRuntime {
     );
   }
 
+  /**
+   * The census in Butchr's vocabulary — and the name is DERIVED FROM THE PATH,
+   * never copied from `paneName` (KAN-346).
+   *
+   * **`paneName` is CrabCast's name for a pane, and for an agent CrabCast
+   * started it is not a Butchr agent name at all.** Measured against a live
+   * peer at `6f47df7d`: a `task/kan-346-diag` agent spawned through this
+   * adapter came back as `crabcast-kan-346-diag-9728c6a0c69ee8c1` — their
+   * prefix, their hash. Every consumer of this list addresses an agent by
+   * `addressFromAgentName`, which parses `butchr-<type>-<key>` and answers
+   * `null` for anything else; `router.ts`'s `list_agents` loop does
+   * `if (!address) continue`, so **the agent was dropped from the fleet
+   * listing entirely** — not reported stranded, not reported at all. That is
+   * strictly worse than the `sessionless: true` this ticket was filed about,
+   * and it is invisible because a shorter list looks like a smaller fleet.
+   *
+   * **The path is the address, so deriving from it is not a translation.**
+   * CrabCast's north star 3 is that an agent IS a canonical filesystem path,
+   * and {@link addressForPath} is the exact inverse of the
+   * {@link pathForAddress} this adapter spawns with. A row outside Butchr's
+   * workspace tree has no Butchr name to give it and keeps `paneName`, which
+   * is what it always was.
+   *
+   * **Nothing changes for a foreign pane that herdr started**, and that is
+   * why the flip did not lose those: herdr names its panes
+   * `butchr-<type>-<key>` already, so the derived name equals the one this
+   * function used to copy. The two disagree only for an agent CrabCast
+   * started — exactly the population this runtime creates.
+   */
   private censusRecords(): HerdrAgentRecord[] {
     const rows = [...this.census.rows, ...this.census.foreign];
-    return rows.map((row) => ({
-      name: row.paneName,
-      agentRuntime: row.agentRuntime,
-      workDir: row.workDir ?? row.path,
-      herdrStatus: asHerdrStatus(row.herdrStatus)
-    }));
+    return rows.map((row) => {
+      const address = addressForPath(row.workDir ?? row.path);
+      return {
+        name: address ? agentNameFor(address.type, address.key) : row.paneName,
+        agentRuntime: row.agentRuntime,
+        workDir: row.workDir ?? row.path,
+        herdrStatus: asHerdrStatus(row.herdrStatus)
+      };
+    });
   }
 
   private readCensus(frame: Record<string, unknown>): Census {
@@ -1245,7 +1292,12 @@ export class CrabCastRuntime implements AgentRuntime {
         herdrStatus: typeof r.herdrStatus === 'string' ? r.herdrStatus : null,
         agentRuntime: typeof r.agentRuntime === 'string' ? r.agentRuntime : null,
         state: typeof r.state === 'string' ? r.state : null,
-        workDir: typeof r.workDir === 'string' ? r.workDir : null
+        workDir: typeof r.workDir === 'string' ? r.workDir : null,
+        createdAt: typeof r.createdAt === 'string' ? r.createdAt : null,
+        launcher:
+          typeof (r.config as Record<string, unknown> | undefined)?.launcher === 'string'
+            ? ((r.config as Record<string, unknown>).launcher as string)
+            : null
       };
     };
     const agents = Array.isArray(frame.agents) ? frame.agents.map(toRow) : [];
@@ -1259,6 +1311,98 @@ export class CrabCastRuntime implements AgentRuntime {
     };
   }
 
+  /**
+   * Rebuild a session record for every agent CrabCast is still running that
+   * this daemon has no session for — the restart repair (KAN-346).
+   *
+   * ## What a Butchr daemon restart actually costs under this runtime
+   *
+   * The session map dies with the process and the agents do not: they are
+   * CrabCast's panes, in CrabCast's process. `HerdrBridge` meets the same state
+   * and heals from it by a route this runtime does not have — the sidepanel
+   * re-activates on sight, and `spawnSession` there finds the live pane and
+   * re-attaches to it. Calling `spawnSession` here would instead
+   * `configure_agent` + `activate_agent`, which starts the agent **fresh**:
+   * `task/KAN-275` lost its whole conversation that way at the 10:58Z flip and
+   * its PR had to be merged by a non-author. So healing has to be a read, and
+   * this is it.
+   *
+   * ## Only `census.rows`, never `census.foreign`, and the line is load-bearing
+   *
+   * A foreign pane is one CrabCast can *see* and does not *own*: no
+   * `sessionId`, so nothing addresses its pty over the wire, and no config, so
+   * nothing says what it expects. Adopting one would manufacture a session id
+   * that resolves to nothing and hand the extension a terminal that renders
+   * forever — a fabrication dressed as a repair. They keep reporting
+   * `sessionless: true`, honestly, and {@link describeAgent} still answers for
+   * them.
+   *
+   * **That distinction is the whole answer to why the flip stranded
+   * everything.** Every agent alive at 10:58Z had been started by herdr, so
+   * CrabCast held all of them as foreign panes and none as its own — measured,
+   * in `fixtures/crabcast-v4-short-census.json`, where `agents` is `[]` and all
+   * five Butchr agents sit under `foreignPanes`. Nothing in this method would
+   * have rescued that fleet, and nothing could have: the panes were never
+   * CrabCast's to serve. It rescues the fleet a CrabCast daemon *started*,
+   * which is the fleet that exists after a cutover rather than during one.
+   *
+   * ## What is adopted and what is left to the registry
+   *
+   * `sessionId`, `createdAt`, `status`, `workDir` and the pty address all come
+   * off the row — read, not invented, and a row missing any of them is skipped
+   * rather than filled in. **`url` is not there and cannot be**: it is a Butchr
+   * concept CrabCast has no field for and we never send, so an adopted session
+   * carries none and `router.ts` restores it from the durable agent registry,
+   * which recorded it at activation. Two fields, two sources, and neither one
+   * falls out of the other.
+   */
+  private adoptFromCensus(): void {
+    for (const row of this.census.rows) {
+      // `state` is CrabCast's word for whether the pane is up. Anything else —
+      // configured-but-unstarted, stopped, refused — is not a session, and
+      // `unstartedAgents` is precisely where the incident found `task/KAN-275`.
+      if (row.state !== 'running') continue;
+      // No remote id, no pty, no adoption. `remoteFor` is what `ensureMirror`
+      // needs, and a session that cannot serve a terminal is the exact thing
+      // this ticket exists to stop reporting.
+      if (!row.sessionId) continue;
+      // Not a time we may guess. See CensusRow.createdAt.
+      if (!row.createdAt) continue;
+      const dir = row.workDir ?? row.path;
+      const address = addressForPath(dir);
+      if (!address) continue; // a CrabCast agent outside Butchr's tree; not ours
+      if (this.sessionForAddress(address.type, address.key)) continue; // already held
+
+      const createdAt = new Date(row.createdAt);
+      if (Number.isNaN(createdAt.getTime())) continue;
+
+      const sessionId = `${address.type}-${address.key.toLowerCase()}-${createdAt.getTime()}`;
+      const session: HerdrSession = {
+        sessionId,
+        type: address.type,
+        key: address.key,
+        // No `url`. It is not on the row and never was — see the docblock.
+        createdAt,
+        status: 'active',
+        workDir: dir,
+        ptyBuffer: '',
+        onDataListeners: [],
+        expectsRuntime: row.launcher !== 'shell',
+        adopted: true
+      };
+      this.sessions.set(sessionId, session);
+      // The half that makes the terminal work: every pty verb goes through
+      // `remoteFor`, so without this the adopted session would look attached
+      // and render nothing.
+      this.remoteIds.set(sessionId, row.sessionId);
+      this.log(
+        `adopted ${agentNameFor(address.type, address.key)} from the census as ${sessionId} ` +
+          `(CrabCast session ${row.sessionId}, created ${row.createdAt}). This daemon did not ` +
+          `start it; no url is claimed, because CrabCast has no field for one.`
+      );
+    }
+  }
+
   private startCensus(): void {
     const tick = () => {
       if (!this.link.connected) {
@@ -1268,8 +1412,10 @@ export class CrabCastRuntime implements AgentRuntime {
       void this.link
         .request({ action: 'list_agents' })
         .then((res) => {
-          if (res.success === true) this.census = this.readCensus(res);
-          else this.census = { ...this.census, reachable: false };
+          if (res.success === true) {
+            this.census = this.readCensus(res);
+            this.adoptFromCensus();
+          } else this.census = { ...this.census, reachable: false };
         })
         .catch(() => {
           this.census = { ...this.census, reachable: false };

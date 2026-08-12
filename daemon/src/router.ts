@@ -2993,7 +2993,11 @@ export class MessageRouter {
         sessionId: null,
         type: described.type,
         key,
-        url: null,
+        // Read from the durable registry, not invented — see {@link
+        // recordedUrlFor} and the longer note on the same field in
+        // `surveyAgents`. This is the Info tab, so it is where a human meets a
+        // stranded agent first.
+        url: this.recordedUrlFor(described.agentName) ?? null,
         createdAt: null,
         status: null,
         workDir: described.workDir,
@@ -3102,7 +3106,13 @@ export class MessageRouter {
       sessionId: session.sessionId,
       type: session.type,
       key: session.key,
-      url: session.url,
+      // The session's own url wins; the registry answers when it has none
+      // (KAN-346). A session adopted from a runtime's census has no url by
+      // construction — CrabCast has no field for one — so without this
+      // fallback the restart repair would hand back an addressable session
+      // bound to nothing. See {@link recordedUrlFor}: this is a read of what
+      // the activation wrote down, never a url derived from the key.
+      url: session.url ?? this.recordedUrlFor(agentNameFor(session.type, session.key)),
       createdAt: session.createdAt.toISOString(),
       status: session.status,
       workDir: session.workDir,
@@ -4814,6 +4824,51 @@ export class MessageRouter {
     return this.agentRegistry?.intents().get(agentName)?.record.key;
   }
 
+  /**
+   * The page this agent was bound to, as the durable registry recorded it at
+   * activation — the half of KAN-346 that is not the runtime's to fix.
+   *
+   * ## Why this is a read and not a new write
+   *
+   * `url` was already being persisted. `rememberActivated` has written
+   * `AgentRecord.url` on every activation since the registry existed, and
+   * `reconcile.ts` reads it back to restore a fleet after a power cut. **What
+   * was missing was this direction**: every row `list_agents` and
+   * `agent_status` built for an agent with no session hardcoded `url: null`,
+   * and the comment above it called that honesty — *"no url the agent was
+   * bound to … filling them in to match the attached shape would be a
+   * fabrication."* That reasoning is right about a session fact and wrong about
+   * this one. **A url is not a session fact.** It is an argument of the
+   * activation, it is on disk, it survives the daemon that recorded it, and
+   * reporting it is a read rather than an invention.
+   *
+   * `activatedBy` on the very same row is the precedent and says so in its own
+   * comment: *"the registry outlives the session map, which is the whole reason
+   * an agent that survived a daemon restart still knows who staffed it."* The
+   * same sentence is true of `url` and nobody had written it down.
+   *
+   * ## What it still refuses to do
+   *
+   * Answer for an agent the registry never recorded. `undefined` here means
+   * *nothing was written down*, and callers render that as `null` — the same
+   * answer they gave before, for the one population where it was the true one.
+   * Nothing is derived from the key, and no url is constructed: an agent
+   * activated without one had none, and `handleActivateByKey` is explicit that
+   * *"a fabricated link is worse than no link."*
+   *
+   * ## Both runtimes, and that is the point
+   *
+   * This is not CrabCast-specific. A `HerdrBridge` fleet that outlives its
+   * daemon reports the same `url: null` on the same row and has always done so;
+   * it is merely less visible there, because the sidepanel re-activates on
+   * sight and a spawned session carries the browser's own url within seconds.
+   * Fixing it here fixes it for the runtime that heals and the runtime that
+   * does not.
+   */
+  public recordedUrlFor(agentName: string): string | undefined {
+    return this.agentRegistry?.intents().get(agentName)?.record.url;
+  }
+
   private surveyAgents(): {
     agents: ListedAgent[];
     unbackedPanes: UnbackedPane[];
@@ -4917,15 +4972,25 @@ export class MessageRouter {
       }
 
       // Session-only fields are null, not invented. There is no session id to
-      // report, no url the agent was bound to and no creation time we saw —
-      // filling them in to match the attached shape would be a fabrication.
+      // report and no creation time we saw — filling those in to match the
+      // attached shape would be a fabrication.
+      //
+      // **`url` LEFT THIS LIST AT KAN-346, and the reason is that it was never
+      // a session-only field.** It is an argument of the activation, written to
+      // the durable registry at the time and read back by `reconcile.ts` to
+      // restore a fleet after a power cut — so answering `null` here was not
+      // refusing to invent, it was declining to read something already on disk.
+      // `activatedBy`, two lines below, has always been read that way and gives
+      // the reason in as many words. See {@link recordedUrlFor}; an agent the
+      // registry never recorded still answers `null`, which is the population
+      // that sentence was actually true of.
       agents.push({
         sessionless: true,
         agentName: record.name,
         sessionId: null,
         type: address.type,
         key: address.key,
-        url: null,
+        url: this.recordedUrlFor(record.name) ?? null,
         createdAt: null,
         status: null,
         workDir: record.workDir,
