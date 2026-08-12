@@ -1488,7 +1488,7 @@ export class MessageRouter {
         this.handleSendToAgent(data, respond);
         break;
       case 'tail_agent':
-        this.handleTailAgent(data, respond);
+        void guard(this.handleTailAgent(data, respond), 'tail_agent');
         break;
       case 'agent_status':
         this.handleAgentStatus(data, respond);
@@ -2919,7 +2919,7 @@ export class MessageRouter {
    * The tail of an agent's terminal — how a supervisor finds out *why* an
    * agent is in the state it reports, without attaching to its pane.
    */
-  private handleTailAgent(data: any, respond: Respond) {
+  private async handleTailAgent(data: any, respond: Respond) {
     const { key, type, lines } = data;
     const fail = (error: string) =>
       respond({ action: 'tail_agent_response', success: false, error });
@@ -2935,10 +2935,18 @@ export class MessageRouter {
     }
 
     try {
+      // THE `await` IS INSIDE THE `try`, WHICH IS THE WHOLE POINT OF NOT
+      // SIMPLIFYING THIS (KAN-283). `tailAgent` is `Promise`-returning now, so
+      // a rejection is only catchable here if it is awaited *within* the block
+      // — `try { respond({...spread}) }` around an un-awaited call would spread
+      // a Promise's own enumerable properties (there are none), answer
+      // `success: undefined` with no `text`, and leave the rejection unhandled.
+      // The client would read that as a failed read of a pane nobody looked at.
+      const tail = await this.herdrBridge.tailAgent(key, type, lines);
       respond({
         action: 'tail_agent_response',
         key,
-        ...this.herdrBridge.tailAgent(key, type, lines)
+        ...tail
       });
     } catch (err: any) {
       fail(err?.message ?? String(err));

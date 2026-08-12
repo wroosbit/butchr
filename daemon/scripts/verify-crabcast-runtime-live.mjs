@@ -44,10 +44,14 @@
 //     it does not prove the daemon's own routers behave once one is installed.
 //     Nothing covers that, because nothing is migrated onto this runtime by
 //     KAN-278 and there is nothing yet to observe.
-//   - **`tailAgent`, `pressPaneKey`, `resetWorkspace`, `setAgentSpawnedListener`.**
-//     All four are `absent` or `different-shaped` on purpose; the switch script
-//     asserts they refuse honestly, and asserting them here would be asserting
-//     the same thing twice.
+//   - **`pressPaneKey`, `resetWorkspace`, `setAgentSpawnedListener`.** All three
+//     are `absent` or `different-shaped` on purpose; the switch script asserts
+//     they refuse honestly, and asserting them here would be asserting the same
+//     thing twice. **`tailAgent` was the fourth entry on this list and is now
+//     section 4c** — KAN-283 made the interface async and the method is served
+//     over the wire, so it moved from "refuses honestly" to "must be shown
+//     working against a real peer", which is this script's job rather than the
+//     switch script's.
 //   - **A `channelEnabled: true` spawn, and the `null` state.** Section 4b
 //     asserts the field arrives and that it is `false`, which is what a spawn
 //     this adapter makes is entitled to be — nothing here asks CrabCast for its
@@ -116,13 +120,24 @@ function paneLetters(raw) {
     .replace(/[^A-Za-z]/g, '');
 }
 
-/** Poll until `fn()` is truthy or the budget runs out. Returns what it saw. */
+/**
+ * Poll until `fn()` is truthy or the budget runs out. Returns what it saw.
+ *
+ * **`fn` MAY BE ASYNC, AND THE `await` IS WHY (KAN-283).** Section 4c polls a
+ * tail, which is `Promise`-returning now. Without the `await` below, an async
+ * predicate would return a *Promise* — truthy on the first evaluation whatever it
+ * eventually resolves to — so this would exit immediately and hand back a
+ * pending promise as if the condition had been met. That is the same defect
+ * `verify-tail-async-awaited.mjs` exists for, in the helper rather than in the
+ * daemon. Awaiting a non-promise is a no-op, so every synchronous caller here is
+ * unaffected.
+ */
 async function until(fn, budgetMs, stepMs = 250) {
   const deadline = Date.now() + budgetMs;
-  let last = fn();
+  let last = await fn();
   while (!last && Date.now() < deadline) {
     await sleep(stepMs);
-    last = fn();
+    last = await fn();
   }
   return last;
 }
@@ -351,6 +366,110 @@ check(
     peer: contract.peerContractVersion,
     pinned: contract.pinnedContractVersion
   })
+);
+
+// ── 4c. tailAgent, served over the socket for the first time ───────────────
+rule('4c. tailAgent — a real tail, over the wire, through the async signature (KAN-283)');
+
+// THIS SECTION IS WHY KAN-283 EXISTS, AND IT IS THE ONE THING NO FAKE CAN OWN.
+// Under KAN-278 this method refused: `AgentRuntime.tailAgent` was synchronous and
+// a socket cannot answer a synchronous call, while CrabCast's `tail_agent`
+// answered `text`, `truncated`, `source` and `sourcesTried` all along. The data
+// was there and our signature could not reach it. The interface is
+// `Promise`-returning now, so this asks the real daemon and reads what comes
+// back.
+//
+// `verify-tail-async-awaited.mjs` is the CI-runnable sibling and it proves a
+// different thing: that every call site awaits, and what an un-awaited read
+// degrades to. It has no peer and cannot establish that a tail crosses the wire.
+// **That is this section's half, and neither script claims the other's.**
+//
+// The marker was echoed by section 4 through `sendToAgent`, so what is asserted
+// here is a round trip through two different CrabCast verbs: we typed it with
+// one and we are reading it back with the other.
+const tailed = await until(
+  async () => {
+    const t = await runtime.tailAgent(KEY, TYPE, 60);
+    return t.success === true && paneLetters(String(t.text ?? '')).includes('KANSENDOK')
+      ? t
+      : null;
+  },
+  20_000
+);
+
+check(
+  'tailAgent SUCCEEDED — it no longer refuses, and this is the KAN-278 gap closing',
+  tailed !== null && tailed.success === true,
+  tailed === null
+    ? 'no successful tail carrying the marker within 20s. If `success` is false, read the ' +
+      'refusal: a `not found` means CrabCast has no agent at that path, which is the one ' +
+      'limit this method has — they can only tail an agent they configured themselves.'
+    : JSON.stringify({ ...tailed, text: `<${String(tailed.text).length} chars>` })
+);
+
+if (tailed) {
+  check(
+    'the text is a real pane read, not an empty string standing in for one',
+    typeof tailed.text === 'string' && tailed.text.length > 0,
+    `text length ${String(tailed.text ?? '').length}`
+  );
+  check(
+    "it echoes the marker section 4 typed — one round trip, two of CrabCast's verbs",
+    paneLetters(tailed.text).includes('KANSENDOK'),
+    paneLetters(tailed.text).slice(-160)
+  );
+  // `source` IS THE FIELD WORTH CHECKING RATHER THAN THE TEXT, because it is the
+  // one where their vocabulary and ours could have diverged silently. They
+  // answer from the same `'recent-unwrapped' | 'visible'` pair `TAIL_SOURCES`
+  // declares, and the adapter narrows anything else to `null` — so an
+  // unrecognised value shows up here as a failure rather than being smuggled
+  // through the type.
+  check(
+    'source names one of OUR two read sources — their vocabulary still matches ours',
+    tailed.source === 'recent-unwrapped' || tailed.source === 'visible',
+    `source=${JSON.stringify(tailed.source)}; a null here means CrabCast named a source this ` +
+      'adapter does not recognise, which is a divergence to report to KAN-59 rather than to paper over'
+  );
+  check(
+    'sourcesTried came back and is a subset of ours',
+    Array.isArray(tailed.sourcesTried) &&
+      tailed.sourcesTried.length > 0 &&
+      tailed.sourcesTried.every((s) => s === 'recent-unwrapped' || s === 'visible'),
+    JSON.stringify(tailed.sourcesTried)
+  );
+  console.log(
+    `\n   source=${JSON.stringify(tailed.source)} ` +
+      `truncated=${JSON.stringify(tailed.truncated)} ` +
+      `sourcesTried=${JSON.stringify(tailed.sourcesTried)}\n`
+  );
+  console.log('   ── the real pane, as CrabCast read it ──');
+  console.log(
+    String(tailed.text)
+      .split('\n')
+      .filter((l) => l.trim().length)
+      .slice(-8)
+      .map((l) => `   | ${l}`)
+      .join('\n')
+  );
+  console.log('   ───────────────────────────────────────\n');
+}
+
+// A READ THAT COULD NOT BE MADE IS STILL `success: false`, and it must not have
+// acquired a `text` on the way. This is the half of the contract that going
+// async could have quietly lost: an implementation with a wire to fail on is
+// exactly the one tempted to answer `text: ''`.
+const absent = await runtime.tailAgent('kan-283-no-such-agent-anywhere', TYPE, 20);
+check(
+  'an agent CrabCast does not know is a FAILED READ, never an empty pane',
+  absent.success === false && absent.text === undefined,
+  JSON.stringify(absent)
+);
+check(
+  'and the refusal names the leg and offers the herdr runtime as the remedy',
+  typeof absent.error === 'string' &&
+    /refused by [a-z-]+:/.test(absent.error) &&
+    /herdr runtime/.test(absent.error),
+  absent.error
 );
 
 // ── 5. teardown reaches the session-ended listener ─────────────────────────
