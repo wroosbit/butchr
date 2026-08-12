@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 73 |
+| `yes` | 74 |
 | `partial` | 7 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **97** |
+| **total** | **98** |
 
-**80 of 97** run on every pull request.
+**81 of 98** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -107,8 +107,8 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-operative-rules-are-carried` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-parentage-in-list-agents` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-per-epic-supervision` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
-| `verify-pr-watch` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal, and no network (§1 replays RECORDED `gh` output; §2-6 stub the reader). |
 | `verify-pr-watch-readiness` | yes | imports the built daemon modules and asserts in process, with no live daemon, no herdr, no credential, no network and no terminal. §1 replays a RECORDED fixture; §2-§5 stub the GitHub reader. |
+| `verify-pr-watch` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal, and no network (§1 replays RECORDED `gh` output; §2-6 stub the reader). |
 | `verify-prompt-poller-seam` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-prompt-provenance-stamp` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-staleness-check` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
