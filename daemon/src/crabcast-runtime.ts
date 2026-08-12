@@ -12,6 +12,8 @@ import {
   workspaceDirFor,
   workspacesRoot,
   type AgentPresence,
+  type CensusReading,
+  type CensusUnreadableRecord,
   type HerdrAgentDescription,
   type HerdrAgentRecord,
   type HerdrAgentStatus,
@@ -106,7 +108,35 @@ interface Census {
   rows: CensusRow[];
   /** Panes CrabCast can see but does not own. Read for `describeAgent`. */
   foreign: CensusRow[];
+  /**
+   * `list_agents.unreadableRecordsTotal`, read at read-path contract v4
+   * (KAN-324). `null` means the frame carried no disclosure — a peer below v4,
+   * or a census that was never taken. **Never defaulted to `0`**: see
+   * {@link CensusReading}.
+   */
+  unreadableRecordsTotal: number | null;
+  /** `list_agents.unreadableRecords`, narrowed to what Butchr may carry. */
+  unreadableRecords: CensusUnreadableRecord[];
 }
+
+/**
+ * The empty census — what this runtime holds before it has read one, and what
+ * every failure path falls back to.
+ *
+ * Its disclosure is `null` rather than `0`, and that is the point of it being a
+ * named constant rather than an object literal repeated at five call sites: a
+ * literal is where somebody writes `0` because it looks tidier, and `0` there
+ * is the claim *"a census was taken and found nothing skipped"* about a census
+ * that did not happen.
+ */
+const NO_CENSUS: Census = {
+  reachable: false,
+  at: 0,
+  rows: [],
+  foreign: [],
+  unreadableRecordsTotal: null,
+  unreadableRecords: []
+};
 
 const HERDR_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 'done', 'unknown'];
 
@@ -193,6 +223,74 @@ export function readChannelEnabled(frame: Record<string, unknown>): boolean | nu
   return typeof value === 'boolean' ? value : null;
 }
 
+/**
+ * Read read-path contract v4's skipped-row disclosure off a `list_agents` or
+ * `daemon_status` frame (KAN-324), **without collapsing its third state**.
+ *
+ * ## What this is reading, and why an additive change needed any code at all
+ *
+ * v4 added `unreadableRecords` and `unreadableRecordsTotal` to both calls
+ * because CrabCast's KAN-302 changed what an unreadable registry row does:
+ * their daemon used to refuse to start on one and now starts and **skips** it.
+ * So from v4 onward a census can be *short*, and at v3 there was no field that
+ * could say so. Measured on this machine against a peer at `6258ded`:
+ * `agents: []`, `configuredAgents: 0`, `unreadableRecordsTotal: 1` — an empty
+ * fleet and a one-row-short fleet, identical on every field a v3 consumer
+ * reads. CrabCast put the counts and the disclosure adjacent for exactly this
+ * reason: **a count that silently excludes what it could not read is the
+ * defect, one field to the left.**
+ *
+ * ## Why this is a function and not `frame.unreadableRecordsTotal ?? 0`
+ *
+ * Because that expression is the defect, and it is the *silent* kind — the same
+ * one {@link readChannelEnabled} exists to refuse, in the same shape. `?? 0`
+ * turns **"this peer disclosed nothing"** into **"this peer disclosed that
+ * nothing was skipped"**, and those are opposite claims about how far the agent
+ * count can be trusted. It is green against every v4 peer anybody tests with,
+ * because a v4 peer sends the field; it is wrong only against the v3 peer this
+ * adapter is still expected to meet — and wrong in the direction of looking
+ * clean.
+ *
+ * So: a number is a disclosure, and **anything else is `null`**. A negative or
+ * non-integer total is not a count either — it is a shape nobody has seen, and
+ * reading it as a count would be guessing while reading it as `0` would be the
+ * collapse.
+ *
+ * ## The total is not the array's length, and must not be derived from it
+ *
+ * Both are read, separately, and the total wins. CrabCast caps the detail rows
+ * it returns on other lists in this same frame (`pages.*.limit` is 25), so a
+ * length that had silently stopped at a cap would read as *"that is all of
+ * them"* — which is this ticket's own defect, reproduced inside the field
+ * written to disclose it. `unreadableRecords` is therefore evidence about the
+ * rows it names and never a count of the rows there are.
+ */
+export function readUnreadableDisclosure(frame: Record<string, unknown>): {
+  unreadableRecordsTotal: number | null;
+  unreadableRecords: CensusUnreadableRecord[];
+} {
+  const total = frame.unreadableRecordsTotal;
+  const rows = Array.isArray(frame.unreadableRecords) ? frame.unreadableRecords : [];
+
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+
+  return {
+    unreadableRecordsTotal:
+      typeof total === 'number' && Number.isInteger(total) && total >= 0 ? total : null,
+    unreadableRecords: rows.map((raw) => {
+      const r = (raw ?? {}) as Record<string, unknown>;
+      return {
+        source: 'crabcast-registry' as const,
+        line: typeof r.line === 'number' && Number.isInteger(r.line) ? r.line : null,
+        problem: str(r.problem),
+        identity: str(r.identity),
+        reason: str(r.reason)
+        // `raw` is deliberately not carried. See CensusUnreadableRecord.
+      };
+    })
+  };
+}
+
 export interface CrabCastRuntimeOptions {
   link: CrabCastLink;
   /** How often the census is refreshed while connected. */
@@ -221,7 +319,7 @@ export class CrabCastRuntime implements AgentRuntime {
   private readonly channelEnabled = new Map<string, boolean | null>();
   private readonly ptyMirrors = new Map<string, PtyMirror>();
 
-  private census: Census = { reachable: false, at: 0, rows: [], foreign: [] };
+  private census: Census = NO_CENSUS;
   private censusTimer: NodeJS.Timeout | null = null;
 
   private sessionEndedListener: ((event: SessionEndedEvent) => void) | null = null;
@@ -620,13 +718,26 @@ export class CrabCastRuntime implements AgentRuntime {
     return this.censusRecords();
   }
 
-  listHerdrAgentsChecked(): { reachable: boolean; agents: HerdrAgentRecord[] } {
+  listHerdrAgentsChecked(): CensusReading {
     // The distinction this method exists for survives intact here, and it is
     // the one CrabCast's north star 2 and Butchr's both insist on: `reachable`
     // is a claim about whether the census could be TAKEN, never about whether
     // it found anything.
-    if (!this.link.connected) return { reachable: false, agents: [] };
-    return { reachable: this.census.reachable, agents: this.censusRecords() };
+    //
+    // KAN-324 adds a second distinction of the same species one level down:
+    // `agents` is what the census found, and `unreadableRecordsTotal` is how
+    // much of the registry it could not look at. A disconnected link discloses
+    // `null` for the same reason it reports no agents — there is no reading to
+    // qualify, and `0` would claim there was one.
+    if (!this.link.connected) {
+      return { reachable: false, agents: [], unreadableRecordsTotal: null, unreadableRecords: [] };
+    }
+    return {
+      reachable: this.census.reachable,
+      agents: this.censusRecords(),
+      unreadableRecordsTotal: this.census.unreadableRecordsTotal,
+      unreadableRecords: this.census.unreadableRecords
+    };
   }
 
   listHerdrStatuses(): Map<string, HerdrAgentStatus> {
@@ -973,7 +1084,13 @@ export class CrabCastRuntime implements AgentRuntime {
     };
     const agents = Array.isArray(frame.agents) ? frame.agents.map(toRow) : [];
     const foreign = Array.isArray(frame.foreignPanes) ? frame.foreignPanes.map(toRow) : [];
-    return { reachable: true, at: Date.now(), rows: agents, foreign };
+    return {
+      reachable: true,
+      at: Date.now(),
+      rows: agents,
+      foreign,
+      ...readUnreadableDisclosure(frame)
+    };
   }
 
   private startCensus(): void {
@@ -1026,6 +1143,15 @@ export class CrabCastRuntime implements AgentRuntime {
     censusAgeMs: number | null;
     censusReachable: boolean;
     /**
+     * Rows the last census could not read, and therefore did not count
+     * (KAN-324). **`censusReachable: true` with a non-zero total here is a
+     * census that was taken and is short** — the one state a v3-proved adapter
+     * could not express, and the reason this field is on the operator report
+     * rather than only in a log line. `null` is no disclosure at all.
+     */
+    censusUnreadableRecordsTotal: number | null;
+    censusUnreadableRecords: CensusUnreadableRecord[];
+    /**
      * One entry per session this adapter started, with the spawn's channel
      * verdict. **Counted three ways rather than summed into a boolean** — a
      * count of "channel-enabled agents" would have to decide what to do with
@@ -1046,6 +1172,8 @@ export class CrabCastRuntime implements AgentRuntime {
       ptyMirrors: this.ptyMirrors.size,
       censusAgeMs: this.census.at ? Date.now() - this.census.at : null,
       censusReachable: this.census.reachable,
+      censusUnreadableRecordsTotal: this.census.unreadableRecordsTotal,
+      censusUnreadableRecords: this.census.unreadableRecords,
       channelEnabled: tally
     };
   }

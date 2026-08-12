@@ -393,6 +393,91 @@ export interface HerdrAgentRecord {
   herdrStatus: HerdrAgentStatus;
 }
 
+/**
+ * One row a census could not read, and therefore did not count (KAN-324).
+ *
+ * **Deliberately does not carry the row's raw text.** CrabCast's own
+ * `unreadableRecords[].raw` is the registry line verbatim, with a
+ * `promptRedacted` flag beside it because a registry row can hold an agent's
+ * prompt. Butchr's `list_agents_response` is read by every agent on the
+ * machine, so copying an unbounded verbatim row onto it would move content
+ * across a boundary the disclosure never needed to cross. What a reader has to
+ * act on is *that* a row was skipped, which one, and why — all three are here.
+ * The verbatim row stays where it already is, one `crabcast daemon-status`
+ * away.
+ */
+export interface CensusUnreadableRecord {
+  /** Which leg could not read the row. The headline of any rendering. */
+  source: 'crabcast-registry' | 'herdr-census';
+  /** 1-based line in the source registry, where the source has lines. */
+  line: number | null;
+  /** The source's own machine-readable classification, verbatim. */
+  problem: string | null;
+  /** The best identifier that survived the row, where one did. */
+  identity: string | null;
+  /** The source's own explanation, verbatim. Never synthesised here. */
+  reason: string | null;
+}
+
+/**
+ * A census reading: the agents, whether it could be taken, **and what it could
+ * not read**.
+ *
+ * ## Why the qualifier is on this type rather than beside it
+ *
+ * Because an agent count published without it is the defect (KAN-324). Before
+ * CrabCast's KAN-302 a registry row their daemon could not read made it refuse
+ * to start; now it starts and *skips*, so a census answers a **shorter list
+ * with nothing saying it is short** — `agents: []` is byte-for-byte what an
+ * empty fleet reads. That is this codebase's recurring shape: a claim true of
+ * part of its subject read as true of all of it.
+ *
+ * Putting {@link unreadableRecordsTotal} in the same returned object as
+ * {@link agents} is the same argument {@link reachable} already makes here, and
+ * for the same reason: they are two halves of one reading, and asking for the
+ * second as a separate call would let the world move between them. A caller
+ * cannot hold the count without also holding what qualifies it.
+ *
+ * **And it is required rather than optional on purpose.** An optional field is
+ * one a future runtime can omit and still compile, which puts the silent-short
+ * census back one implementation later. Required means a runtime that cannot
+ * disclose has to say so — in `null`, below — rather than say nothing.
+ *
+ * ## `null` is a third state and must not be collapsed to `0`
+ *
+ * `?? 0` is the defect in one operator: it turns *"nobody disclosed"* into
+ * *"there were none"*, which is the exact false reassurance this field exists
+ * to remove. The same collapse was already caught once on `channelEnabled` (see
+ * `readChannelEnabled` in `crabcast-runtime.ts`), and it degrades the same way
+ * — toward looking clean.
+ *
+ * - `number` — this reading carries a disclosure. `0` means *nothing was
+ *   skipped*, and **that is what makes the agent count trustworthy.**
+ * - `null` — no disclosure reached us. Either the census could not be taken at
+ *   all, or the peer publishes none (a CrabCast below read-path contract v4).
+ *   The count may still be short; nothing here says it is not.
+ */
+export interface CensusReading {
+  /** Whether the census could be TAKEN. Never a claim about what it found. */
+  reachable: boolean;
+  agents: HerdrAgentRecord[];
+  /**
+   * How many rows the source could not read, or `null` for no disclosure.
+   *
+   * **The total, not `unreadableRecords.length`.** A source is free to cap the
+   * detail rows it returns; a length that silently stopped at that cap would
+   * read as "that is all of them", which is the defect one field to the left.
+   */
+  unreadableRecordsTotal: number | null;
+  /**
+   * The rows themselves, where the source disclosed them. Always present and
+   * empty rather than absent — "nothing was skipped" and "this runtime does not
+   * track that" are different answers, and {@link unreadableRecordsTotal} is
+   * the field that tells them apart.
+   */
+  unreadableRecords: CensusUnreadableRecord[];
+}
+
 export class HerdrBridge implements AgentRuntime {
   private sessions: Map<string, HerdrSession> = new Map();
 
@@ -1105,8 +1190,28 @@ export class HerdrBridge implements AgentRuntime {
    * die between the two — producing exactly the false verdict the distinction
    * exists to prevent. `reachable: false` means the list below is silence, not
    * evidence, and nothing may be declared dead on the strength of it.
+   *
+   * ## The row filter had the KAN-324 defect too, and now discloses
+   *
+   * The `.filter` below drops any row without a usable `name`, and until KAN-324
+   * it dropped them **silently** — the same shape the ticket was filed about on
+   * CrabCast's side, one layer up and in our own code. herdr publishes no
+   * disclosure of its own, so the count is this method's: it is the rows this
+   * bridge threw away, counted where they are thrown away.
+   *
+   * **`null` where the census was not taken, never `0`.** A herdr that did not
+   * answer skipped nothing *and read nothing*, so `0` there would be a claim
+   * about a census that never happened.
    */
-  public listHerdrAgentsChecked(): { reachable: boolean; agents: HerdrAgentRecord[] } {
+  public listHerdrAgentsChecked(): CensusReading {
+    /** No census, therefore no disclosure. `0` would be a claim about a read that did not occur. */
+    const unread: CensusReading = {
+      reachable: false,
+      agents: [],
+      unreadableRecordsTotal: null,
+      unreadableRecords: []
+    };
+
     let output: string;
     try {
       output = execSync('herdr agent list', {
@@ -1115,27 +1220,49 @@ export class HerdrBridge implements AgentRuntime {
         stdio: ['ignore', 'pipe', 'ignore']
       });
     } catch (e) {
-      return { reachable: false, agents: [] };
+      return unread;
     }
 
     try {
-      const agents = JSON.parse(output)?.result?.agents;
-      if (!Array.isArray(agents)) return { reachable: false, agents: [] };
+      const rows = JSON.parse(output)?.result?.agents;
+      if (!Array.isArray(rows)) return unread;
+
+      const agents: HerdrAgentRecord[] = [];
+      const unreadable: CensusUnreadableRecord[] = [];
+
+      rows.forEach((agent: any, index: number) => {
+        if (!agent || typeof agent.name !== 'string') {
+          unreadable.push({
+            source: 'herdr-census',
+            // `herdr agent list` is a JSON array, not a line-oriented registry,
+            // so the position in that array is the only locator there is.
+            line: index + 1,
+            problem: 'no-name',
+            identity: null,
+            reason:
+              'this row carried no string `name`, and a census row without one cannot be ' +
+              'addressed, tailed or supervised. Naming it would be inventing the one value ' +
+              'that identifies it.'
+          });
+          return;
+        }
+        agents.push({
+          name: agent.name as string,
+          agentRuntime: typeof agent.agent === 'string' && agent.agent ? agent.agent : null,
+          workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
+          herdrStatus: toAgentStatus(agent.agent_status)
+        });
+      });
 
       return {
         reachable: true,
-        agents: agents
-          .filter((agent: any) => agent && typeof agent.name === 'string')
-          .map((agent: any) => ({
-            name: agent.name as string,
-            agentRuntime: typeof agent.agent === 'string' && agent.agent ? agent.agent : null,
-            workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
-            herdrStatus: toAgentStatus(agent.agent_status)
-          }))
+        agents,
+        unreadableRecordsTotal: unreadable.length,
+        unreadableRecords: unreadable
       };
     } catch (e) {
       console.error('[HerdrBridge] Could not parse `herdr agent list` output', e);
-      return { reachable: false, agents: [] };
+      return unread;
     }
   }
 
