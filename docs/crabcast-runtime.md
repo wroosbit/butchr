@@ -22,6 +22,23 @@ behaviour are claims about observations, and
   else** — see *What the contract does not hold* below.
 - **Butchr commit these line numbers were read at:** the branch of KAN-294.
 
+**KAN-283's additions were read at a DIFFERENT build, and this note is here
+rather than buried because the alternative is the mistake this document ends by
+confessing to.** The `tail_agent` observations — the ruling table's row 18, the
+`tail_agent_response` entry under *The fields this runtime branches on*, and the
+`sourcesTried` vocabulary match — come from a live daemon answering
+`build.commit: 6f47df7d05ebcb8593469c740d7b6dc2aa149b13` with
+`contractVersion: 6`. **That is three contract versions past the pin above**, and
+it was what happened to be running on this machine rather than something chosen.
+
+So: **those claims are claims about `6f47df7d`, not about `8d7348f`.** They are
+marked as such where they appear. The pin has deliberately **not** moved —
+`CRABCAST_PIN` still reads `8d7348f`, a mismatch is logged and never fatal, and
+moving it is a step with a notice behind it rather than a side effect of a ticket
+about our own signatures. What this means for a reader: if a `tail_agent` claim
+here disagrees with a daemon built at the pin, **the claim is the suspect**, and
+`verify-crabcast-runtime-live.mjs` §4c is what re-runs it.
+
 ---
 
 ## The transport: the daemon socket, not the CLI
