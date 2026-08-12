@@ -55,6 +55,26 @@ export interface HerdrSession {
    */
   resumedConversation?: boolean;
   /**
+   * Set when this session was **reconstructed from a runtime's census** rather
+   * than created by a spawn of this daemon's (KAN-346).
+   *
+   * A daemon restart empties the session map while the agents keep running, so
+   * every session-only field goes `null` and the extension has nothing to
+   * attach a terminal to. `HerdrBridge` never meets that state for long — the
+   * sidepanel re-activates on sight and its `spawnSession` re-attaches to the
+   * live pane — but a runtime that lives behind a socket has to rebuild the
+   * record from what the peer still holds. This flag is how a reader tells the
+   * two apart, because they are not the same claim: a spawned session was
+   * *watched* being created, and an adopted one is this daemon's reading of a
+   * row.
+   *
+   * **`true` or absent, never `false`.** The literal type is deliberate: a
+   * session that was spawned must not be *nameable* as `adopted: false` by some
+   * later author reaching for symmetry, because then two spellings would mean
+   * "spawned" and only one of them would be searchable.
+   */
+  adopted?: true;
+  /**
    * Whether a live agent runtime is what this session's launcher delivers.
    * False only for `shell`, where a bare prompt with no runtime behind the
    * pane is the delivered product — the same exemption router.ts's

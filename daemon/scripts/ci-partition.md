@@ -39,12 +39,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 69 |
-| `partial` | 6 |
+| `partial` | 7 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **92** |
+| **total** | **93** |
 
-**75 of 92** run on every pull request.
+**76 of 93** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -125,6 +125,7 @@ classification is the deliverable and the CI job is downstream of it.
 | script | class | reason |
 | --- | --- | --- |
 | `verify-crabcast-census-disclosure` | partial | sections 1-7 assert in CI. They stand up their own Unix socket and a fake `herdr` on PATH, and need no peer, no real herdr, no PTY, no credential and no network. Section 8 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
+| `verify-crabcast-session-restore` | partial | sections 1-4 assert in CI. They stand up their own Unix socket and their own agent registry under os.tmpdir(), and need no peer, no herdr, no PTY, no credential and no network. Section 5 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-jira-nudge-coalescing` | partial | the coalescing assertions run in CI. The CONTROL leg needs an `--unfixed` build to show the defect it prevents, and AC3d needs `--live`; both are skipped without them and both are named in the run output. |
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
