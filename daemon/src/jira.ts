@@ -299,8 +299,22 @@ export interface JiraTransport {
    * a `WritableJiraTransport` that every implementation would implement anyway:
    * the auth, the cloud-ID resolution and the gateway/site fallback are the
    * whole of what a transport is, and they are identical for both verbs.
+   *
+   * **KAN-293 renamed this from `post` and gave it two more parameters.** The
+   * rename is deliberate rather than cosmetic: a method called `post` that can
+   * also issue a `PUT` is a method whose name is a lie, and this interface is
+   * read by people deciding what the daemon's credential is able to do. The
+   * `product` parameter closes a real gap — the old signature could only ever
+   * reach Jira's base, so the first Confluence write would have gone to the
+   * wrong host.
    */
-  post(path: string, body: unknown, signal: AbortSignal): Promise<JiraResponse>;
+  write(
+    method: 'POST' | 'PUT',
+    path: string,
+    body: unknown,
+    signal: AbortSignal,
+    product?: TransportProduct
+  ): Promise<JiraResponse>;
   /** Non-secret description, safe for logs. */
   describe(): string;
 }
@@ -536,7 +550,7 @@ export class TokenJiraTransport implements JiraTransport {
   private async attempt(
     leg: 'gateway' | 'site',
     base: string,
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT',
     path: string,
     // `requestBody`, not `body`: the response body is destructured under that
     // name a few lines down, and two different bodies sharing one identifier in
@@ -636,13 +650,27 @@ export class TokenJiraTransport implements JiraTransport {
    * to the site host — would mean a write could succeed where a read failed or
    * the reverse, and the fleet would have two different answers to "is Atlassian
    * reachable". One router, both verbs.
+   *
+   * **KAN-293 gave it a product and a second verb, and both were bugs waiting
+   * to happen rather than features.** It hard-coded `'jira'`, which was correct
+   * while the only write was a Jira transition and would have quietly sent every
+   * Confluence write to Jira's gateway base the moment one existed. `PUT` is
+   * needed by exactly two operations — a Jira issue edit and a Confluence page
+   * update — and it is threaded through as data rather than added as a third
+   * method here, so the routing stays one function.
    */
-  public async post(path: string, body: unknown, signal: AbortSignal): Promise<JiraResponse> {
-    return this.request('POST', path, body, signal);
+  public async write(
+    method: 'POST' | 'PUT',
+    path: string,
+    body: unknown,
+    signal: AbortSignal,
+    product: TransportProduct = 'jira'
+  ): Promise<JiraResponse> {
+    return this.request(method, path, body, signal, product);
   }
 
   private async request(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT',
     path: string,
     body: unknown,
     signal: AbortSignal,
@@ -1135,8 +1163,14 @@ export class JiraClient {
    * distinction is asserted rather than assumed: see the write section of
    * `verify-atlassian-proxy-write-scope.mjs`.
    */
-  public async proxyWrite(path: string, body: unknown, signal: AbortSignal): Promise<JiraResponse> {
-    return this.transport.post(path, body, signal);
+  public async proxyWrite(
+    method: 'POST' | 'PUT',
+    path: string,
+    body: unknown,
+    signal: AbortSignal,
+    product: TransportProduct = 'jira'
+  ): Promise<JiraResponse> {
+    return this.transport.write(method, path, body, signal, product);
   }
 
   /**
@@ -1942,12 +1976,17 @@ export class JiraIssueTypeService {
    *
    * Never throws, like everything else this service exposes.
    */
-  public async proxyWrite(path: string, body: unknown): Promise<JiraProxyOutcome> {
-    return this.proxyCall('POST', path, body);
+  public async proxyWrite(
+    method: 'POST' | 'PUT',
+    path: string,
+    body: unknown,
+    product: TransportProduct = 'jira'
+  ): Promise<JiraProxyOutcome> {
+    return this.proxyCall(method, path, body, product);
   }
 
   private async proxyCall(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT',
     path: string,
     body: unknown,
     product: TransportProduct = 'jira'
@@ -1975,7 +2014,7 @@ export class JiraIssueTypeService {
     try {
       const client = new JiraClient(transport);
       const { status, body: responseBody, legs } = write
-        ? await client.proxyWrite(path, body, controller.signal)
+        ? await client.proxyWrite(method as 'POST' | 'PUT', path, body, controller.signal, product)
         : await client.proxyRead(path, controller.signal, product);
       // 204 included, which is how Jira reports a transition it performed. See
       // `JiraClient.proxyWrite` on why an empty body is a success shape here and

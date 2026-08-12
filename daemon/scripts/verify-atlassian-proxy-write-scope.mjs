@@ -100,15 +100,32 @@ const THE_WRITE = 'atlassian_transition_issue';
 // ── 1. the write grant is one operation, and this is what it is ────────────
 rule('1. the grant — exactly one write, one verb, one scope');
 
+// KAN-293 re-pointed both of these, and this file's own convention is to say
+// so rather than to present the new numbers as though they had always been
+// there. "Exactly one write" was KAN-291's grant and it is no longer true: the
+// content writes are the whole of KAN-293's slice. What replaces it is the
+// enumeration, exactly — a count is a thing that grows by one without anybody
+// noticing, and a named list is not.
 check(
-  `the whole table contains exactly one non-GET operation, and it is ${THE_WRITE}`,
-  PROXY_OPERATIONS.filter((op) => op.method !== 'GET').length === 1 &&
-    PROXY_OPERATIONS.filter((op) => op.method !== 'GET')[0].tool === THE_WRITE,
+  `the table's writes are exactly the ten expected, and ${THE_WRITE} is still among them`,
+  PROXY_OPERATIONS.filter((op) => op.method !== 'GET').map((op) => op.tool).sort().join(',') ===
+    [
+      'atlassian_add_comment',
+      'atlassian_add_worklog',
+      'atlassian_create_confluence_footer_comment',
+      'atlassian_create_confluence_inline_comment',
+      'atlassian_create_confluence_page',
+      'atlassian_create_issue',
+      'atlassian_create_issue_link',
+      'atlassian_edit_issue',
+      'atlassian_transition_issue',
+      'atlassian_update_confluence_page'
+    ].join(','),
   JSON.stringify(PROXY_OPERATIONS.filter((op) => op.method !== 'GET').map((op) => op.tool))
 );
 check(
-  'that operation is a POST — no PUT, PATCH or DELETE anywhere in the table',
-  PROXY_OPERATIONS.every((op) => op.method === 'GET' || op.method === 'POST'),
+  'no DELETE and no PATCH — the table can change content and cannot destroy it',
+  PROXY_OPERATIONS.every((op) => ['GET', 'POST', 'PUT'].includes(op.method)),
   JSON.stringify(PROXY_OPERATIONS.map((op) => [op.tool, op.method]))
 );
 // KAN-292 re-pointed this, and the re-pointing is itself the thing to read.
@@ -138,12 +155,24 @@ check(
     ]),
   JSON.stringify(grantedScopes('jira-write'))
 );
+// KAN-293 adds the second write scope this table has ever named, and it is
+// Confluence's. Kept as an exact comparison for the reason the paragraph above
+// gives: the value of this check is that it is exact.
 check(
-  'and write:jira-work is the ONLY write scope in the entire table',
+  'exactly two write scopes exist in the whole table, and they are the two expected',
   JSON.stringify(
-    [...new Set(PROXY_OPERATIONS.flatMap((op) => scopesOf(op)).filter((s) => /^write:/.test(s)))]
-  ) === JSON.stringify(['write:jira-work']),
+    [...new Set(PROXY_OPERATIONS.flatMap((op) => scopesOf(op)).filter((s) => /^write:/.test(s)))].sort()
+  ) === JSON.stringify(['write:confluence-content', 'write:jira-work']),
   JSON.stringify(PROXY_OPERATIONS.flatMap((op) => scopesOf(op)).filter((s) => /^write:/.test(s)))
+);
+// And the Confluence write scope must not reach the Jira write rung, which is
+// the ladder property stated as a scope rather than as a mode: an operator who
+// grants jira-write is granting a Jira credential and nothing about Confluence
+// content.
+check(
+  'jira-write does not require any Confluence write scope',
+  !grantedScopes('jira-write').some((scope) => /^write:confluence/.test(scope)),
+  JSON.stringify(grantedScopes('jira-write'))
 );
 // The write scope must never appear on a read mode. That would grant an
 // operator who asked for reads a credential able to change things, which is the
@@ -154,17 +183,46 @@ check(
   !grantedScopes('jira-read').some((scope) => /^write:/.test(scope)),
   JSON.stringify(grantedScopes('jira-read'))
 );
+// KAN-291's `writesTo` became KAN-293's `writeScope`, a tagged union, because
+// three of the nine new writes cannot answer "which single issue does this
+// touch": a link touches two, a creation touches one that does not exist yet,
+// and a Confluence write touches none.
+//
+// **These two checks are now belt to the type system's braces, and that is a
+// demotion worth stating rather than hiding.** `ProxyOperation` is a
+// discriminated union in which the write half REQUIRES `writeScope` and the
+// read half forbids it, so both of these are compile errors before they are
+// test failures — verified by mutation at KAN-293's red drive, recorded in the
+// PR. They are kept because the day somebody widens the type is the day the
+// compiler stops objecting, and that is precisely the day this file should.
 check(
-  'every write declares writesTo — the table says which calls are restricted',
-  PROXY_OPERATIONS.filter((op) => op.method !== 'GET').every((op) => typeof op.writesTo === 'function'),
+  'every write declares a writeScope — the table says what bounds each call',
+  PROXY_OPERATIONS.filter((op) => op.method !== 'GET').every((op) => typeof op.writeScope?.kind === 'string'),
   JSON.stringify(
-    PROXY_OPERATIONS.filter((op) => op.method !== 'GET' && typeof op.writesTo !== 'function').map((op) => op.tool)
+    PROXY_OPERATIONS.filter((op) => op.method !== 'GET' && !op.writeScope?.kind).map((op) => op.tool)
   )
 );
 check(
-  'no read declares writesTo — a GET that claims to write would skew every count here',
-  PROXY_OPERATIONS.filter((op) => op.method === 'GET').every((op) => op.writesTo === undefined),
-  JSON.stringify(PROXY_OPERATIONS.filter((op) => op.method === 'GET' && op.writesTo).map((op) => op.tool))
+  'no read declares a writeScope — a GET that claims to write would skew every count here',
+  PROXY_OPERATIONS.filter((op) => op.method === 'GET').every((op) => op.writeScope === undefined),
+  JSON.stringify(PROXY_OPERATIONS.filter((op) => op.method === 'GET' && op.writeScope).map((op) => op.tool))
+);
+// THE POLICY LINE, ASSERTED WHERE A READER LOOKS FOR IT. Everything below the
+// top rung is bounded by the caller's own identity; only the Confluence rung
+// holds unscoped writes, and each of those has to carry its own justification.
+check(
+  "every write outside confluence-write is bounded by the caller's own identity",
+  writeOperationsFor('jira-write').every((op) => op.writeScope.kind !== 'unscoped'),
+  JSON.stringify(writeOperationsFor('jira-write').map((op) => [op.tool, op.writeScope.kind]))
+);
+check(
+  'every unscoped write states a justification, and every one of them is Confluence',
+  PROXY_OPERATIONS.filter((op) => op.writeScope?.kind === 'unscoped').every(
+    (op) => op.mode === 'confluence-write' && typeof op.writeScope.justification === 'string' && op.writeScope.justification.length > 40
+  ),
+  JSON.stringify(
+    PROXY_OPERATIONS.filter((op) => op.writeScope?.kind === 'unscoped').map((op) => [op.tool, op.mode])
+  )
 );
 check(
   'every write states its bodyShape, so the grant is readable without reading build()',
@@ -227,14 +285,35 @@ check(
 // mode is the only thing standing between an agent and a write, so it is
 // asserted over every mode this daemon knows rather than over the two that
 // happen to be interesting.
+//
+// KAN-293 re-points the expected counts and keeps the shape: every mode is
+// still asserted, and the two read rungs must still enable exactly zero.
+const WRITES_PER_MODE = {
+  off: 0,
+  'jira-read': 0,
+  'confluence-read': 0,
+  'jira-write': 6,
+  'confluence-write': 10
+};
 for (const mode of PROXY_MODES) {
   const writes = writeOperationsFor(mode);
   check(
-    `mode "${mode}" enables ${writes.length} write(s) — and only jira-write enables any`,
-    mode === 'jira-write' ? writes.length === 1 : writes.length === 0,
+    `mode "${mode}" enables exactly ${WRITES_PER_MODE[mode]} write(s)`,
+    writes.length === WRITES_PER_MODE[mode],
     JSON.stringify(writes.map((op) => op.tool))
   );
 }
+// The half of the old sentence that carried the security property, kept as its
+// own check now that "only one mode enables any" is no longer the shape: a READ
+// rung enabling a write would be the widening a reviewer is least likely to see.
+check(
+  'neither read rung enables a single write, whatever the counts above say',
+  writeOperationsFor('jira-read').length === 0 && writeOperationsFor('confluence-read').length === 0,
+  JSON.stringify([
+    writeOperationsFor('jira-read').map((op) => op.tool),
+    writeOperationsFor('confluence-read').map((op) => op.tool)
+  ])
+);
 
 // ── 3. THE POSITIVE CONTROL ────────────────────────────────────────────────
 rule('3. positive control — the same table and the same policy DO say yes');
@@ -246,8 +325,9 @@ check(
   JSON.stringify(writeDecision)
 );
 check(
-  'jira-write enables the write — so every "it refused" in this file measured a real absence',
-  writeOperationsFor('jira-write').length === 1,
+  'jira-write enables its writes — so every "it refused" in this file measured a real absence',
+  writeOperationsFor('jira-write').length === 6 &&
+    writeOperationsFor('jira-write').some((op) => op.tool === THE_WRITE),
   'the write mode enables nothing even when on: sections 2, 4 and 5 are vacuous and this ' +
     'file is worthless rather than reassuring'
 );
@@ -527,8 +607,23 @@ check(
   JSON.stringify(writeReport.operations.find((op) => op.tool === THE_WRITE))
 );
 check(
-  'the summary says writes are restricted and says it is not authentication',
-  /OWN TICKET/i.test(writeReport.summary) && /not authentication/i.test(writeReport.summary),
+  "the summary says writes are bound to the caller's own work and is not authentication",
+  /OWN WORK/i.test(writeReport.summary) && /not authentication/i.test(writeReport.summary),
+  writeReport.summary
+);
+// KAN-293: and where a rung holds writes nothing about the caller bounds, the
+// operator reading this summary must be told so IN IT. A grant an operator can
+// only discover by reading the source is a grant they will not discover.
+const confluenceReport = proxyReport(selectedProxyMode({ [PROXY_ENV_VAR]: 'confluence-write' }), cred);
+check(
+  'the confluence-write summary says plainly that those writes are not bound by the caller',
+  /NOT BOUND BY THE CALLER AT ALL/i.test(confluenceReport.summary) &&
+    /confluence-write rung/i.test(confluenceReport.summary),
+  confluenceReport.summary
+);
+check(
+  'the jira-write summary does NOT claim an unscoped write, because that rung has none',
+  !/NOT BOUND BY THE CALLER AT ALL/i.test(writeReport.summary),
   writeReport.summary
 );
 check(
@@ -605,9 +700,18 @@ check(
 );
 check(
   'router.ts builds the write body from the operation, never from the request',
-  /proxyWrite\(request\.path, request\.body\)/.test(routerSrc) &&
-    !/proxyWrite\([^)]*data\./.test(routerSrc),
+  /proxyWrite\(\s*operation\.method,\s*request\.path,\s*request\.body,\s*request\.product\s*\)/.test(
+    routerSrc
+  ) && !/proxyWrite\([^)]*data\./.test(routerSrc),
   'a body taken off the wire makes the granted scope unbounded'
+);
+// KAN-293: the verb is now data too, and it must come from the same place the
+// path and body do. A verb read off the wire would let a caller turn a POST
+// this table granted into a PUT it did not.
+check(
+  "router.ts takes the write verb from the operation table, never from the caller",
+  /proxyWrite\(\s*operation\.method,/.test(routerSrc) && !/proxyWrite\(\s*data/.test(routerSrc),
+  'the HTTP verb is part of the grant; a caller-supplied one is a widening'
 );
 check(
   'no path or body reaching Atlassian is read off the wire',
