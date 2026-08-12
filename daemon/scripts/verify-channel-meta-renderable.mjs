@@ -31,8 +31,8 @@
 // one of the blended kind, so read the SECTION verdicts rather than the exit
 // code when the build is not green:
 //
-//   §1  reads `daemon/src/*.ts` AS TEXT      — tests what you wrote
-//   §2  §3  import from `daemon/dist`        — tests the last successful build
+//   §1  reads `daemon/src/*.ts` AS TEXT          — tests what you wrote
+//   §2  §3  §4  import from `daemon/dist`        — tests the last successful build
 //
 // Pass `--static-only` to run §1 alone, which is the honest thing to do when
 // `dist` is stale or the build failed. `node daemon/scripts/verify-channel-meta-renderable.mjs`
@@ -49,12 +49,29 @@
 // not. If you change the client contract, that observation is what has to be
 // repeated; this script will not notice.
 //
-// ALSO UNCOVERED, and by nobody. `docs/channel-delivery.md` records that meta
-// KEYS must be identifiers — "keys containing hyphens or other characters are
-// silently dropped" — a PARTIAL loss where this one is total: the frame still
-// arrives, minus one attribute. It is documented rather than measured, KAN-319
-// did not reproduce it, and `unrenderableMetaEntries` deliberately does not
-// refuse on it. KAN-319's ticket comment names it as the follow-up.
+// THE KEY AXIS (KAN-325) — this paragraph said "uncovered, and by nobody" until
+// that ticket reproduced it. `docs/channel-delivery.md` recorded that meta KEYS
+// must be identifiers and that others are "silently dropped", sourced from the
+// channels reference and never reproduced. It reproduces: on claude-code 2.1.228,
+// fourteen key shapes fired at one live agent's connection, every frame reported
+// `success: true`, and the keys outside /^[A-Za-z_][A-Za-z0-9_]*$/ arrived MINUS
+// THAT ATTRIBUTE. The doc's word "identifier" was also wrong in one direction —
+// `$` is a legal JS identifier character and is dropped.
+//
+// SO THE TWO AXES GET OPPOSITE TREATMENT, and that asymmetry is the ticket's
+// decision rather than an oversight:
+//
+//   a bad VALUE  loses the WHOLE FRAME       -> refused before the write  (§3)
+//   a bad KEY    loses ONE ATTRIBUTE         -> written, and NAMED        (§4)
+//
+// Refusing a bad key would trade a measured partial loss for a certain total one.
+// The defect was never that keys are dropped — it was that nothing said so.
+//
+// WHAT COVERS C3 FOR THE KEY AXIS: the same kind of by-hand recipient-side
+// observation KAN-319 used, pasted into KAN-325's PR — a live agent quoting the
+// `<channel>` tags that reached its own context, hyphenated key absent and the
+// identifier control key present in the same frame. This script cannot establish
+// that and does not claim to; §1 and §2 assert the daemon's side of it only.
 
 import fs from 'fs';
 import os from 'os';
@@ -162,6 +179,78 @@ check(
     'is being dropped by the client again while the record reads `delivered`.'
 );
 
+// --------------------------------------------------------------- KAN-325 ---
+// The KEY axis. Same treatment as 1a–1d one field over: the type is the
+// mechanism, and these read the sources so a failed build cannot mask them.
+
+/** The class the client actually renders, measured in KAN-325. Kept in step by 1e. */
+const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+check(
+  '1e  the pattern this proof asserts against is the one the product ships',
+  new RegExp(
+    String.raw`CHANNEL_META_KEY_PATTERN\s*=\s*/\^\[A-Za-z_\]\[A-Za-z0-9_\]\*\$/`
+  ).test(channelSrc),
+  'channel.ts exports exactly the class KAN-325 measured, and this file tests against its own ' +
+    'copy of it. If the product ever narrows or widens the class, this check fails rather than ' +
+    'letting the two drift apart silently — which is the KAN-145 shape (one fact, two copies).',
+  'CHANNEL_META_KEY_PATTERN in channel.ts is no longer the measured class, so every other key ' +
+    'check in this file is asserting against a pattern the product does not use.'
+);
+
+check(
+  '1f  ChannelMeta closes the KEY axis with a union, not `Record<string, string>`',
+  /ChannelMeta\s*=\s*Partial<Record<ChannelMetaKey,\s*string>>/.test(channelSrc),
+  '`ChannelMeta = Partial<Record<ChannelMetaKey, string>>`, so an in-process producer writing ' +
+    '`poke-number` is a COMPILE ERROR. Verified by mutation: adding `\'poke-number\': \'3\'` to the ' +
+    'guardian poke fails the build with TS2353. Note which mechanism caught it — the compiler, ' +
+    'not this script.',
+  '`ChannelMeta` takes arbitrary string keys again. A producer can now write a key the client ' +
+    'will drop, and the frame will arrive without it while every instrument reads delivered.'
+);
+
+// The guard ON the guard. A closed union stops arbitrary keys; nothing in the
+// type system stops a later author ADDING a bad one to the union, because
+// `'poke-number'` is a perfectly good string literal. This is the check that
+// does — and it is static, so it holds even when `dist` is stale.
+const unionMembers = (() => {
+  const m = channelSrc.match(/export type ChannelMetaKey\s*=([^;]*);/);
+  return m ? [...m[1].matchAll(/'([^']*)'/g)].map((x) => x[1]) : [];
+})();
+const badMembers = unionMembers.filter((k) => !KEY_PATTERN.test(k));
+
+check(
+  '1g  every member of ChannelMetaKey is itself a key the client will render',
+  unionMembers.length > 0 && badMembers.length === 0,
+  `${unionMembers.length} member(s) — ${unionMembers.join(', ')} — all match ${KEY_PATTERN.source}. ` +
+    'The union stops a producer inventing a bad key; THIS stops somebody adding one to the union, ' +
+    'which the type system cannot: a bad key is a valid string literal.',
+  unionMembers.length === 0
+    ? 'ChannelMetaKey could not be parsed out of channel.ts, so this guard is asserting nothing.'
+    : `ChannelMetaKey now admits ${badMembers.join(', ')}, which the client drops. Every frame ` +
+      'carrying that attribute arrives without it, silently.'
+);
+
+// Parallel to 1c, on the other axis: 1c reads the VALUES of every meta literal
+// in daemon/src, this reads their KEYS. Broader than "the ones reaching
+// routeChannelMessage" for 1c's stated reason, and cheap for the same one.
+const badLiteralKeys = metaLiterals.flatMap(({ file, body }) =>
+  [...body.matchAll(/(?:^|,)\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_$][\w$]*))\s*:/g)]
+    .map((m) => m[1] ?? m[2] ?? m[3])
+    .filter((key) => !KEY_PATTERN.test(key))
+    .map((key) => `${file}: ${key}`)
+);
+
+check(
+  '1h  no meta literal in daemon/src carries a key the client will drop',
+  badLiteralKeys.length === 0,
+  `${metaLiterals.length} meta literal(s) scanned across daemon/src, every KEY renderable. ` +
+    'Catches a quoted key — `\'poke-number\': \'3\'` — which is how this mistake reaches a meta ' +
+    'literal that is not yet typed as ChannelMeta and is one call site away from being one.',
+  `a meta key the client drops is present: ${badLiteralKeys.join(', ')}. That attribute will not ` +
+    'reach the recipient, and the frame will arrive looking complete.'
+);
+
 if (staticOnly) {
   rule(`${failures === 0 ? 'STATIC SECTIONS PASSED' : `${failures} STATIC SECTION(S) FAILED`}`);
   console.log(
@@ -188,8 +277,13 @@ if (!fs.existsSync(path.join(distDir, 'channel.js'))) {
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'kan319-'));
 process.env.HOME = TMP;
 
-const { routeChannelMessage, unrenderableMetaEntries, writeChannelSwitch, CHANNEL_SWITCH_PATH } =
-  await import(path.join(path.resolve(distDir), 'channel.js'));
+const {
+  routeChannelMessage,
+  unrenderableMetaEntries,
+  undeliverableMetaKeys,
+  writeChannelSwitch,
+  CHANNEL_SWITCH_PATH
+} = await import(path.join(path.resolve(distDir), 'channel.js'));
 const { AgentConnectionRegistry } = await import(
   path.join(path.resolve(distDir), 'agent-connections.js')
 );
@@ -229,6 +323,50 @@ check(
   unrenderableMetaEntries(undefined).length === 0 && unrenderableMetaEntries(null).length === 0,
   '`undefined` and `null` are the ordinary no-meta case and are not refusals.',
   'a frame with no meta at all is being refused, which would stop the whole channel.'
+);
+
+// --------------------------------------------------------------- KAN-325 ---
+
+check(
+  '2d  the exact key shapes measured against a live client are classified the same way',
+  undeliverableMetaKeys({
+    // rendered, observed in a recipient's own <channel> tag
+    probeShape: 'x', controlKey: 'x', snake_key: 'x', key2: 'x', _leading: 'x', KEY_NAME: 'x'
+  }).length === 0 &&
+    undeliverableMetaKeys({
+      // dropped, observed absent from a recipient's own <channel> tag
+      'hyphen-key': 'x', 'dot.key': 'x', '1leading': 'x', 'space key': 'x',
+      $dollar: 'x', 'mid$dollar': 'x', 'ns:key': 'x', 'kéy': 'x', '': 'x'
+    }).length === 9,
+  'all six keys a live claude-code 2.1.228 rendered pass, and all nine it dropped are named. ' +
+    'These are not invented cases: each was fired at a real connection and read back out of the ' +
+    "recipient's context. `$dollar` is the one worth noting — a legal JS identifier character " +
+    'that the client drops anyway, so "must be identifiers" would have been the wrong check.',
+  'the classifier disagrees with what the client was measured to do, so it either drops good ' +
+    'attributes or stays silent about lost ones.'
+);
+
+check(
+  '2e  the daemon\'s own five meta keys are all deliverable',
+  undeliverableMetaKeys({
+    sender: '[butchr daemon]', workspaceType: 'epic', workspaceKey: 'KAN-203',
+    guardianPoke: 'true', livenessProbe: 'true'
+  }).length === 0,
+  'every key the daemon produces today renders. This is the arm that must stay quiet: a warning ' +
+    'on ordinary traffic would be noise on every frame the fleet sends, which is how a real ' +
+    'warning stops being read.',
+  'the daemon is warning about its own routine meta keys, which would bury the case this exists for.'
+);
+
+check(
+  '2f  a non-object meta is left to the VALUE check rather than reported twice',
+  undeliverableMetaKeys(undefined).length === 0 &&
+    undeliverableMetaKeys(null).length === 0 &&
+    undeliverableMetaKeys('nope').length === 0 &&
+    undeliverableMetaKeys([1, 2]).length === 0,
+  'no-meta and wrong-shape-meta both score zero here. `unrenderableMetaEntries` already refuses ' +
+    'the wrong shape, and two reports of one fault send the reader looking for two faults.',
+  'the key check is also reporting the shape fault, duplicating a refusal that already exists.'
 );
 
 // ===========================================================================
@@ -320,6 +458,79 @@ check(
 );
 
 // ===========================================================================
+rule('SECTION 4 — a bad KEY is written and NAMED, not refused (KAN-325)');
+// ===========================================================================
+//
+// The mirror of section 3, and deliberately the opposite verdict. Section 3
+// proves a frame the client would discard entirely is never written. This proves
+// a frame the client would deliver MINUS ONE ATTRIBUTE still goes — because
+// refusing it would turn a measured partial loss into a certain total one — and
+// that the caller is told what it lost.
+
+const keyed = stubSocket();
+const keyedRegistry = new AgentConnectionRegistry();
+keyedRegistry.register(keyed, address);
+
+const warned = routeChannelMessage({
+  registry: keyedRegistry,
+  address,
+  content: 'a notice',
+  // `sender` renders; `poke-number` does not. One frame, both keys — which is
+  // the shape KAN-325 measured, so the control travels with the variable rather
+  // than in a separate run that could differ for another reason.
+  meta: { sender: '[butchr daemon]', 'poke-number': '3' }
+});
+
+check(
+  '4a  the frame IS written — delivery is preserved',
+  warned.routed === true && keyed.written.length === 1,
+  `routed to ${warned.connectionId} and one frame written. The recipient gets the body and every ` +
+    'renderable attribute. Refusing here would have cost them the whole message to save one ' +
+    'attribute, on the carrier that now hauls supervision.',
+  'a frame with one bad key was refused. That converts a partial loss into a total one, which is ' +
+    'strictly worse than the defect.'
+);
+
+check(
+  '4b  and the offending key is named back to the sender',
+  Array.isArray(warned.droppedMetaKeys) &&
+    warned.droppedMetaKeys.length === 1 &&
+    warned.droppedMetaKeys[0] === 'poke-number',
+  `\`droppedMetaKeys: ${JSON.stringify(warned.droppedMetaKeys)}\` rides on a \`routed: true\`. ` +
+    'THIS IS THE DEFECT KAN-325 CLOSES: the keys were always dropped, and nothing anywhere said ' +
+    'so — no error, no log line, no field in the reply. A producer got an attribute that simply ' +
+    'was not there.',
+  `the outcome does not name the dropped key (droppedMetaKeys: ${JSON.stringify(warned.droppedMetaKeys)}). ` +
+    'The frame is written and the loss is silent again, which is the whole ticket.'
+);
+
+check(
+  '4c  and the renderable key is NOT named, so the warning means something',
+  !warned.droppedMetaKeys?.includes('sender'),
+  '`sender` travelled in the same frame and is not reported. A warning that fired on good keys ' +
+    'would be ignored within a day.',
+  'a renderable key is being reported as dropped, so the warning cannot be trusted.'
+);
+
+const clean = stubSocket();
+const cleanRegistry = new AgentConnectionRegistry();
+cleanRegistry.register(clean, address);
+const quiet = routeChannelMessage({
+  registry: cleanRegistry,
+  address,
+  content: 'a notice',
+  meta: { sender: '[butchr daemon]', workspaceKey: 'KAN-203' }
+});
+
+check(
+  '4d  CONTROL — ordinary traffic carries no warning field at all',
+  quiet.routed === true && quiet.droppedMetaKeys === undefined,
+  'the field is absent rather than an empty array on every normal frame, so a reader testing ' +
+    '`if (outcome.droppedMetaKeys)` is testing the thing it means to.',
+  'ordinary traffic is carrying a warning field, which makes the field useless as a signal.'
+);
+
+// ===========================================================================
 
 rule(`${failures === 0 ? 'ALL SECTIONS PASSED' : `${failures} SECTION(S) FAILED`}`);
 console.log(
@@ -328,8 +539,13 @@ console.log(
       '  says which entry was wrong. Producers cannot express the mistake at all: `ChannelMeta`\n' +
       '  makes it a compile error, and the runtime check exists for `channel_send`, whose meta\n' +
       '  arrives off the wire where no type can reach it.\n\n' +
-      '  This proves the daemon refuses to write such a frame. It does NOT prove a client\n' +
-      '  renders a good one — see the header for what covers that and how.\n'
+      '  On the KEY axis the verdict is deliberately the opposite (KAN-325): the frame is\n' +
+      '  WRITTEN and the dropped keys are NAMED, because a bad key costs one attribute where a\n' +
+      '  bad value costs the whole frame, and refusing would trade the measured partial loss\n' +
+      '  for a certain total one.\n\n' +
+      '  This proves the daemon refuses to write one kind of frame and reports honestly on the\n' +
+      '  other. It does NOT prove a client renders a good one — see the header for what covers\n' +
+      '  that and how.\n'
     : '\n  See the FAILED lines above.\n'
 );
 
