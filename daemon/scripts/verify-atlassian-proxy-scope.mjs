@@ -213,10 +213,28 @@ check(
   operationsFor('jira-read').every((op) => op.method === 'GET'),
   JSON.stringify(operationsFor('jira-read').filter((op) => op.method !== 'GET').map((op) => op.tool))
 );
+// KAN-293 re-pointed this one for KAN-291's own stated reason, and the wording
+// it replaced was written in anticipation of exactly this: *"there is
+// deliberately no PUT, PATCH or DELETE: the operations that need them are
+// content edits, which are KAN-293's and which should have to widen this union
+// rather than slip in under a method it already allows."* They needed it, the
+// union was widened deliberately, and this is the check being re-pointed rather
+// than deleted.
+//
+// **The property that survives is the one that was always the point: NOTHING
+// HERE DELETES.** A PUT replaces content that a version number and an audit
+// line both account for; a DELETE destroys something no proxy of ours should be
+// able to destroy, and no operation in this table has ever needed one.
 check(
-  'the only non-GET verb anywhere in the table is POST',
-  PROXY_OPERATIONS.every((op) => op.method === 'GET' || op.method === 'POST'),
-  JSON.stringify(PROXY_OPERATIONS.map((op) => [op.tool, op.method]))
+  'no operation uses DELETE — the table can change content and cannot destroy it',
+  PROXY_OPERATIONS.every((op) => op.method === 'GET' || op.method === 'POST' || op.method === 'PUT'),
+  JSON.stringify(PROXY_OPERATIONS.filter((op) => !['GET', 'POST', 'PUT'].includes(op.method)).map((o) => [o.tool, o.method]))
+);
+check(
+  'PUT appears on exactly the two operations that replace a document, and nowhere else',
+  PROXY_OPERATIONS.filter((op) => op.method === 'PUT').map((op) => op.tool).sort().join(',') ===
+    'atlassian_edit_issue,atlassian_update_confluence_page',
+  JSON.stringify(PROXY_OPERATIONS.filter((op) => op.method === 'PUT').map((op) => op.tool))
 );
 // KAN-292 re-pointed this one, and the honest thing is to say that it moved
 // rather than to present the new list as though it had always been there.
@@ -553,15 +571,31 @@ check(
 // purpose. It asserts the shape of the boundary that now holds: **POST and
 // nothing else**, with the verbs that would let an agent destroy or overwrite
 // still absent from this file entirely.
+//
+// KAN-293 re-points it once more, and the note above about *how* it failed to
+// go red is the reason the replacement is written the way it is. `PUT` is now
+// legitimately present — two operations replace a document — so the list of
+// forbidden spellings loses `PUT` and keeps the two that matter. **A DELETE or
+// a PATCH reaching this transport is still a widening nobody authorised**, and
+// unlike the original this is not a check on one spelling: `PATCH` and `DELETE`
+// cannot reach `fetch` here by any route without one of these literals
+// appearing, because the verb is threaded through as a typed parameter whose
+// union does not contain them.
 const jiraSrc = fs.readFileSync(path.join(daemonDir, 'src', 'jira.ts'), 'utf8');
-const forbiddenVerbs = ["'PUT'", "'PATCH'", "'DELETE'", '"PUT"', '"PATCH"', '"DELETE"'].filter((verb) =>
+const forbiddenVerbs = ["'PATCH'", "'DELETE'", '"PATCH"', '"DELETE"'].filter((verb) =>
   jiraSrc.includes(verb)
 );
 check(
-  'jira.ts has no PUT, PATCH or DELETE — the write is a POST or it is nothing',
+  'jira.ts has no PATCH or DELETE — the transport can write and cannot destroy',
   forbiddenVerbs.length === 0,
-  `found ${JSON.stringify(forbiddenVerbs)}: an overwrite or a deletion reached the transport, ` +
-    'which is a widening well past the one transition KAN-291 authorises'
+  `found ${JSON.stringify(forbiddenVerbs)}: a deletion reached the transport, which is a ` +
+    'widening well past the content writes KAN-293 authorises'
+);
+check(
+  "the transport's write verb is a closed union, so a third verb cannot be passed in",
+  /method: 'POST' \| 'PUT'/.test(jiraSrc),
+  'the verb arrives as data now (KAN-293), so the union on it is what keeps DELETE out — ' +
+    'a widened union would let a caller name a verb this table never granted'
 );
 check(
   'the write reaches Atlassian only through a body the caller did not supply',
@@ -574,10 +608,10 @@ check(
 // poller and the reconciler must not have quietly gained the ability to write
 // on the daemon's own account — only the proxy writes, and only when asked.
 check(
-  'only the proxy writes — no domain method on the client posts',
-  (jiraSrc.match(/this\.transport\.post\(/g) ?? []).length === 1,
-  'more than one call site posts: ' +
-    JSON.stringify(jiraSrc.match(/.*this\.transport\.post\(.*/g)) +
+  'only the proxy writes — no domain method on the client writes',
+  (jiraSrc.match(/this\.transport\.write\(/g) ?? []).length === 1,
+  'more than one call site writes: ' +
+    JSON.stringify(jiraSrc.match(/.*this\.transport\.write\(.*/g)) +
     ' — the daemon is meant to write only what an agent asked it to'
 );
 

@@ -1,3 +1,4 @@
+import { AdfConversionError, AdfDoc, AdfTarget, confluenceBody, markdownToAdf } from './adf.js';
 import { JIRA_KEY } from './keys.js';
 
 /**
@@ -175,7 +176,12 @@ import { JIRA_KEY } from './keys.js';
  * per widening is what makes granting them one at a time the path of least
  * resistance rather than an act of discipline.
  */
-export type ProxyMode = 'off' | 'jira-read' | 'confluence-read' | 'jira-write';
+export type ProxyMode =
+  | 'off'
+  | 'jira-read'
+  | 'confluence-read'
+  | 'jira-write'
+  | 'confluence-write';
 
 /**
  * Which Atlassian product an operation's path belongs to (KAN-292).
@@ -201,7 +207,8 @@ export const PROXY_MODES: readonly ProxyMode[] = [
   'off',
   'jira-read',
   'confluence-read',
-  'jira-write'
+  'jira-write',
+  'confluence-write'
 ];
 
 /**
@@ -240,6 +247,29 @@ export const PROXY_MODES: readonly ProxyMode[] = [
  *
  * It costs the operator nothing they had not already accepted: `jira-write`
  * already grants every read in `jira-read`, and Confluence reads are reads.
+ *
+ * ## KAN-293 ADDS A RUNG AT THE TOP, AND THE PLACE IT CUTS IS THE POLICY LINE
+ *
+ * `confluence-write` is the new top rung, and the division between it and
+ * `jira-write` is not by product for its own sake — **it is the line slice A's
+ * write-scoping policy can reach**:
+ *
+ *  - Every write in **`jira-write`** is bounded by the caller's own identity.
+ *    Five of the six name the caller's own ticket; the sixth creates an issue in
+ *    the caller's own project. An operator on this rung is granting agents the
+ *    ability to write **to their own work and nowhere else**, which is what
+ *    KAN-291 decided and what this slice inherits rather than re-opens.
+ *  - Every write in **`confluence-write`** is *unscoped*, because there is
+ *    nothing to scope it to: a Confluence page has no relationship to a Jira
+ *    issue key that this daemon can read, so "your own ticket" names no page.
+ *    Enabling this rung is therefore a genuinely wider grant — any agent may
+ *    write any page the credential can reach — and it is a separate word an
+ *    operator has to type for exactly that reason.
+ *
+ * **That line is enforced by the type system and not by care.** See
+ * {@link ProxyOperation}: a write tagged `jira-write` whose scope is `unscoped`
+ * does not compile. So the sentence "everything below the top rung is bounded
+ * by the caller" cannot quietly stop being true.
  */
 export function enabledModes(mode: ProxyMode): Exclude<ProxyMode, 'off'>[] {
   switch (mode) {
@@ -251,6 +281,8 @@ export function enabledModes(mode: ProxyMode): Exclude<ProxyMode, 'off'>[] {
       return ['jira-read', 'confluence-read'];
     case 'jira-write':
       return ['jira-read', 'confluence-read', 'jira-write'];
+    case 'confluence-write':
+      return ['jira-read', 'confluence-read', 'jira-write', 'confluence-write'];
   }
 }
 
@@ -292,11 +324,18 @@ export interface ProxyRequest {
   body?: unknown;
 }
 
-export interface ProxyOperation {
+/**
+ * Everything true of a proxied operation whether it reads or writes.
+ *
+ * The fields that differ between the two — the mode, the verb, the body shape
+ * and the write scope — are **not** here. They live on the two halves of
+ * {@link ProxyOperation}, which is a discriminated union rather than one
+ * interface with optional members, and that is the whole design: see its
+ * docblock for what becomes impossible to write down.
+ */
+interface ProxyOperationBase {
   /** The tool name as agents see it. */
   tool: string;
-  /** The mode that enables it. Never `off`. */
-  mode: Exclude<ProxyMode, 'off'>;
   /**
    * Every product this operation can reach — the enumeration a reader wants
    * when asking "what can this mode touch", and the default {@link build} gets
@@ -332,43 +371,17 @@ export interface ProxyOperation {
    */
   scope: string | readonly string[];
   /**
-   * The HTTP method.
-   *
-   * `POST` is the only write verb here and there is deliberately no `PUT`,
-   * `PATCH` or `DELETE`: the operations that need them are content edits and
-   * deletions, which are KAN-293's and which should have to widen this union
-   * rather than slip in under a method it already allows.
-   */
-  method: 'GET' | 'POST';
-  /**
    * The path shape, with its parameters named, for the enumeration in a PR and
    * for a reader who wants to know what the credential is actually used for
    * without reading {@link build}.
    */
   pathShape: string;
-  /**
-   * The body shape, for a write, in the same spirit and for a stronger reason:
-   * with a write, the path alone no longer says what the credential can do.
-   * Absent on a GET, which sends none.
-   */
-  bodyShape?: string;
   /** What the agent-facing tool description says. */
   description: string;
   /** JSON Schema for the tool's arguments, as MCP wants it. */
   inputSchema: Record<string, unknown>;
   /** Build the concrete path and body, or refuse. Never throws. */
   build(args: Record<string, any>): BuildResult;
-  /**
-   * The Jira issue this operation **writes to**, read off the same arguments
-   * {@link build} validates — or `null` when they do not name a usable one.
-   *
-   * Present on every write and absent on every read, which is what lets
-   * "every write is checked against its caller" be verified against this table
-   * rather than trusted to the handler that happens to call it today. A write
-   * added without one is caught by the verify script, not by a reviewer's
-   * memory.
-   */
-  writesTo?(args: Record<string, any>): string | null;
   /**
    * Reshape what Atlassian returned before the agent sees it, or combine the
    * answers of a fan-out into one (KAN-292).
@@ -389,6 +402,138 @@ export interface ProxyOperation {
    */
   transform?(bodies: unknown[], context: ProxyTransformContext): unknown;
 }
+
+/**
+ * Who a write is permitted to touch, declared by the operation itself.
+ *
+ * KAN-291 wrote this as one optional method returning one issue key, which was
+ * exactly right for the one write it had. KAN-293 adds eight more and three of
+ * them cannot answer that question: a link touches **two** issues, a creation
+ * touches an issue that **does not exist yet**, and a Confluence write touches
+ * **no issue at all**. A single `string | null` would have had to answer `null`
+ * for all three, and `null` already means "the arguments were unusable" — so
+ * the widest writes in the table would have been indistinguishable from a typo,
+ * and {@link refuseWriteOutsideCaller} would have waved them through.
+ *
+ * So the shape is a tagged union, and each tag carries the *reason* it is
+ * permitted along with what it permits. `unscoped` is deliberately the
+ * uncomfortable one to write: it demands a `justification` in the table, that
+ * justification is rendered into the operator-facing report, and the type
+ * system only accepts it on the top rung of the ladder.
+ */
+export type WriteScope =
+  /** The caller's own ticket, and nothing else. KAN-291's policy, unchanged. */
+  | { kind: 'own-ticket'; issue(args: Record<string, any>): string | null }
+  /**
+   * A write naming **two** issues, of which at least one must be the caller's
+   * own ticket.
+   *
+   * This is `createIssueLink` and it is the one place KAN-291's policy needed
+   * extending rather than applying, so the extension is written here rather
+   * than inferred. A link is a single object with two endpoints: refusing
+   * unless *both* are the caller's own ticket would refuse every link that has
+   * ever been useful — including the one `prompts/task.md` instructs every
+   * agent to create, `Relates` from a follow-up it just filed to its own ticket
+   * — and permitting a link between two issues that are *both* somebody else's
+   * is the thing worth refusing. "At least one end is mine" is the rule that
+   * keeps the second and allows the first.
+   *
+   * What it concedes, said plainly: an agent can attach a link to somebody
+   * else's ticket, provided the other end is its own. That is a visible,
+   * attributable, reversible edit to a field designed to be edited, and it is
+   * the smallest concession that leaves the tool able to do its job.
+   */
+  | { kind: 'own-ticket-endpoint'; issues(args: Record<string, any>): string[] }
+  /**
+   * A new issue in the caller's own project.
+   *
+   * The other case KAN-291's policy does not reach, for a reason that is not a
+   * loophole: a created issue has no key to compare against the caller's, so
+   * "your own ticket" is not a rule that can be evaluated. The nearest bound
+   * that *can* be — and it is derived from the caller's identity in exactly the
+   * way A's rule is, rather than invented alongside it — is the project the
+   * caller's own ticket lives in. `task/KAN-293` files into `KAN` and nowhere
+   * else.
+   *
+   * It bounds what it can: an agent cannot create issues in a project it has no
+   * business in. It does not bound how *many*, and nothing here pretends to —
+   * see {@link refuseWriteOutsideCaller}.
+   */
+  | { kind: 'own-project'; project(args: Record<string, any>): string | null }
+  /**
+   * Nothing about the caller bounds this write, and the table has to say why.
+   *
+   * Accepted **only** on the `confluence-write` rung — the type below is what
+   * enforces that — because Confluence is the one product where no bound
+   * derivable from a Jira key exists. The `justification` is not decoration: it
+   * is carried into {@link AtlassianProxyReport} so an operator deciding
+   * whether to enable that rung reads the reason next to the grant.
+   */
+  | { kind: 'unscoped'; justification: string };
+
+/**
+ * The write scopes that bound a write by the caller's own identity.
+ *
+ * Everything except `unscoped`, derived rather than re-listed so that a scope
+ * added later is bounded-by-default and has to be *excluded* here to become
+ * unbounded — the safe direction, and the one that survives somebody adding a
+ * fifth kind without reading this paragraph.
+ */
+export type CallerBoundedScope = Exclude<WriteScope, { kind: 'unscoped' }>;
+
+/**
+ * One operation the proxy serves — a read or a write, and the type knows which.
+ *
+ * ## WHY THIS IS A UNION AND NOT AN INTERFACE WITH OPTIONAL FIELDS
+ *
+ * KAN-291 left the write policy resting on one optional member: `writesTo` was
+ * present on the single write and absent on every read, and a write added
+ * without one would have been unrestricted. That was guarded by a verify script
+ * — a real guard, and the right one at the time — but a script is a thing that
+ * runs *after* somebody has written the code, and `prompts/task.md` is explicit
+ * about the order to prefer: **an assertion can be deleted by a later author
+ * and the build still passes; an unrepresentable state cannot be introduced at
+ * all.**
+ *
+ * Nine writes is where that stops being a stylistic preference. These four
+ * states no longer compile:
+ *
+ *  1. **A write with no declared scope.** `writeScope` is required on the write
+ *     half of the union, so the omission KAN-291's script had to hunt for is
+ *     now a red squiggle under the operation that omitted it.
+ *  2. **An unscoped write below the top rung.** The `jira-write` member accepts
+ *     only {@link CallerBoundedScope}, so the sentence "every write in
+ *     `jira-write` is bounded by the caller's own identity" is checked by
+ *     `tsc` on every build rather than believed.
+ *  3. **A read that claims a write scope**, or sits in a write mode.
+ *  4. **A write with no `bodyShape`.** Required here, optional before. For a
+ *     write the path alone does not say what the credential can do, so the
+ *     enumeration a reviewer reads would have had a hole in it exactly where
+ *     the risk is.
+ *
+ * The runtime checks all remain, and that ordering is deliberate: belt and
+ * braces, in that order. What the type removes is the *class* of mistake, and
+ * what the checks remain for is the day somebody widens the type.
+ */
+export type ProxyOperation =
+  | (ProxyOperationBase & {
+      mode: 'jira-read' | 'confluence-read';
+      method: 'GET';
+      bodyShape?: never;
+      writeScope?: never;
+    })
+  | (ProxyOperationBase & {
+      mode: 'jira-write';
+      method: 'POST' | 'PUT';
+      bodyShape: string;
+      writeScope: CallerBoundedScope;
+    })
+  | (ProxyOperationBase & {
+      mode: 'confluence-write';
+      method: 'POST' | 'PUT';
+      bodyShape: string;
+      writeScope: WriteScope;
+    });
 
 /**
  * The non-secret facts a {@link ProxyOperation.transform} may use.
@@ -575,6 +720,138 @@ function freeText(
   if (!raw) return { error: `${field} is required, e.g. ${example}` };
   if (raw.length > limit) {
     return { error: `${field} is ${raw.length} characters; the proxy accepts up to ${limit}.` };
+  }
+  return { value: raw };
+}
+
+/**
+ * A body an agent wrote, converted to ADF — or the reason it was refused
+ * (KAN-293).
+ *
+ * ## THIS IS THE ONE ARGUMENT THAT IS GENUINELY CONTENT, AND IT IS STILL NOT A BODY
+ *
+ * Everything else this file validates is an identifier that goes into a path.
+ * This is prose that goes into a request body, which is the surface the module
+ * header calls "exactly as unbounded as a path" — so it is worth being precise
+ * about why it does not reopen that hole.
+ *
+ * **An agent supplies text; the proxy builds the document.** What arrives is a
+ * markdown string. What is sent is an ADF tree that `adf.ts` constructed node
+ * by node from that string. There is no path by which a key an agent typed
+ * becomes a key in the JSON — the agent cannot name a field, cannot reach a
+ * sibling of `body`, and cannot inject a node type the converter does not
+ * emit — for the same reason `{"transition":{"id":…}}` was safe with a digits
+ * regex in front of it. The conversion **is** the validation, and it is a
+ * whitelist by construction rather than a filter.
+ *
+ * The length cap is the other half. A body is the one input here that can be
+ * megabytes, and Jira's own limit on a description is 32 000 characters.
+ */
+const MAX_BODY_CHARS = 32000;
+
+function markdownBody(
+  args: Record<string, any>,
+  field: string,
+  what: string,
+  target: AdfTarget,
+  required = true
+): { doc: AdfDoc; coercions: string[] } | { absent: true } | { error: string } {
+  const raw = typeof args?.[field] === 'string' ? args[field] : '';
+  if (!raw.trim()) {
+    if (!required) return { absent: true };
+    return {
+      error:
+        `${field} is required — ${what}, as Markdown. Butchr converts it to ADF itself rather ` +
+        'than asking Atlassian to, because the official markdown converter silently drops ' +
+        'content on nested structures (KAN-183, KAN-266, reproduced 2026-08-12).'
+    };
+  }
+  if (raw.length > MAX_BODY_CHARS) {
+    return {
+      error: `${field} is ${raw.length} characters; the proxy accepts up to ${MAX_BODY_CHARS}.`
+    };
+  }
+  try {
+    const { doc, coercions } = markdownToAdf(raw, target);
+    return { doc, coercions };
+  } catch (err: any) {
+    // `markdownToAdf` throws exactly when it would otherwise have written
+    // something incomplete. That is an ordinary refusal from an agent's point
+    // of view, and its message is written for one, so it is passed through
+    // rather than replaced with a sentence this file invented.
+    return { error: err instanceof AdfConversionError ? err.message : `Could not convert ${field}: ${err?.message ?? String(err)}` };
+  }
+}
+
+/**
+ * A single line of plain text — a summary, a page title, a link type name.
+ *
+ * Newlines are stripped rather than refused: an agent that pasted a wrapped
+ * sentence into a title meant the sentence, and Jira would reject the newline
+ * with a less useful message than this would.
+ */
+function plainLine(
+  args: Record<string, any>,
+  field: string,
+  what: string,
+  limit = 255
+): { value: string } | { error: string } {
+  const raw = typeof args?.[field] === 'string' ? args[field].replace(/\s+/g, ' ').trim() : '';
+  if (!raw) return { error: `${field} is required — ${what}.` };
+  if (raw.length > limit) {
+    return { error: `${field} is ${raw.length} characters; the proxy accepts up to ${limit}.` };
+  }
+  return { value: raw };
+}
+
+/**
+ * A Jira time expression, as `addWorklog` wants it: `3h`, `1d 4h`, `45m`.
+ *
+ * Matched rather than passed through because it lands in a request body. Jira
+ * would reject a malformed one, but "5 hours" failing with Jira's own error is
+ * a worse experience than being told the spelling here.
+ */
+const TIME_SPENT = /^(\d+(\.\d+)?[wdhm]\s*)+$/;
+
+function timeSpent(args: Record<string, any>): { value: string } | { error: string } {
+  const raw = typeof args?.timeSpent === 'string' ? args.timeSpent.trim() : '';
+  if (!raw) return { error: 'timeSpent is required, e.g. "3h" or "1d 4h".' };
+  if (!TIME_SPENT.test(raw)) {
+    return {
+      error:
+        `"${raw.slice(0, 40)}" is not a Jira time expression. Use w/d/h/m units, e.g. "3h", ` +
+        '"45m" or "1d 4h" — not "3 hours".'
+    };
+  }
+  return { value: raw };
+}
+
+/**
+ * The name of a Jira issue type or issue link type.
+ *
+ * Letters, spaces and hyphens: "Task", "Story", "Blocks", "Relates". A closed
+ * character class rather than a closed *list*, because the list is per-site and
+ * `atlassian_get_issue_link_types` / `atlassian_get_project_issue_types` are
+ * the operations that read it — hard-coding it here would be a second copy of
+ * something the site already answers.
+ */
+const TYPE_NAME = /^[A-Za-z][A-Za-z \-]{0,49}$/;
+
+function typeName(
+  args: Record<string, any>,
+  field: string,
+  what: string,
+  example: string
+): { value: string } | { error: string } {
+  const raw = typeof args?.[field] === 'string' ? args[field].trim() : '';
+  if (!raw) return { error: `${field} is required — ${what}, e.g. "${example}".` };
+  if (!TYPE_NAME.test(raw)) {
+    return {
+      error:
+        `"${raw.slice(0, 40)}" is not ${what}. Expected a name like "${example}" — letters, ` +
+        `spaces and hyphens. Read the names this site actually has with ` +
+        `${field === 'linkType' ? 'atlassian_get_issue_link_types' : 'atlassian_get_project_issue_types'}.`
+    };
   }
   return { value: raw };
 }
@@ -866,9 +1143,12 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         body: { transition: { id: id.id } }
       };
     },
-    writesTo(args) {
-      const key = issueKey(args);
-      return 'error' in key ? null : key.key;
+    writeScope: {
+      kind: 'own-ticket',
+      issue(args) {
+        const key = issueKey(args);
+        return 'error' in key ? null : key.key;
+      }
     }
   },
 
@@ -1530,6 +1810,639 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
           'and not against each other.'
       };
     }
+  },
+
+  // ── KAN-293: the content writes ──────────────────────────────────────────
+  //
+  // Nine operations, which completes the surface: 22 + 9 = 31, against the 31
+  // tools the official Atlassian MCP server offers. Counted off the LIVE tool
+  // list as every ticket in this epic instructs, because the tickets' own
+  // arithmetic has been wrong twice — 21 reads (18 of them KAN-292's, 3
+  // KAN-272's) and 10 writes (1 of them KAN-291's transition, 9 here).
+  //
+  // WHAT MAKES THESE ONE SLICE IS THE BODY, NOT THE VERB. Every operation below
+  // carries content an agent wrote, and all of it goes through ONE converter —
+  // `adf.ts` — for a reason measured rather than assumed: Atlassian's own
+  // markdown→ADF conversion silently drops nested structures, and the proof of
+  // that is in `adf.ts`'s header along with the page ids. Sending ADF we built
+  // ourselves is the only way to know what was stored.
+  //
+  // FIVE OF THE SIX JIRA WRITES NAME THE CALLER'S OWN TICKET, which is KAN-291's
+  // policy applied rather than re-decided. The two places it needed extending —
+  // a link has two endpoints, and a created issue has no key yet — are extended
+  // in `WriteScope`, where the argument for each is written down next to what it
+  // permits. THE FOUR CONFLUENCE WRITES ARE UNSCOPED, they say so, and they sit
+  // in a rung of their own that an operator has to enable by name.
+
+  {
+    tool: 'atlassian_add_comment',
+    mode: 'jira-write',
+    products: ['jira'],
+    scope: 'write:jira-work',
+    method: 'POST',
+    pathShape: '/rest/api/3/issue/{issueKey}/comment',
+    bodyShape: '{"body":{ADF built from your markdown}}',
+    description:
+      "Comment on a Jira issue, using the Butchr daemon's own credential. YOU MAY ONLY " +
+      "COMMENT ON YOUR OWN TICKET — the issue key must be this workspace's own key, and a " +
+      'call naming any other issue is refused before it reaches Atlassian. The body is ' +
+      'Markdown and Butchr converts it to ADF itself; it does NOT use the official ' +
+      "converter, which silently drops content nested inside list items. If your markdown " +
+      'cannot be converted without losing something, the call is refused and nothing is ' +
+      'written rather than a comment appearing with a paragraph missing. A failure is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issueKey: {
+          type: 'string',
+          description: "The issue key, e.g. \"KAN-293\". Must be this agent's own workspace key."
+        },
+        bodyMarkdown: { type: 'string', description: 'The comment, as Markdown.' }
+      },
+      required: ['issueKey', 'bodyMarkdown']
+    },
+    build(args) {
+      const key = issueKey(args);
+      if ('error' in key) return key;
+      const body = markdownBody(args, 'bodyMarkdown', 'the comment text', 'jira');
+      if ('error' in body) return body;
+      if ('absent' in body) return { error: 'bodyMarkdown is required.' };
+      return {
+        path: `/rest/api/3/issue/${encodeURIComponent(key.key)}/comment`,
+        body: { body: body.doc }
+      };
+    },
+    writeScope: {
+      kind: 'own-ticket',
+      issue(args) {
+        const key = issueKey(args);
+        return 'error' in key ? null : key.key;
+      }
+    }
+  },
+  {
+    tool: 'atlassian_add_worklog',
+    mode: 'jira-write',
+    products: ['jira'],
+    scope: 'write:jira-work',
+    method: 'POST',
+    pathShape: '/rest/api/3/issue/{issueKey}/worklog',
+    bodyShape: '{"timeSpent":"{timeSpent}","comment":{ADF}?,"started":"{started}"?}',
+    description:
+      "Log work against a Jira issue, using the Butchr daemon's own credential. YOU MAY ONLY " +
+      'LOG WORK ON YOUR OWN TICKET. timeSpent is a Jira time expression ("3h", "1d 4h", ' +
+      '"45m") and the optional comment is Markdown converted to ADF by Butchr. A failure is ' +
+      'loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issueKey: {
+          type: 'string',
+          description: "The issue key. Must be this agent's own workspace key."
+        },
+        timeSpent: { type: 'string', description: 'How long, e.g. "3h" or "1d 4h".' },
+        comment: { type: 'string', description: 'Optional note, as Markdown.' },
+        started: {
+          type: 'string',
+          description:
+            'Optional ISO-8601 start time with milliseconds and a numeric offset, e.g. ' +
+            '"2026-08-12T04:00:00.000+0000". Defaults to now.'
+        }
+      },
+      required: ['issueKey', 'timeSpent']
+    },
+    build(args) {
+      const key = issueKey(args);
+      if ('error' in key) return key;
+      const spent = timeSpent(args);
+      if ('error' in spent) return spent;
+      const comment = markdownBody(args, 'comment', 'a note about the work', 'jira', false);
+      if ('error' in comment) return comment;
+
+      // Jira's worklog `started` is one of its fussiest formats and it rejects
+      // anything else with a 400 that does not say so. Matched here, and
+      // omitted entirely when absent so Jira applies its own default.
+      const startedRaw = typeof args?.started === 'string' ? args.started.trim() : '';
+      if (startedRaw && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{4}$/.test(startedRaw)) {
+        return {
+          error:
+            `"${startedRaw.slice(0, 40)}" is not a Jira worklog start time. Jira wants exactly ` +
+            '"YYYY-MM-DDTHH:mm:ss.SSS+0000" — milliseconds are required and the offset carries ' +
+            'no colon. Omit it to log the work as starting now.'
+        };
+      }
+
+      return {
+        path: `/rest/api/3/issue/${encodeURIComponent(key.key)}/worklog`,
+        body: {
+          timeSpent: spent.value,
+          ...('absent' in comment ? {} : { comment: comment.doc }),
+          ...(startedRaw ? { started: startedRaw } : {})
+        }
+      };
+    },
+    writeScope: {
+      kind: 'own-ticket',
+      issue(args) {
+        const key = issueKey(args);
+        return 'error' in key ? null : key.key;
+      }
+    }
+  },
+  {
+    tool: 'atlassian_edit_issue',
+    mode: 'jira-write',
+    products: ['jira'],
+    scope: 'write:jira-work',
+    method: 'PUT',
+    pathShape: '/rest/api/3/issue/{issueKey}',
+    bodyShape: '{"fields":{"summary"?,"description":{ADF}?,"parent"?,"labels"?}}',
+    description:
+      "Edit a Jira issue's summary, description, parent epic or labels, using the Butchr " +
+      "daemon's own credential. YOU MAY ONLY EDIT YOUR OWN TICKET. The description is " +
+      'Markdown converted to ADF by Butchr rather than by the official converter, which ' +
+      'silently drops nested content. FOUR FIELDS AND NO OTHERS: this proxy builds the whole ' +
+      'request body from validated arguments and there is deliberately no way to name an ' +
+      'arbitrary Jira field, because that would grant every field the edit API accepts. If ' +
+      'you need one this does not offer, say so on your ticket. A failure is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issueKey: {
+          type: 'string',
+          description: "The issue key. Must be this agent's own workspace key."
+        },
+        summary: { type: 'string', description: 'Optional new summary (one line).' },
+        description: { type: 'string', description: 'Optional new description, as Markdown.' },
+        parent: {
+          type: 'string',
+          description:
+            'Optional parent EPIC key. A Task cannot be a child of a Story — both sit at the ' +
+            'same hierarchy level and Jira refuses the write.'
+        },
+        labels: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional replacement label list.'
+        }
+      },
+      required: ['issueKey']
+    },
+    build(args) {
+      const key = issueKey(args);
+      if ('error' in key) return key;
+
+      const fields: Record<string, unknown> = {};
+
+      if (args?.summary !== undefined && args.summary !== '') {
+        const summary = plainLine(args, 'summary', 'the new issue summary');
+        if ('error' in summary) return summary;
+        fields.summary = summary.value;
+      }
+
+      const description = markdownBody(args, 'description', 'the new description', 'jira', false);
+      if ('error' in description) return description;
+      if (!('absent' in description)) fields.description = description.doc;
+
+      if (args?.parent !== undefined && args.parent !== '') {
+        const parent = issueKey({ issueKey: args.parent });
+        if ('error' in parent) {
+          return { error: `parent: ${parent.error}` };
+        }
+        fields.parent = { key: parent.key };
+      }
+
+      if (args?.labels !== undefined) {
+        if (!Array.isArray(args.labels)) return { error: 'labels must be an array of strings.' };
+        const labels = args.labels.map((label: any) => String(label).trim());
+        const bad = labels.find((label: string) => !/^[A-Za-z0-9_.-]{1,255}$/.test(label));
+        if (bad !== undefined) {
+          return {
+            error:
+              `"${String(bad).slice(0, 40)}" is not a usable Jira label. Labels carry no spaces ` +
+              '— letters, digits, underscore, dot and hyphen.'
+          };
+        }
+        fields.labels = labels;
+      }
+
+      if (!Object.keys(fields).length) {
+        return {
+          error:
+            'Nothing to edit. Give at least one of summary, description, parent or labels — ' +
+            'an edit with no fields would be a request that changes nothing and reports success.'
+        };
+      }
+
+      return { path: `/rest/api/3/issue/${encodeURIComponent(key.key)}`, body: { fields } };
+    },
+    writeScope: {
+      kind: 'own-ticket',
+      issue(args) {
+        const key = issueKey(args);
+        return 'error' in key ? null : key.key;
+      }
+    }
+  },
+  {
+    tool: 'atlassian_create_issue_link',
+    mode: 'jira-write',
+    products: ['jira'],
+    scope: 'write:jira-work',
+    method: 'POST',
+    pathShape: '/rest/api/3/issueLink',
+    bodyShape: '{"type":{"name":"{linkType}"},"inwardIssue":{"key":…},"outwardIssue":{"key":…}}',
+    description:
+      "Link two Jira issues, using the Butchr daemon's own credential. AT LEAST ONE END MUST " +
+      "BE YOUR OWN TICKET — linking two issues that are both somebody else's is refused. " +
+      'Read the link type names this site has with atlassian_get_issue_link_types; "Relates" ' +
+      'and "Blocks" are the usual ones, and the direction is inward/outward as that tool ' +
+      'reports it. A failure is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        linkType: {
+          type: 'string',
+          description: 'The link type name, e.g. "Relates" or "Blocks".'
+        },
+        inwardIssue: { type: 'string', description: 'The issue on the inward side.' },
+        outwardIssue: { type: 'string', description: 'The issue on the outward side.' }
+      },
+      required: ['linkType', 'inwardIssue', 'outwardIssue']
+    },
+    build(args) {
+      const type = typeName(args, 'linkType', 'a Jira issue link type', 'Relates');
+      if ('error' in type) return type;
+      const inward = issueKey({ issueKey: args?.inwardIssue });
+      if ('error' in inward) return { error: `inwardIssue: ${inward.error}` };
+      const outward = issueKey({ issueKey: args?.outwardIssue });
+      if ('error' in outward) return { error: `outwardIssue: ${outward.error}` };
+      if (inward.key === outward.key) {
+        return { error: `Cannot link ${inward.key} to itself.` };
+      }
+      return {
+        path: '/rest/api/3/issueLink',
+        body: {
+          type: { name: type.value },
+          inwardIssue: { key: inward.key },
+          outwardIssue: { key: outward.key }
+        }
+      };
+    },
+    writeScope: {
+      kind: 'own-ticket-endpoint',
+      issues(args) {
+        const inward = issueKey({ issueKey: args?.inwardIssue });
+        const outward = issueKey({ issueKey: args?.outwardIssue });
+        return [
+          ...('error' in inward ? [] : [inward.key]),
+          ...('error' in outward ? [] : [outward.key])
+        ];
+      }
+    }
+  },
+  {
+    tool: 'atlassian_create_issue',
+    mode: 'jira-write',
+    products: ['jira'],
+    scope: 'write:jira-work',
+    method: 'POST',
+    pathShape: '/rest/api/3/issue',
+    bodyShape:
+      '{"fields":{"project":{"key":…},"issuetype":{"name":…},"summary":…,"description":{ADF}?,"parent":{"key":…}?}}',
+    description:
+      "File a new Jira issue, using the Butchr daemon's own credential. YOU MAY ONLY CREATE " +
+      "IN YOUR OWN PROJECT — the project is taken from your own ticket's key and a call " +
+      'naming another project is refused. SET THE PARENT EPIC AT CREATION: an unparented ' +
+      "ticket is invisible in its epic's org chart and names nobody as its approver. Read " +
+      "your own ticket's parent with atlassian_get_issue and copy it; the parent is the EPIC " +
+      'and never a Story, because Story and Task sit at the same hierarchy level and Jira ' +
+      'refuses that write. The description is Markdown converted to ADF by Butchr. A failure ' +
+      'is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectKey: {
+          type: 'string',
+          description: "The project key, e.g. \"KAN\". Must be your own ticket's project."
+        },
+        issueType: { type: 'string', description: 'Issue type name, e.g. "Task" or "Story".' },
+        summary: { type: 'string', description: 'One-line summary.' },
+        description: { type: 'string', description: 'Optional description, as Markdown.' },
+        parent: {
+          type: 'string',
+          description: 'Parent EPIC key. Copy it from your own ticket unless it has none.'
+        }
+      },
+      required: ['projectKey', 'issueType', 'summary']
+    },
+    build(args) {
+      const project = projectKey(args);
+      if ('error' in project) return project;
+      const type = typeName(args, 'issueType', 'a Jira issue type', 'Task');
+      if ('error' in type) return type;
+      const summary = plainLine(args, 'summary', 'the issue summary');
+      if ('error' in summary) return summary;
+      const description = markdownBody(args, 'description', 'the issue description', 'jira', false);
+      if ('error' in description) return description;
+
+      const fields: Record<string, unknown> = {
+        project: { key: project.key },
+        issuetype: { name: type.value },
+        summary: summary.value
+      };
+      if (!('absent' in description)) fields.description = description.doc;
+
+      if (args?.parent !== undefined && args.parent !== '') {
+        const parent = issueKey({ issueKey: args.parent });
+        if ('error' in parent) return { error: `parent: ${parent.error}` };
+        fields.parent = { key: parent.key };
+      }
+
+      return { path: '/rest/api/3/issue', body: { fields } };
+    },
+    writeScope: {
+      kind: 'own-project',
+      project(args) {
+        const project = projectKey(args);
+        return 'error' in project ? null : project.key;
+      }
+    }
+  },
+
+  // ── The Confluence writes. Unscoped, and the rung says so. ────────────────
+
+  {
+    tool: 'atlassian_create_confluence_page',
+    mode: 'confluence-write',
+    products: ['confluence'],
+    scope: 'write:confluence-content',
+    method: 'POST',
+    pathShape: '/wiki/api/v2/pages',
+    bodyShape:
+      '{"spaceId":…,"status":"current","title":…,"parentId":…?,"body":{"representation":"atlas_doc_format","value":"{ADF}"}}',
+    description:
+      "Create a Confluence page, using the Butchr daemon's own credential. THIS IS NOT " +
+      'RESTRICTED TO YOUR OWN WORK — unlike every Jira write here, a page has no relationship ' +
+      'to your ticket that the daemon can check, so this can write anywhere the credential ' +
+      'reaches. The body is Markdown converted to ADF by Butchr, NOT by the official ' +
+      'converter, which silently drops blockquotes nested in list items and takes the whole ' +
+      'list item with them. If the conversion would lose anything the call is refused. ' +
+      'A failure is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spaceId: { type: 'string', description: 'Numeric space id, from atlassian_get_confluence_spaces.' },
+        title: { type: 'string', description: 'The page title.' },
+        bodyMarkdown: { type: 'string', description: 'The page content, as Markdown.' },
+        parentId: { type: 'string', description: 'Optional numeric id of the parent page.' }
+      },
+      required: ['spaceId', 'title', 'bodyMarkdown']
+    },
+    build(args) {
+      const space = numericId(args, 'spaceId', 'a Confluence space');
+      if ('error' in space) return space;
+      const title = plainLine(args, 'title', 'the page title');
+      if ('error' in title) return title;
+      const body = markdownBody(args, 'bodyMarkdown', 'the page content', 'confluence');
+      if ('error' in body) return body;
+      if ('absent' in body) return { error: 'bodyMarkdown is required.' };
+
+      let parentId: string | undefined;
+      if (args?.parentId !== undefined && args.parentId !== '') {
+        const parent = numericId(args, 'parentId', 'a Confluence page');
+        if ('error' in parent) return parent;
+        parentId = parent.id;
+      }
+
+      return {
+        path: '/wiki/api/v2/pages',
+        product: 'confluence',
+        body: {
+          spaceId: space.id,
+          status: 'current',
+          title: title.value,
+          ...(parentId ? { parentId } : {}),
+          body: confluenceBody(body.doc)
+        }
+      };
+    },
+    writeScope: {
+      kind: 'unscoped',
+      justification:
+        'A Confluence page has no Jira issue key, so the caller\'s own ticket names no page ' +
+        'and there is nothing for KAN-291\'s own-ticket rule to compare against. Bounded ' +
+        'instead by the rung: an operator enables confluence-write by name, separately from ' +
+        'every Jira write, and every call is attributed in the audit log.'
+    }
+  },
+  {
+    tool: 'atlassian_update_confluence_page',
+    mode: 'confluence-write',
+    products: ['confluence'],
+    scope: 'write:confluence-content',
+    method: 'PUT',
+    pathShape: '/wiki/api/v2/pages/{pageId}',
+    bodyShape:
+      '{"id":…,"status":"current","title":…,"version":{"number":…},"body":{"representation":"atlas_doc_format","value":"{ADF}"}}',
+    description:
+      "Replace a Confluence page's content, using the Butchr daemon's own credential. NOT " +
+      'RESTRICTED TO YOUR OWN WORK — see atlassian_create_confluence_page. YOU MUST PASS THE ' +
+      "PAGE'S CURRENT VERSION NUMBER, read with atlassian_get_confluence_page: Confluence " +
+      'uses it for optimistic locking, so a stale number is refused rather than silently ' +
+      'overwriting somebody else\'s edit. This REPLACES the body; read the page first if you ' +
+      'mean to append. The body is Markdown converted to ADF by Butchr. A failure is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'Numeric page id.' },
+        title: { type: 'string', description: 'The page title (required by the API even if unchanged).' },
+        bodyMarkdown: { type: 'string', description: 'The new page content, as Markdown.' },
+        version: {
+          type: 'string',
+          description:
+            "The page's CURRENT version number, from atlassian_get_confluence_page. Butchr " +
+            'sends the next one.'
+        },
+        versionMessage: { type: 'string', description: 'Optional note for the version history.' }
+      },
+      required: ['pageId', 'title', 'bodyMarkdown', 'version']
+    },
+    build(args) {
+      const page = numericId(args, 'pageId', 'a Confluence page');
+      if ('error' in page) return page;
+      const title = plainLine(args, 'title', 'the page title');
+      if ('error' in title) return title;
+      const body = markdownBody(args, 'bodyMarkdown', 'the page content', 'confluence');
+      if ('error' in body) return body;
+      if ('absent' in body) return { error: 'bodyMarkdown is required.' };
+      const current = numericId(args, 'version', "the page's current version");
+      if ('error' in current) return current;
+
+      let message: string | undefined;
+      if (args?.versionMessage !== undefined && args.versionMessage !== '') {
+        const note = plainLine(args, 'versionMessage', 'the version note');
+        if ('error' in note) return note;
+        message = note.value;
+      }
+
+      return {
+        path: `/wiki/api/v2/pages/${encodeURIComponent(page.id)}`,
+        product: 'confluence',
+        body: {
+          id: page.id,
+          status: 'current',
+          title: title.value,
+          // The caller supplies the version it read; Confluence wants the one
+          // it is being moved to. Incremented here rather than by the agent so
+          // that "the number you read" is the only thing anybody has to get
+          // right, and computed with BigInt because page versions are not
+          // bounded by anything this file should assume.
+          version: {
+            number: Number(BigInt(current.id) + 1n),
+            ...(message ? { message } : {})
+          },
+          body: confluenceBody(body.doc)
+        }
+      };
+    },
+    writeScope: {
+      kind: 'unscoped',
+      justification:
+        'As atlassian_create_confluence_page: no Jira key names a page. Additionally bounded ' +
+        "by Confluence's own optimistic locking — a write against a stale version number is " +
+        'refused by the API, so this cannot silently clobber a concurrent edit.'
+    }
+  },
+  {
+    tool: 'atlassian_create_confluence_footer_comment',
+    mode: 'confluence-write',
+    products: ['confluence'],
+    scope: 'write:confluence-content',
+    method: 'POST',
+    pathShape: '/wiki/api/v2/footer-comments',
+    bodyShape:
+      '{"pageId":…,"parentCommentId":…?,"body":{"representation":"atlas_doc_format","value":"{ADF}"}}',
+    description:
+      "Comment at the foot of a Confluence page, using the Butchr daemon's own credential. " +
+      'NOT RESTRICTED TO YOUR OWN WORK — see atlassian_create_confluence_page. Pass ' +
+      'parentCommentId to reply to an existing comment rather than starting a thread. The ' +
+      'body is Markdown converted to ADF by Butchr. A failure is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'Numeric page id.' },
+        bodyMarkdown: { type: 'string', description: 'The comment, as Markdown.' },
+        parentCommentId: {
+          type: 'string',
+          description: 'Optional numeric id of the comment being replied to.'
+        }
+      },
+      required: ['pageId', 'bodyMarkdown']
+    },
+    build(args) {
+      const page = numericId(args, 'pageId', 'a Confluence page');
+      if ('error' in page) return page;
+      const body = markdownBody(args, 'bodyMarkdown', 'the comment text', 'confluence');
+      if ('error' in body) return body;
+      if ('absent' in body) return { error: 'bodyMarkdown is required.' };
+
+      let parent: string | undefined;
+      if (args?.parentCommentId !== undefined && args.parentCommentId !== '') {
+        const reply = numericId(args, 'parentCommentId', 'a Confluence comment');
+        if ('error' in reply) return reply;
+        parent = reply.id;
+      }
+
+      return {
+        path: '/wiki/api/v2/footer-comments',
+        product: 'confluence',
+        body: {
+          pageId: page.id,
+          ...(parent ? { parentCommentId: parent } : {}),
+          body: confluenceBody(body.doc)
+        }
+      };
+    },
+    writeScope: {
+      kind: 'unscoped',
+      justification: 'As atlassian_create_confluence_page: no Jira key names a page.'
+    }
+  },
+  {
+    tool: 'atlassian_create_confluence_inline_comment',
+    mode: 'confluence-write',
+    products: ['confluence'],
+    scope: 'write:confluence-content',
+    method: 'POST',
+    pathShape: '/wiki/api/v2/inline-comments',
+    bodyShape:
+      '{"pageId":…,"body":{…},"inlineCommentProperties":{"textSelection":…,"textSelectionMatchCount":…,"textSelectionMatchIndex":…}}',
+    description:
+      "Comment on a specific passage of a Confluence page, using the Butchr daemon's own " +
+      'credential. NOT RESTRICTED TO YOUR OWN WORK — see atlassian_create_confluence_page. ' +
+      'textSelection must match the page text EXACTLY or Confluence refuses the anchor; read ' +
+      'the page with atlassian_get_confluence_page and copy the passage. The body is Markdown ' +
+      'converted to ADF by Butchr. A failure is loud.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'Numeric page id.' },
+        bodyMarkdown: { type: 'string', description: 'The comment, as Markdown.' },
+        textSelection: {
+          type: 'string',
+          description: 'The exact passage on the page this comment anchors to.'
+        },
+        matchIndex: {
+          type: 'number',
+          description:
+            'Which occurrence of that passage, counting from 0, when it appears more than ' +
+            'once. Defaults to 0.'
+        },
+        matchCount: {
+          type: 'number',
+          description: 'How many times the passage appears on the page. Defaults to 1.'
+        }
+      },
+      required: ['pageId', 'bodyMarkdown', 'textSelection']
+    },
+    build(args) {
+      const page = numericId(args, 'pageId', 'a Confluence page');
+      if ('error' in page) return page;
+      const body = markdownBody(args, 'bodyMarkdown', 'the comment text', 'confluence');
+      if ('error' in body) return body;
+      if ('absent' in body) return { error: 'bodyMarkdown is required.' };
+      const selection = freeText(args, 'textSelection', '"the sentence you are commenting on"', 500);
+      if ('error' in selection) return selection;
+
+      const count = Number.isFinite(Number(args?.matchCount)) ? Math.max(1, Math.floor(Number(args.matchCount))) : 1;
+      const index = Number.isFinite(Number(args?.matchIndex)) ? Math.max(0, Math.floor(Number(args.matchIndex))) : 0;
+      if (index >= count) {
+        return {
+          error:
+            `matchIndex ${index} is not inside matchCount ${count} — the index counts from 0, ` +
+            'so the last occurrence of a passage appearing twice is index 1.'
+        };
+      }
+
+      return {
+        path: '/wiki/api/v2/inline-comments',
+        product: 'confluence',
+        body: {
+          pageId: page.id,
+          body: confluenceBody(body.doc),
+          inlineCommentProperties: {
+            textSelection: selection.value,
+            textSelectionMatchCount: count,
+            textSelectionMatchIndex: index
+          }
+        }
+      };
+    },
+    writeScope: {
+      kind: 'unscoped',
+      justification: 'As atlassian_create_confluence_page: no Jira key names a page.'
+    }
   }
 ];
 
@@ -1622,7 +2535,7 @@ export function selectedProxyMode(env: NodeJS.ProcessEnv = process.env): ProxyDe
 /** What a proxied operation looks like to a reader enumerating the grant. */
 export interface ProxyOperationReport {
   tool: string;
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PUT';
   /** Which products this operation's paths reach. See {@link ProxyProduct}. */
   products: readonly ProxyProduct[];
   pathShape: string;
@@ -1631,12 +2544,25 @@ export interface ProxyOperationReport {
   /** Always a list here, however the table spelled it. See {@link scopesOf}. */
   scope: string[];
   /**
-   * Whether this operation is restricted to the caller's own ticket. True for
-   * every write; false for every read. Reported rather than left to be inferred
-   * from the method, because "which of these can change something, and who may
-   * ask" is the question a reader of this report actually has.
+   * Whether this operation is restricted to the caller's own ticket.
+   *
+   * **It stopped being "true for every write" in KAN-293, and that is the point
+   * of reporting it.** Five of the ten writes are own-ticket, one is
+   * own-project, one needs only one endpoint to be the caller's, and four are
+   * unscoped. A reader who inferred the answer from the method would now be
+   * wrong four times out of ten, which is exactly why it was reported rather
+   * than inferred in the first place.
    */
   ownTicketOnly: boolean;
+  /**
+   * What actually bounds this write, and — where nothing about the caller does
+   * — the table's own justification for that (KAN-293).
+   *
+   * Absent on reads. The justification is surfaced rather than left in the
+   * source because the operator deciding whether to enable a rung is the person
+   * the argument was written for, and it is no use to them in a docblock.
+   */
+  writeScope?: { kind: WriteScope['kind']; justification?: string };
 }
 
 /**
@@ -1685,10 +2611,21 @@ export function proxyReport(
     pathShape: op.pathShape,
     ...(op.bodyShape ? { bodyShape: op.bodyShape } : {}),
     scope: scopesOf(op),
-    ownTicketOnly: !!op.writesTo
+    ownTicketOnly: op.writeScope?.kind === 'own-ticket',
+    ...(op.writeScope
+      ? {
+          writeScope: {
+            kind: op.writeScope.kind,
+            ...(op.writeScope.kind === 'unscoped'
+              ? { justification: op.writeScope.justification }
+              : {})
+          }
+        }
+      : {})
   }));
   const scopes = grantedScopes(decision.mode);
   const writes = operations.filter((op) => op.method !== 'GET');
+  const unscoped = writes.filter((op) => op.writeScope?.kind === 'unscoped');
 
   const summary =
     decision.mode === 'off'
@@ -1706,11 +2643,21 @@ export function proxyReport(
         `${credential.configured ? `${credential.email ?? 'the configured account'} @ ${credential.siteUrl ?? 'the configured site'}` : 'NO CONFIGURED CREDENTIAL — every call will refuse'}, ` +
         `needing ${scopes.join(', ')} and nothing else. Selected by ${PROXY_ENV_VAR}=${decision.rawValue}. ` +
         (writes.length
-          ? `EVERY WRITE IS RESTRICTED TO THE CALLING AGENT'S OWN TICKET (${writes
-              .map((op) => op.tool)
+          ? `${writes.length - unscoped.length} of ${writes.length} write(s) are BOUND TO THE ` +
+            `CALLING AGENT'S OWN WORK (${writes
+              .filter((op) => op.writeScope?.kind !== 'unscoped')
+              .map((op) => `${op.tool}: ${op.writeScope?.kind}`)
               .join(', ')}), which bounds accident and is not authentication — anything that ` +
-            'can reach the daemon socket can claim any identity. A credential minted with only ' +
-            'read scope will refuse these, loudly, on the first call. '
+            'can reach the daemon socket can claim any identity. ' +
+            (unscoped.length
+              ? `${unscoped.length} write(s) are NOT BOUND BY THE CALLER AT ALL (${unscoped
+                  .map((op) => op.tool)
+                  .join(', ')}): any agent may write any Confluence content this credential ` +
+                'can reach. That is what enabling the confluence-write rung grants, it is why ' +
+                'it is a rung of its own, and the table\'s reason is: ' +
+                `${unscoped[0].writeScope?.justification ?? ''} `
+              : '') +
+            'A credential minted with only read scope will refuse these, loudly, on the first call. '
           : '') +
         'A listed tool is not a working one: only a call establishes that the credential is ' +
         'still accepted.';
@@ -1848,50 +2795,107 @@ export function refuseWriteOutsideCaller(
   op: ProxyOperation,
   args: Record<string, any>,
   caller: ProxyCaller | null
-): { error: string; reason: 'unidentified-caller' | 'caller-has-no-ticket' | 'not-your-ticket' } | null {
-  // Reads are not restricted by this rule, and the table says which is which:
-  // `writesTo` is present on every write and absent on every read.
-  if (!op.writesTo) return null;
+): {
+  error: string;
+  reason:
+    | 'unidentified-caller'
+    | 'caller-has-no-ticket'
+    | 'not-your-ticket'
+    | 'not-your-project';
+} | null {
+  // Reads are not restricted by this rule, and the TYPE says which is which:
+  // `writeScope` exists on the write half of `ProxyOperation` and nowhere else,
+  // so a write that reaches this function without one does not compile.
+  if (!op.writeScope) return null;
+  const scope = op.writeScope;
 
-  const target = op.writesTo(args);
-  // `build` refuses a malformed key with a better sentence than anything here
-  // could, and the handler calls it first. Reaching this with no target means
-  // the arguments were unusable; let `build` be the one to say so.
-  if (!target) return null;
-
+  // KAN-293: an unattributable write is refused whatever its scope, INCLUDING
+  // the unscoped ones. That is not ceremony. `unscoped` means the caller's
+  // identity does not *narrow* the write; it does not mean the write may be
+  // anonymous. The audit line is the only remaining bound on a Confluence
+  // write, and an audit line naming nobody bounds nothing at all.
   if (!caller || !caller.type || !caller.key) {
     return {
       reason: 'unidentified-caller',
       error:
         `${op.tool} is refused because this call did not say which workspace it came from, ` +
-        'and a write is only permitted to the caller\'s own ticket. Nothing was sent to ' +
+        'and every write through this proxy must be attributable. Nothing was sent to ' +
         'Atlassian. This is a bug in whatever made the call rather than something to work ' +
         'around: an unattributable write is exactly the one this proxy will not make.'
     };
   }
 
+  if (scope.kind === 'unscoped') return null;
+
+  // Every remaining scope is derived from the caller's own Jira key, so a
+  // caller without one fails closed. See the docblock: a `confluence` workspace
+  // keyed by a page id is the ordinary case here, not a corner one.
   if (!JIRA_KEY.test(caller.key.toUpperCase())) {
     return {
       reason: 'caller-has-no-ticket',
       error:
         `${op.tool} is refused: this is the "${caller.type}" workspace ${caller.key}, whose key ` +
-        'is not a Jira issue, so it has no ticket of its own to transition — and a write is ' +
-        `only permitted to the caller's own ticket. Nothing was sent to Atlassian. Use this ` +
-        "agent's own Atlassian MCP tools if you genuinely need to move somebody else's issue."
+        'is not a Jira issue, so it has no ticket of its own — and this write is permitted ' +
+        `only against the caller's own work. Nothing was sent to Atlassian. Use this agent's ` +
+        "own Atlassian MCP tools if you genuinely need to write to somebody else's issue."
     };
   }
 
-  if (target !== caller.key.toUpperCase()) {
+  const mine = caller.key.toUpperCase();
+
+  if (scope.kind === 'own-ticket') {
+    const target = scope.issue(args);
+    // `build` refuses a malformed key with a better sentence than anything here
+    // could, and the handler calls it first. Reaching this with no target means
+    // the arguments were unusable; let `build` be the one to say so.
+    if (!target) return null;
+    if (target !== mine) {
+      return {
+        reason: 'not-your-ticket',
+        error:
+          `${op.tool} is refused: ${caller.type}/${caller.key} asked to write to ${target}, and ` +
+          "the Butchr proxy permits a write only to the caller's own ticket. Nothing was sent " +
+          `to Atlassian and ${target} is unchanged. If ${target} genuinely has to change — ` +
+          'approving agents set Done on the tickets they approve, which is exactly this case ' +
+          "— use this agent's own Atlassian MCP tools, which are unaffected by this refusal."
+      };
+    }
+    return null;
+  }
+
+  if (scope.kind === 'own-ticket-endpoint') {
+    const targets = scope.issues(args);
+    if (targets.length < 2) return null;
+    if (!targets.includes(mine)) {
+      return {
+        reason: 'not-your-ticket',
+        error:
+          `${op.tool} is refused: ${caller.type}/${caller.key} asked to link ${targets.join(' to ')}, ` +
+          "and neither end is this agent's own ticket. A link is permitted when at least one " +
+          'end is your own — which is what lets you link a follow-up you just filed to your ' +
+          'ticket — but linking two issues that are both somebody else\'s is not yours to do. ' +
+          "Nothing was sent to Atlassian. Use this agent's own Atlassian MCP tools if the link " +
+          'genuinely has to exist.'
+      };
+    }
+    return null;
+  }
+
+  // own-project. The caller's project is the part of its key before the hyphen,
+  // which `JIRA_KEY` has already established is well formed.
+  const target = scope.project(args);
+  if (!target) return null;
+  const myProject = mine.split('-')[0];
+  if (target.toUpperCase() !== myProject) {
     return {
-      reason: 'not-your-ticket',
+      reason: 'not-your-project',
       error:
-        `${op.tool} is refused: ${caller.type}/${caller.key} asked to transition ${target}, and ` +
-        "the Butchr proxy permits a write only to the caller's own ticket. Nothing was sent to " +
-        `Atlassian and ${target} has not moved. If ${target} genuinely has to move — approving ` +
-        'agents set Done on the tickets they approve, which is exactly this case — use this ' +
-        "agent's own Atlassian MCP tools, which are unaffected by this refusal."
+        `${op.tool} is refused: ${caller.type}/${caller.key} asked to create an issue in ` +
+        `project ${target}, and its own ticket lives in ${myProject}. The Butchr proxy permits ` +
+        "creation only in the caller's own project. Nothing was sent to Atlassian and no " +
+        `issue was created. Use this agent's own Atlassian MCP tools if you genuinely need to ` +
+        `file into ${target}.`
     };
   }
-
   return null;
 }

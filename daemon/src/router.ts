@@ -3386,7 +3386,17 @@ export class MessageRouter {
       const outcome =
         operation.method === 'GET'
           ? await this.jira.proxyRead(request.path, request.product)
-          : await this.jira.proxyWrite(request.path, request.body);
+          : // KAN-293: the verb and the product both come from the operation
+            // table and the request it built. Until this slice the write leg
+            // hard-coded POST and the Jira product, which was true of the one
+            // write that existed and would have sent every Confluence write to
+            // Jira's gateway base.
+            await this.jira.proxyWrite(
+              operation.method,
+              request.path,
+              request.body,
+              request.product
+            );
       outcomes.push({ request, outcome });
       // A fan-out stops at its first failure rather than pressing on. Half an
       // answer presented as an answer is the failure mode this whole module was
