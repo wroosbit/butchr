@@ -37,6 +37,14 @@
 //   it needs separate GitHub identities per agent — filed as a follow-up rather
 //   than attempted here.
 //
+//   AND SINCE KAN-321, IT NO LONGER FIRES BY ACCIDENT.  A marker that a comment
+//   *displays* — inside a code fence, a blockquote, an indented block — or
+//   *hides* inside an HTML comment is a mention rather than an assertion, and is
+//   no longer read as an approval. That is a smaller claim than the one above it
+//   and the two must not be confused: it does not make the gate harder to
+//   satisfy deliberately, only harder to satisfy unintentionally. See the
+//   USE VERSUS MENTION section below.
+//
 // So the honest sentence is: this converts *"I believe I was approved"* into
 // *"a comment naming this exact commit exists, or the merge is blocked."* That
 // is a smaller claim than "approval is enforced", and it is the one to make.
@@ -172,6 +180,175 @@ export function exitCodeFor({ gateHealthy, approved, exitOn }) {
  */
 const MARKER = /^[ \t]*BUTCHR-APPROVAL:[ \t]+([0-9a-f]{40})[ \t]+BY[ \t]+(\S+)[ \t]*$/gim;
 
+/** The same grammar against a single line, for reporting a marker we refused. */
+const MARKER_LINE = /^[ \t]*BUTCHR-APPROVAL:[ \t]+([0-9a-f]{40})[ \t]+BY[ \t]+(\S+)[ \t]*$/i;
+
+// ---------------------------------------------------------------------------
+// USE VERSUS MENTION — KAN-321.
+//
+// `task/KAN-317` needed a second approval on #139 and asked for one the obvious
+// way: it pasted the exact line it wanted, inside a code fence, so that its
+// approver could copy it. Fifteen seconds later `approval-recorded` went green,
+// describing an approval that did not exist. The genuine one arrived 61 seconds
+// after that; for 47 seconds the required check reported an approval on the
+// strength of the author's own request for one.
+//
+// THIS IS NOT THE FORGERY LIMIT ABOVE, AND IT IS WORSE IN ONE SPECIFIC WAY: it
+// needs no intent. The forgery note describes what a *deliberate* agent could
+// do. This is what a *cooperative* agent does by following the obvious path —
+// the natural way to request an approval is to quote the line you are
+// requesting. `MARKER` matches "a line of its own", and a line inside a code
+// fence is still a line of its own.
+//
+// AND IT FIRES AT THE WORST MOMENT: the marker gets quoted precisely when
+// somebody is requesting or explaining the gate, which is exactly when the gate
+// is being relied upon. A rule that is tripped by citing it correctly is tripped
+// by its most careful users first.
+//
+// THE FIX IS TO READ ONLY WHAT THE COMMENT ASSERTS. A Markdown comment has
+// contexts that show a line rather than say it, and one that hides it
+// altogether; a marker in any of them is a mention. `scanQuoted` labels those
+// lines and `assertedText` blanks them before the grammar above ever runs.
+//
+// WHY EVERY AMBIGUITY HERE RESOLVES TOWARD "QUOTED", and it is the reason this
+// scanner is allowed to be approximate rather than a conformant CommonMark
+// parser. Deciding a line is quoted REFUSES a marker, and a refused marker is a
+// red required check and a blocked merge. So an over-eager scanner costs an
+// approver a re-post with a reason that names exactly what happened, while an
+// under-eager one hands back the defect this section exists to close. Fail
+// closed, loudly. Where you are unsure, mark it quoted.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO. It does not require the marker to lead the
+// comment. That was the first candidate on KAN-321 and it was rejected against
+// data rather than taste — see `verify-approval-recorded.mjs` §14, which carries
+// the survey of all 19 markers this repository has ever seen.
+//
+// WHAT IT STILL DOES NOT CATCH, stated here rather than left to be inferred:
+//
+//   - FORGERY, exactly as before. An author who writes the marker as a plain
+//     top-level line satisfies the gate, whatever they meant by it. Unchanged.
+//   - A MARKER POSTED AS A DELIBERATE DEMONSTRATION. #132 carries two, at top
+//     level, refused only because their SHA and their signer were wrong. One
+//     naming the right head and the right approver would still be accepted.
+//   - RENDERED-INLINE PROSE. A line indented under a list item is a paragraph
+//     rather than code, and this scanner calls it quoted anyway — fail-closed,
+//     and noted so that nobody reads the labels as a rendering claim.
+
+/**
+ * The contexts in which a Markdown comment shows a line rather than says it.
+ * A closed frozen set for the same reason `EXIT_ON` is one: `.mjs` cannot spell
+ * it as a literal type, and a typo that silently picks a branch is, for a gate,
+ * a wrong colour.
+ */
+export const QUOTED = Object.freeze({
+  FENCED_CODE: 'a fenced code block',
+  INDENTED_CODE: 'an indented block',
+  BLOCKQUOTE: 'a blockquote',
+  HTML_COMMENT: 'an HTML comment'
+});
+
+/** An opening fence may carry an info string; a closing one may not. */
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+const BLOCKQUOTE = /^ {0,3}>/;
+const INDENTED = /^(?: {4,}|\t)/;
+/** Strip one or more blockquote markers, so a quoted marker can be reported. */
+const BLOCKQUOTE_PREFIX = /^(?: {0,3}> ?)+/;
+
+/**
+ * Label every line of `body` with the context that displays or hides it, or
+ * `null` where the line is the comment speaking in its own voice.
+ *
+ * Exported so the proof can drive the scanner directly rather than only through
+ * its effect on a verdict — a scanner tested only via `evaluate` is one whose
+ * failures all look like approval failures.
+ *
+ * @param {string} body
+ * @returns {(string|null)[]} one entry per line, a `QUOTED` value or `null`
+ */
+export function scanQuoted(body) {
+  const lines = String(body ?? '').split(/\r?\n/);
+  const out = new Array(lines.length).fill(null);
+  let fence = null;
+  let html = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Inside a fence, nothing else can start: a `>` or a `<!--` in there is
+    // code being shown. An unclosed fence runs to the end of the comment, which
+    // is CommonMark's own rule and is also the fail-closed direction.
+    if (fence) {
+      out[i] = QUOTED.FENCED_CODE;
+      const close = FENCE_CLOSE.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.len) fence = null;
+      continue;
+    }
+
+    if (html) {
+      out[i] = QUOTED.HTML_COMMENT;
+      if (line.includes('-->')) html = false;
+      continue;
+    }
+
+    // A fence closes only on the SAME character at the SAME length or longer,
+    // which is what makes a ``` inside a ```` block content rather than a
+    // terminator. That nesting is how a worked example of this very gate gets
+    // written, so it is the case most likely to occur here.
+    const open = FENCE_OPEN.exec(line);
+    if (open) {
+      fence = { char: open[1][0], len: open[1].length };
+      out[i] = QUOTED.FENCED_CODE;
+      continue;
+    }
+
+    if (BLOCKQUOTE.test(line)) {
+      out[i] = QUOTED.BLOCKQUOTE;
+      continue;
+    }
+
+    // Four spaces or a tab. This is deliberately blunter than CommonMark, which
+    // would call the same line a paragraph continuation in some positions — but
+    // a continuation renders INLINE, so it is not "a line of its own" either,
+    // and both readings refuse. Three spaces stay legal, so the indentation the
+    // grammar has always tolerated is untouched.
+    if (INDENTED.test(line)) {
+      out[i] = QUOTED.INDENTED_CODE;
+      continue;
+    }
+
+    // A complete `<!-- … -->` on one line opens nothing. Anything left after
+    // removing those pairs is a comment that runs on to a later line — and a
+    // marker nobody can see is the same defect as one that is merely shown.
+    if (line.replace(/<!--[\s\S]*?-->/g, '').includes('<!--')) {
+      out[i] = QUOTED.HTML_COMMENT;
+      html = true;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * `body` with every displayed or hidden line blanked, keeping the line count so
+ * that the grammar above still sees "a line of its own" exactly where the
+ * comment does.
+ */
+export function assertedText(body) {
+  const lines = String(body ?? '').split(/\r?\n/);
+  const quoted = scanQuoted(body);
+  return lines.map((line, i) => (quoted[i] ? '' : line)).join('\n');
+}
+
+/** The body, id and GitHub author of a comment, which may be a bare string. */
+function commentParts(c) {
+  return {
+    body: typeof c === 'string' ? c : (c?.body ?? ''),
+    commentId: typeof c === 'string' ? null : (c?.id ?? null),
+    author: typeof c === 'string' ? null : (c?.user?.login ?? null)
+  };
+}
+
 /**
  * The approver the pull request itself declares, in its body:
  *
@@ -188,27 +365,80 @@ const DECLARED = /^[ \t]*BUTCHR-APPROVER:[ \t]+(\S+)[ \t]*$/im;
 /** The branch convention: `butchr/KAN-306` is the agent working KAN-306. */
 const BRANCH = /^butchr\/([A-Z][A-Z0-9]*-\d+)$/;
 
+/** Every marker a comment ASSERTS. What the gate reads, and the only thing it does. */
 export function parseMarkers(comments) {
   const found = [];
   for (const c of comments ?? []) {
-    const body = typeof c === 'string' ? c : (c?.body ?? '');
+    const { body, commentId, author } = commentParts(c);
+    const text = assertedText(body);
     MARKER.lastIndex = 0;
     let m;
-    while ((m = MARKER.exec(body)) !== null) {
-      found.push({
-        sha: m[1].toLowerCase(),
-        approver: m[2],
-        commentId: typeof c === 'string' ? null : (c?.id ?? null),
-        author: typeof c === 'string' ? null : (c?.user?.login ?? null)
-      });
+    while ((m = MARKER.exec(text)) !== null) {
+      found.push({ sha: m[1].toLowerCase(), approver: m[2], commentId, author });
     }
   }
   return found;
 }
 
+/**
+ * Every marker a comment MENTIONS — refused, and reported so that the refusal
+ * has a reason an approver can act on.
+ *
+ * This exists because the fix without it is the worse bug. An approver who
+ * fences their marker would otherwise get silence: a red check whose reason
+ * reads "no approval marker was found", about a comment they can see contains
+ * one. Each entry carries `quotedAs` so the reason names the context.
+ */
+export function parseQuotedMarkers(comments) {
+  const found = [];
+  for (const c of comments ?? []) {
+    const { body, commentId, author } = commentParts(c);
+    const lines = String(body ?? '').split(/\r?\n/);
+    const quoted = scanQuoted(body);
+    lines.forEach((line, i) => {
+      if (!quoted[i]) return;
+      // A blockquoted marker never matched the grammar in the first place — `>`
+      // is not `[ \t]` — so it has always been refused, silently and by
+      // accident rather than by design. Stripping the prefix here is what turns
+      // that accident into a reported refusal.
+      const bare = quoted[i] === QUOTED.BLOCKQUOTE ? line.replace(BLOCKQUOTE_PREFIX, '') : line;
+      const m = MARKER_LINE.exec(bare);
+      if (m) {
+        found.push({
+          sha: m[1].toLowerCase(),
+          approver: m[2],
+          commentId,
+          author,
+          quotedAs: quoted[i]
+        });
+      }
+    });
+  }
+  return found;
+}
+
 export function parseDeclaredApprover(prBody) {
-  const m = DECLARED.exec(prBody ?? '');
+  const m = DECLARED.exec(assertedText(prBody));
   return m ? m[1] : null;
+}
+
+/**
+ * The approver a pull request body only MENTIONS. The same use/mention defect
+ * one field over, and it bites in a way the marker's version does not: a body
+ * that shows `BUTCHR-APPROVER: epic/KAN-39` as an example of the convention,
+ * above a real declaration of somebody else, used to have the example win —
+ * `DECLARED` is not global and takes the first match in the file.
+ */
+export function parseQuotedApprover(prBody) {
+  const lines = String(prBody ?? '').split(/\r?\n/);
+  const quoted = scanQuoted(prBody);
+  for (let i = 0; i < lines.length; i++) {
+    if (!quoted[i]) continue;
+    const bare = quoted[i] === QUOTED.BLOCKQUOTE ? lines[i].replace(BLOCKQUOTE_PREFIX, '') : lines[i];
+    const m = /^[ \t]*BUTCHR-APPROVER:[ \t]+(\S+)[ \t]*$/i.exec(bare);
+    if (m) return { approver: m[1], quotedAs: quoted[i] };
+  }
+  return null;
 }
 
 /** The ticket this pull request belongs to, read off its own branch name. */
@@ -229,7 +459,9 @@ export function ownTicketFromRef(headRef) {
 export function evaluate({ headSha, headRef, prBody, comments }) {
   const reasons = [];
   const markers = parseMarkers(comments);
+  const quotedMarkers = parseQuotedMarkers(comments);
   const declared = parseDeclaredApprover(prBody);
+  const quotedDeclared = parseQuotedApprover(prBody);
   const ownTicket = ownTicketFromRef(headRef);
   const head = (headSha ?? '').toLowerCase();
 
@@ -237,6 +469,7 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
     return {
       ok: false,
       markers,
+      quotedMarkers,
       accepted: null,
       declared,
       ownTicket,
@@ -255,6 +488,13 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
         'the Story your task is linked to by a `Blocks` link, else the parent epic. ' +
         'Declaring it in advance is what stops a marker from an uninvolved agent counting.'
     );
+    if (quotedDeclared) {
+      reasons.push(
+        `the body does name \`${quotedDeclared.approver}\` as approver, but inside ` +
+          `${quotedDeclared.quotedAs}, where it is shown rather than declared (KAN-321). ` +
+          'Move the declaration out to the top level of the body.'
+      );
+    }
   } else if (!AGENT.test(declared)) {
     reasons.push(
       `the declared approver \`${declared}\` is not a \`<type>/<KEY>\` agent name ` +
@@ -272,9 +512,14 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
   if (markers.length === 0) {
     reasons.push(
       'no approval marker was found in any comment on this pull request. An approval is a ' +
-        'comment containing, on a line of its own: ' +
-        '`BUTCHR-APPROVAL: <40-char-head-sha> BY <type>/<KEY>`.\n' +
-        `      For this head that line reads:  BUTCHR-APPROVAL: ${head} BY ${declared ?? '<approver>'}`
+        'comment containing, on a line of its own and at the top level of the comment: ' +
+        '`BUTCHR-APPROVAL: <40-char-head-sha> BY <type>/<KEY>`. For this head that line is ' +
+        `the following, which must be pasted UNINDENTED and NOT inside a code fence (KAN-321):\n` +
+        // Deliberately not indented to line up with the reason above it. The
+        // gate printing its own suggestion indented by six spaces, in an era
+        // where an indented marker is refused, would be this defect handing the
+        // next agent a line that cannot work.
+        `BUTCHR-APPROVAL: ${head} BY ${declared ?? '<approver>'}`
     );
   }
 
@@ -300,5 +545,42 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
     );
   }
 
-  return { ok: reasons.length === 0, reasons, accepted, markers, declared, ownTicket, head };
+  // KAN-321: explain a refusal caused by a quoted marker — and ONLY explain it.
+  //
+  // THE GUARD IS THE POINT, NOT A TIDINESS. This block must never be what makes
+  // a verdict fail, because `ok` is `reasons.length === 0`: pushing here
+  // unconditionally would refuse a pull request that carries a real asserted
+  // approval merely because some other comment on it also quotes a marker — and
+  // a PR that discusses this gate is exactly the kind that would. So it appends
+  // to an existing failure and is unreachable when the gate is satisfied.
+  if (reasons.length > 0 && quotedMarkers.length > 0) {
+    const atHeadQuoted = quotedMarkers.filter((m) => m.sha === head);
+    const relevant = atHeadQuoted.length > 0 ? atHeadQuoted : quotedMarkers;
+    reasons.push(
+      `${quotedMarkers.length} marker(s) WERE found and every one of them was quoted rather ` +
+        'than asserted, so none counted (KAN-321 — the gate used to read a quotation as the ' +
+        'thing itself, which let a request for an approval satisfy it). ' +
+        relevant
+          .map(
+            (m) =>
+              `Comment ${m.commentId ?? '?'} names ${m.sha.slice(0, 12)}… by \`${m.approver}\` ` +
+              `inside ${m.quotedAs}.`
+          )
+          .join(' ') +
+        ' If you meant to approve, post the marker as a plain unindented line at the top level ' +
+        'of a comment. If you were quoting it to ask for an approval, this refusal is correct ' +
+        'and nothing is wrong.'
+    );
+  }
+
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    accepted,
+    markers,
+    quotedMarkers,
+    declared,
+    ownTicket,
+    head
+  };
 }

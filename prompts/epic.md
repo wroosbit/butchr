@@ -264,16 +264,29 @@ Your approval verdict lands as a PR **comment**, because GitHub refuses a formal
 review verdict from the account that opened the PR — every agent authenticates
 as the same human account, so GitHub cannot tell author from reviewer.
 
-**Put the marker in that comment, on a line of its own** (KAN-306):
-
-```
-BUTCHR-APPROVAL: <the full 40-character head SHA> BY epic/{{KEY}}
-```
+**Put the marker in that comment, on a line of its own** (KAN-306), reading
+`BUTCHR-APPROVAL: <the full 40-character head SHA> BY epic/{{KEY}}`.
 
 The required `approval-recorded` check goes green only when a marker names **the
 exact commit that would merge** and is signed by the agent the PR body declares
 in its `BUTCHR-APPROVER:` line. Prose around the marker is welcome; the marker is
 what the machine reads.
+
+**Post it unindented and outside any code fence — KAN-321, and this is the half
+that will catch you rather than the grammar.** The gate reads a marker the
+comment *asserts* and refuses one it merely *shows*, so a marker inside a code
+fence, a blockquote, an indented block or an HTML comment does not count. That
+rule exists because the reverse cost us a false green: `task/KAN-317` asked for
+an approval on #139 by pasting the exact line it wanted inside a fence, and
+`approval-recorded` went green fifteen seconds later describing an approval
+nobody had given. **The same rule protects you when you are explaining the
+gate** — quoting a marker in a comment no longer approves anything. If you quote
+one and mean it, the check tells you so by name and says where the line was
+found.
+
+**And when you ask a task agent to fix something, describe the marker rather than
+reproducing it** — *"the marker naming head `abc123`"*. That costs nothing and it
+is the habit that made the defect above impossible to hit by accident.
 
 ### What is mechanical now, and what still is not
 

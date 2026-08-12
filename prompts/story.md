@@ -407,11 +407,19 @@ plainly in that comment that it **is** an approval and that the task agent may
 now merge; a comment that only observes that things look fine is not something
 an agent can act on.
 
-**Put the marker in that comment, on a line of its own** (KAN-306):
+**Put the marker in that comment, on a line of its own** (KAN-306), reading
+`BUTCHR-APPROVAL: <the full 40-character head SHA> BY story/{{KEY}}`.
 
-```
-BUTCHR-APPROVAL: <the full 40-character head SHA> BY story/{{KEY}}
-```
+**Post it unindented and outside any code fence — KAN-321.** The gate reads a
+marker the comment *asserts* and refuses one it merely *shows*, so a marker
+inside a code fence, a blockquote, an indented block or an HTML comment does not
+count. `task/KAN-317` asked for an approval on #139 by pasting the exact line it
+wanted inside a fence, and `approval-recorded` went green fifteen seconds later
+describing an approval nobody had given. The same rule is what now lets you quote
+a marker while explaining the gate without approving anything by accident; if you
+quote one and meant it, the check says so by name and names where it found it.
+**When you ask a task agent for something, describe the marker rather than
+reproducing it** — *"the marker naming head `abc123`"*.
 
 Prose around it is welcome and wanted — the marker is what the machine reads,
 the reasoning around it is what the next reader does. The required

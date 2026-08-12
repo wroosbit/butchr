@@ -707,8 +707,16 @@ const RULES = [
     // The second is the one that will get dropped by a future editor tidying
     // for length, which is precisely why it is inventoried rather than trusted
     // to survive on its own.
+    // KAN-321 ADDED THE FOURTH PATTERN, and it is the one whose absence is
+    // silent rather than loud. The other three fail visibly: an approver that
+    // does not know the grammar posts prose and the check stays red, which
+    // somebody chases. This one fails the other way — an approver that fences
+    // its marker, as every prompt here used to SHOW the marker fenced, gets a
+    // red check about a comment that visibly contains the line. Without the rule
+    // in the prompt, the mechanism is stricter than the documentation, which is
+    // this epic's own defect shape pointed backwards.
     id: 'H-18',
-    title: 'the approval marker: head-pinned, signed, required — and blind to forgery by construction',
+    title: 'the approval marker: head-pinned, signed, required, asserted not quoted — and blind to forgery by construction',
     //
     // Three prompts and not `PROMPTS`: a `confluence` workspace writes pages,
     // opens no pull request and approves nobody's, so requiring the marker
@@ -716,7 +724,7 @@ const RULES = [
     carriedBy: Object.fromEntries(
       ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
         f,
-        [/BUTCHR-APPROVAL:/, /BUTCHR-APPROVER:/, /approval-recorded/, /forgery/i],
+        [/BUTCHR-APPROVAL:/, /BUTCHR-APPROVER:/, /approval-recorded/, /forgery/i, /code fence/i],
       ])
     ),
   },
