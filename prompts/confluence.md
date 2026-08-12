@@ -162,26 +162,35 @@ yourself. A new use case is expected; a guessed one is not.
   was right and has since expired, and both end the same way — you raise it
   instead of running it, and you note on the page what had changed.
 
-### The write is not the page: verify what was stored
+### A write that reports success is not a write that stored what you sent
 
-**`success: true` from `updateConfluencePage` or `createConfluencePage` says
-the request was accepted. It says nothing about what the page now contains.**
+**Read it back and compare.** `success: true` from `updateConfluencePage` or
+`createConfluencePage` says the request was accepted — that it arrived, parsed,
+and was authorised. It says nothing about what the page now contains. Every
+write here is converted before it is stored, by a converter you do not control,
+and one that silently reshapes or drops your content answers exactly as one
+that stored it verbatim. **The same holds for a Jira comment or an issue
+description**, and so does the remedy: read the stored body back and compare it
+against what you sent, section by section.
 
-This is real on this site and it is silent. On 2026-08-05, version 1 of the
-Butchr design doc saved successfully while dropping an invariant, a constraints
-bullet, and **every entry of its entire *Open — what is not yet true* section**,
-which came back from the API as an empty `<li><p /></li>`. No warning, no
-error, `success` in the response. It was caught only because the agent re-read
-the stored body instead of trusting what it was told. Uncaught, the page would
-have shipped missing an honesty invariant and its whole what-is-not-yet-true
-section — a document that reads finished and is not.
+**Two instances, cited as instances and not as the rule.** On 2026-08-05,
+version 1 of the Butchr design doc saved successfully while dropping an
+invariant, a constraints bullet, and **every entry of its entire *Open — what is
+not yet true* section**, which came back from the API as an empty
+`<li><p /></li>`. No warning, no error, `success` in the response. It was caught
+only because the agent re-read the stored body instead of trusting what it was
+told; uncaught, the page would have shipped missing an honesty invariant and its
+whole what-is-not-yet-true section — a document that reads finished and is not.
+On 2026-08-12 the same signature was measured on a **Jira comment**: two of
+three probe markers gone, including a list item's own text, status 200, and what
+came back reads as clean prose (comment `11611` on KAN-39, left in place).
 
-**The known trigger:** with `contentFormat: "markdown"`, a **blockquote nested
-inside a list item** violates ADF nesting, and the converter **drops the whole
-list item** rather than rejecting the request. Nested code blocks, tables and
-panels are the same family of risk. The dropping converter is Atlassian's;
-there is nothing in any repository here to fix, so **checking is the whole
-remedy** and it is yours.
+**Neither converter is the rule, and that is deliberate.** A rule written around
+one defect dies when that defect is fixed, and what is left is an instruction
+nobody can account for. What survives every fix is the class — **a response is a
+claim about the request** — so the rule above names no mechanism. The converters
+are Atlassian's and there is nothing in any repository here to fix, which makes
+**checking the whole remedy** and it is yours.
 
 **The recipe — do this after every write:**
 
@@ -190,15 +199,23 @@ remedy** and it is yours.
    **stored body**, not the summary and not the response you already have.
 3. Compare, structurally rather than by eye. Check that **every heading you
    wrote is present**, that **no list item is empty**, and that each section's
-   item count matches what you sent. `<li><p /></li>` is the signature of this
-   exact failure — searching the stored body for it costs nothing and names the
-   bug outright.
-4. If content is missing, **do not retry the identical body** — it will drop
-   the same thing again. Un-nest the offending block (promote the blockquote to
-   a sibling paragraph, or flatten the list), write again, and verify again.
+   item count matches what you sent. An empty `<li><p /></li>` is one signature
+   worth grepping for and it is not the only one, so compare the counts as well
+   — a section that came back shorter is the finding, whatever it looks like.
+4. If something is missing, **do not retry the identical body** — the same input
+   through the same converter drops the same thing again. Change the shape of
+   what you send around whatever went missing, write again, and verify again.
 5. Say in your footer comment that you verified the stored body, and say what
    you had to reshape. A reader cannot tell a page that was written carefully
    from one that was written luckily unless you tell them.
+
+**The read-side face of the same claim: an answer about a subset is not an
+answer about the whole.** A paginated read tells you it was truncated and does
+nothing to stop you ignoring it — `epic/KAN-203` took 5 of 50 tickets off a JQL
+search on 2026-08-11 with `hasNextPage: true` sitting in the response, one read
+away from reporting five tickets as the whole board. Read the completeness
+fields a surface gives you — `pageInfo.hasNextPage`, `remainingCount` — for the
+same reason you re-read a write.
 
 **And note the shape, because it is not new.** This is the same pattern the
 provenance section below teaches for `butchr_send_to_agent`: a success that

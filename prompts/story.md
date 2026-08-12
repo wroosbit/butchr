@@ -1011,6 +1011,44 @@ cannot be un-written.
 *Credentials stop at the daemon* is one of KAN-39's invariants, and the daemon
 enforces its half in code. A transcript is the leg nothing enforces.
 
+### A write that reports success is not a write that stored what you sent
+
+**Read it back and compare.** A `200`, or a `success: true`, is a claim about
+the **request** — that it arrived, parsed, and was authorised. It is not a claim
+about what the far side now holds. Every write here is converted before it is
+stored, by a converter you do not control, and one that silently reshapes or
+drops your content answers exactly as one that stored it verbatim. So after any
+write you will be held to — a ticket comment, an issue description, a page —
+read the stored body back and compare it against what you sent, section by
+section: every heading present, no list item empty, the counts matching.
+
+**Your writes are almost all Jira**, which is exactly where this was untaught
+until 2026-08-12. A task description is the whole of what its agent is briefed
+from, and an approval comment is the artifact merge governance turns on: a
+dropped bullet in either is a governance failure wearing the costume of a typo,
+and the agent reading it cannot tell.
+
+**Two instances, cited as instances and not as the rule.** On 2026-08-12 an
+`addCommentToJiraIssue` with `contentFormat: "markdown"` stored one of three
+probe markers and dropped the other two, including a list item's own text —
+status 200, no warning, and what came back reads as clean prose (comment
+`11611` on KAN-39, left in place). On 2026-08-05 a Confluence page write came
+back missing an invariant, a bullet and an entire section. **Neither converter
+is the rule, and that is deliberate**: a rule written around one defect dies
+when that defect is fixed, leaving an instruction nobody can account for. What
+survives every fix is the class.
+
+**The read-side face of the same claim: an answer about a subset is not an
+answer about the whole.** A paginated read tells you it was truncated and does
+nothing to stop you ignoring it — `epic/KAN-203` took 5 of 50 tickets off a JQL
+search on 2026-08-11 with `hasNextPage: true` sitting in the response, one read
+away from reporting five tickets as the whole board. Read the completeness
+fields a surface gives you — `pageInfo.hasNextPage`, `remainingCount` — for the
+same reason you re-read a write.
+
+It is the same shape this file teaches for `butchr_send_to_agent`: **a success
+that reports the call was made, not that the thing happened.**
+
 ## The supervision sweep
 
 You supervise the tasks you filed, so the backstop the epic agent runs is
