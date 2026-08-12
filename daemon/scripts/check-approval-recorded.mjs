@@ -30,17 +30,36 @@
 // the same head and finds the comment. From the merge onwards the comment
 // trigger works by itself.
 //
+// WHAT THIS PROCESS'S EXIT CODE MEANS, WHICH CHANGED IN KAN-317. It reports
+// whether the GATE worked, not whether the pull request is approved. The
+// approval answer is the `approval-recorded` status this script POSTs, and that
+// status is the required context. The full argument — why one carrier can
+// retract an answer and the other cannot, and why publishing to both made every
+// approved pull request read `UNSTABLE` forever — is on `exitCodeFor` in
+// `lib/approval-marker.mjs`. Read it before changing either exit path.
+//
 // Usage:
 //   node daemon/scripts/check-approval-recorded.mjs             # in CI
 //   node daemon/scripts/check-approval-recorded.mjs --pr 132    # by hand
 //   node daemon/scripts/check-approval-recorded.mjs --pr 132 --no-status
+//
+//   --no-status            do not publish; implies --exit-on-approval, because
+//                          with no status posted the exit code is the only
+//                          carrier left and the verdict has to go somewhere.
+//   --exit-on-approval     exit 1 when the pull request is unapproved. What CI
+//                          did before KAN-317; keep it for a shell that wants
+//                          the answer in `$?`.
+//   --exit-on-gate-health  exit 0 whenever the gate published a verdict, even a
+//                          red one. The CI default, stated explicitly for a
+//                          caller that also passes `--no-status` and genuinely
+//                          means it.
 //
 // Reads `GITHUB_TOKEN` from the environment and never prints it, echoes it, or
 // passes it as an argument. It is sent in an Authorization header at the point
 // of use and stays there.
 
 import fs from 'fs';
-import { evaluate } from './lib/approval-marker.mjs';
+import { evaluate, exitCodeFor, EXIT_ON } from './lib/approval-marker.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (name) => {
@@ -48,6 +67,23 @@ const arg = (name) => {
   return i >= 0 ? argv[i + 1] : null;
 };
 const postStatus = !argv.includes('--no-status');
+
+// The exit code carries the approval verdict exactly when nothing else does.
+// Default to the status being the carrier; fall back to the exit code when the
+// status has been suppressed; let either be named outright.
+const exitOn = argv.includes('--exit-on-approval')
+  ? EXIT_ON.APPROVAL
+  : argv.includes('--exit-on-gate-health')
+    ? EXIT_ON.GATE_HEALTH
+    : postStatus
+      ? EXIT_ON.GATE_HEALTH
+      : EXIT_ON.APPROVAL;
+
+// Did this run manage to answer the question at all? Distinct from the answer,
+// and the only thing the job's own conclusion reports. Anything pushed here is
+// a defect in the gate or its environment — never a fact about the pull
+// request, which is what `verdict.reasons` is for.
+const gateDefects = [];
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com';
 const REPO = process.env.GITHUB_REPOSITORY || 'wroosbit/butchr';
@@ -149,6 +185,18 @@ console.log('');
 
 const verdict = evaluate({ headSha, headRef, prBody: pr.body, comments });
 
+// A head we cannot read is the gate's problem and not the pull request's: the
+// lib's own reason line says so — "a defect in the check itself". Detected on
+// the shape of the SHA rather than by matching that reason's text, because a
+// gate whose health depends on the wording of a sentence is a gate that goes
+// green when somebody improves the prose.
+if (!/^[0-9a-f]{40}$/.test(headSha ?? '')) {
+  gateDefects.push(
+    `the pull request head was not readable as a 40-character SHA (got ${JSON.stringify(headSha)}). ` +
+      'The gate cannot judge a head it cannot see, and it must not pass while it cannot.'
+  );
+}
+
 // `ok` implies `accepted` in `lib/approval-marker.mjs` — every path that leaves
 // `accepted` null also pushes a reason. That is true by construction across two
 // files, which is exactly the kind of invariant that survives until somebody
@@ -158,6 +206,15 @@ const verdict = evaluate({ headSha, headRef, prBody: pr.body, comments });
 // never reports at all and the pull request blocks forever on a check that
 // looks like it never ran. Found by deliberately breaking the omission leg and
 // watching this script die instead of going red. Fail closed, and say why.
+//
+// KAN-317: this one is a gate defect as well as a refusal, and it is filed as
+// both. The pull request is refused (the status goes red, because a gate that
+// cannot say who approved has not established that anybody did) AND the job
+// goes red (because the contradiction is in our own code, and it is the one
+// thing here nobody would otherwise be paged about). The comment above already
+// says this is "a contradiction inside `lib/approval-marker.mjs`, not a fact
+// about this pull request" — before KAN-317 that sentence was true and the exit
+// code disagreed with it.
 if (verdict.ok && !verdict.accepted) {
   verdict.ok = false;
   verdict.reasons.push(
@@ -165,6 +222,10 @@ if (verdict.ok && !verdict.accepted) {
       'contradiction inside `lib/approval-marker.mjs`, not a fact about this pull request. ' +
       'Refusing rather than passing, because a gate that cannot say who approved has not ' +
       'established that anybody did.'
+  );
+  gateDefects.push(
+    '`lib/approval-marker.mjs` returned `ok` with no accepted marker. This is a contradiction ' +
+      'in the gate itself — fix the lib.'
   );
 }
 
@@ -204,11 +265,48 @@ if (postStatus) {
     console.log(`\nposted commit status ${CONTEXT}=${state} at ${headSha}`);
   } catch (e) {
     // A status we could not publish is a gate nobody can see. Fail loudly
-    // rather than exiting green on an unpublished verdict.
+    // rather than exiting green on an unpublished verdict. KAN-317 routes this
+    // through `gateDefects` instead of exiting on the spot, so that it reports
+    // as what it is — the gate broken, rather than the pull request refused —
+    // and so that the summary below still prints. It is red under both modes.
     console.error(`\nFAILED to post the ${CONTEXT} status: ${e.message}`);
-    process.exit(1);
+    gateDefects.push(
+      `the ${CONTEXT} status could not be published at ${headSha}: ${e.message}. A verdict ` +
+        'nobody can read is not a gate, so this run reports itself broken rather than passing.'
+    );
   }
 }
 
-const failures = verdict.ok ? 0 : 1;
-process.exit(failures ? 1 : 0);
+// ---------------------------------------------------------------------------
+// THE TWO VERDICTS, SAID APART — KAN-317.
+//
+// The failure mode of this whole change is a reader who takes a green
+// `approval-gate` job for an approval, so the job log states which question
+// each colour answers rather than leaving it to be inferred from an exit code.
+const gateHealthy = gateDefects.length === 0;
+const exitCode = exitCodeFor({ gateHealthy, approved: verdict.ok, exitOn });
+
+console.log('');
+console.log('─── verdicts ───────────────────────────────────────────────────────────');
+console.log(`  approval  ${verdict.ok ? 'APPROVED' : 'NOT APPROVED'} at this head`);
+console.log(`            carried by the required commit status \`${CONTEXT}\`${postStatus ? '' : ' (suppressed: --no-status)'}`);
+console.log(`  gate      ${gateHealthy ? 'HEALTHY' : 'BROKEN'} — did this check manage to publish that answer?`);
+console.log(`            carried by this job's own conclusion (\`approval-gate\`, not required)`);
+if (!gateHealthy) for (const d of gateDefects) console.log(`              - ${d}`);
+console.log(`  exiting   ${exitCode} — on ${exitOn}`);
+console.log('────────────────────────────────────────────────────────────────────────');
+
+if (!verdict.ok && gateHealthy && exitCode === 0) {
+  console.log('');
+  console.log('This job is GREEN and this pull request is NOT APPROVED. That is the designed');
+  console.log(`reading, not a hole: \`${CONTEXT}\` is red and it is the context branch protection`);
+  console.log('requires, so the merge is BLOCKED. The job is green because the gate itself is');
+  console.log('working — it read the head and published the refusal above.');
+  console.log('');
+  console.log('The job used to go red here too, and could never go green again afterwards: a');
+  console.log('comment-triggered re-run attaches to the default branch, not to this head, so the');
+  console.log('red run was never replaced and every approved pull request read UNSTABLE forever.');
+  console.log('KAN-317. Do not "fix" that by rebasing — a rebase voids the approval marker.');
+}
+
+process.exit(exitCode);

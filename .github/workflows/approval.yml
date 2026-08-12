@@ -20,6 +20,30 @@ name: Approval
 # posted status lands at the head every time. The job is therefore named
 # `approval-gate` so that exactly one thing in this repository is called
 # `approval-recorded`.
+#
+# AND THE TWO NAMES ANSWER TWO DIFFERENT QUESTIONS — KAN-317, and this is the
+# half that was missing above rather than a correction to it:
+#
+#   `approval-recorded`  (a commit status, REQUIRED)  is this head approved?
+#   `approval-gate`      (this job, NOT required)     did the gate manage to say?
+#
+# A GREEN JOB OVER A RED STATUS IS THEREFORE NORMAL, and it is what an
+# unapproved pull request looks like: the gate worked, and the answer is no. The
+# merge is blocked by the required status, which is the only thing branch
+# protection reads.
+#
+# It used to publish the approval answer here too, and that was the defect
+# KAN-317 fixed. A run's conclusion is fixed when the run ends, and — by the very
+# mechanism the paragraph above describes — the comment-triggered re-evaluation
+# attaches to the default branch, so it can never replace this run's red. Every
+# pull request starts unapproved, so every pull request earned a permanent red
+# `approval-gate`, so every APPROVED pull request read `mergeStateStatus:
+# UNSTABLE` rather than `CLEAN`. That is not cosmetic: the natural repair for
+# UNSTABLE is `gh pr update-branch`, which moves the head and voids the approval
+# marker, and that loop cost #138 a re-review. The status can retract an answer;
+# a job conclusion cannot, so only the status carries one.
+#
+# The full argument is on `exitCodeFor` in `daemon/scripts/lib/approval-marker.mjs`.
 
 on:
   pull_request:
@@ -64,7 +88,12 @@ jobs:
       # in an Authorization header. It is never echoed, never passed as an
       # argument, and never printed — arguments are visible in process listings
       # and in logs alike.
-      - name: Check that an approval is recorded at this exact head
+      # This step goes red only when the GATE is broken — it could not read the
+      # head, could not publish the status, or contradicted itself. An
+      # unapproved pull request is a red `approval-recorded` status and a green
+      # step, deliberately; see the header. The script prints both verdicts
+      # side by side so a reader of this log never has to infer which is which.
+      - name: Publish the approval verdict as `approval-recorded` at this head
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node daemon/scripts/check-approval-recorded.mjs
