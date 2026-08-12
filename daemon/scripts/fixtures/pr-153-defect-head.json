@@ -1,0 +1,37 @@
+{
+  "provenance": {
+    "what": "wroosbit/butchr#153 at head 514db76 — the state the PR watcher announced as ready to review at 2026-08-12T15:58:53Z, 67 seconds before it announced the same unchanged head as DIRTY.",
+    "why_reconstructed_rather_than_captured": "The live `gh pr list` window had moved on by the time this was recorded: #153 merged at 16:11Z on a LATER head (740ee07), so `gh pr view 153 --json statusCheckRollup` now returns that head's eight green checks and not this one's. Every field below is nevertheless GitHub's own value, read back from the commit APIs which are keyed by sha and therefore still answer for 514db76. The two commands and their real output are recorded per field.",
+    "fields": {
+      "statusCheckRollup": {
+        "check_runs": "gh api repos/wroosbit/butchr/commits/514db76/check-runs --jq '{total_count}' -> {\"total_count\":0}  (so the rollup carries NO CheckRun entries at all)",
+        "statuses": "gh api repos/wroosbit/butchr/commits/514db76/status --jq '.statuses[]' -> {\"context\":\"approval-recorded\",\"created_at\":\"2026-08-12T15:53:08Z\",\"description\":\"no approval marker naming this head — see the job log\",\"state\":\"failure\",\"target_url\":\"https://github.com/wroosbit/butchr/actions/runs/31614699205\"}",
+        "shaping": "Rendered into the `gh pr list --json statusCheckRollup` spelling of a StatusContext — __typename/context/startedAt/state/targetUrl, uppercased state — copied from the four real approval-recorded entries in gh-pr-list.json in this directory."
+      },
+      "mergeStateStatus": "UNKNOWN. NOT read back from an API — GitHub does not retain historical merge states, so this one field is INFERRED, and it is the only inferred value here. The inference: the watcher's `green-idle` predicate required a head that was neither BEHIND nor DIRTY, so at 15:58:53Z the field was one of the other values; #152 merged to main at 15:58:13Z (git log 7bbb28a, 40s earlier), which invalidates GitHub's cached mergeability; and the same unchanged head read DIRTY at 16:00:00Z. UNKNOWN is what GitHub returns in that window. Any other non-stale value would exercise the same fix identically, because the fix tests for a POSITIVE statement of mergeability rather than for the absence of these two.",
+      "other": "number/state/headRefName/headRefOid/title/url are the real ones; comments elided (the comment leg is covered by verify-pr-watch.mjs §3)."
+    }
+  },
+  "row": {
+    "number": 153,
+    "title": "KAN-343: the evidence every stand-down depends on now discloses itself",
+    "url": "https://github.com/wroosbit/butchr/pull/153",
+    "state": "OPEN",
+    "isDraft": false,
+    "headRefName": "butchr/KAN-343",
+    "headRefOid": "514db76844b3e8323e53d32e6c2c8b06bf0d6386",
+    "mergedAt": null,
+    "reviewDecision": "",
+    "mergeStateStatus": "UNKNOWN",
+    "statusCheckRollup": [
+      {
+        "__typename": "StatusContext",
+        "context": "approval-recorded",
+        "startedAt": "2026-08-12T15:53:08Z",
+        "state": "FAILURE",
+        "targetUrl": "https://github.com/wroosbit/butchr/actions/runs/31614699205"
+      }
+    ],
+    "comments": []
+  }
+}

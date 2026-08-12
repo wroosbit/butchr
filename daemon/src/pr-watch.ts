@@ -4,7 +4,13 @@ import { BUTCHR_DIR, ensureButchrDir } from './ipc.js';
 import { agentNameFor } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { SupervisorOfRecord } from './agent-registry.js';
-import { GitHubReader, PullRequestSnapshot, discoverRepos } from './github.js';
+import {
+  GitHubReader,
+  Mergeability,
+  PullRequestSnapshot,
+  discoverRepos,
+  mergeabilityOf
+} from './github.js';
 import { NotifyFn, refuseWithoutCarrier } from './notify.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
 import type { LiveAgent, NudgeRelation } from './jira-poll.js';
@@ -181,6 +187,153 @@ export interface PrMemory {
   seenAt: string;
 }
 
+/**
+ * ---------------------------------------------------------------------------
+ * ONE ANSWER TO "IS THIS PULL REQUEST WAITING ON NOTHING BUT A REVIEW?" (KAN-339)
+ * ---------------------------------------------------------------------------
+ *
+ * WHAT WENT WRONG. On 2026-08-12 this watcher said, of `wroosbit/butchr#153`:
+ *
+ *   15:58:53Z  "has every other check green and NO approval recorded at this
+ *               head, so nothing is blocking it except a review that has not
+ *               happened"
+ *   16:00:00Z  "is DIRTY against main"
+ *
+ * Same pull request, same head `514db76`, unmoved between the two, 67 seconds
+ * apart. The first sentence was wrong in **both** halves: no check had run at
+ * that head at all (`check-runs` `total_count: 0`; the sole rollup entry was the
+ * failing `approval-recorded` status), and a review was not the only thing
+ * blocking it — the conflict was, and no review can clear a conflict.
+ *
+ * WHAT ACTUALLY CAUSED IT, because the obvious diagnosis is wrong and worth
+ * recording as wrong. It is *not* two call sites disagreeing: there is one, and
+ * it consulted `mergeStateStatus` then exactly as it does now. Both halves are
+ * the **same mistake in two fields** — a condition written as *the absence of
+ * known-bad values* standing in for *the presence of a known-good one*:
+ *
+ *   - `checks === 'success'` was true because nothing had failed, not because
+ *     anything had passed. Fixed in {@link rollupOf}.
+ *   - `!(mergeStateStatus === 'BEHIND' || === 'DIRTY')` was true because GitHub
+ *     had not finished recomputing. `#152` merged to `main` at 15:58:13Z, which
+ *     invalidates the cached mergeability; 40 seconds later the field read
+ *     neither BEHIND nor DIRTY, and 67 seconds after that it read DIRTY again
+ *     with nothing about the world having changed in between. Fixed by
+ *     {@link mergeabilityOf}, which asks which values are a positive statement
+ *     that the head merges.
+ *
+ * WHAT THIS TYPE IS FOR. Both fixes could have been two more inline conditions,
+ * and the next sentence composed about a pull request would have been free to
+ * consult neither. So the answer is a value instead: `green-idle` is emitted only
+ * from a {@link PrReadiness} that is `ready`, and `ready` is a shape that cannot
+ * be constructed while any blocker holds. The confident sentence is therefore not
+ * *unlikely* to disagree with the facts — it is **not composable** without them.
+ * `prompts/task.md`: prefer the type to the assertion where the invariant is
+ * about what the code is able to say.
+ */
+export type PrBlocker =
+  /** GitHub computed a merge and found a conflict. A human resolves this. */
+  | 'conflicted'
+  /** Behind `main` on a strict branch. `gh pr update-branch` resolves this. */
+  | 'behind'
+  /** GitHub has not told us whether the head merges. Not a fault; not a green light. */
+  | 'mergeability-unknown'
+  /** No check has run at this head. NOT the same as every check passing. */
+  | 'checks-absent'
+  | 'checks-pending'
+  | 'checks-failed'
+  | 'draft'
+  | 'not-open'
+  /** Somebody has already approved, so nobody is being waited on. */
+  | 'already-approved';
+
+/**
+ * Whether a pull request is waiting on nothing but a review — and if not, why.
+ *
+ * The `reason` is a sentence a recipient can act on, because the whole value of
+ * this watcher is that a reader does not have to go and check first. `blocker`
+ * is what a proof asserts on; `reason` is what a person reads.
+ */
+export type PrReadiness =
+  | { ready: true }
+  | { ready: false; blocker: PrBlocker; reason: string };
+
+/** The two blockers a `head-stale` notice is for. See where it is raised. */
+export function isStaleMergeability(mergeability: Mergeability): boolean {
+  return mergeability === 'conflicted' || mergeability === 'behind';
+}
+
+/**
+ * The one place that decides it. Every sentence about whether a pull request
+ * needs a reviewer is composed from this and from nothing else.
+ */
+export function readinessOf(pr: PullRequestSnapshot): PrReadiness {
+  if (pr.state !== 'OPEN') {
+    return { ready: false, blocker: 'not-open', reason: `is ${pr.state.toLowerCase()}` };
+  }
+  if (pr.isDraft) return { ready: false, blocker: 'draft', reason: 'is still a draft' };
+
+  // Mergeability first, because a conflicted pull request is not made ready by
+  // anything else being true of it — which is exactly what the 15:58:53Z notice
+  // got wrong.
+  const mergeability = mergeabilityOf(pr.mergeStateStatus);
+  if (mergeability === 'conflicted') {
+    return {
+      ready: false,
+      blocker: 'conflicted',
+      reason:
+        'CONFLICTS with main — that needs the conflict resolved by hand, and no review and no ' +
+        '`update-branch` can clear it'
+    };
+  }
+  if (mergeability === 'behind') {
+    return {
+      ready: false,
+      blocker: 'behind',
+      reason:
+        'is BEHIND main — `gh pr update-branch` fixes it, and because that changes the head, an ' +
+        'approval given before it does not survive'
+    };
+  }
+  if (mergeability === 'unknown') {
+    return {
+      ready: false,
+      blocker: 'mergeability-unknown',
+      reason:
+        `is in merge state ${pr.mergeStateStatus} — GitHub has not told us whether this head ` +
+        'merges, which is not the same as it merging'
+    };
+  }
+
+  switch (pr.checks) {
+    case 'none':
+      return {
+        ready: false,
+        blocker: 'checks-absent',
+        reason:
+          'has NO checks at this head — none have run, which is not the same as all of them ' +
+          'passing, and on a conflicted or unpushed head none ever will'
+      };
+    case 'pending':
+      return { ready: false, blocker: 'checks-pending', reason: 'still has checks running' };
+    case 'failure':
+      return {
+        ready: false,
+        blocker: 'checks-failed',
+        reason: `has failing checks: ${pr.failingChecks.join(', ') || 'unnamed'}`
+      };
+  }
+
+  if (pr.approval === 'recorded' || pr.reviewDecision === 'APPROVED') {
+    return {
+      ready: false,
+      blocker: 'already-approved',
+      reason: 'already has an approval at this head, so nobody is being waited on'
+    };
+  }
+
+  return { ready: true };
+}
+
 /** What kind of news a pull request produced. One per row of the ticket's table. */
 export type PrEventKind =
   | 'merged'
@@ -204,8 +357,16 @@ export interface PrEvent {
   headRefName: string;
   /** `checks-failed` only: which checks are not green. */
   failingChecks?: string[];
-  /** `head-stale` only: `BEHIND` or `DIRTY`. */
+  /** `head-stale` only: `BEHIND` or `DIRTY`, verbatim. */
   mergeStateStatus?: string;
+  /**
+   * `head-stale` only: which of the two it is, classified.
+   *
+   * Carried as the classification rather than re-derived at rendering time, so
+   * the words a recipient reads and the decision that produced the event come
+   * from one call to {@link mergeabilityOf} rather than two.
+   */
+  mergeability?: Mergeability;
   /** `approved` only: which of the two mechanisms carried it. */
   approvalSource?: 'marker' | 'review';
   /** `comment` only: how many are new. */
@@ -245,9 +406,26 @@ export interface UnmatchedPr {
 /** What one tick did, so the caller can log it and a proof can assert on it. */
 export interface PrTick {
   repos: string[];
-  /** Every PR read this tick that matched a ticket, as `repo#number`. */
+  /**
+   * Every PR read this tick that matched a ticket, as `repo#number` — including
+   * the merged and closed ones, because the read window is `--state all`.
+   *
+   * NOT A COUNT OF PULL REQUESTS NEEDING ATTENTION. See {@link openWatched},
+   * which is, and see {@link describeHealth} for what happened when a sentence
+   * treated the two as the same number.
+   */
   watched: string[];
-  /** Matched a ticket whose agent is not live: nothing to announce, not a fault. */
+  /** The subset of {@link watched} that is actually OPEN. */
+  openWatched: string[];
+  /**
+   * OPEN, matched a ticket, and that ticket's agent is not live: nothing to
+   * announce, not a fault.
+   *
+   * Restricted to open pull requests (KAN-339). A pull request merged three
+   * weeks ago also has no live agent, and counting it here made "nobody to tell"
+   * — a phrase that reads as a standing deficiency — scale with the size of the
+   * read window rather than with anything wrong.
+   */
   nobodyLive: string[];
   unmatched: UnmatchedPr[];
   events: PrEvent[];
@@ -291,9 +469,16 @@ export interface PrWatchHealth {
   lastError: string | null;
   /** True when GitHub asked to be left alone and the interval was lengthened. */
   degraded: boolean;
-  /** Pull requests matched to a ticket and being watched. */
+  /**
+   * Rows in the read window that matched a ticket — open, merged and closed.
+   *
+   * A measure of how much this watcher is polling, NOT of how much is
+   * outstanding. {@link openCount} is the second thing.
+   */
   watchedCount: number;
-  /** Matched a ticket with no live agent — watched, but nobody to tell. */
+  /** Of those, how many are actually OPEN. This is the number that means work. */
+  openCount: number;
+  /** OPEN, matched a ticket, and no live agent to tell. */
   nobodyLiveCount: number;
   /** Matched no ticket at all. Named individually, because AC4 asks for that. */
   unmatched: UnmatchedPr[];
@@ -333,10 +518,28 @@ export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: numbe
   // "there are none" when the truth is "we could not look". A number that decays
   // to a clean-looking zero when observation stops is the exact silence this
   // field exists to break.
+  // AND THE POPULATION IS SPLIT BY STATE, which is the second defect this
+  // sentence had (KAN-339). The read is `--state all` — deliberately, because a
+  // merged pull request leaves the open list and "it is gone" cannot tell merged
+  // from closed — so the window is the last PR_LIST_LIMIT rows in ANY state. The
+  // sentence used to report all of them as one number and read, on a repository
+  // with zero open pull requests:
+  //
+  //   "40 pull request(s) matched a ticket, 40 of them with no live agent to
+  //    tell, and 0 matched no ticket at all."
+  //
+  // Every figure in that was arithmetically correct and the sentence was false:
+  // it reads as forty pull requests wanting attention from nobody, when nothing
+  // was open and nothing wanted anything. The counters answered "how many rows
+  // did I poll?" while the prose asked "how much is outstanding?". Splitting
+  // them is the fix; narrowing the fetch is NOT, and must not be — see above.
+  const closedRows = Math.max(0, health.watchedCount - health.openCount);
   const asOf =
-    `As of the last successful look, ${health.watchedCount} pull request(s) matched a ticket, ` +
-    `${health.nobodyLiveCount} of them with no live agent to tell, and ` +
-    `${health.unmatched.length} matched no ticket at all` +
+    `As of the last successful look, ${health.openCount} OPEN pull request(s) matched a ticket, ` +
+    `${health.nobodyLiveCount} of them with no live agent to tell. A further ${closedRows} ` +
+    'matched row(s) in the read window are already merged or closed and are polled only so that ' +
+    'a state change on one is still recognisable — they are not outstanding work. ' +
+    `${health.unmatched.length} row(s) matched no ticket at all` +
     (health.unmatched.length
       ? ` (${health.unmatched.map((pr) => `${pr.repo}#${pr.number} on ${pr.headRefName}`).join(', ')})`
       : '') +
@@ -412,18 +615,40 @@ export function prEventNoticeText(events: PrEvent[], relation: NudgeRelation): s
       case 'changes-requested':
         return 'has a review requesting changes';
       case 'green-idle':
+        // Every clause here is a thing `readinessOf` had to establish before this
+        // event could exist — checks that RAN and passed, and a head GitHub has
+        // positively said merges. Before KAN-339 this sentence asserted the first
+        // on the strength of nothing having failed and did not mention the
+        // second at all, and it was wrong about both on `#153`.
         return (
-          'has every other check green and NO approval recorded at this head, so nothing is ' +
-          'blocking it except a review that has not happened — `approval-recorded` is the ' +
-          'required status that is still red'
+          'has checks green at this head, a head GitHub reports as merging cleanly, and NO ' +
+          'approval recorded, so nothing is blocking it except a review that has not happened — ' +
+          '`approval-recorded` is the required status that is still red'
         );
       case 'checks-failed':
         return `has failing checks: ${(event.failingChecks ?? []).join(', ') || 'unnamed'}`;
       case 'head-stale':
-        return (
-          `is ${event.mergeStateStatus ?? 'not mergeable'} against main — on a strict branch an ` +
-          'approval does not survive its head'
-        );
+        // Two states, two different pairs of hands. Collapsing them into one
+        // sentence told a reader that something was wrong and not who could fix
+        // it, which on a conflicted PR sent the approver rather than the author.
+        switch (event.mergeability) {
+          case 'conflicted':
+            return (
+              'CONFLICTS with main — this needs the conflict resolved by hand on the branch. ' +
+              'No review clears it and `gh pr update-branch` cannot either, and until it is ' +
+              'resolved no workflow will run at this head'
+            );
+          case 'behind':
+            return (
+              'is BEHIND main — `gh pr update-branch` fixes it. That changes the head, so any ' +
+              'approval given against the old one no longer names it'
+            );
+          default:
+            return (
+              `is ${event.mergeStateStatus ?? 'not mergeable'} against main — on a strict branch ` +
+              'an approval does not survive its head'
+            );
+        }
       case 'comment':
         return (event.newComments ?? 1) > 1
           ? `has ${event.newComments} new comments`
@@ -679,6 +904,7 @@ export class PrWatcher {
     lastError: null,
     degraded: false,
     watchedCount: 0,
+    openCount: 0,
     nobodyLiveCount: 0,
     unmatched: []
   };
@@ -763,6 +989,7 @@ export class PrWatcher {
     const tick: PrTick = {
       repos: [],
       watched: [],
+      openWatched: [],
       nobodyLive: [],
       unmatched: [],
       events: [],
@@ -810,6 +1037,7 @@ export class PrWatcher {
       // Not a failure: no live agent holds a checkout. The health sentence says
       // so in its own words rather than reporting a clean nothing.
       this.health.watchedCount = 0;
+      this.health.openCount = 0;
       this.health.nobodyLiveCount = 0;
       this.health.unmatched = [];
       return tick;
@@ -847,7 +1075,13 @@ export class PrWatcher {
           continue;
         }
         tick.watched.push(`${pr.repo}#${pr.number}`);
-        if (!byKey.has(issueKey)) tick.nobodyLive.push(`${pr.repo}#${pr.number}`);
+        // Open-ness is what makes a row outstanding, and it is recorded here
+        // rather than recomputed from the health numbers, so the two can never
+        // be derived from different reads of the same tick.
+        if (pr.state === 'OPEN') {
+          tick.openWatched.push(`${pr.repo}#${pr.number}`);
+          if (!byKey.has(issueKey)) tick.nobodyLive.push(`${pr.repo}#${pr.number}`);
+        }
 
         for (const event of this.recognise(pr, issueKey)) {
           pending.push(event);
@@ -876,6 +1110,7 @@ export class PrWatcher {
     // to make in words. The last real observation stands, labelled as such.
     if (!anyFailure) {
       this.health.watchedCount = tick.watched.length;
+      this.health.openCount = tick.openWatched.length;
       this.health.nobodyLiveCount = tick.nobodyLive.length;
       this.health.unmatched = tick.unmatched;
     }
@@ -922,17 +1157,30 @@ export class PrWatcher {
       headRefName: pr.headRefName
     };
 
-    const stale = pr.mergeStateStatus === 'BEHIND' || pr.mergeStateStatus === 'DIRTY';
-    const wasStale = seen ? seen.mergeStateStatus === 'BEHIND' || seen.mergeStateStatus === 'DIRTY' : false;
+    // Both of these read the SAME classifier the readiness answer reads, so
+    // "this PR is stale" and "this PR is ready" cannot come apart in the way
+    // KAN-339 recorded. `head-stale` fires on the two blockers somebody can act
+    // on and NOT on `mergeability-unknown`: an uncomputed merge state is the
+    // ordinary consequence of any push to `main` and would fire on half the
+    // fleet's pull requests several times a day, saying nothing anybody can do
+    // anything about. Uncertainty suppresses the confident notice; it does not
+    // earn a notice of its own.
+    const mergeability = mergeabilityOf(pr.mergeStateStatus);
+    const stale = isStaleMergeability(mergeability);
+    const wasStale = seen ? isStaleMergeability(mergeabilityOf(seen.mergeStateStatus)) : false;
 
     // `green-idle` is a standing CONDITION, not an edge in a field, so it is
     // armed per head sha rather than per transition. Without that it would
     // either announce once and never again after a rebase — losing exactly the
     // case a strict branch creates — or announce every tick forever, which is
     // the chattiness that trains agents to ignore this channel.
-    const approved = pr.approval === 'recorded' || pr.reviewDecision === 'APPROVED';
-    const greenIdle =
-      pr.state === 'OPEN' && !pr.isDraft && pr.checks === 'success' && !approved && !stale;
+    //
+    // Its predicate is now one call. Everything it used to test inline — open,
+    // not draft, checks actually green, no approval yet, and a head GitHub has
+    // positively said merges — lives in `readinessOf`, and this is the only
+    // place `green-idle` can come from.
+    const readiness = readinessOf(pr);
+    const greenIdle = readiness.ready;
 
     if (!seen) {
       this.state.set(id, {
@@ -988,7 +1236,16 @@ export class PrWatcher {
     }
 
     if (stale && !wasStale && pr.state === 'OPEN') {
-      events.push({ ...base, kind: 'head-stale', mergeStateStatus: pr.mergeStateStatus });
+      // `mergeability` is carried rather than the raw string so the notice can
+      // say what to DO about it — conflicts and being behind need different
+      // hands. It is the same classification `readinessOf` refused on, so the
+      // two notices cannot describe this head differently.
+      events.push({
+        ...base,
+        kind: 'head-stale',
+        mergeStateStatus: pr.mergeStateStatus,
+        mergeability
+      });
     }
 
     const known = new Set(seen.commentIds);
@@ -1012,7 +1269,29 @@ export class PrWatcher {
       state: pr.state,
       reviewDecision: pr.reviewDecision,
       checks: pr.checks,
-      mergeStateStatus: pr.mergeStateStatus,
+      // AN UNCOMPUTED MERGE STATE DOES NOT OVERWRITE A KNOWN ONE (KAN-339).
+      //
+      // `mergeStateStatus` is remembered for exactly one purpose: to answer "was
+      // this already stale last time?", so that a standing conflict is announced
+      // once rather than every minute. `UNKNOWN` is not an answer to that
+      // question, and writing it down as though it were makes the memory forget.
+      //
+      // Every push to `main` invalidates this field on every open pull request,
+      // so the DIRTY → UNKNOWN → DIRTY flap is the ordinary consequence of the
+      // fleet merging anything. Recording the UNKNOWN loses `wasStale` and the
+      // conflict is re-announced on the next tick as though it were new — which
+      // is how a watcher teaches its readers to ignore it. Keeping the last
+      // thing GitHub actually said costs nothing and is what `wasStale` meant
+      // all along; the CURRENT read is still what `readinessOf` refuses on, so
+      // this cannot make an unknown head look ready.
+      //
+      // Scoped to an UNCHANGED head, deliberately: carrying a previous head's
+      // mergeability across a push would be remembering something about a commit
+      // that no longer exists.
+      mergeStateStatus:
+        mergeability === 'unknown' && seen.headRefOid === pr.headRefOid
+          ? seen.mergeStateStatus
+          : pr.mergeStateStatus,
       headRefOid: pr.headRefOid,
       approval: pr.approval,
       // The union, so a comment deleted between reads cannot make an older one
