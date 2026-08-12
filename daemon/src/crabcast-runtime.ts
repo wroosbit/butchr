@@ -45,7 +45,7 @@ import type { ResumeCause } from './resume.js';
  *
  * That is a bigger break than PTY and it was not on anybody's list. PTY at
  * least *has* a clean answer (KAN-224's local mirror, implemented below and
- * confirmed against the running daemon). Synchrony has three answers and no
+ * confirmed against the running daemon). Synchrony had three answers and no
  * fourth, exactly as KAN-224 §5.1 found for `ptyBuffer` alone:
  *
  * 1. **Serve it from a mirror the adapter keeps warm.** Correct for census
@@ -57,9 +57,18 @@ import type { ResumeCause } from './resume.js';
  *    *we* started: we know them exactly, with no round trip and no staleness.
  *    Used for the session-lookup group.
  * 3. **Refuse, with figures, naming the leg.** The only honest answer where the
- *    caller needs a *fresh* fact that costs a round trip. Used for
- *    {@link tailAgent}, and it is a real capability gap rather than a detail —
- *    see that method.
+ *    caller needs a *fresh* fact that costs a round trip.
+ *
+ * **KAN-283 added the fourth, which was never a strategy but a repair: change
+ * the signature.** `tailAgent` was the whole of category 3 and is served over
+ * the wire now — a tail is the one read where a cached answer is the wrong
+ * answer, so neither mirror nor local record could serve it, and refusing was
+ * the honest answer only for as long as the interface forbade awaiting. **The
+ * other 13 synchronous returns were each ruled on and every one stayed
+ * synchronous**, because 1 or 2 serves it correctly or because CrabCast has no
+ * counterpart to await; the ruling is in `docs/crabcast-runtime.md` under *The
+ * synchrony ruling*. So categories 1 and 2 are the design and category 3 is now
+ * empty of anything a signature change could rescue.
  *
  * ## What was read to build this
  *
@@ -144,6 +153,45 @@ function asHerdrStatus(value: unknown): HerdrAgentStatus {
   return typeof value === 'string' && (HERDR_STATUSES as string[]).includes(value)
     ? (value as HerdrAgentStatus)
     : 'unknown';
+}
+
+/**
+ * The read sources a tail may name — the same pair `TAIL_SOURCES` declares in
+ * `herdr.ts`, restated here rather than imported because that constant is not
+ * exported and the type is.
+ *
+ * **Confirmed identical on the wire**, which is why the mapping is a narrowing
+ * and not a translation: a live CrabCast at `6f47df7d` answered
+ * `sourcesTried: ["recent-unwrapped", "visible"]` — their own vocabulary,
+ * matching ours value for value. That is the exception rather than the rule
+ * across this adapter, and it is the whole reason {@link CrabCastRuntime.tailAgent}
+ * is worth serving over the wire instead of approximating.
+ */
+const TAIL_SOURCE_VALUES = ['recent-unwrapped', 'visible'] as const;
+
+/**
+ * A source name we recognise, or `null`.
+ *
+ * **`null` means "every source was asked and every one was empty"** — the
+ * assertion {@link AgentRuntime.tailAgent} defines and that
+ * `superviseChannelStartup` relies on — and an unrecognised value collapses to
+ * it for a reason worth stating: a source we cannot name is one we cannot make
+ * that claim about either, and the alternative is passing a string through the
+ * type as if it had been checked. A new source appearing on their side is
+ * therefore *visible* here as a `null` rather than smuggled through, and
+ * `sourcesTried` still carries what they said.
+ */
+function narrowTailSource(value: unknown): TailSource | null {
+  return typeof value === 'string' && (TAIL_SOURCE_VALUES as readonly string[]).includes(value)
+    ? (value as TailSource)
+    : null;
+}
+
+/** The same narrowing over a list, dropping anything we cannot name. */
+function narrowTailSources(values: unknown[]): TailSource[] {
+  return values
+    .map((v) => narrowTailSource(v))
+    .filter((v): v is TailSource => v !== null);
 }
 
 /**
@@ -356,35 +404,40 @@ export class CrabCastRuntime implements AgentRuntime {
    * **The remaining reason is the consumer, not the datum.** The one caller
    * (`daemon.ts` → `superviseChannelStartup`, KAN-246) does not merely want to
    * know the verdict; it then *supervises* the startup, and supervision is built
-   * out of two methods this runtime cannot serve: {@link tailAgent}, which
-   * refuses because `AgentRuntime` declares it synchronous, and
-   * {@link pressPaneKey}, which throws because CrabCast has no `press_pane_key`
-   * and its `send_to_agent` opens with a Ctrl+C. Firing would start a watcher
-   * whose every observation is a refusal and whose one action throws — it would
-   * not fail loudly, it would conclude things about a pane it never read. That
-   * is the same defect as fabricating a command line, reached by a shorter
-   * route.
+   * out of two methods — {@link tailAgent} and {@link pressPaneKey}.
+   *
+   * **KAN-283 fixed half of that, and half is not enough to fire on.**
+   * `tailAgent` is served over the wire now, so the *observation* half works:
+   * the watcher could read the pane for real. `pressPaneKey` still throws,
+   * because CrabCast has no `press_pane_key` and its `send_to_agent` opens with
+   * a Ctrl+C — which is the one thing a startup dialog must not receive, since
+   * the Ctrl+C would cancel the boot the Enter exists to unblock. So firing here
+   * would start a watcher that **sees the dialog correctly and cannot answer
+   * it**, retrying until its deadline. That is a worse failure than the old one
+   * rather than a better one: it burns a real socket read every three seconds to
+   * reach a conclusion it was never able to act on.
    *
    * The interface still anticipates this: *"A runtime that never spawns a pane
    * of its own may leave this unfired; the daemon installs a listener and does
    * not require it to be called."*
    *
    * **The cost, named rather than buried, and it is unchanged: channel-startup
-   * supervision does not run under this runtime.** What changed is that the
-   * blocker is now KAN-283's async-interface work rather than a missing field on
-   * their side. That is a smaller and more tractable gap than the one this
-   * docblock described yesterday, and it is one of the reasons the switch is off
-   * by default.
+   * supervision does not run under this runtime.** What changed is which leg is
+   * missing. It was two; it is now one, and that one is CrabCast's absent verb
+   * rather than our signature — an interface observation for KAN-59, not
+   * something this side can close. That is gate 3, and it is one of the reasons
+   * the switch is off by default.
    */
   setAgentSpawnedListener(
     _listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {
     this.log(
       'setAgentSpawnedListener: registered and never fired. The spawn verdict IS available ' +
-        'now (activate_response.channelEnabled, kept per session), but channel-startup ' +
-        'supervision is built on tailAgent and pressPaneKey, which this runtime refuses and ' +
-        'throws respectively — firing would start a watcher that concludes things about a ' +
-        'pane it can never read.'
+        'now (activate_response.channelEnabled, kept per session) and tailAgent IS served ' +
+        'since KAN-283, so the watcher could read the pane — but pressPaneKey still throws, ' +
+        'because CrabCast has no press_pane_key and send_to_agent opens with a Ctrl+C. ' +
+        'Firing would start a watcher that sees the startup dialog correctly and cannot ' +
+        'answer it. One leg missing rather than two, and it is theirs rather than ours.'
     );
   }
 
@@ -797,57 +850,170 @@ export class CrabCastRuntime implements AgentRuntime {
   // ── talking to an agent ──────────────────────────────────────────────────
 
   /**
-   * **The one method this runtime cannot serve, and the reason is the finding
-   * of this ticket rather than a shortfall of CrabCast's.**
+   * **Served for real, over the wire — this is what KAN-283 unblocked.**
    *
-   * CrabCast serves tails well: `tail_agent` answers `success`, `text`,
-   * `truncated`, `source` and `sourcesTried`, with `source` drawn from the same
-   * `'recent-unwrapped' | 'visible'` pair Butchr's own {@link TailSource} uses.
-   * It is a *better* match than most of this interface — their KAN-98 fixed the
-   * shape for the same reason ours has it.
+   * KAN-278 found this method refusing while CrabCast's own `tail_agent`
+   * answered `success`, `text`, `truncated`, `source` and `sourcesTried`, with
+   * `source` drawn from the same `'recent-unwrapped' | 'visible'` pair Butchr's
+   * own {@link TailSource} uses. **The data was there and our signature could
+   * not reach it**: `AgentRuntime.tailAgent` was synchronous, a tail is the one
+   * read where a cached answer is the wrong answer, and so the mirror strategy
+   * that correctly serves the census group was unavailable. The interface is
+   * `Promise`-returning now and the refusal is gone.
    *
-   * **`AgentRuntime.tailAgent` is synchronous.** A tail is the one read where a
-   * cached answer is the wrong answer — its whole purpose is to show what the
-   * pane says *now* — so the mirror strategy that serves the census group is
-   * not available, and there is no way to await a socket inside a synchronous
-   * signature.
+   * ## Three things confirmed from the wire rather than from their document
    *
-   * So it refuses, with figures, naming the leg — and the refusal is
-   * `success: false`, which the interface's own docblock defines as **a claim
-   * about the READ**, never about the agent. That is exactly what happened: we
-   * could not look. Returning `success: true, text: ''` here would be the
-   * precise defect that docblock was written to forbid.
+   * Driven against a live daemon at `6f47df7d` (contract v6 — **past our pin**,
+   * so these are claims about that build, not about `CRABCAST_PIN`):
    *
-   * **The fix is the same one KAN-224 prescribed for the PTY group**: an async
-   * signature. `tailAgent` needs to become `Promise`-returning before any
-   * cutover, and that is interface work, not adapter work.
+   * 1. **`path` is required and must exist.** Omitting it answers *"Missing or
+   *    invalid path: an agent is addressed by the directory it runs in"*; a path
+   *    that is not there answers `ENOENT` with their reason that the filesystem
+   *    is the typo-checker. Both are `success: false`.
+   * 2. **`sourcesTried` comes back on the refusal too**, carrying both sources
+   *    — so their `success: false` is a claim about the READ in the same sense
+   *    ours is, and the field maps straight across.
+   * 3. **They can only tail an agent CrabCast itself configured.** Their agent
+   *    name is derived from the path (`crabcast-<leaf>-<hash>`), so a pane
+   *    *herdr* owns under a Butchr name is `not found` even though
+   *    `list_agents` reports it under `foreignPanes`. That is honest rather than
+   *    broken — see the note on the fall-through below — and it is why this
+   *    method is not a general pane reader under this runtime.
+   *
+   * ## What is deliberately NOT done here
+   *
+   * **No fallback to a mirror, and no synthesised empty pane.** A failed read
+   * stays `success: false` with the refusal carried verbatim. Returning
+   * `success: true, text: ''` on a refusal is the precise defect
+   * {@link AgentRuntime.tailAgent}'s contract was written to forbid — a claim
+   * about the agent manufactured out of a fact about the read — and it is the
+   * one this method must never introduce now that it has a wire to fail on.
    */
-  tailAgent(
+  async tailAgent(
     key: string,
     type?: string,
-    _lines?: number
-  ): {
+    lines?: number
+  ): Promise<{
     success: boolean;
     text?: string;
     truncated?: boolean;
     source?: TailSource | null;
     sourcesTried?: TailSource[];
     error?: string;
-  } {
-    return {
-      success: false,
-      error: renderRefusal(
-        this.link.refusal(
-          'butchr-adapter',
-          `tailAgent(${type ?? '*'}/${key}) cannot be served: AgentRuntime declares it ` +
-            'synchronous and this runtime answers over a socket. CrabCast serves tails fine ' +
-            "(`tail_agent` returns text, truncated, source and sourcesTried) — it is our " +
-            'signature that cannot await it',
-          'Make tailAgent async before any cutover — the same change KAN-224 prescribed for ' +
-            'the PTY group. Until then, run under the default herdr runtime for tails.'
+  }> {
+    // ADDRESSED THE SAME WAY `describeAgent` IS, so one key cannot mean two
+    // agents depending on which method asked. A bare key is resolved through
+    // our own session table because `type` is Butchr's vocabulary and CrabCast
+    // has none — their north star 4.
+    const resolvedType = type ?? this.sessionForKey(key)?.type ?? null;
+    if (!resolvedType) {
+      return {
+        success: false,
+        error: renderRefusal(
+          this.link.refusal(
+            'butchr-adapter',
+            `tailAgent(${key}) cannot be addressed: no type was given and no session this ` +
+              'daemon started names that key, so there is no path to ask CrabCast about',
+            'Pass a type, or address an agent this daemon spawned.'
+          )
         )
-      )
-    };
+      };
+    }
+
+    const dir = pathForAddress(resolvedType, key);
+    try {
+      const res = await this.link.request({
+        action: 'tail_agent',
+        path: dir,
+        ...(lines === undefined ? {} : { lines })
+      });
+
+      if (res.success !== true) {
+        // THEIR REFUSAL, CARRIED VERBATIM AND NOT PARSED. `sourcesTried` is
+        // passed through when they send it because it is the same field with the
+        // same meaning — "we looked here" — and dropping it would lose the only
+        // evidence that the read was attempted twice.
+        return {
+          success: false,
+          error: renderRefusal(
+            this.link.refusal(
+              'crabcast-daemon',
+              `tail_agent(${resolvedType}/${key}) refused: ` +
+                String(res.error ?? 'no reason given'),
+              'Start a CrabCast daemon addressing that socket if it is down, or unset ' +
+                'BUTCHR_AGENT_RUNTIME to serve tails from the default herdr runtime, which ' +
+                'needs no peer. Note that CrabCast can only tail an agent it configured ' +
+                'itself: a pane herdr owns under a Butchr name is not theirs to read.'
+            )
+          ),
+          ...(Array.isArray(res.sourcesTried)
+            ? { sourcesTried: narrowTailSources(res.sourcesTried) }
+            : {})
+        };
+      }
+
+      // `text` MUST BE A STRING TO BE A SUCCESSFUL READ. A `success: true` with
+      // no text is not an empty pane — it is a response we cannot interpret, and
+      // the honest report of one is that we could not look.
+      if (typeof res.text !== 'string') {
+        return {
+          success: false,
+          error: renderRefusal(
+            this.link.refusal(
+              'crabcast-daemon',
+              `tail_agent(${resolvedType}/${key}) answered success without text ` +
+                `(text was ${typeof res.text}), so what is on the pane is UNKNOWN rather ` +
+                'than empty',
+              'This is an interface observation for KAN-59, not a change request.'
+            )
+          ),
+          ...(Array.isArray(res.sourcesTried)
+            ? { sourcesTried: narrowTailSources(res.sourcesTried) }
+            : {})
+        };
+      }
+
+      // `source: null` WITH `success: true` IS "EVERY SOURCE WAS ASKED AND EVERY
+      // ONE WAS EMPTY", and it is the assertion `superviseChannelStartup` and
+      // `readLandedCount` are entitled to rely on. It is carried through as
+      // `null` rather than dropped: an absent `source` and a `null` one are the
+      // same fact here only because their empty answer spells it the same way,
+      // and `?? null` says so once instead of leaving it to each caller.
+      return {
+        success: true,
+        text: res.text,
+        truncated: res.truncated === true,
+        source: narrowTailSource(res.source),
+        ...(Array.isArray(res.sourcesTried)
+          ? { sourcesTried: narrowTailSources(res.sourcesTried) }
+          : {})
+      };
+    } catch (e: any) {
+      // A LINK THAT IS DOWN IS A READ WE COULD NOT MAKE, never an empty pane.
+      //
+      // RE-HEADLINED RATHER THAN CARRIED, and the reason is the one thing this
+      // path has that the link's generic refusal does not: a remedy that is
+      // *specific to a tail*. `request` rejects with `unreachable()`, whose
+      // remedy is the right general advice — start a daemon, or unset the
+      // switch — and a reader looking at a failed tail wants to be told that
+      // **the default herdr runtime serves tails with no peer at all**. The
+      // figures are not lost: `link.refusal()` regenerates socket, errno,
+      // attempts, downFor and last-good from the same link, and the original
+      // message is appended so nothing the link said is discarded.
+      return {
+        success: false,
+        error: renderRefusal(
+          this.link.refusal(
+            'crabcast-socket',
+            `tail_agent(${resolvedType}/${key}) could not be sent: ` +
+              String(e?.message ?? e),
+            'Start a CrabCast daemon addressing that socket, or unset ' +
+              'BUTCHR_AGENT_RUNTIME to serve tails from the default herdr runtime, which ' +
+              'needs no peer.'
+          )
+        )
+      };
+    }
   }
 
   /**

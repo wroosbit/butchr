@@ -17,10 +17,34 @@ behaviour are claims about observations, and
 - **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` (KAN-294; was
   `7c6d97f` under KAN-278). Read off `daemon_status.build.commit` of a real
   daemon built at that commit, not off a notice.
-- **CrabCast read-path contract version:** `3`, read off `daemon_status.contractVersion`
-  at the same build. **It covers `list_agents` and `agent_status` and nothing
+- **CrabCast read-path contract version:** **`4`**, which is what
+  `CRABCAST_CONTRACT_VERSION` in `crabcast-link.ts` actually pins. **This line
+  read `3` until KAN-283** — KAN-324 bumped the constant to consume
+  `unreadableRecordsTotal` and did not bump the prose, so the document was one
+  version behind the code it describes. Corrected by reading the constant rather
+  than the sentence. **It covers `list_agents` and `agent_status` and nothing
   else** — see *What the contract does not hold* below.
 - **Butchr commit these line numbers were read at:** the branch of KAN-294.
+
+**KAN-283's additions were read at a DIFFERENT build, and this note is here
+rather than buried because the alternative is the mistake this document ends by
+confessing to.** The `tail_agent` observations — the ruling table's row 18, the
+`tail_agent_response` entry under *The fields this runtime branches on*, and the
+`sourcesTried` vocabulary match — come from a live daemon answering
+`build.commit: 6f47df7d05ebcb8593469c740d7b6dc2aa149b13` with
+`contractVersion: 6`. **That is two contract versions past the `4` we pin**, and
+it was what happened to be running on this machine rather than something chosen.
+`verify-crabcast-runtime-live.mjs` §4b reports it as a failure — `{"peer":6,
+"pinned":4}` — which is the instrument working: that assertion exists to notice
+exactly this, and it fails identically on `main` against this daemon.
+
+So: **those claims are claims about `6f47df7d`, not about `8d7348f`.** They are
+marked as such where they appear. The pin has deliberately **not** moved —
+`CRABCAST_PIN` still reads `8d7348f`, a mismatch is logged and never fatal, and
+moving it is a step with a notice behind it rather than a side effect of a ticket
+about our own signatures. What this means for a reader: if a `tail_agent` claim
+here disagrees with a daemon built at the pin, **the claim is the suspect**, and
+`verify-crabcast-runtime-live.mjs` §4c is what re-runs it.
 
 ---
 
@@ -110,16 +134,91 @@ that is a real capability gap rather than a detail.
 | 15 | `listHerdrAgentsChecked` | **served** | The distinction survives intact: `reachable` is a claim about whether the census could be **taken**, never about whether it found anything. |
 | 16 | `listHerdrStatuses` | **different-shaped** | Derived from the same census. `herdrStatus` values match Butchr's `HerdrAgentStatus` set exactly. |
 | 17 | `confirmAgentPresent` | **served** | Already `Promise`-returning, so it polls `list_agents` for real. `requireRuntime` reads their `agentRuntime` field, which is the same evidence Butchr uses. A census that could not be taken returns `unverifiable`, never `absent`. |
-| 18 | `tailAgent` | **absent (ours, not theirs)** | **CrabCast serves tails well**: `tail_agent` returns `success`, `text`, `truncated`, `source`, `sourcesTried`, with `source` drawn from the same `'recent-unwrapped' \| 'visible'` pair Butchr uses — a better match than most of this interface. **Our signature is synchronous**, and a tail is the one read where a cached answer is the wrong answer. So it refuses with figures. `success: false` is a claim about the READ, which is exactly what happened. **Fix: make `tailAgent` async before any cutover** — the same change KAN-224 prescribed for PTY. |
+| 18 | `tailAgent` | **served (KAN-283)** | **Was `absent (ours, not theirs)` under KAN-278; served over the wire now.** `tail_agent` returns `success`, `text`, `truncated`, `source`, `sourcesTried`, with `source` drawn from the same `'recent-unwrapped' \| 'visible'` pair Butchr uses — a better match than most of this interface. The blocker was **our** synchronous signature, a tail being the one read where a cached answer is the wrong answer; KAN-283 made `AgentRuntime.tailAgent` `Promise`-returning and the refusal is gone. **One limit, from the wire: CrabCast can only tail an agent it configured itself** — their agent name is derived from the path (`crabcast-<leaf>-<hash>`), so a pane herdr owns under a Butchr name answers `not found` even while `list_agents` reports it under `foreignPanes`. That is `success: false`, a claim about the READ, and it is correct. |
 | 19 | `pressPaneKey` | **absent** | No `press_pane_key` action — verified, it answers `Unknown action`. `send_to_agent` is not a substitute: it opens with a Ctrl+C (its response reports `interrupts: 1`), which is precisely what this method exists not to do. Throws. |
 | 20 | `sendToAgent` | **served (superset)** | `send_to_agent` answers `delivered`, `verdict`, `interrupts`, `submits` and an `evidence` block. We map **`delivered`**, not `success` — `success` says the call worked, `delivered` says the keystrokes landed, and this method's contract is about the typing. |
 | 21 | `writePty` | **served** | `pty_input`, fire-and-forget with no `id` (CrabCast only acks a frame carrying one). Returns "do I have this session?", the same meaning as in-process. |
 | 22 | `resizePty` | **served** | `pty_resize`. |
 | 23 | `registerDataListener` | **different-shaped** | KAN-224's design, implemented. One long-lived `pty_init` per **session**; this call never touches the socket, pushing onto a local array and returning a closure that filters it out. |
 
-**Totals: 11 served, 8 different-shaped, 4 absent** (methods 2, 6, 18, 19).
-Two of the four absences are ours rather than CrabCast's — `tailAgent` is our
-signature, and `resetWorkspace` is a responsibility that moves to us.
+**Totals: 12 served, 8 different-shaped, 3 absent** (methods 2, 6, 19). One of
+the three remaining absences is ours rather than CrabCast's: `resetWorkspace` is
+a responsibility that moves to us. **`tailAgent` was the fourth until KAN-283**,
+and it was the one absence that was purely a signature.
+
+---
+
+## The synchrony ruling: one method changed, thirteen deliberately did not
+
+**KAN-283.** The finding above says 14 of the 23 methods return data
+synchronously. `tailAgent` is now `Promise`-returning; **the other 13 were each
+ruled on and every one stayed synchronous.** This section is that ruling, method
+by method, because *"we looked at the rest"* is not a reviewable claim.
+
+**The test applied, stated before the answers so it can be disagreed with.** A
+method needs an async signature when **the correct answer requires a fact that
+is fresh at call time and that CrabCast will actually answer.** Both halves are
+load-bearing. Fail the first and a warm mirror is not a compromise but the
+honest shape of the answer — a fleet observation *is* a reading with a timestamp,
+and `HerdrBridge`'s own answer is a `herdr agent list` shell-out that is stale
+the moment it returns. Fail the second and async conjures nothing: a capability
+CrabCast does not have is not reachable by awaiting it.
+
+`tailAgent` passes both, uniquely: a tail's entire purpose is to say what the
+pane shows *now*, and `tail_agent` answers it in our own vocabulary.
+
+| # | Method | Ruling | Why — and what an async signature would have bought |
+| --- | --- | --- | --- |
+| 3 | `spawnSession` | **stays sync** | Returns a handle the caller *polls*, and `HerdrBridge` returns an equally not-yet-ready one: `status: 'initializing'`, promoted to `active` or to `terminated` + `spawnError` by `provision()` writing to the object the caller already holds. Async would make every caller wait on a `configure_agent` + `activate_agent` round trip **that no caller waits for today**, and would tell them nothing the handle does not. |
+| 5 | `terminateSession` | **stays sync** | Answers *"asked"*, never *"stopped"* — and that is already true of `HerdrBridge`, where the session-ended event is what says it stopped. The local record is marked immediately, so the caller's next read cannot see a live session. Async would let it report the `deactivate_agent` ack, which is **still not "stopped"**: a different wrong answer at the cost of every call site. |
+| 6 | `resetWorkspace` | **stays sync** | Nothing to await. CrabCast removed `reset` because they never create the directory (north star 3), so the missing work is **Butchr deleting a directory** — synchronous filesystem work we do not do yet. That is gate 4, and it is a capability gap rather than a signature one. |
+| 7 | `closeAgentByKey` | **stays sync** | Delegates to `terminateSession`; same ruling for the same reason. |
+| 8 | `getSession` | **stays sync** | Local session table. Exact for sessions we started, no round trip, no staleness. |
+| 9 | `getSessionByAddress` | **stays sync** | Local session table, and **the dominant lookup — 8 of the 43 call sites.** The method where an async signature would cost the most and buy the least. |
+| 10 | `listActiveSessions` | **stays sync** | Local session table. **This one feeds the symptom a human actually noticed — see below.** It is still the right ruling, and the reason it is worth reading twice. |
+| 11 | `describeAgent` | **stays sync** | Census mirror plus `foreignPanes`, lagging by up to one census interval (2 s). A fleet question's honest answer is a timestamped observation. |
+| 12 | `resolveAddress` | **stays sync** | Nothing to ask. `type` is Butchr's vocabulary and CrabCast has none by their north star 4; the key→type mapping is a fact about **our own** sessions. |
+| 13 | `herdrReachable` | **stays sync** | `link.connected && census.reachable` — two facts this process already holds. Async would turn a health question into a round trip **that can hang**, which is the opposite of what a caller asking "is the runtime there?" needs. |
+| 14 | `listHerdrAgents` | **stays sync** | Census mirror. |
+| 15 | `listHerdrAgentsChecked` | **stays sync** | Census mirror plus its disclosure. The distinction the method exists for — `reachable` is about whether the census could be **taken** — survives a mirror intact. |
+| 16 | `listHerdrStatuses` | **stays sync** | Derived from the same census. |
+
+**Thirteen of thirteen, which is a result and not a shrug.** It is also the
+answer KAN-278 predicted, and the value of doing it method by method is the one
+case where the prediction was nearly wrong for the right reason:
+
+### `sessionId` and `url`: the ruling that matters more than `tailAgent`'s
+
+`epic/KAN-39` asked which of the 13 feed `sessionId` and `url`, having watched a
+cutover on 2026-08-12 come back with **`sessionless: true`, `sessionId: null`,
+`url: null` on every agent** — the thing the human noticed, and the reason the
+flip was rolled back inside seven minutes.
+
+**The answer is methods 8, 9 and 10, and going async would not have changed one
+row of it.** The mechanism, read off `router.ts`: `handleListAgents` walks
+`listActiveSessions()` to build its attached set, and **every census row not in
+that set becomes `sessionless: true` with the session-only fields explicitly
+`null` rather than invented.** Under CrabCast the session table holds only
+sessions *this daemon process* started, so immediately after a flip it is empty,
+every census row falls to the sessionless branch, and the rendering is correct
+behaviour of an empty table.
+
+**`url` is the decisive half, and it settles the question rather than arguing
+it.** `url` is a *Butchr* fact — the Jira ticket URL, passed **into**
+`spawnSession` — and `provision()` sends `configure_agent` exactly four fields
+plus MCP servers: `path`, `priority`, `launcher`, `prompt`. **`url` is never sent
+to CrabCast at all.** So no read of CrabCast can return it, under any signature,
+ever. A restarted daemon cannot recover `url` for an agent it did not itself
+start by awaiting anything, because the fact was never on their side to await.
+
+So this is **its own gate**, adjacent to gates 3 and 5 and not folded into them:
+it is a **durability** question — persist Butchr's session records, or
+reconstruct what is reconstructible from the census on connect — and explicitly
+**not** a synchrony one. Their census row does carry a `sessionId` of their own
+(`CensusRow.sessionId`), so partial reconstruction is available and `url` is not.
+**Nobody covers this yet.** Naming it is this ticket's contribution to it;
+KAN-283 does not fix it, and a cutover should not read *"gate 1 is done"* as
+progress on it.
 
 ---
 
@@ -193,12 +292,27 @@ which is how it is told apart from a response.
 
 **Every frame** — `id` for correlation, `action`, `success`, `error`.
 
-**Not branched on, deliberately:** `tail_agent_response` — nothing in this
-runtime calls `tail_agent`, because `tailAgent` cannot be served synchronously.
-Also unread: `capacity`, `provenance`, `configEchoContract`, `pages` and the
-paging handles, `agent_status` (the census covers it), and every refusal field
-including `headroomBoundBy` — refusal text is carried through **verbatim** and
-never parsed, so a new value there cannot break us.
+**`tail_agent_response`** — **new since KAN-283**, and it moved onto this list
+from the one below it. `success`; `text`, which must be a **string** for the read
+to count (a `success: true` with a non-string `text` is reported as a read we
+could not make, never as an empty pane); `truncated`; `source`, narrowed against
+our own `'recent-unwrapped' | 'visible'` pair with anything unrecognised becoming
+`null`; `sourcesTried`, narrowed the same way and carried through on refusals as
+well as successes, because it is the evidence that the read was attempted twice.
+`error` is carried **verbatim** and never parsed.
+
+The request sends `path` and, when the caller gave one, `lines`. Confirmed from
+the wire at `6f47df7d`: `path` is required, must be a non-empty string, and must
+exist on disk — all three refusals are `success: false` with their reason stated.
+**Their agent name is derived from the path**, so they can only tail an agent
+CrabCast itself configured; a pane herdr owns under a Butchr name answers `not
+found` while still appearing under `list_agents.foreignPanes`.
+
+**Not branched on, deliberately:** `capacity`, `provenance`,
+`configEchoContract`, `pages` and the paging handles, `agent_status` (the census
+covers it), and every refusal field including `headroomBoundBy` — refusal text is
+carried through **verbatim** and never parsed, so a new value there cannot break
+us.
 
 ### `channelEnabled` — three states, and the one that is easy to lose
 

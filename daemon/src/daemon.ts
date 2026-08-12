@@ -429,7 +429,8 @@ const channelLiveness = new ChannelLivenessProbe({
       }),
     // `recent-unwrapped`, through the same reader `butchr_tail_agent` uses, so
     // what this matches against is what a human would see if they looked.
-    readPane: (address) => herdrBridge.tailAgent(address.key, address.type, 200).text ?? null,
+    readPane: async (address) =>
+      (await herdrBridge.tailAgent(address.key, address.type, 200)).text ?? null,
     // THE CHANNEL, AND ONLY THE CHANNEL. A composer send types into the pane,
     // which is the surface this probe reads its answer off — it would write its
     // own token there and read it back as proof that a model had seen it. There
@@ -894,8 +895,8 @@ herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
       // and `unreadable-pane` (which counts pane FAILURES) could never fire for
       // it. Reading `success` rather than `text ?? null` says that out loud
       // instead of leaving it to the shape of an optional field.
-      readPane: () => {
-        const tail = herdrBridge.tailAgent(session.key, session.type, 140);
+      readPane: async () => {
+        const tail = await herdrBridge.tailAgent(session.key, session.type, 140);
         return tail.success && typeof tail.text === 'string' ? tail.text : null;
       },
       pressEnter: () => herdrBridge.pressPaneKey(session.key, session.type, 'Enter'),

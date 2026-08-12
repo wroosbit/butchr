@@ -994,8 +994,8 @@ if (LIVE) {
    * a coalesced message — which is longer — as more interruptions than a short
    * one, which is the exact number under test.
    */
-  const daemonLines = (agent) => {
-    const tail = bridge.tailAgent(agent.key, agent.type, 200);
+  const daemonLines = async (agent) => {
+    const tail = await bridge.tailAgent(agent.key, agent.type, 200);
     const text = tail.success && typeof tail.text === 'string' ? tail.text : '';
     return text
       .split('\n')
@@ -1028,7 +1028,7 @@ if (LIVE) {
     console.log('\n  poll 2 — a hand-off on KAN-9901, and a comment on KAN-9900:\n');
     const tick = await poller.pollOnce();
     const mine = tick.nudges.filter((n) => n.agentName === WATCHER.agentName);
-    const onScreen = daemonLines(WATCHER);
+    const onScreen = await daemonLines(WATCHER);
 
     const carried = mine.map((n) => ({
       ticket: eventsOf(n)[0]?.key,
@@ -1049,7 +1049,7 @@ if (LIVE) {
     read. That is the whole of this ticket, on a real terminal.`);
 
     for (const agent of AGENTS) {
-      const tail = bridge.tailAgent(agent.key, agent.type, 45);
+      const tail = await bridge.tailAgent(agent.key, agent.type, 45);
       console.log(`\n  ${agent.agentName}'s real terminal:\n`);
       console.log((tail.text ?? tail.error ?? '(no output)').split('\n').map((l) => `    ${l}`).join('\n'));
     }

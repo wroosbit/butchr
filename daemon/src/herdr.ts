@@ -1606,13 +1606,26 @@ export class HerdrBridge implements AgentRuntime {
    * pane as meaningful — `superviseChannelStartup` and `readLandedCount` both
    * do — is entitled to it only because of that.
    *
-   * Never throws; the caller owes its client a response.
+   * Never throws; the caller owes its client a response. As an `async` method
+   * that means it never *rejects* either — every path below returns a value.
+   *
+   * ## `async` WITHOUT AN `await` IN IT, AND THAT IS DELIBERATE (KAN-283)
+   *
+   * Every read here is a `spawnSync`, so this body does no waiting and could
+   * still be synchronous. It is `Promise`-returning because {@link
+   * AgentRuntime.tailAgent} is, and that interface went async for the runtime
+   * that answers over a socket — see its docblock. **The `async` keyword is the
+   * only change this method received**: not a line of the logic below moved, so
+   * the value an awaiting caller observes is the value the synchronous version
+   * returned, and the resolution lands on the first microtask rather than after
+   * any I/O. `verify-tail-async-awaited.mjs` §1 asserts that equivalence
+   * against the built module rather than leaving it as a claim in a comment.
    */
-  public tailAgent(
+  public async tailAgent(
     key: string,
     type?: string,
     lines?: number
-  ): {
+  ): Promise<{
     success: boolean;
     text?: string;
     truncated?: boolean;
@@ -1621,7 +1634,7 @@ export class HerdrBridge implements AgentRuntime {
     /** Every source asked, in order, so "we looked twice" is auditable rather than trusted. */
     sourcesTried?: TailSource[];
     error?: string;
-  } {
+  }> {
     const wanted = clampTailLines(lines);
     const tried: TailSource[] = [];
     const answeredEmpty: TailSource[] = [];

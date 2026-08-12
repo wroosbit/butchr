@@ -136,11 +136,13 @@ class StubRuntime implements AgentRuntime {
     return { present: false, reason: 'unverifiable', error: 'stub', waitedMs: 0, checks: 0 };
   }
 
-  tailAgent(
+  // KAN-283. `Promise`-returning, because a runtime answering over a socket
+  // cannot serve a tail synchronously — see AgentRuntime.tailAgent.
+  async tailAgent(
     _key: string,
     _type?: string,
     _lines?: number
-  ): { success: boolean; text?: string; truncated?: boolean; error?: string } {
+  ): Promise<{ success: boolean; text?: string; truncated?: boolean; error?: string }> {
     return { success: false, error: 'stub' };
   }
 

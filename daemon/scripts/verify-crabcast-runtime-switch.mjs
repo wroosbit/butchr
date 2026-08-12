@@ -314,7 +314,12 @@ const deadLink = new CrabCastLink({ socketPath: deadSocket, log: quiet, reconnec
 const deadRuntime = new CrabCastRuntime({ link: deadLink, log: quiet, censusIntervalMs: 10_000 });
 await sleep(400);
 
-const tail = deadRuntime.tailAgent('kan-1', 'task');
+// AWAITED SINCE KAN-283. `tailAgent` is `Promise`-returning now, and without the
+// `await` every assertion below would read `undefined` off a Promise: the first
+// one would fail, and the six that follow would fail for a reason that has
+// nothing to do with the refusal they are about. `verify-tail-async-awaited.mjs`
+// is the script that owns that hazard generally; this is one instance of it.
+const tail = await deadRuntime.tailAgent('kan-1', 'task');
 check('tailAgent refuses rather than reporting an empty pane', tail.success === false, JSON.stringify(tail));
 check(
   'it does NOT return text — success:false is a claim about the READ',

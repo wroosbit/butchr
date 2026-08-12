@@ -226,8 +226,14 @@ export interface ChannelLivenessWorld {
   emissionEnabled: () => boolean;
   /** Every agent that could be asked right now, with its recorded client. */
   candidates: () => ChannelLivenessCandidate[];
-  /** The agent's terminal as text, or `null` when it cannot be read. */
-  readPane: (address: AgentAddress) => string | null;
+  /**
+   * The agent's terminal as text, or `null` when it cannot be read.
+   *
+   * `Promise`-returning since KAN-283, because `AgentRuntime.tailAgent` is —
+   * see that interface for why the transport requires it of a tail and of
+   * nothing else.
+   */
+  readPane: (address: AgentAddress) => Promise<string | null>;
   /** Write the frame over the channel. NEVER a composer send — see above. */
   send: (address: AgentAddress, content: string) => ChannelLivenessRoute;
   now: () => number;
@@ -427,7 +433,7 @@ export async function runChannelLivenessProbe(opts: {
   // spend an agent's turn. A run that sent the frame and then could not read the
   // pane would be indistinguishable from a non-answer, and would be recorded as
   // one — which is a wrong reading of a model that may well have answered.
-  const before = world.readPane(candidate.address);
+  const before = await world.readPane(candidate.address);
   if (before === null) {
     return done(
       'pane-unreadable',
@@ -492,7 +498,7 @@ export async function runChannelLivenessProbe(opts: {
   let lastReadFailed = false;
   while (world.now() - waitStartedAt < answerWindowMs) {
     await world.sleep(panePollMs);
-    const pane = world.readPane(candidate.address);
+    const pane = await world.readPane(candidate.address);
     totalReads += 1;
     lastReadFailed = pane === null;
     if (pane === null) continue;

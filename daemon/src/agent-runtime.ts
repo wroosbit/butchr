@@ -236,19 +236,55 @@ export interface AgentRuntime {
    * that has text on it (see `TAIL_SOURCES` in herdr.ts) — and a source that
    * FAILED is not a source that said empty. `source` names which one answered,
    * and is `null` exactly when every source was asked and every one was empty.
+   *
+   * ## Why this one is `Promise`-returning and its 13 siblings are not (KAN-283)
+   *
+   * **A tail is the one read where a cached answer is the wrong answer.** Its
+   * whole purpose is to say what the pane shows *now*, so the warm-mirror
+   * strategy that correctly serves the census group is not available to it, and
+   * a runtime living behind a socket has no third option: KAN-278 found
+   * `CrabCastRuntime.tailAgent` refusing outright while CrabCast's own
+   * `tail_agent` answered `text`, `truncated`, `source` and `sourcesTried` —
+   * **a better match than most of this interface.** The data was there and the
+   * signature could not reach it. That is the whole of why this method is async
+   * and the reason is worth carrying: **it is the transport that requires it,
+   * not tidiness.** The other 13 synchronous returns were each ruled on rather
+   * than swept along — see the table in `docs/crabcast-runtime.md` — and every
+   * one stayed synchronous, because a mirror or a local record serves it
+   * correctly and changing it would have cost 43 call sites for nothing.
+   *
+   * **`HerdrBridge` answers from a `spawnSync` and therefore resolves on the
+   * first microtask.** Going async changed no value it produces and no ordering
+   * a caller can observe; `verify-tail-async-awaited.mjs` §1 pins that.
+   *
+   * ## THE HAZARD THE ASYNC SIGNATURE INTRODUCES, NAMED WHERE IT IS DECLARED
+   *
+   * **An un-awaited call reads exactly like a failed read, and nothing goes
+   * red.** `Promise.success` is `undefined`, which is neither `true` nor
+   * `false`, and `Promise.text` is `undefined` — so a caller that forgets the
+   * `await` sees `success` falsy and `text` absent and concludes *"could not
+   * look"* about a pane it never asked about. That resurrects the precise
+   * KAN-255 defect this method's contract exists to forbid, one layer up: a
+   * claim about the agent manufactured out of a fact about the caller. It is
+   * silent in TypeScript at every site that spreads or truthiness-tests the
+   * result rather than reading a typed field.
+   *
+   * `daemon/scripts/verify-tail-async-awaited.mjs` owns this: it greps every
+   * call site for the `await` and drives the un-awaited shape to show what it
+   * degrades to. Its verdict was watched failing before it was trusted.
    */
   tailAgent(
     key: string,
     type?: string,
     lines?: number
-  ): {
+  ): Promise<{
     success: boolean;
     text?: string;
     truncated?: boolean;
     source?: TailSource | null;
     sourcesTried?: TailSource[];
     error?: string;
-  };
+  }>;
 
   /**
    * Press one key at an agent's pane. Throws when the agent, the pane or the

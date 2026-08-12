@@ -226,7 +226,7 @@ setPane(REAL_PANE);
 clearFaults();
 resetInvocations();
 {
-  const t = bridge.tailAgent(KEY, TYPE, 8);
+  const t = await bridge.tailAgent(KEY, TYPE, 8);
   check(t.success === true, 'success', JSON.stringify(t));
   check(typeof t.text === 'string' && t.text.includes('hello-from-kan-255'),
     'the pane text is returned rather than an empty string', JSON.stringify(t.text));
@@ -247,7 +247,7 @@ setPane(REAL_PANE);
 clearFaults();
 resetInvocations();
 {
-  const t = bridge.tailAgent(KEY, TYPE, 40);
+  const t = await bridge.tailAgent(KEY, TYPE, 40);
   check(t.success === true && t.source === 'recent-unwrapped',
     'a --lines 40 read is answered by recent-unwrapped', `source=${t.source}`);
   check(JSON.stringify(sourcesAsked()) === JSON.stringify(['recent-unwrapped']),
@@ -268,7 +268,7 @@ setPane({ rows: 23, content: '' });
 clearFaults();
 resetInvocations();
 {
-  const t = bridge.tailAgent(KEY, TYPE, 40);
+  const t = await bridge.tailAgent(KEY, TYPE, 40);
   check(t.success === true, 'success — this is an answer about the pane, not a failure',
     JSON.stringify(t));
   check(t.text === '', 'text is empty', JSON.stringify(t.text));
@@ -293,7 +293,7 @@ rule('5. A SOURCE THAT FAILS IS NOT A SOURCE THAT SAID EMPTY');
   setPane(REAL_PANE);
   clearFaults();
   failSource('visible', true);
-  const t = bridge.tailAgent(KEY, TYPE, 8);
+  const t = await bridge.tailAgent(KEY, TYPE, 8);
   check(t.success === false,
     '5a: recent-unwrapped empty + visible refusing → success FALSE, not an empty pane',
     JSON.stringify(t));
@@ -311,7 +311,7 @@ rule('5. A SOURCE THAT FAILS IS NOT A SOURCE THAT SAID EMPTY');
   clearFaults();
   failSource('recent-unwrapped', true);
   failSource('visible', true);
-  const t = bridge.tailAgent(KEY, TYPE, 40);
+  const t = await bridge.tailAgent(KEY, TYPE, 40);
   check(t.success === false, '5b: every source refusing → success FALSE', JSON.stringify(t));
   check(typeof t.error === 'string' && /no source could be read/.test(t.error),
     '5b: and it says no source could be read', t.error);
@@ -322,7 +322,7 @@ rule('5. A SOURCE THAT FAILS IS NOT A SOURCE THAT SAID EMPTY');
   setPane(REAL_PANE);
   clearFaults();
   failSource('recent-unwrapped', true);
-  const t = bridge.tailAgent(KEY, TYPE, 40);
+  const t = await bridge.tailAgent(KEY, TYPE, 40);
   check(t.success === true && typeof t.text === 'string' && t.text.includes('hello-from-kan-255'),
     '5c: recent-unwrapped refusing + visible answering → the TEXT, not a failure',
     JSON.stringify(t));
@@ -338,7 +338,7 @@ rule('6. THE `visible` FALLBACK IS HELD TO THE CALLER\'S N, WHICH IT IGNORES');
 setPane({ rows: 23, content: 'row-one\nrow-two\nrow-three\nrow-four\nrow-five' });
 clearFaults();
 {
-  const t = bridge.tailAgent(KEY, TYPE, 2);
+  const t = await bridge.tailAgent(KEY, TYPE, 2);
   check(t.source === 'visible', 'visible answered (--lines 2 lands in the blank rows)',
     `source=${t.source}`);
   check(t.text === 'row-four\nrow-five',
@@ -364,15 +364,21 @@ rule('7. THE COMPOSITION — a spurious empty read must not read as "no dialog"'
   setPane({ rows: 200, content: DIALOG });
   clearFaults();
 
-  const readPane = () => {
-    // Copied from daemon.ts's world.readPane.
-    const tail = bridge.tailAgent(KEY, TYPE, 140);
+  // `async` SINCE KAN-283, WHICH IS WHAT THIS SECTION IS FOR. `readPane` is
+  // handed straight to `superviseChannelStartup` as its `world.readPane`, and
+  // that interface is `() => Promise<string | null>` now because
+  // `AgentRuntime.tailAgent` is. Copied from daemon.ts's world.readPane, awaits
+  // and all — the point of this section is that the expression the daemon ships
+  // is the expression under test.
+  const readPane = async () => {
+    const tail = await bridge.tailAgent(KEY, TYPE, 140);
     return tail.success && typeof tail.text === 'string' ? tail.text : null;
   };
 
-  check(readPane() !== null && /Loading development channels/.test(readPane()),
+  const seen = await readPane();
+  check(seen !== null && /Loading development channels/.test(seen),
     'the dialog is SEEN through the daemon\'s own readPane expression',
-    JSON.stringify(readPane()));
+    JSON.stringify(seen));
 
   let enters = 0;
   let now = 0;
