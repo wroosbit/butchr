@@ -438,7 +438,12 @@ const channelLiveness = new ChannelLivenessProbe({
         registry: agentConnections,
         address,
         content,
-        meta: { livenessProbe: true },
+        // A STRING, and the quotes are load-bearing (KAN-319). Meta entries
+        // become attributes on the recipient's `<channel>` tag, so a boolean
+        // here fails the client's parse and the whole frame is dropped in
+        // silence — which is what this probe was reading as `no-answer`, the
+        // state reserved for a model that declined.
+        meta: { livenessProbe: 'true' },
         selfCheck: channelSelfChecks
       });
       return outcome.routed
@@ -1291,7 +1296,15 @@ const guardianPoker = new GuardianPoker({
           sender: DAEMON_SENDER_TAG,
           workspaceType: address.type,
           workspaceKey: address.key,
-          guardianPoke: true
+          // A STRING, and this one quote is the whole of KAN-319 (see
+          // channel.ts on `ChannelMeta`). As a boolean it failed the client's
+          // parse of the notification params, so every poke was written to a
+          // live connection, recorded `delivered: true`, and discarded before it
+          // reached a model — six times, across two agents and three
+          // connections, while the fleet went unsupervised and every instrument
+          // read green. It renders as `guardianPoke="true"` on the recipient's
+          // `<channel>` tag, which is how a reader tells a poke from a notice.
+          guardianPoke: 'true'
         },
         selfCheck: channelSelfChecks,
         // `managed` is what separates a guardian whose registration was dropped

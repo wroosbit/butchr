@@ -152,13 +152,85 @@ export function writeChannelSwitch(enabled: boolean): void {
   fs.renameSync(tmp, CHANNEL_SWITCH_PATH);
 }
 
+/**
+ * The `meta` a channel frame may carry: attributes, so **string values only**.
+ *
+ * WHY THIS IS A TYPE RATHER THAN A COMMENT (KAN-319)
+ *
+ * `docs/channel-delivery.md` records the client contract as `params { content:
+ * string, meta?: Record<string,string> }`, and *"each `meta` entry becomes an
+ * attribute"*. Until this ticket that constraint lived only in that sentence:
+ * {@link routeChannelMessage} took `meta?: unknown` and passed it through, so a
+ * caller writing `{ guardianPoke: true }` compiled, wrote, and was reported
+ * **delivered**.
+ *
+ * It is not delivered. A non-string value fails the client's parse of the
+ * notification params and **the client discards the whole frame in silence** —
+ * not the offending entry, the entire message. Nothing downstream can see that:
+ * the daemon's write succeeded, the connection was live, and C1 and C2 are both
+ * honestly true. Measured on 2026-08-11 from the recipient side, two frames
+ * written to one connection (`conn-15`) in the same instant, differing only in
+ * one `meta` value's type — the all-string frame entered the agent's context and
+ * the boolean one did not.
+ *
+ * That is what cost this fleet its supervision for an evening. Six guardian pokes
+ * across two agents and three connections carried `guardianPoke: true`, every one
+ * recorded `delivered: true`, and **not one reached a model** — while ordinary
+ * notifications to the same agents on the same connections, whose meta happens to
+ * be all strings, arrived and were acted on throughout. The liveness probe's
+ * `livenessProbe: true` was losing every frame the same way, and its record read
+ * `no-answer`, which is the state reserved for *a model that declined*.
+ *
+ * So the fix is a type and not a check, per the standing preference: a check can
+ * be deleted by a later author and the build still passes, whereas
+ * `{ guardianPoke: true }` against this alias **cannot be written at all**. The
+ * assertion below exists as well, for the one caller a type cannot reach.
+ */
+export type ChannelMeta = Record<string, string>;
+
+/**
+ * The meta entries this client will not render, named one by one.
+ *
+ * The runtime half of {@link ChannelMeta}, and it exists for exactly one caller:
+ * `channel_send`, which takes its `meta` **off the wire** as parsed JSON. A type
+ * cannot reach a value that arrived as bytes, so that path gets the assertion and
+ * every in-process caller gets the type. Belt and braces, in that order.
+ *
+ * Empty means every entry survives the client's parse. A non-empty result is a
+ * frame that would be written successfully and then silently dropped, which is
+ * the one outcome this module must never produce.
+ *
+ * **What this does NOT check, said rather than left to be discovered.**
+ * `docs/channel-delivery.md` also records that meta *keys* must be identifiers —
+ * *"keys containing hyphens or other characters are silently dropped"* — and that
+ * failure is **partial** where this one is total: the frame still arrives, minus
+ * one attribute. It is documented rather than measured, this ticket did not
+ * reproduce it, and refusing a whole frame on the strength of an unverified
+ * sentence would lose messages that would otherwise mostly land. So it is
+ * uncovered here and by nothing else; KAN-319's ticket comment names it as the
+ * follow-up rather than leaving a reader to infer coverage that does not exist.
+ */
+export function unrenderableMetaEntries(meta: unknown): string[] {
+  if (meta === undefined || meta === null) return [];
+  if (typeof meta !== 'object' || Array.isArray(meta)) {
+    return [`meta is ${Array.isArray(meta) ? 'an array' : typeof meta}, and the client's contract is an object of string attributes`];
+  }
+  return Object.entries(meta as Record<string, unknown>)
+    .filter(([, value]) => typeof value !== 'string')
+    .map(
+      ([key, value]) =>
+        `${key} is ${value === null ? 'null' : typeof value} (${JSON.stringify(value)}), and only strings render as attributes`
+    );
+}
+
 /** Why an addressed frame did not go out. Every one of these is sender-visible. */
 export type ChannelRefusal =
   | 'channel-disabled'
   | 'selfcheck-failed'
   | 'no-connection'
   | 'registration-lost'
-  | 'socket-closed';
+  | 'socket-closed'
+  | 'meta-not-renderable';
 
 /** What one attempt to write an addressed frame did. */
 export type ChannelRouteOutcome =
@@ -326,7 +398,12 @@ export function routeChannelMessage(opts: {
   registry: AgentConnectionRegistry;
   address: AgentAddress;
   content: string;
-  meta?: unknown;
+  /**
+   * String values only — see {@link ChannelMeta}. A boolean here was six
+   * undelivered guardian pokes reported as delivered (KAN-319), and it is a
+   * compile error rather than a comment for that reason.
+   */
+  meta?: ChannelMeta;
   /** KAN-248's verdicts. Asked one question: has this agent been degraded? */
   selfCheck?: { degraded: (address: AgentAddress) => boolean };
   /**
@@ -340,6 +417,48 @@ export function routeChannelMessage(opts: {
   managed?: (address: AgentAddress) => boolean;
 }): ChannelRouteOutcome {
   const { registry, address, content, meta, selfCheck, managed } = opts;
+
+  // REFUSED RATHER THAN WRITTEN, AND BEFORE ANYTHING ELSE IS READ (KAN-319).
+  //
+  // A frame whose meta the client cannot parse is one that would be written
+  // successfully, reported `delivered`, and then discarded before it reached a
+  // model — the failure this fleet spent an evening unsupervised by. There is no
+  // fourth outcome to invent for it: `delivered` was never lying, it was
+  // answering C1 and C2 correctly about a frame that could not satisfy C3, and
+  // the honest repair is to stop writing such a frame rather than to add a state
+  // that describes having written one.
+  //
+  // FIRST, ahead of the kill switch, and that placement is deliberate rather
+  // than incidental. This is the only refusal here that is about the CALLER'S
+  // OWN ARGUMENT rather than about the state of the fleet, so it is the only one
+  // whose answer does not depend on a switch, a self-check or a map — and a
+  // caller holding meta this client will drop has a bug whether or not channels
+  // happen to be on. Reporting `channel-disabled` to it would send it to look at
+  // the fleet for a defect that is in its own call.
+  //
+  // **It does not weaken the gate ordering KAN-274 argues for.** That ordering
+  // exists so a shut gate cannot leak the identity map's contents; this branch
+  // reads neither the map nor the switch and reveals nothing about either — it
+  // reports back only what the caller itself passed in. Nothing is written on
+  // this path, which is the property the gate is actually protecting.
+  //
+  // In-process callers cannot reach this branch — `ChannelMeta` makes their
+  // mistake a compile error — which is deliberate: the assertion is here for
+  // `channel_send`'s wire input, whose `meta` arrives as parsed JSON typed
+  // `any`, and a caller that meets it has bypassed a type.
+  const unrenderable = unrenderableMetaEntries(meta);
+  if (unrenderable.length) {
+    return {
+      routed: false,
+      reason: 'meta-not-renderable',
+      detail:
+        `${describeAddress(address)}: nothing was written, because this client would have ` +
+        `accepted the frame and then dropped it in silence — ${unrenderable.join('; ')}. ` +
+        `Channel meta becomes attributes on the <channel> tag, so its values must be strings ` +
+        `(docs/channel-delivery.md). Stringify the value and send it again; a frame refused ` +
+        `here is one that would otherwise have been reported delivered and never arrived`
+    };
+  }
 
   // THE ORDER LIVES IN `carrierFor` AND IS CONSULTED, NOT REPEATED (KAN-274).
   // The gate is still read before the map — literally, not just in the answer:
