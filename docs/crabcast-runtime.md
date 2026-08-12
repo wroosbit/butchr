@@ -14,6 +14,24 @@ human's decision of 2026-08-08, which is not lifted. Claims about their
 behaviour are claims about observations, and
 `daemon/scripts/verify-crabcast-runtime-live.mjs` re-runs them.
 
+**Three sentences on this page are pinned to the constants they quote** — the
+two rows below and the `contractVersion` sentence under *What the contract does
+not hold*. Each carries an invisible marker naming the declaration and a digest
+of it, and `daemon/scripts/verify-doc-constant-pins.mjs` recomputes that digest
+on every pull request. Move `CRABCAST_PIN` or `CRABCAST_CONTRACT_VERSION`
+without moving these sentences and CI goes red (KAN-347). **Nothing else on this
+page is pinned**, and no other document is: that script's header states the
+scope and `docs/doc-constant-drift.md` states why it is this narrow.
+
+<!-- constant-pin: CRABCAST_PIN
+     src: daemon/src/crabcast-link.ts
+     sha256: 8b5c3f4072d9
+     says: **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` -->
+<!-- constant-pin: CRABCAST_CONTRACT_VERSION
+     src: daemon/src/crabcast-link.ts
+     sha256: 7a7595869bf0
+     says: **CrabCast read-path contract version:** **`4`** -->
+
 - **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` (KAN-294; was
   `7c6d97f` under KAN-278). Read off `daemon_status.build.commit` of a real
   daemon built at that commit, not off a notice.
@@ -388,7 +406,12 @@ refreshed.
 
 ### What the contract does not hold
 
-`contractVersion: 3` covers **`list_agents` and `agent_status`**. It does not
+<!-- constant-pin: CRABCAST_CONTRACT_VERSION
+     src: daemon/src/crabcast-link.ts
+     sha256: 7a7595869bf0
+     says: `contractVersion: 4` covers **`list_agents` and `agent_status`** -->
+
+`contractVersion: 4` covers **`list_agents` and `agent_status`**. It does not
 cover `activate_response`, and CrabCast disclosed that themselves — their
 KAN-287 is the ticket to bring it in. **`channelEnabled` is read from
 `activate_response`**, so it can change without moving the version and without
@@ -398,6 +421,13 @@ that script's own header rather than left to inference.
 
 The same holds, unmentioned by anybody until KAN-294, for the census: nothing
 promises `list_agents` will *not* grow the field, and nothing promises it will.
+
+**This paragraph opened `contractVersion: 3` until KAN-347**, which is the
+*second* place KAN-324's bump was never carried into the prose. KAN-283
+corrected the version row at the top of this page by hand and did not find this
+one — not carelessness, but the ordinary reach of a hand-correction: it fixes
+the sentence somebody was looking at. Both sentences are pinned now, which is
+the argument for the mechanism rather than for a third careful reader.
 
 ---
 
