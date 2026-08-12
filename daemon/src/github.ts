@@ -148,8 +148,68 @@ export const APPROVAL_JOB_CONTEXT = 'approval-gate';
 /** Whether an approval is recorded at this exact head. */
 export type ApprovalState = 'recorded' | 'not-recorded' | 'absent';
 
-/** Where a set of checks has got to, reduced to the four answers that matter. */
+/**
+ * Where a set of checks has got to, reduced to the four answers that matter.
+ *
+ * `'none'` IS NOT A TIDY SYNONYM FOR `'success'` AND THE DIFFERENCE COST A REAL
+ * NOTIFICATION (KAN-339). "No check has run at this head" and "every check at
+ * this head passed" are different states, and a rollup function that cannot tell
+ * them apart hands its caller a `'success'` nothing has earned. See
+ * {@link rollupOf} for the exact shape that produced one.
+ */
 export type CheckRollup = 'success' | 'failure' | 'pending' | 'none';
+
+/**
+ * What GitHub has managed to work out about merging this head, as a decision
+ * rather than as a string to be compared against a list of bad values.
+ *
+ * WHY THIS EXISTS RATHER THAN `mergeStateStatus !== 'DIRTY' && !== 'BEHIND'`
+ * (KAN-339, and it is the same defect as the paragraph above in a second field)
+ *
+ * `mergeStateStatus` is computed lazily. When a pull request's base moves,
+ * GitHub invalidates the answer and returns `UNKNOWN` until it has recomputed —
+ * which is a *gap in knowledge*, and a test written as "it is not one of the two
+ * bad values" reads that gap as good news. Measured on 2026-08-12: `#152` merged
+ * to `main` at 15:58:13Z, and 40 seconds later the watcher read `#153`'s head as
+ * not-stale and announced it ready to review. At 16:00:00Z GitHub finished
+ * recomputing and the same unchanged head read `DIRTY`.
+ *
+ * So the question is asked the other way round: which of GitHub's answers is a
+ * POSITIVE statement that this head can be merged? `CLEAN`, `BLOCKED` and
+ * `UNSTABLE` are — each of them means GitHub computed a merge and found no
+ * conflict, differing only in what else stands in the way. Everything else,
+ * including every value GitHub adds after this is written, is `'unknown'` and is
+ * treated as "we do not know", which is what it is.
+ */
+export type Mergeability = 'mergeable' | 'conflicted' | 'behind' | 'unknown';
+
+/**
+ * Classify `mergeStateStatus`. Unrecognised values are `'unknown'`, never
+ * `'mergeable'` — a vocabulary this file does not know is not a promise.
+ */
+export function mergeabilityOf(mergeStateStatus: string): Mergeability {
+  switch ((mergeStateStatus ?? '').toUpperCase()) {
+    // GitHub computed a merge commit and there is no conflict. The three differ
+    // only in what ELSE blocks the button, which is not this function's question:
+    //   CLEAN    — nothing blocks it.
+    //   BLOCKED  — a required check or review does. This is the ordinary state of
+    //              an unapproved pull request on this repository, because
+    //              `approval-recorded` is required and fails until approved, so
+    //              it is precisely the state `green-idle` is looking for.
+    //   UNSTABLE — a non-required check is red.
+    case 'CLEAN':
+    case 'BLOCKED':
+    case 'UNSTABLE':
+      return 'mergeable';
+    case 'DIRTY':
+      return 'conflicted';
+    case 'BEHIND':
+      return 'behind';
+    // UNKNOWN, DRAFT, HAS_HOOKS, '' and anything GitHub adds later.
+    default:
+      return 'unknown';
+  }
+}
 
 /** One pull request, as the watcher needs to see one. */
 export interface PullRequestSnapshot {
@@ -360,6 +420,35 @@ export function discoverRepos(
  * `pending`, and `pending` is deliberately not `failure` — announcing a red PR
  * because its checks had not finished would be the chattiness this ticket
  * forbids, arriving as a false alarm.
+ *
+ * ---------------------------------------------------------------------------
+ * AN EMPTY LIST AND AN EMPTIED LIST ARE THE SAME ANSWER (KAN-339)
+ * ---------------------------------------------------------------------------
+ *
+ * This function used to guard `!list.length` at the top and then fall through to
+ * `'success'` at the bottom whenever nothing had been pushed into `failing` and
+ * nothing was pending. Between those two lines it *removes* entries: both of the
+ * approval mechanism's contributions are read and set aside, for the good reason
+ * given at {@link APPROVAL_STATUS_CONTEXT}. So a rollup consisting only of the
+ * approval mechanism entered as non-empty, was emptied, and left as `'success'`.
+ *
+ * THE MEASURED CASE, which is the whole argument for the counter below. At
+ * `wroosbit/butchr#153`, head `514db76`:
+ *
+ *   gh api .../commits/514db76/check-runs  ->  total_count: 0
+ *   gh api .../commits/514db76/status      ->  ["approval-recorded"], failure
+ *
+ * One entry, and it is the approval status. The old code returned
+ * `checks: 'success'` for that, and the watcher composed *"has every other check
+ * green … nothing is blocking it except a review that has not happened"* about a
+ * pull request on which **no workflow had started at all**. `epic/KAN-203`'s
+ * words for the class: *nothing at all is a different shape from zero, and only
+ * the second is what a real absence looks like.*
+ *
+ * The fix is to count what was actually judged rather than to infer it from an
+ * empty failure list. `'success'` now requires at least one real check to have
+ * passed; the absence of a failure no longer stands in for the presence of a
+ * pass.
  */
 export function rollupOf(entries: any[] | null | undefined): {
   checks: CheckRollup;
@@ -367,12 +456,17 @@ export function rollupOf(entries: any[] | null | undefined): {
   approval: ApprovalState;
 } {
   const list = Array.isArray(entries) ? entries : [];
-  if (!list.length) return { checks: 'none', failingChecks: [], approval: 'absent' };
 
   const green = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
   const failing: string[] = [];
   let pending = false;
   let approval: ApprovalState = 'absent';
+  /**
+   * How many entries were judged as checks — i.e. survived the approval
+   * exclusions. Zero of them is `'none'` whether the list arrived empty or was
+   * emptied here, which is the point.
+   */
+  let judged = 0;
 
   for (const entry of list) {
     const name =
@@ -393,6 +487,8 @@ export function rollupOf(entries: any[] | null | undefined): {
       continue;
     }
     if (name === APPROVAL_JOB_CONTEXT) continue;
+
+    judged++;
 
     if (typeof entry?.state === 'string') {
       // A StatusContext: one field, already terminal or not.
@@ -418,6 +514,11 @@ export function rollupOf(entries: any[] | null | undefined): {
   // approval-gate" is a notice nobody trusts.
   if (failing.length) return { checks: 'failure', failingChecks: [...new Set(failing)].sort(), approval };
   if (pending) return { checks: 'pending', failingChecks: [], approval };
+  // Ordered after `failure` and `pending` deliberately: those two are positive
+  // observations and `judged` cannot be zero when either holds. This last line
+  // is the only one that can be reached with nothing having been judged, and
+  // `'success'` is not what nothing having been judged means.
+  if (!judged) return { checks: 'none', failingChecks: [], approval };
   return { checks: 'success', failingChecks: [], approval };
 }
 
