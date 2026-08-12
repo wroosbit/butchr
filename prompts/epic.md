@@ -655,30 +655,23 @@ changes the design, update the page to match; when it changes an invariant,
 update the description. A design doc describing the system as it *was* is worse
 than none, because it is believed.
 
-#### A page write can report success and silently drop content
+#### The page write is the case where this bites hardest
 
-**The response's `success` is a claim about the request, not about the page.**
-On 2026-08-05, version 1 of this epic's design-doc page saved successfully
-while dropping an invariant, a constraints bullet, and every entry of its
-entire *Open — what is not yet true* section, which came back from the API as
-an empty `<li><p /></li>`. Nothing errored. It was caught only because the
-agent re-read the stored body instead of trusting the response — uncaught, the
-page would have shipped missing an honesty invariant and its whole
-what-is-not-yet-true section, which is a document that reads finished and is
-not.
+**A write that reports success is not a write that stored what you sent** —
+that rule is under *Norms* below and it governs every write you make. It is
+worth naming here because the design doc is the write it costs most. On
+2026-08-05, version 1 of this epic's design-doc page saved successfully while
+dropping an invariant, a constraints bullet, and every entry of its entire
+*Open — what is not yet true* section, which came back from the API as an empty
+`<li><p /></li>`. Nothing errored. Uncaught, the page would have shipped
+missing an honesty invariant and its whole what-is-not-yet-true section, which
+is a document that reads finished and is not — and a design doc that reads
+finished is exactly the one nobody re-reads.
 
-So **after every page write, read the page back and compare the stored body
-against what you sent** — `getConfluencePage` with `body.storage`, then check
-that each section you wrote is present and non-empty. The known trigger is a
-**blockquote nested inside a list item** under `contentFormat: "markdown"`: it
-violates ADF nesting, and the converter drops the whole list item rather than
-rejecting the request. The dropping converter is Atlassian's and there is
-nothing here to fix; what is ours is checking. `prompts/confluence.md` carries
-the same recipe for the agents whose whole job is a page.
-
-Note the shape rather than filing it as a new kind of hazard: it is the third
-instance of the one the prompts already teach twice for `butchr_send_to_agent`
-— **a success that reports the call was made, not that the thing happened.**
+So after every page write, read the page back with `getConfluencePage` and
+`body.storage` and check each section you wrote is present and non-empty.
+`prompts/confluence.md` carries the full recipe, for the agents whose whole job
+is a page.
 
 Keep an honest **"what is not yet true"** section on the page. Where the doc
 describes a target the code has not reached, say so plainly. This is the only
@@ -1317,6 +1310,45 @@ token is cheap, and a transcript cannot be un-written.
 *Credentials stop at the daemon* is one of KAN-39's invariants, and the daemon
 enforces its half in code. A transcript is the leg nothing enforces: it is how
 a credential gets past that boundary without anybody writing a line of code.
+
+### A write that reports success is not a write that stored what you sent
+
+**Read it back and compare.** A `200`, or a `success: true`, is a claim about
+the **request** — that it arrived, parsed, and was authorised. It is not a claim
+about what the far side now holds. Every write here is converted before it is
+stored, by a converter you do not control, and one that silently reshapes or
+drops your content answers exactly as one that stored it verbatim. So after any
+write you will be held to — a ticket comment, an issue description, a page —
+read the stored body back and compare it against what you sent, section by
+section: every heading present, no list item empty, the counts matching.
+
+**This is not a Confluence rule.** Comments are where most of this board's
+writing happens, and they are how you approve a PR, how you close a ticket, and
+how the next agent learns what you decided. A dropped bullet in an approval
+comment is a governance failure wearing the costume of a typo.
+
+**Two instances, cited as instances and not as the rule.** On 2026-08-12 an
+`addCommentToJiraIssue` with `contentFormat: "markdown"` stored one of three
+probe markers and dropped the other two, including a list item's own text —
+status 200, no warning, and what came back reads as clean prose (comment
+`11611` on KAN-39, left in place). On 2026-08-05 a Confluence page write came
+back missing an invariant, a bullet and an entire section. **Neither converter
+is the rule, and that is deliberate**: a rule written around one defect dies
+when that defect is fixed, leaving an instruction nobody can account for. What
+survives every fix is the class.
+
+**The read-side face of the same claim: an answer about a subset is not an
+answer about the whole.** A paginated read tells you it was truncated and does
+nothing to stop you ignoring it — `epic/KAN-203` took 5 of 50 tickets off a JQL
+search on 2026-08-11 with `hasNextPage: true` sitting in the response, one read
+away from reporting five tickets as the whole board. Read the completeness
+fields a surface gives you — `pageInfo.hasNextPage`, `remainingCount` — for the
+same reason you re-read a write.
+
+Note the shape rather than filing either half as a new kind of hazard: it is
+the one this file already teaches for `butchr_send_to_agent` — **a success that
+reports the call was made, not that the thing happened.** When a response
+asserts something about the world, verify the world.
 
 ### Closing a won't-do
 

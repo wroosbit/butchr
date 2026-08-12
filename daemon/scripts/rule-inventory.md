@@ -102,7 +102,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-2` — KAN-186 — the self-paced supervision loop, distinguished from the daemon poller
 - `H-3` — KAN-186 — secrets never enter a transcript
 - `H-4` — KAN-186 — re-check the justification at the moment of starting, not at approval
-- `H-5` — KAN-186 — a page write's `success` is a claim about the request, not about the page
+- `H-5` — KAN-186, generalised by KAN-334 — a write that reports success is not a write that stored what you sent; read it back and compare
 - `H-7` — KAN-186 — a handoff describing future work is a plan, not evidence that it happened
 - `H-8` — KAN-237 — merge governance (2026-08-08): the story agent approves, the task agent merges
 - `H-9` — KAN-237 — an older ticket's standing rules are stale; the prompt wins
@@ -121,6 +121,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-22` — KAN-314 — a proof run after a failed build, or over a stale `dist`, is a verdict about the old build
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
+- `R-3` — KAN-334 — retired: the workaround telling agents to avoid nesting a blockquote in a list item
 <!-- INVENTORY:END -->
 
 ## Removed from the inventory

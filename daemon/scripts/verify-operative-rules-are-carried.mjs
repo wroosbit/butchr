@@ -352,17 +352,43 @@ const RULES = [
     ),
   },
   {
+    // KAN-334 generalised this entry out of the page. It used to be a
+    // *Confluence page write* rule carried by three prompts, and `prompts/
+    // story.md` carried nothing — while the write every agent here actually
+    // makes, all day, is a **Jira comment**. Measured 2026-08-12:
+    // `addCommentToJiraIssue` with `contentFormat: "markdown"` stored one of
+    // three probe markers and dropped two, including a list item's own text,
+    // status 200 (comment `11611` on KAN-39). So the rule was right, homed in
+    // one place, and absent from the surface it mattered most on.
+    //
+    // THE PATTERNS DELIBERATELY NO LONGER REQUIRE THE MECHANISM, and that is
+    // the point of the ticket rather than a relaxation of the check. Requiring
+    // `<li><p /></li>` and `blockquote nested inside a list item` made this
+    // sweep the thing that kept a dated converter defect alive in four prompts
+    // — a required check enforcing precisely what R-3 below now forbids. Each
+    // prompt still *cites* those instances, with their dates; none may state
+    // them as the rule, and nothing here obliges one to keep them. What is
+    // required is the claim and the act it asks for.
     id: 'H-5',
-    title: "a page write's `success` is a claim about the request, not about the page",
+    title: 'a write that reports success is not a write that stored what you sent — read it back and compare',
     carriedBy: {
+      ...Object.fromEntries(
+        PROMPTS.map((f) => [
+          f,
+          [
+            /reports success is not a write that stored what you sent/i,
+            /read (it|the (stored )?(body|page)) back and compare/i,
+          ],
+        ])
+      ),
+      // The page agent additionally owes the *recipe* — reading it back is its
+      // job rather than a step in someone else's, and the other three prompts
+      // point at this file for it.
       'prompts/confluence.md': [
-        /verify what was stored/i,
+        /reports success is not a write that stored what you sent/i,
+        /read (it|the (stored )?(body|page)) back and compare/i,
         /getConfluencePage/,
-        /<li><p \/><\/li>/,
-        /blockquote nested inside a list item/i,
       ],
-      'prompts/epic.md': [/page write can report success and silently drop content/i, /<li><p \/><\/li>/],
-      'prompts/task.md': [/verify what was stored/i, /<li><p \/><\/li>/],
     },
   },
   {
@@ -1199,6 +1225,49 @@ const RETIRED = [
       // A bare /supervisor/ would fire on those and be "fixed" by deleting them.
       /\bDone\b[^.]{0,80}\byour supervisor'?s?\b/i,
       /\byour supervisor'?s\b[^.]{0,30}\bto set\b/i,
+    ],
+  },
+  {
+    // KAN-334. The workaround, never the rule. *"Do not nest a blockquote
+    // inside a list item"* was true of one converter on 2026-08-05, and
+    // `prompts/confluence.md` instructed it until this ticket — step 4 of its
+    // recipe told an agent to *"un-nest the offending block (promote the
+    // blockquote to a sibling paragraph, or flatten the list)"*.
+    //
+    // It is retired from `prompts/` because it carries a date, and `epic/
+    // KAN-203`'s founding-rule test is what settles that: *"an instruction
+    // carrying a date loses it when written into a permanent home, and nobody
+    // re-examines an invariant, so it goes unquestioned and load-bearing at
+    // once. Ask of any invariant: is there a date hiding in this?"* Six months
+    // on, this one is a prompt forbidding a structure that works, nobody knows
+    // why it is there, and removing it means proving a negative. H-5 is what
+    // replaces it: it asks an agent to **check**, and checking outlives every
+    // converter that will ever be at fault.
+    //
+    // THE PATTERNS MATCH THE INSTRUCTION FORM ONLY, and that limit is the whole
+    // design of this entry rather than a shortfall in it. All four prompts
+    // still cite the 2026-08-05 page loss and the 2026-08-12 Jira probe as
+    // **instances**, with their dates, and a citation is exactly what this
+    // ticket ruled allowed. So nothing below fires on a described symptom — a
+    // dropped list item, an empty `<li><p /></li>`, a signature worth grepping
+    // for. Every pattern is an imperative aimed at the shape of the markdown
+    // the agent is about to send.
+    //
+    // WHICH MEANS A GREEN R-3 IS NOT "NO PROMPT TEACHES THE WORKAROUND", for
+    // the same structural reason R-2's docblock gives: a paraphrase passes.
+    // What covers the class is a reviewer reading the prompt diff. Nothing
+    // else does; do not infer that anything else does.
+    id: 'R-3',
+    title: 'the 2026-08-05 workaround: avoid nesting a blockquote inside a list item',
+    since: '2026-08-12',
+    patterns: [
+      /(do|does) not nest (a )?blockquotes?/i,
+      /never nest (a )?blockquotes?/i,
+      /avoid nesting (a )?blockquotes?/i,
+      /(promote|lift|move|raise) the blockquote to a sibling/i,
+      /un-?nest the offending/i,
+      /keep (your |the )?quotes? at (the )?top level/i,
+      /blockquotes? (must|should) not (be nested|sit) (in|inside|within)/i,
     ],
   },
 ];
