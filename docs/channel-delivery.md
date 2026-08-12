@@ -69,6 +69,39 @@ attribute. `source` is set automatically from the server's configured name. Meta
 keys **must be identifiers** — *"Keys containing hyphens or other characters are
 silently dropped."*
 
+> **Measured, and the reference's word "identifier" is not quite the rule
+> (KAN-325, claude-code `2.1.228`).** This sentence sat here unreproduced from
+> 2026-08-07 until KAN-319 read it as authoritative — correctly — while fixing
+> the neighbouring *value* case, and filed KAN-325 rather than trusting it
+> further. It reproduces. Fourteen key shapes were fired at one live agent's
+> connection, every frame reported `success: true`, and the recipient quoted back
+> what reached its own context:
+>
+> | rendered | dropped |
+> | --- | --- |
+> | `probeShape` `controlKey` `snake_key` `key2` `_leading` `KEY_NAME` | `hyphen-key` `dot.key` `1leading` `space key` `$dollar` `mid$dollar` `ns:key` `kéy` `""` |
+>
+> So the class is exactly **`/^[A-Za-z_][A-Za-z0-9_]*$/`**. Read *"identifier"*
+> loosely and you get one case wrong in the permissive direction: **`$` is a legal
+> JavaScript identifier character and is dropped**, leading and mid-key alike. A
+> leading digit is dropped; a trailing one is kept. Non-ASCII is dropped. The
+> empty key is dropped.
+>
+> **The loss is partial, and that is the whole difference from the value case.**
+> All fourteen frames *arrived* — body intact, every other attribute intact, minus
+> the offending one. A bad meta **value** costs the entire frame ([KAN-319]); a bad
+> meta **key** costs one attribute. The daemon therefore treats them oppositely and
+> deliberately: it *refuses* to write a frame with a bad value, and it *writes*
+> a frame with a bad key while naming the lost keys back to the sender — refusing
+> there would trade a measured partial loss for a certain total one. See
+> `ChannelMetaKey` and `undeliverableMetaKeys` in `daemon/src/channel.ts`, and
+> `daemon/scripts/verify-channel-meta-renderable.mjs` §4.
+>
+> This is a claim about `2.1.228` and about nothing else. Channels are a research
+> preview; if the contract moves, this table is what has to be re-measured.
+
+[KAN-319]: https://wroosbit.atlassian.net/browse/KAN-319
+
 Optional additions:
 
 | Field | Purpose |
