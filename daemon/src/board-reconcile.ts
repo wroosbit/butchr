@@ -156,12 +156,29 @@ import {
  * was already written one section up.
  *
  * On 2026-08-12 `KAN-203` sat In Progress with `assignee: null`. This loop
- * concluded no agent should exist for it and stood down the running supervisor
- * once every sixty seconds for about forty-five minutes. The human restarted it
- * by hand roughly eight times and was the only instrument that noticed — the
- * guardian that reports agents dying was the agent being killed. KAN-256 had
- * met the same field two days earlier and repaired the *sentence*, which was
- * careful, correct work that left the behaviour exactly where it stood.
+ * concluded no agent should exist for it and stood the running supervisor down
+ * once every sixty seconds for as long as that lasted. The human restarted it
+ * by hand and was the only instrument that noticed — the guardian that reports
+ * agents dying was the agent being killed. KAN-256 had met the same field two
+ * days earlier and repaired the *sentence*, which was careful, correct work
+ * that left the behaviour exactly where it stood.
+ *
+ * Read off KAN-203's Jira changelog rather than recalled, and it is the whole
+ * of what that changelog can say:
+ *
+ *     2026-08-12T11:05:31Z  assignee  "Wroos Bit" -> null
+ *     2026-08-12T11:24:01Z  assignee  null -> "Wroos Bit"      (18m 30s later)
+ *
+ * Two entries, and the issue has five in its whole history, so **the field was
+ * empty exactly once and for eighteen and a half minutes** — KAN-342 estimates
+ * about forty-five, and the changelog is the better witness. Roughly eighteen
+ * cycles, which fits the eight hand restarts the ticket records better than
+ * forty-five would. **The author reads `Wroos Bit` on both**, which identifies
+ * nobody: every agent reaches Jira through the human's account, and Butchr's
+ * `[authorship]` records cover comments only. That is the same structural hole
+ * KAN-256 hit and it is unchanged — which is exactly why nothing below depends
+ * on who emptied the field, on whether it was deliberate, or on it being put
+ * back.
  *
  * THE DISTINCTION, AND IT IS THE WHOLE CHANGE
  *
