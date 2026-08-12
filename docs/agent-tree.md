@@ -191,6 +191,13 @@ components, and prints the tree, the assertions, and a census of every agent on
 the page with the number of switches it has. It also writes `tree.html`: static
 markup, no scripts, screenshottable anywhere.
 
+That render goes to a temp directory outside the repository unless you pass an
+`outDir`, and the run prints the full path. It used to default to
+`extension/kan81-render/`, which committed a checked-in copy to the repository —
+KAN-326 has the account of what that cost, and
+`extension/scripts/verify-render-writes-outside-the-tree.mjs` is what keeps the
+default where it is.
+
 The payload is synthetic because the daemon does not send the field yet. That is
 the intended proof for this half rather than a stand-in for one — the wire
 contract is the specification, and this script is the first thing that consumes
