@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 72 |
+| `yes` | 73 |
 | `partial` | 7 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **96** |
+| **total** | **97** |
 
-**79 of 96** run on every pull request.
+**80 of 97** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -76,6 +76,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-channel-spawn-verdict` | yes | imports the built daemon modules, stages its own $HOME and its own unix socket in temporary directories, and needs no herdr, no pty, no network and no CrabCast. Section 3 creates and removes two probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-channel-startup-supervision` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ci-partition-is-enforced` | yes | builds its fixtures in a temporary directory and reads `ci.yml` and the script headers off the checkout; node builtins only, no build, no daemon, no herdr, no credential, no network. |
+| `verify-ci-set-guards-tree-writes` | yes | it builds a throwaway git repository under `os.tmpdir()` and spawns the copied runner in it. No live daemon, no herdr, no credential, no peer, no terminal, no network; the only external binary is `git`, which the checkout already requires. It does not run this repository's own verify set, so it does not run the set from inside the set. |
 | `verify-confluence-workspaces` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cost-estimate-plausibility` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
