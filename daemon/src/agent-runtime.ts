@@ -2,6 +2,7 @@ import type { McpServerDefinitions } from './integrations/integration.js';
 import type { ResumeCause } from './resume.js';
 import type {
   AgentPresence,
+  CensusReading,
   HerdrAgentDescription,
   HerdrAgentRecord,
   HerdrAgentStatus,
@@ -201,10 +202,16 @@ export interface AgentRuntime {
   listHerdrAgents(): HerdrAgentRecord[];
 
   /**
-   * `listHerdrAgents` plus whether the census could be taken. Callers that
-   * must distinguish "no agents" from "could not ask" use this one.
+   * `listHerdrAgents` plus whether the census could be taken **and what it
+   * could not read**. Callers that must distinguish "no agents" from "could not
+   * ask" — or a whole fleet from a silently short one — use this one.
+   *
+   * The return type is named ({@link CensusReading}) rather than inlined so
+   * that its qualifier is not something an implementation can quietly omit:
+   * see that type for why `unreadableRecordsTotal` is required and why its
+   * `null` must not be collapsed to `0`.
    */
-  listHerdrAgentsChecked(): { reachable: boolean; agents: HerdrAgentRecord[] };
+  listHerdrAgentsChecked(): CensusReading;
 
   listHerdrStatuses(): Map<string, HerdrAgentStatus>;
 

@@ -6,8 +6,17 @@ import { JiraIssueTypeService } from './jira.js';
 import { LaunchDarklyIntegration } from './integrations/launchdarkly.js';
 import { Integration, McpServerDefinitions } from './integrations/integration.js';
 import { coreMcpServerDefinitions } from './launchers.js';
+// `HerdrSession` stays the FIRST name in this import, on the line directly
+// below the brace. `verify-agent-runtime-seam.mjs` §1 reverts the runtime seam
+// by textually replacing `import {\n  HerdrSession,` here, and anything between
+// the brace and that name — another import, or a comment like this one —
+// silently defeats the revert. The proof then reports the required check as red
+// when its whole point is that the check is green and blind. Caught by that
+// script during KAN-324, twice; hence this note being out here rather than in
+// there.
 import {
   HerdrSession,
+  CensusReading,
   HerdrAgentDescription,
   HerdrAgentRecord,
   HerdrAgentStatus,
@@ -4204,7 +4213,7 @@ export class MessageRouter {
    * dropping them would repeat the mistake this handler exists to fix.
    */
   private handleListAgents(data: any, respond: Respond) {
-    const { agents, unbackedPanes, staleSessions } = this.surveyAgents();
+    const { agents, unbackedPanes, staleSessions, census } = this.surveyAgents();
 
     // Agents that should be here and are not. Computed from the same census the
     // list is built from, so the two can never disagree about what is running.
@@ -4282,6 +4291,29 @@ export class MessageRouter {
       // agents are missing" from "this daemon does not track that" cannot do it
       // from an absent field. Empty array means the fleet is whole.
       missingAgents,
+      // What the census could not read, beside the list it qualifies (KAN-324).
+      //
+      // **`agents` above is a count, and this is what says whether that count
+      // is whole.** The runtime's census answers a shorter list with nothing
+      // marking it short whenever a registry row could not be read — since
+      // CrabCast's KAN-302 an unreadable row makes their daemon skip rather
+      // than refuse to start, so `agents: []` is byte-for-byte what an empty
+      // fleet reads. Measured on this machine at the time of writing:
+      // `configuredAgents: 0` with `unreadableRecordsTotal: 1`.
+      //
+      // Adjacent to the count rather than in a log line, for the reason the
+      // whole ticket exists: a disclosure nobody reads is the same as no
+      // disclosure, and the caller deciding what the fleet *is* is reading
+      // this response. Same rule as `missingAgents` above — always present,
+      // never absent.
+      //
+      // **`null` is not `0` and a client must not render it as one.** `0` says
+      // the census was taken and skipped nothing, which is what makes the agent
+      // count trustworthy. `null` says no disclosure reached this daemon — the
+      // census could not be taken, or the peer is below read-path contract v4 —
+      // and the count above may be short with nothing here to say so.
+      censusUnreadableRecordsTotal: census.unreadableRecordsTotal,
+      censusUnreadableRecords: census.unreadableRecords,
       // Work that was taken off the machine to make room for something more
       // important, and has not been put back. Always present, empty when
       // nothing is owed — a caller distinguishing "nothing was preempted" from
@@ -4778,8 +4810,20 @@ export class MessageRouter {
     agents: ListedAgent[];
     unbackedPanes: UnbackedPane[];
     staleSessions: Set<string>;
+    /**
+     * What the census could not read, carried out of here rather than re-asked
+     * for downstream (KAN-324).
+     *
+     * A second `listHerdrAgentsChecked()` in `handleListAgents` would be a
+     * second census, taken a moment later, and the response would then pair an
+     * agent list with a disclosure about a *different* reading — which is the
+     * defect the qualifier exists to prevent, reassembled out of two honest
+     * halves. One reading in, one reading out.
+     */
+    census: CensusReading;
   } {
-    const { reachable, agents: herdrAgents } = this.herdrBridge.listHerdrAgentsChecked();
+    const census = this.herdrBridge.listHerdrAgentsChecked();
+    const { reachable, agents: herdrAgents } = census;
     const byName = new Map<string, HerdrAgentRecord>(herdrAgents.map(a => [a.name, a]));
     const statuses = new Map(herdrAgents.map(a => [a.name, a.herdrStatus]));
 
@@ -4893,7 +4937,7 @@ export class MessageRouter {
       });
     }
 
-    return { agents, unbackedPanes, staleSessions };
+    return { agents, unbackedPanes, staleSessions, census };
   }
 
   /**

@@ -19,6 +19,7 @@
 import type { AgentRuntime, AgentSpawn } from '../src/agent-runtime.js';
 import type {
   AgentPresence,
+  CensusReading,
   HerdrAgentDescription,
   HerdrAgentRecord,
   HerdrAgentStatus,
@@ -116,8 +117,11 @@ class StubRuntime implements AgentRuntime {
     return [];
   }
 
-  listHerdrAgentsChecked(): { reachable: boolean; agents: HerdrAgentRecord[] } {
-    return { reachable: false, agents: [] };
+  listHerdrAgentsChecked(): CensusReading {
+    // `null` rather than `0`: this stub takes no census, so it has nothing to
+    // disclose about one. `0` would be a claim that a reading happened and
+    // found nothing skipped — see CensusReading.
+    return { reachable: false, agents: [], unreadableRecordsTotal: null, unreadableRecords: [] };
   }
 
   listHerdrStatuses(): Map<string, HerdrAgentStatus> {

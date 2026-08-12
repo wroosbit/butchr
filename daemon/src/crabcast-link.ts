@@ -72,12 +72,37 @@ import path from 'path';
 export const CRABCAST_PIN = '8d7348fa98201b61642d2454b3a797373361128a';
 
 /**
- * `daemon_status.contractVersion` this adapter was proved against (KAN-294).
+ * `daemon_status.contractVersion` this adapter was proved against (KAN-294,
+ * moved 3 → 4 by KAN-324).
  *
  * CrabCast's read-path contract (their KAN-277, `fe9ec80`) puts a version on the
  * wire and documents `list_agents` and `agent_status` field by field. It was
  * `3` at {@link CRABCAST_PIN} — read off a real daemon at that build, not off
  * their notice.
+ *
+ * ## Why this is 4, and what "proved against" had to mean to move it
+ *
+ * v4 is **mechanically additive**: one new row shape (`UnreadableRecord`) and
+ * two new fields — `unreadableRecords` and `unreadableRecordsTotal` — on
+ * `list_agents` and `daemon_status`. Nothing changed meaning or type, nothing
+ * was removed, and `agent_status` is untouched. A consumer ignoring both fields
+ * reads exactly what it read at v3 and is not *wrong*.
+ *
+ * **It is not therefore neutral for us**, which is the whole of KAN-324. Their
+ * KAN-302 changed a registry row this daemon cannot read from *refuse to start*
+ * into *start and skip*, so at v3 `list_agents` cannot distinguish a fully-read
+ * registry from a silently short one: `agents: []` with one row skipped is
+ * byte-for-byte what an empty registry reads. Measured on this machine at the
+ * bump, against a peer at `6258ded`: `configuredAgents: 0, expectedAgents: 0,
+ * unreadableRecordsTotal: 1`.
+ *
+ * So this number was moved **only after the census started reading both new
+ * fields** — {@link CrabCastRuntime.readCensus} — and the move is proved by
+ * `daemon/scripts/verify-crabcast-census-disclosure.mjs`, which exercises the
+ * fields rather than asserting the constant. **A version constant bumped
+ * without reading the new fields would reproduce KAN-324 one release later**,
+ * with a green check on top: that is the failure this paragraph exists to name,
+ * and it is why the proof is named here beside the number.
  *
  * **Recorded and reported, never enforced**, for the same reason the pin is:
  * refusing on a version bump would be Butchr pressuring their release cadence.
@@ -93,7 +118,7 @@ export const CRABCAST_PIN = '8d7348fa98201b61642d2454b3a797373361128a';
  * number and without going red in their CI. {@link CrabCastRuntime} reads
  * `channelEnabled` from exactly there, and says so at its own call site.
  */
-export const CRABCAST_CONTRACT_VERSION = 3;
+export const CRABCAST_CONTRACT_VERSION = 4;
 
 /** Where a stock CrabCast puts its socket, per its own README. */
 export function defaultCrabCastSocket(): string {

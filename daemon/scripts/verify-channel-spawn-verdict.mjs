@@ -469,9 +469,16 @@ check(
   'CRABCAST_PIN is 8d7348f — the commit the three landings are at',
   CRABCAST_PIN
 );
+// Moved 3 → 4 by KAN-324, and the sentence moved with it because the number on
+// its own says nothing. v4 added `unreadableRecords`/`unreadableRecordsTotal` to
+// `list_agents`, and the constant was only allowed to move once the census
+// actually read them — a bump without that reproduces the defect one release
+// later with a green check on top. What proves the reading is
+// `verify-crabcast-census-disclosure.mjs`; what this line still pins is that
+// nobody moves the number again without going through it.
 check(
-  CRABCAST_CONTRACT_VERSION === 3,
-  'CRABCAST_CONTRACT_VERSION is 3 — read off a real daemon at that build',
+  CRABCAST_CONTRACT_VERSION === 4,
+  'CRABCAST_CONTRACT_VERSION is 4 — the v4 fields are read, not just the number bumped (KAN-324)',
   String(CRABCAST_CONTRACT_VERSION)
 );
 
