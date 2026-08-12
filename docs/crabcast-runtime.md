@@ -17,8 +17,12 @@ behaviour are claims about observations, and
 - **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` (KAN-294; was
   `7c6d97f` under KAN-278). Read off `daemon_status.build.commit` of a real
   daemon built at that commit, not off a notice.
-- **CrabCast read-path contract version:** `3`, read off `daemon_status.contractVersion`
-  at the same build. **It covers `list_agents` and `agent_status` and nothing
+- **CrabCast read-path contract version:** **`4`**, which is what
+  `CRABCAST_CONTRACT_VERSION` in `crabcast-link.ts` actually pins. **This line
+  read `3` until KAN-283** — KAN-324 bumped the constant to consume
+  `unreadableRecordsTotal` and did not bump the prose, so the document was one
+  version behind the code it describes. Corrected by reading the constant rather
+  than the sentence. **It covers `list_agents` and `agent_status` and nothing
   else** — see *What the contract does not hold* below.
 - **Butchr commit these line numbers were read at:** the branch of KAN-294.
 
@@ -28,8 +32,11 @@ confessing to.** The `tail_agent` observations — the ruling table's row 18, th
 `tail_agent_response` entry under *The fields this runtime branches on*, and the
 `sourcesTried` vocabulary match — come from a live daemon answering
 `build.commit: 6f47df7d05ebcb8593469c740d7b6dc2aa149b13` with
-`contractVersion: 6`. **That is three contract versions past the pin above**, and
+`contractVersion: 6`. **That is two contract versions past the `4` we pin**, and
 it was what happened to be running on this machine rather than something chosen.
+`verify-crabcast-runtime-live.mjs` §4b reports it as a failure — `{"peer":6,
+"pinned":4}` — which is the instrument working: that assertion exists to notice
+exactly this, and it fails identically on `main` against this daemon.
 
 So: **those claims are claims about `6f47df7d`, not about `8d7348f`.** They are
 marked as such where they appear. The pin has deliberately **not** moved —
