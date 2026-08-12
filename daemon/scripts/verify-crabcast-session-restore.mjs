@@ -48,15 +48,28 @@
 //
 // ── DRIVING IT RED (AC5) ───────────────────────────────────────────────────
 //
-// Two mutations, because two independent mechanisms are being asserted and one
-// mutation would leave the other untested:
+// Four mutations, because four independent mechanisms are being asserted and
+// any one mutation leaves the others green — which is the evidence that they
+// ARE independent, not merely the cost of driving them separately:
 //
 //   1. `adoptFromCensus` — comment out the `this.adoptFromCensus()` call in
-//      `startCensus`. Sections 2 and 5 go red; that is the restart repair.
-//   2. `recordedUrlFor` — make it `return undefined`. Section 3 goes red; that
-//      is the durable url.
+//      `startCensus`. Sections 2, 4 and 5 go red; 1 and 3 stay green. The most
+//      informative line of that red is the reuse check, which reports
+//      `spawnSession returned "…-1786543884695" (initializing)` — a NEW id, on
+//      the wire, starting the agent fresh. That is the conversation-destroying
+//      path, shown rather than described.
+//   2. `recordedUrlFor` — make it `return undefined`. Section 3's two report
+//      checks go red while "the registry stored the url verbatim" stays green,
+//      which localises the defect to the read side. Sections 2 and 5 stay green.
+//   3. `censusRecords` — put `name: row.paneName` back. Section 1 goes red and
+//      nothing else does, because adoption addresses rows by path rather than
+//      by name.
+//   4. Section 5's own leftover guard — leave a probe agent running at
+//      `KAN346_PROBE_KEY` and re-run. The guard refuses the section instead of
+//      absorbing the reuse. This one was written FROM a real failure rather
+//      than for one; see the comment at the guard.
 //
-// Both transcripts are on the pull request. Per KAN-314, confirm the build
+// All four transcripts are on the pull request. Per KAN-314, confirm the build
 // exited 0 by a route that reports it before reading ANY verdict below — **this
 // script imports from `dist`**, so after a failed build it is testing the
 // previous build and both outcomes mislead.
@@ -300,6 +313,35 @@ await section('2. adoption — a session re-forms for an agent CrabCast still ho
     );
   }
 
+  // ── AN ADOPTED SESSION MUST BE REUSED BY A LATER ACTIVATE, NOT RESPAWNED ──
+  //
+  // This is the assertion with the most at stake in the whole script, and it is
+  // about a conversation rather than a field. An activate against an agent that
+  // is already running must return the session we hold; if adoption did not
+  // populate the session map, `spawnSession` would instead reach for
+  // `configure_agent` + `activate_agent` — which starts the agent FRESH.
+  // `task/KAN-275` was lost exactly that way at the 10:58Z flip: CrabCast
+  // listed it under unstarted agents with "activating starts FRESH", so it was
+  // gone rather than paused, and its PR had to be merged by a non-author.
+  //
+  // Safe against a fake peer precisely BECAUSE it must not touch the wire:
+  // `spawnSession` returns the live session before any request is made. A build
+  // where adoption is gone does reach the socket here, and the fake answers no
+  // `configure_agent`, so the session stays `initializing` and this check fails
+  // rather than hanging.
+  {
+    const { type, key } = OWNED[0];
+    const held = runtime.getSessionByAddress(key, type);
+    const again = runtime.spawnSession(type, key, undefined, 'must not respawn', 'shell');
+    check(
+      !!held && again.sessionId === held.sessionId && again.status === 'active',
+      'an activate against an adopted agent REUSES it — it does not start it fresh',
+      `spawnSession returned ${JSON.stringify(again.sessionId)} (${again.status}) where the ` +
+        `adopted session is ${JSON.stringify(held?.sessionId)}. A new id here is a conversation ` +
+        `destroyed, which is how task/KAN-275 was lost.`
+    );
+  }
+
   // A foreign pane is NOT adopted, and that is the line the whole design rests
   // on: no sessionId on the row means nothing addresses its pty.
   const foreign = CENSUS.foreignPanes[0];
@@ -507,6 +549,36 @@ await section('5. LIVE — a real CrabCast, a real restart, a real pty', async (
 
   const { runtime: first } = createAgentRuntime({ log: () => {} });
   await until(() => first.herdrReachable(), 8_000);
+
+  // ── A LEFTOVER PROBE MAKES THIS SECTION LIE, SO IT IS REFUSED RATHER THAN
+  // ── ABSORBED, AND THIS GUARD IS HERE BECAUSE IT ALREADY HAPPENED
+  //
+  // The first green run after the red drives printed
+  // `spawned session task-kan-346-live-probe-1786542591553, url undefined` —
+  // an adoption id, and a url this call had just passed. A probe agent left
+  // running by an earlier red drive had been adopted on the first census tick,
+  // and `spawnSession` then correctly reused that session instead of starting
+  // anything. **Every assertion below still passed**, describing a restart
+  // repair for an agent this section never spawned. That is this ticket's own
+  // house defect wearing the proof as a costume: an artifact whose sentence
+  // claims more than its mechanism covers, degrading toward looking finished.
+  //
+  // Reuse is the RIGHT behaviour — it is what stops an activate restarting a
+  // live agent and losing its conversation, which is how `task/KAN-275` died —
+  // so the fix is not to change it but to refuse to call it a spawn.
+  const already = first.getSessionByAddress(KEY, TYPE);
+  if (already) {
+    bad(
+      `${TYPE}/${KEY} is already running, so this section cannot spawn one`,
+      `a session for it already exists (${already.sessionId}, adopted=${already.adopted}). ` +
+        `spawnSession would REUSE it and every check below would pass while proving nothing ` +
+        `about a spawn. Clear the leftover and re-run:\n` +
+        `         crabcast deactivate ${workDir} && crabcast forget ${workDir}`
+    );
+    first.dispose();
+    return;
+  }
+
   const spawned = first.spawnSession(TYPE, KEY, URL, 'KAN-346 live restore probe.', 'shell');
   await until(() => spawned.status === 'active' || !!spawned.spawnError, 60_000);
   check(
@@ -518,6 +590,15 @@ await section('5. LIVE — a real CrabCast, a real restart, a real pty', async (
     first.dispose();
     return;
   }
+  // Belt and braces on the guard above: the returned session must be one this
+  // call created, carrying the url this call passed. An adopted session has
+  // neither.
+  check(
+    spawned.adopted === undefined && spawned.url === URL,
+    'and it is genuinely a SPAWN — not a live agent reused, which would prove nothing',
+    `adopted=${JSON.stringify(spawned.adopted)} url=${JSON.stringify(spawned.url)}; ` +
+      `an adopted session carries no url, so this is a reuse wearing a spawn's assertions`
+  );
   console.log(`       spawned session ${spawned.sessionId}, url ${JSON.stringify(spawned.url)}`);
 
   // THE RESTART. Disposing the runtime and building another against the same
@@ -582,7 +663,13 @@ await section('5. LIVE — a real CrabCast, a real restart, a real pty', async (
   try {
     fs.rmSync(workDir, { recursive: true, force: true });
   } catch {}
-  console.log(`       cleanup: CrabCast still holds a configured record. Remove it with:`);
+  // BOTH VERBS, AND `deactivate` FIRST. `forget` on a RUNNING agent reports
+  // `alreadyGone: true` for the record and leaves the pane up — which is how
+  // the leftover that this section's guard now refuses got left behind in the
+  // first place. A red run reaches here with the agent still running, so this
+  // is printed unconditionally rather than only on success.
+  console.log(`       cleanup: CrabCast still holds this probe. Remove it with BOTH, in order:`);
+  console.log(`                crabcast deactivate ${workDir}`);
   console.log(`                crabcast forget ${workDir}`);
 });
 
