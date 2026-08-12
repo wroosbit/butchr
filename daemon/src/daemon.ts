@@ -33,6 +33,7 @@ import {
   describeAddress
 } from './agent-connections.js';
 import {
+  CHANNEL_META_KEY_PATTERN,
   CHANNEL_SWITCH_PATH,
   carrierFor,
   channelEmissionEnabled,
@@ -557,7 +558,14 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
       });
       log(
         `channel_send → ${describeAddress(address)}: ` +
-          (outcome.routed ? `written to ${outcome.connectionId}` : `refused (${outcome.reason})`)
+          (outcome.routed ? `written to ${outcome.connectionId}` : `refused (${outcome.reason})`) +
+          // KAN-325. The log line is one of the three places that said nothing
+          // when a key was dropped; a producer that used `poke-number` got no
+          // error, no log line and no field in the reply, and the attribute was
+          // simply not there. This is the one a human tailing the daemon sees.
+          (outcome.routed && outcome.droppedMetaKeys
+            ? ` — WARNING: meta key(s) the client will drop: ${outcome.droppedMetaKeys.join(', ')}`
+            : '')
       );
       if (!outcome.routed) {
         reply({
@@ -576,9 +584,29 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         connectionId: outcome.connectionId,
         workspaceType: outcome.address.type,
         workspaceKey: outcome.address.key,
+        // KAN-325. `success: true` remains honest and unchanged — the frame WAS
+        // written, and it WILL arrive. What it never said, and now does, is that
+        // it will arrive with these attributes missing. Sender-visible rather
+        // than logged only, because the sender here is another agent reading this
+        // reply over the socket, and a log line on this machine is not something
+        // it can see.
+        ...(outcome.droppedMetaKeys
+          ? {
+              droppedMetaKeys: outcome.droppedMetaKeys,
+              warning:
+                `these meta key(s) will NOT reach the recipient: ${outcome.droppedMetaKeys.join(', ')}. ` +
+                'The frame was still written and the rest of it will arrive — the client renders only ' +
+                `keys matching ${CHANNEL_META_KEY_PATTERN.source} as attributes and drops the others in ` +
+                'silence (measured, claude-code 2.1.228; docs/channel-delivery.md). Rename the key and ' +
+                'send again if the attribute mattered'
+            }
+          : {}),
         claim:
           `the frame was written to ${outcome.connectionId}; this is not a claim that the agent read it, ` +
-          'nor that a model received it'
+          'nor that a model received it' +
+          (outcome.droppedMetaKeys
+            ? `. It will arrive WITHOUT the meta key(s) named in \`warning\``
+            : '')
       });
       return true;
     }

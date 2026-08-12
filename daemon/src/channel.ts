@@ -186,7 +186,95 @@ export function writeChannelSwitch(enabled: boolean): void {
  * `{ guardianPoke: true }` against this alias **cannot be written at all**. The
  * assertion below exists as well, for the one caller a type cannot reach.
  */
-export type ChannelMeta = Record<string, string>;
+export type ChannelMeta = Partial<Record<ChannelMetaKey, string>>;
+
+/**
+ * The meta keys this daemon is able to send, named one by one (KAN-325).
+ *
+ * A closed union rather than `string`, and it is the KEY half of the same fix
+ * KAN-319 made to the VALUE half one field over. The value axis is closed by
+ * {@link ChannelMeta}'s `string`; this closes the key axis, and it closes it the
+ * same way and for the same reason — a producer that writes `poke-number` gets a
+ * **compile error** rather than an attribute that silently is not there.
+ *
+ * **Measured, not inherited from the doc.** KAN-325 fired fourteen frames at one
+ * live agent's connection and read back what the client rendered. Every frame
+ * arrived; the keys outside `/^[A-Za-z_][A-Za-z0-9_]*$/` arrived **minus that one
+ * attribute** — see {@link CHANNEL_META_KEY_PATTERN} for the table.
+ *
+ * **Adding a key is one line here, and that friction is the feature.** The
+ * alternative — `Record<string, string>` plus a runtime check — is an assertion a
+ * later author can delete with the build still green, which is the trade the
+ * standing preference exists to refuse. It is the same shape as `method: 'GET'`
+ * in launchdarkly-proxy.ts: the wrong value is not *caught*, it is **not
+ * nameable**.
+ *
+ * These five are every key the daemon produces today: the notification composer's
+ * three, plus one marker each for the guardian poke and the liveness probe.
+ */
+export type ChannelMetaKey =
+  | 'sender'
+  | 'workspaceType'
+  | 'workspaceKey'
+  | 'guardianPoke'
+  | 'livenessProbe';
+
+/**
+ * Which meta keys this client renders as attributes, measured rather than quoted.
+ *
+ * `docs/channel-delivery.md` said only *"keys must be identifiers — keys
+ * containing hyphens or other characters are silently dropped"*, sourced from the
+ * channels reference and **never reproduced**. KAN-325 reproduced it, on
+ * claude-code **2.1.228**, from the recipient side: fourteen key shapes, one live
+ * agent, one connection, every frame reported `success: true`.
+ *
+ * | rendered | dropped |
+ * | --- | --- |
+ * | `probeShape` `controlKey` `snake_key` `key2` `_leading` `KEY_NAME` | `hyphen-key` `dot.key` `1leading` `space key` `$dollar` `mid$dollar` `ns:key` `kéy` `""` |
+ *
+ * So the class is exactly this pattern, and the doc's word *"identifier"* was
+ * **wrong in one direction worth naming**: `$` is a legal JavaScript identifier
+ * character and is dropped. A leading digit is dropped; a trailing one is kept.
+ * Non-ASCII is dropped. The empty key is dropped.
+ *
+ * **The loss is PARTIAL, and that is the whole difference from KAN-319.** All
+ * fourteen frames arrived — body intact, every other attribute intact, minus the
+ * offending one. A bad *value* costs the entire frame; a bad *key* costs one
+ * attribute. Which is why nothing here refuses: see {@link undeliverableMetaKeys}.
+ */
+export const CHANNEL_META_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The meta keys this client will drop, named — and **never refused** (KAN-325).
+ *
+ * The runtime half of {@link ChannelMetaKey}, and it exists for the same single
+ * caller {@link unrenderableMetaEntries} does: `channel_send`, whose `meta`
+ * arrives off the wire as parsed JSON where no type can reach it. In-process
+ * producers cannot reach a bad key at all — the union makes it a compile error.
+ *
+ * **Why this WARNS where its neighbour REFUSES, which is the decision this ticket
+ * exists to make.** Refusing is right for a bad value because the frame is lost
+ * either way, so a refusal costs the caller nothing it had. It is wrong here:
+ * the frame *otherwise lands*, so refusing would convert a measured partial loss
+ * into a certain total one — trading one missing attribute for the whole message,
+ * on the very carrier that now hauls supervision. So the frame goes, and the
+ * sender is told exactly which keys did not survive it.
+ *
+ * That is the defect this closes, stated plainly: the loss was not that keys are
+ * dropped, it was that **nothing said so** — no error, no log line, no field in
+ * the response. A caller now gets all three.
+ *
+ * Returns `[]` for a non-object rather than reporting it: that shape is
+ * {@link unrenderableMetaEntries}'s to refuse, and two reports of one fault send
+ * the reader looking for two.
+ */
+export function undeliverableMetaKeys(meta: unknown): string[] {
+  if (meta === undefined || meta === null) return [];
+  if (typeof meta !== 'object' || Array.isArray(meta)) return [];
+  return Object.keys(meta as Record<string, unknown>).filter(
+    (key) => !CHANNEL_META_KEY_PATTERN.test(key)
+  );
+}
 
 /**
  * The meta entries this client will not render, named one by one.
@@ -200,15 +288,11 @@ export type ChannelMeta = Record<string, string>;
  * frame that would be written successfully and then silently dropped, which is
  * the one outcome this module must never produce.
  *
- * **What this does NOT check, said rather than left to be discovered.**
- * `docs/channel-delivery.md` also records that meta *keys* must be identifiers —
- * *"keys containing hyphens or other characters are silently dropped"* — and that
- * failure is **partial** where this one is total: the frame still arrives, minus
- * one attribute. It is documented rather than measured, this ticket did not
- * reproduce it, and refusing a whole frame on the strength of an unverified
- * sentence would lose messages that would otherwise mostly land. So it is
- * uncovered here and by nothing else; KAN-319's ticket comment names it as the
- * follow-up rather than leaving a reader to infer coverage that does not exist.
+ * **What this does NOT check, said rather than left to be discovered.** Meta
+ * *keys* are not this function's axis. That gap was named here as uncovered until
+ * KAN-325 reproduced it and closed it — see {@link undeliverableMetaKeys}, which
+ * **warns rather than refuses**, because a bad key loses one attribute where a bad
+ * value loses the whole frame.
  */
 export function unrenderableMetaEntries(meta: unknown): string[] {
   if (meta === undefined || meta === null) return [];
@@ -234,7 +318,21 @@ export type ChannelRefusal =
 
 /** What one attempt to write an addressed frame did. */
 export type ChannelRouteOutcome =
-  | { routed: true; connectionId: string; address: AgentAddress }
+  | {
+      routed: true;
+      connectionId: string;
+      address: AgentAddress;
+      /**
+       * Meta keys the client will drop from this frame (KAN-325).
+       *
+       * **Present only when non-empty, and on the `routed: true` branch on
+       * purpose** — the frame WAS written and the recipient WILL get it, minus
+       * these attributes. It is a warning riding on a success, not a refusal
+       * wearing one: a partial loss refused as a total loss is the worse trade,
+       * and {@link undeliverableMetaKeys} argues it.
+       */
+      droppedMetaKeys?: string[];
+    }
   | { routed: false; reason: ChannelRefusal; detail: string; switchPath?: string };
 
 /**
@@ -495,12 +593,33 @@ export function routeChannelMessage(opts: {
     meta
   });
 
+  // NAMED ON THE WAY OUT, NOT REFUSED ON THE WAY IN (KAN-325).
+  //
+  // Computed here rather than beside the `meta-not-renderable` branch above so
+  // that the two are not read as one gate with two reasons. They are opposite
+  // decisions about opposite failures: a bad VALUE loses the whole frame, so the
+  // frame is not written; a bad KEY loses one attribute, so the frame IS written
+  // and the caller is told what did not survive it. Measured, both of them —
+  // KAN-319 from the recipient side for the value, KAN-325 for the key.
+  //
+  // At the routing point rather than in `channel_send` for the reason this module
+  // gives for `carrierFor`: a property established where the carrier is chosen is
+  // true of an agent's TRAFFIC, whereas one established in a single action handler
+  // is true only of that handler's callers. Today the type means every in-process
+  // producer scores empty here, which costs a regex over at most five keys.
+  const droppedMetaKeys = undeliverableMetaKeys(meta);
+
   // `resolve` skips destroyed sockets, so this is the narrow race where one died
   // between the lookup and the write. Reported rather than retried: a retry
   // would be a second delivery attempt the caller did not ask for, and the
   // caller can see a refusal and decide.
   return wrote
-    ? { routed: true, connectionId: target.id, address: target.address }
+    ? {
+        routed: true,
+        connectionId: target.id,
+        address: target.address,
+        ...(droppedMetaKeys.length ? { droppedMetaKeys } : {})
+      }
     : {
         routed: false,
         reason: 'socket-closed',
