@@ -53,9 +53,34 @@ fresh / stale / unknown **with the evidence it was decided on**, because
 | Item | Compares | Stale means |
 | --- | --- | --- |
 | `git` — local checkout | `HEAD` vs `origin/main`, as last fetched | commits merged that this checkout does not have |
-| `daemon-build` | newest `daemon/src/**` mtime vs newest `daemon/dist` mtime | source changed after the last build |
+| `daemon-build` | newest mtime among `daemon/`'s **build inputs** vs newest `daemon/dist` mtime | an input changed after the last build |
 | `daemon-process` | daemon start time vs `daemon/dist` mtime | `dist` was rebuilt while this daemon kept running |
-| `extension-build` | newest extension source mtime vs newest `extension/dist` mtime | source changed after the last build |
+| `extension-build` | newest mtime among `extension/`'s **build inputs** vs newest `extension/dist` mtime | an input changed after the last build |
+
+### What counts as a build input
+
+Not "everything in the directory". `tsc` compiles `daemon/src/**` and nothing
+else; `vite build` reads the three HTML entry points at the extension root,
+what they import, and `public/`. Neither reads `scripts/` — the verify scripts
+and render harnesses there run *against* a build and are never compiled into
+one — so editing one used to report a stale extension build with a remedy no
+rebuild could satisfy, and which asks the operator for a `chrome://extensions`
+reload (KAN-305). The cost was not the noise: **while that item was red for a
+verify script, a genuinely stale build was indistinguishable from it.**
+
+The input set lives in `BuildInputs` in `daemon/src/staleness.ts` and each
+report repeats it on the evidence line, so what was compared is visible in the
+answer rather than only in the source.
+
+**It is a classification, not a list.** Every entry beside the build must be
+declared either an input or — with the reason — not one. An entry matching
+neither makes the item `unknown`, names itself, and says where to classify it,
+because the failure mode of a bare allowlist is the directory added after it
+was written: never scanned, and so a `dist` genuinely behind it reports fresh.
+A lying green is worse than the lying red this replaced. You will also see that
+`unknown` on a checkout that is behind `origin/main` and still holds a
+directory since deleted; pulling clears it, and the `git` item is red alongside
+it saying so.
 
 `daemon-process` is not in the original ticket; it is here because it is
 symptomatically identical to a stale build. You rebuild, you do not restart,

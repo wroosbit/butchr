@@ -6,8 +6,14 @@
 // gap — an unpulled main, a dist older than its sources, a rebuilt dist the
 // running daemon never loaded — or that starts crying wolf over an agent
 // building in its own worktree, an unrelated branch moving on origin, or a
-// deliberate feature-branch checkout. Every case below is a real clone damaged
-// one way at a time, and every one asserts the verdict it must produce.
+// deliberate feature-branch checkout. Since KAN-305 it also catches both ways
+// the build items can misjudge their own inputs: a file that is *not* a build
+// input (anything under `daemon/scripts/` or `extension/scripts/`) reported as
+// staleness no rebuild could clear, and — the opposite error, and the one a
+// careless fix for the first introduces — a real input dropped from the set and
+// therefore never compared, which reports fresh over a dist that is behind it.
+// Every case below is a real clone damaged one way at a time, and every one
+// asserts the verdict it must produce.
 //
 // CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
 // in process; no live daemon, no herdr, no credential, no peer, no terminal.
@@ -91,6 +97,12 @@ let caseNumber = 0;
  * state each individual item must be in, keyed by StalenessItemId. Naming the
  * items rather than only the boolean is what makes a case fail when the right
  * alarm is raised for the wrong reason.
+ *
+ * `expect.notStale` is the weaker form, for a case whose point is "this item is
+ * not what was damaged" rather than any particular verdict — see case (a),
+ * which checks out an older commit whose tree this build of the check may not
+ * be able to classify. `expect.detail` asserts against the evidence line rather
+ * than the headline, for the cases where *which file* was named is the claim.
  */
 function report(title, repoRoot, opts = {}, expect = null) {
   caseNumber++;
@@ -117,12 +129,28 @@ function report(title, repoRoot, opts = {}, expect = null) {
       item ? `got ${item.state} — ${item.headline}` : 'no such item in the report'
     );
   }
+  for (const id of expect.notStale ?? []) {
+    const item = r.items.find((i) => i.id === id);
+    check(
+      `case ${caseNumber}: ${id} is not stale`,
+      item !== undefined && item.state !== 'stale',
+      item ? `got ${item.state} — ${item.headline}` : 'no such item in the report'
+    );
+  }
   if (expect.headline) {
     const item = r.items.find((i) => i.id === expect.headline.id);
     check(
       `case ${caseNumber}: ${expect.headline.id} headline says ${expect.headline.match}`,
       expect.headline.match.test(item?.headline ?? ''),
       `got: ${item?.headline ?? '(no item)'}`
+    );
+  }
+  if (expect.detail) {
+    const item = r.items.find((i) => i.id === expect.detail.id);
+    check(
+      `case ${caseNumber}: ${expect.detail.id} evidence names ${expect.detail.match}`,
+      expect.detail.match.test(item?.detail ?? ''),
+      `got: ${item?.detail ?? '(no item)'}`
     );
   }
   return r;
@@ -181,9 +209,18 @@ run('git', ['-C', repo, 'reset', '--hard', '--quiet', 'origin/main~2']);
 restoreBaseline();
 // Only git is damaged, so only git may go stale: an alarm that also fired on
 // the builds here would be reporting damage this case did not do.
+//
+// `notStale` rather than `fresh` for the two build items, and the reason is
+// worth keeping: this case is the one that runs the *current* check against an
+// *older* tree, which no real install is ever in — the daemon runs the build
+// made from the checkout it is reading. `origin/main~2` still holds
+// `extension/kan81-render/`, deleted in 3615c21, so the extension item
+// correctly reports that it cannot classify that tree. Asserting `fresh` here
+// would tie this case to whatever the last two commits happened to delete.
 report('(a) local main is behind origin/main', repo, {}, {
   stale: true,
-  items: { git: 'stale', 'daemon-build': 'fresh', 'extension-build': 'fresh' },
+  items: { git: 'stale' },
+  notStale: ['daemon-build', 'extension-build'],
   headline: { id: 'git', match: /2 commits behind origin\/main/ }
 });
 
@@ -197,7 +234,8 @@ touch(path.join(repo, 'daemon/src/router.ts'), 0);
 report('(b) daemon/src is newer than daemon/dist', repo, {}, {
   stale: true,
   items: { git: 'fresh', 'daemon-build': 'stale', 'extension-build': 'fresh' },
-  headline: { id: 'daemon-build', match: /daemon\/dist is older than daemon\/src/ }
+  headline: { id: 'daemon-build', match: /daemon\/dist is older than daemon's build inputs/ },
+  detail: { id: 'daemon-build', match: /daemon\/src\/router\.ts/ }
 });
 touch(path.join(repo, 'daemon/src/router.ts'), -3600);
 
@@ -208,9 +246,119 @@ touch(path.join(repo, 'extension/sidepanel.jsx'), 0);
 report('(c) extension sources are newer than extension/dist', repo, {}, {
   stale: true,
   items: { git: 'fresh', 'daemon-build': 'fresh', 'extension-build': 'stale' },
-  headline: { id: 'extension-build', match: /extension\/dist is older than extension/ }
+  headline: { id: 'extension-build', match: /extension\/dist is older than extension/ },
+  detail: { id: 'extension-build', match: /extension\/sidepanel\.jsx/ }
 });
 touch(path.join(repo, 'extension/sidepanel.jsx'), -3600);
+
+// ---------------------------------------------------------------------------
+// (c2) every *other* class of real extension build input, one at a time.
+//
+// This is the half a careless narrowing breaks, so each input class is damaged
+// separately rather than trusting that one representative covers the rest. A
+// fix that pointed the check at `extension/src` alone would pass (c) and this
+// case's first row, and go quietly green on the other three.
+// ---------------------------------------------------------------------------
+for (const rel of [
+  'extension/src/components/StalenessBanner.jsx', // a component, nested
+  'extension/public/manifest.json', // publicDir, copied verbatim into dist
+  'extension/vite.config.js', // the build's own configuration
+  'extension/sidepanel.css' // a root stylesheet an entry point pulls in
+]) {
+  touch(path.join(repo, rel), 0);
+  report(`(c2) ${rel} is newer than extension/dist`, repo, {}, {
+    stale: true,
+    items: { 'daemon-build': 'fresh', 'extension-build': 'stale' },
+    headline: { id: 'extension-build', match: /extension\/dist is older than extension's build inputs/ },
+    // The evidence must name the file that was damaged. Without this the case
+    // would pass on any stale verdict, including one reached via a different
+    // input — which is how a narrowing that dropped this class could hide.
+    detail: { id: 'extension-build', match: new RegExp(rel.replace(/[.]/g, '\\.')) }
+  });
+  touch(path.join(repo, rel), -3600);
+}
+
+// ---------------------------------------------------------------------------
+// (c3) KAN-305: a verify script is not a build input, and must not read as one.
+//
+// The defect this case exists for: `extension-build` compared extension/dist
+// against the newest file anywhere under extension/, so editing a verify script
+// reported a stale extension build — with a remedy asking a human to reload the
+// extension, for a change no rebuild could ever contain. The cost is the row
+// below it: while the item was red for this, a genuinely stale build was
+// indistinguishable from it.
+// ---------------------------------------------------------------------------
+touch(path.join(repo, 'extension/scripts/verify-sidepanel-survives-daemon-restart.mjs'), 0);
+report('(c3) a verify script under extension/scripts is not a build input', repo, {}, {
+  stale: false,
+  items: { git: 'fresh', 'daemon-build': 'fresh', 'extension-build': 'fresh' }
+});
+// ...and the true positive is still visible while that script is the newest
+// file in the tree. This row is the point of the case: the false red used to
+// mask exactly this.
+touch(path.join(repo, 'extension/src/components/StalenessBanner.jsx'), 0);
+report('(c3) a real stale build is still caught with that script newer still', repo, {}, {
+  stale: true,
+  items: { 'extension-build': 'stale' },
+  detail: { id: 'extension-build', match: /extension\/src\/components\/StalenessBanner\.jsx/ }
+});
+touch(path.join(repo, 'extension/src/components/StalenessBanner.jsx'), -3600);
+touch(path.join(repo, 'extension/scripts/verify-sidepanel-survives-daemon-restart.mjs'), -3600);
+
+// ---------------------------------------------------------------------------
+// (c4) the same shape on the daemon side. `daemon/scripts/` grew by dozens of
+//      files under KAN-295; tsc compiles `src/**` and nothing else.
+// ---------------------------------------------------------------------------
+touch(path.join(repo, 'daemon/scripts/verify-staleness-check.mjs'), 0);
+report('(c4) a verify script under daemon/scripts is not a build input', repo, {}, {
+  stale: false,
+  items: { git: 'fresh', 'daemon-build': 'fresh', 'extension-build': 'fresh' }
+});
+touch(path.join(repo, 'daemon/scripts/verify-staleness-check.mjs'), -3600);
+
+// ---------------------------------------------------------------------------
+// (c5) an entry under extension/ that is classified neither way.
+//
+// The check narrowed from "the whole tree" to a declared input set, and the
+// failure mode of any such list is the entry added after it was written: not
+// scanned, so a build genuinely behind it reports fresh. This case is what
+// makes that impossible to do quietly — an unclassified entry is `unknown`,
+// names itself, and says where to classify it.
+// ---------------------------------------------------------------------------
+mkdirSync(path.join(repo, 'extension/newly-added-thing'), { recursive: true });
+writeFileSync(path.join(repo, 'extension/newly-added-thing/thing.js'), '// added after the input set\n');
+report('(c5) an unclassified entry under extension/ is unknown, not assumed harmless', repo, {}, {
+  // `unknown` raises no alarm — it is not a claim that anything is behind —
+  // but the Agents banner renders unknown alongside stale, so it is seen.
+  stale: false,
+  items: { 'extension-build': 'unknown', 'daemon-build': 'fresh' },
+  headline: { id: 'extension-build', match: /cannot classify/ }
+});
+rmSync(path.join(repo, 'extension/newly-added-thing'), { recursive: true, force: true });
+
+// ---------------------------------------------------------------------------
+// (c6) ...and the false alarm the case above could easily have become.
+//
+// An entry holding no files contributes no timestamp, so no classification of
+// it could change the verdict — reporting a doubt there would be a new false
+// alarm of exactly the kind this ticket removed. The live install has carried
+// an empty, untracked extension/sidepanel/ since 2026-07-30, which is how this
+// case came to be written rather than imagined.
+// ---------------------------------------------------------------------------
+mkdirSync(path.join(repo, 'extension/empty-leftover'), { recursive: true });
+report('(c6) an empty unclassified directory is not a doubt worth raising', repo, {}, {
+  stale: false,
+  items: { 'extension-build': 'fresh', 'daemon-build': 'fresh' }
+});
+// It becomes reportable the moment it holds something, which is the moment it
+// could matter — the carve-out is about emptiness, not about the name.
+writeFileSync(path.join(repo, 'extension/empty-leftover/now-it-has-a-file.js'), '// no longer empty\n');
+report('(c6) the same directory, once it holds a file, is unknown again', repo, {}, {
+  stale: false,
+  items: { 'extension-build': 'unknown' },
+  headline: { id: 'extension-build', match: /cannot classify/ }
+});
+rmSync(path.join(repo, 'extension/empty-leftover'), { recursive: true, force: true });
 
 // ---------------------------------------------------------------------------
 // (d) the fourth gap: dist rebuilt while the daemon kept running. Only reported
