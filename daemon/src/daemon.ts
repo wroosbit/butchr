@@ -899,7 +899,18 @@ herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
         const tail = await herdrBridge.tailAgent(session.key, session.type, 140);
         return tail.success && typeof tail.text === 'string' ? tail.text : null;
       },
-      pressEnter: () => herdrBridge.pressPaneKey(session.key, session.type, 'Enter'),
+      // The confirmation is unused HERE and load-bearing at the type level: it
+      // is the token only `classifyStartupDialog` can mint, so this line cannot
+      // be reached for a pane whose live dialog was not identified as the
+      // development-channels one (KAN-340). Named rather than `_` so the reader
+      // meets the reason at the site that sends the keystroke.
+      pressEnter: (confirmation) => {
+        log(
+          `[ChannelStartup] ${describeAddress(address)}: pressing Enter — the live dialog is ` +
+          `the development-channels one, matched on "${confirmation.evidence}"`
+        );
+        herdrBridge.pressPaneKey(session.key, session.type, 'Enter');
+      },
       now: () => Date.now(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       freshConnection: freshConnectionFrom(agentConnections, address),
