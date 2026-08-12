@@ -681,13 +681,26 @@ section(14, 'KAN-321: what was rejected, pinned so it is not silently adopted');
   //          refused on SHA and on signer
   //        1 accidental — #139 comment 5260338837, line 89, inside a fence
   //
-  //     So leading position separates the populations too. It was rejected
-  //     because it separates them by a HABIT rather than by the defect: sixteen
-  //     approvals that happen to open with the marker is a convention nobody was
-  //     ever told to keep, and the first approver who writes a sentence before
-  //     their marker gets a red check for a formatting rule that appears in no
-  //     prompt. Fenced exclusion separates the same populations 18-to-1 by
-  //     naming what actually went wrong. The assertions below pin the rejection.
+  //     So leading position separates the populations too, and on the survey
+  //     alone it would have cost nothing. It was rejected for two reasons, the
+  //     second of which is decisive:
+  //
+  //       - It separates them by a HABIT rather than by the defect. Sixteen
+  //         approvals that happen to open with the marker is a convention nobody
+  //         was ever told to keep, and the first approver who writes a sentence
+  //         before their marker would get a red check for a formatting rule that
+  //         appears in no prompt.
+  //       - IT CONTRADICTS THE PUBLISHED CONTRACT. `prompts/epic.md` and
+  //         `prompts/story.md` both say "prose around the marker is welcome",
+  //         and §7 has pinned "prose above and below the marker is fine" since
+  //         KAN-306. Adopting candidate 1 was driven as a mutation on this
+  //         branch: it turns 20 of these 140 assertions red, across §1, §3, §4,
+  //         §7, §8, §9 and §14 — i.e. it does not tighten the gate, it changes
+  //         what an approval IS, and six sections already say otherwise.
+  //
+  //     Fenced exclusion separates the same populations 18-to-1 by naming what
+  //     actually went wrong, and turns nothing pre-existing red. The assertions
+  //     below pin the rejection so it is not later adopted by accident.
   //
   // (2) IGNORE QUOTED MARKERS. TAKEN — §11 to §13.
   //
