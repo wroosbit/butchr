@@ -363,6 +363,51 @@ export function repoForCheckout(checkout: string): string | null {
 }
 
 /**
+ * How a repository got into the watch set (KAN-360).
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS A TYPE AND NOT A COMMENT ON A `string[]`
+ * ---------------------------------------------------------------------------
+ *
+ * The watch set used to be a list of names, and a list of names cannot answer
+ * the question a reader of the health report actually has — *"is this repository
+ * being watched because somebody is responsible for it, or because somebody
+ * happens to be sitting in it?"* KAN-360's AC3 asks for that distinction, and
+ * the reason it asks is that the two look identical right up to the moment the
+ * second one stops being true.
+ *
+ * Carrying the provenance in the value rather than in a parallel structure means
+ * **a repository cannot enter the set without saying how it got there**: every
+ * producer has to name a source, and a fourth way of getting in cannot be added
+ * without adding a fourth member here and meeting every `switch` that reads it.
+ * `prompts/task.md`: prefer the type where the invariant is about what the code
+ * is able to say.
+ */
+export type RepoSource =
+  /** `BUTCHR_PR_WATCH_REPOS` named it. Watched whatever the fleet is doing. */
+  | 'config'
+  /** A live agent holds a checkout of it. The primary path. */
+  | 'checkout'
+  /**
+   * Nobody holds a checkout, and the watcher's own durable memory says there is
+   * an OPEN pull request there. See `pr-watch.ts` for why this exists.
+   */
+  | 'memory';
+
+/** A repository in the watch set, and how it got there. */
+export interface WatchedRepo {
+  repo: string;
+  source: RepoSource;
+}
+
+/** The words a health report uses for each source. One place, so they cannot drift. */
+export const REPO_SOURCE_PHRASE: Record<RepoSource, string> = {
+  config: 'named in BUTCHR_PR_WATCH_REPOS',
+  checkout: 'a live agent holds a checkout',
+  memory: 'from memory — an open pull request is outstanding there and no live agent holds a checkout'
+};
+
+/**
  * Which repositories to watch: the ones the live fleet is actually working in.
  *
  * WHY DISCOVERY AND NOT CONFIGURATION
@@ -380,18 +425,37 @@ export function repoForCheckout(checkout: string): string | null {
  * business. Watching them would be paying GitHub requests to discover that
  * nothing in an unrelated repository concerns anybody.
  *
- * `BUTCHR_PR_WATCH_REPOS` overrides discovery entirely, comma-separated, for a
- * machine that wants a repository watched whether or not somebody is in it.
+ * `BUTCHR_PR_WATCH_REPOS` overrides *this* function's discovery entirely,
+ * comma-separated, for a machine that wants a repository watched whether or not
+ * somebody is in it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS FUNCTION CANNOT SEE, AND WHO COVERS IT (KAN-360)
+ * ---------------------------------------------------------------------------
+ *
+ * Both branches here answer *"where is the fleet sitting right now?"*, and the
+ * agent a pull request notification is **for** is never in the answer. Measured
+ * 2026-08-12 on this machine: `epic/kan-39`, `epic/kan-203` and `epic/kan-59`
+ * hold **no** git checkout at all — only task agents do, in their worktrees. So
+ * a task agent standing down after opening a pull request takes the repository
+ * out of this set while its approver is still running and still responsible.
+ *
+ * That is not fixed here, deliberately. This function is a reader of the
+ * *filesystem*, and the fact that closes the gap — that an open pull request is
+ * still outstanding — lives in `PrWatchState`. `PrWatcher.resolveRepos` unions
+ * the two, and it is the only place that decides the final set.
  */
 export function discoverRepos(
   agents: Array<{ type: string; key: string }>,
   env: NodeJS.ProcessEnv = process.env
-): string[] {
+): WatchedRepo[] {
   const configured = (env.BUTCHR_PR_WATCH_REPOS ?? '')
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
-  if (configured.length) return [...new Set(configured)];
+  if (configured.length) {
+    return [...new Set(configured)].map((repo) => ({ repo, source: 'config' as const }));
+  }
 
   const found = new Set<string>();
   for (const agent of agents) {
@@ -409,7 +473,7 @@ export function discoverRepos(
       if (repo) found.add(repo);
     }
   }
-  return [...found].sort();
+  return [...found].sort().map((repo) => ({ repo, source: 'checkout' as const }));
 }
 
 /**

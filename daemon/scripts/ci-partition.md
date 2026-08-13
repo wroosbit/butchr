@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 75 |
+| `yes` | 76 |
 | `partial` | 7 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **99** |
+| **total** | **100** |
 
-**82 of 99** run on every pull request.
+**83 of 100** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -109,6 +109,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-parentage-in-list-agents` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-per-epic-supervision` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-pr-watch-readiness` | yes | imports the built daemon modules and asserts in process, with no live daemon, no herdr, no credential, no network and no terminal. §1 replays a RECORDED fixture; §2-§5 stub the GitHub reader. |
+| `verify-pr-watch-repo-retention` | yes | imports the built daemon modules and asserts against them in process, over a workspace tree it builds under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal and no network (the GitHub reader is stubbed). Nothing is written inside the repository. |
 | `verify-pr-watch` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal, and no network (§1 replays RECORDED `gh` output; §2-6 stub the reader). |
 | `verify-prompt-poller-seam` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-prompt-provenance-stamp` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
