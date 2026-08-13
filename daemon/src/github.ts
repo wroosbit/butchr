@@ -394,18 +394,67 @@ export type RepoSource =
    */
   | 'memory';
 
-/** A repository in the watch set, and how it got there. */
-export interface WatchedRepo {
-  repo: string;
-  source: RepoSource;
+/** An agent named as holding a checkout, in the spelling a reader can act on. */
+export interface CheckoutHolder {
+  /** `epic`, `task`, … */
+  type: string;
+  /** The registry's spelling — `KAN-39`, not `kan-39`. */
+  key: string;
+  /** The directory that was read, so the claim can be checked in one command. */
+  path: string;
 }
 
-/** The words a health report uses for each source. One place, so they cannot drift. */
-export const REPO_SOURCE_PHRASE: Record<RepoSource, string> = {
-  config: 'named in BUTCHR_PR_WATCH_REPOS',
-  checkout: 'a live agent holds a checkout',
-  memory: 'from memory — an open pull request is outstanding there and no live agent holds a checkout'
-};
+/**
+ * A repository in the watch set, and how it got there.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY `checkout` CARRIES ITS HOLDERS AND THE OTHER TWO CARRY NOTHING (KAN-370)
+ * ---------------------------------------------------------------------------
+ *
+ * This is a discriminated union rather than `{ repo, source, heldBy? }` so that
+ * **`checkout` cannot be stated without naming whose checkout it is.** An
+ * optional field would let a future producer say `source: 'checkout'` and leave
+ * `heldBy` undefined, which is exactly the claim KAN-370 was filed about; a
+ * required field on the `checkout` member makes that a compile error instead.
+ * `prompts/task.md`: prefer the type where the invariant is about what the code
+ * is able to say.
+ *
+ * **The defect this closes is verifiability, not truth.** KAN-370 reported the
+ * field as false. It was not — `epic/kan-39` genuinely held a checkout at
+ * `workspaces/epic/kan-39/review-127` from 2026-08-11, and discovery had
+ * correctly joined against the live agent list all along. What was missing is
+ * that a reader of the health report could not tell **which** agent, so checking
+ * the claim meant re-deriving discovery by hand. Two supervisors did exactly
+ * that with `find workspaces -maxdepth 3 -name .git`, which cannot reach a real
+ * agent checkout — those sit at depth 4 — and concluded from its one irrelevant
+ * hit that the field lied. A claim that is correct but uncheckable from the
+ * report costs what a false one costs; naming the holder is what makes it cheap
+ * to falsify, and `path` is there so the check is one `git -C … remote` away.
+ */
+export type WatchedRepo =
+  | { repo: string; source: 'config' }
+  | { repo: string; source: 'checkout'; heldBy: CheckoutHolder[] }
+  | { repo: string; source: 'memory' };
+
+/**
+ * The words a health report uses for a watched repository. One place, so they
+ * cannot drift.
+ *
+ * `checkout` names its holders because the bare phrase is what KAN-370 was filed
+ * about: it asserted something true that its reader had no way to check.
+ */
+export function repoSourcePhrase(watched: WatchedRepo): string {
+  switch (watched.source) {
+    case 'config':
+      return 'named in BUTCHR_PR_WATCH_REPOS';
+    case 'checkout':
+      return `a live agent holds a checkout: ${watched.heldBy
+        .map((holder) => `${holder.type}/${holder.key}`)
+        .join(', ')}`;
+    case 'memory':
+      return 'from memory — an open pull request is outstanding there and no live agent holds a checkout';
+  }
+}
 
 /**
  * Which repositories to watch: the ones the live fleet is actually working in.
@@ -434,11 +483,32 @@ export const REPO_SOURCE_PHRASE: Record<RepoSource, string> = {
  * ---------------------------------------------------------------------------
  *
  * Both branches here answer *"where is the fleet sitting right now?"*, and the
- * agent a pull request notification is **for** is never in the answer. Measured
- * 2026-08-12 on this machine: `epic/kan-39`, `epic/kan-203` and `epic/kan-59`
- * hold **no** git checkout at all — only task agents do, in their worktrees. So
+ * agent a pull request notification is **for** is usually not in the answer. So
  * a task agent standing down after opening a pull request takes the repository
  * out of this set while its approver is still running and still responsible.
+ *
+ * **This paragraph used to assert that supervisors hold no checkout at all** —
+ * *"Measured 2026-08-12 on this machine: `epic/kan-39`, `epic/kan-203` and
+ * `epic/kan-59` hold no git checkout at all — only task agents do."* That was
+ * **already false when it was written** (KAN-370): `epic/kan-39` had held one at
+ * `workspaces/epic/kan-39/review-127` since 2026-08-11, taken to review a pull
+ * request. It was measured with `find workspaces -maxdepth 3 -name .git`, which
+ * cannot reach a checkout — they sit at depth 4 — so the measurement could not
+ * have found what it was looking for.
+ *
+ * The retention rule that paragraph argues for is **unaffected and still
+ * right**, and it survives on a better argument than the one it was given. The
+ * false version was *"supervisors never hold a checkout, so discovery can never
+ * cover them."* The true version is that a supervisor holding one is **luck
+ * rather than design**: `review-127` exists because `epic/kan-39` happened to
+ * review a pull request in a worktree and never removed it, and a watch set
+ * resting on that is precisely the *coverage from luck* KAN-360 exists to tell
+ * apart from coverage. So discovery still cannot be relied on to cover an
+ * approver — not because it never does, but because when it does, nothing made
+ * it so and nothing keeps it so.
+ *
+ * Only the evidence was wrong. The design it was offered for was not, and a
+ * later reader finding the falsehood should not conclude otherwise.
  *
  * That is not fixed here, deliberately. This function is a reader of the
  * *filesystem*, and the fact that closes the gap — that an open pull request is
@@ -457,7 +527,10 @@ export function discoverRepos(
     return [...new Set(configured)].map((repo) => ({ repo, source: 'config' as const }));
   }
 
-  const found = new Set<string>();
+  // Keyed by repository, holding every agent found in one — a repository is
+  // routinely held by more than one agent at a time, and a reader checking the
+  // claim wants the whole list rather than whichever was seen first.
+  const found = new Map<string, CheckoutHolder[]>();
   for (const agent of agents) {
     if (!agent.type || !agent.key) continue;
     const workspace = path.join(workspacesRoot(), agent.type, agent.key.toLowerCase());
@@ -469,11 +542,17 @@ export function discoverRepos(
     }
     for (const child of children) {
       if (!child.isDirectory()) continue;
-      const repo = repoForCheckout(path.join(workspace, child.name));
-      if (repo) found.add(repo);
+      const checkout = path.join(workspace, child.name);
+      const repo = repoForCheckout(checkout);
+      if (!repo) continue;
+      const holders = found.get(repo) ?? [];
+      holders.push({ type: agent.type, key: agent.key, path: checkout });
+      found.set(repo, holders);
     }
   }
-  return [...found].sort().map((repo) => ({ repo, source: 'checkout' as const }));
+  return [...found.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([repo, heldBy]) => ({ repo, source: 'checkout' as const, heldBy }));
 }
 
 /**
