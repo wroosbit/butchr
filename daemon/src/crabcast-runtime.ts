@@ -395,8 +395,20 @@ export function readUnreadableDisclosure(
       const r = (raw ?? {}) as Record<string, unknown>;
       const identity = str(r.identity);
       const claimsPath = str(r.claimsPath);
+      // All three v7 fields cross the door together, because they arrived
+      // together and are absent from the same peers. `claimsAt` outside it
+      // would be a `null` meaning "this peer cannot send it", and their
+      // contract guarantees that `null` means "the row named none" — the same
+      // collapse as `standing`, one field over.
       const standing: StandingReading = standingAvailable
-        ? { available: true, standing: narrowRowStanding(r.standing) }
+        ? {
+            available: true,
+            verdict: narrowRowStanding(r.standing),
+            // Quotations. Carried as the strings they are and never parsed —
+            // see StandingReading.claimsAt for why a date type would be a lie.
+            claimsAt: str(r.claimsAt),
+            claimsEvent: str(r.claimsEvent)
+          }
         : { available: false, because: 'peer-below-v7', peerContractVersion };
 
       return {
@@ -405,12 +417,9 @@ export function readUnreadableDisclosure(
         problem: str(r.problem),
         identity,
         reason: str(r.reason),
-        // On the wire from v4, so readable against the v6 peer this machine has.
+        // v4, not v7 — on the wire from the peer this machine actually has, so
+        // it is read in front of the door rather than behind it.
         claimsPath,
-        // A quotation. Carried as the string it is and never parsed — see
-        // CensusUnreadableRecord.claimsAt for why a date type would be a lie.
-        claimsAt: str(r.claimsAt),
-        claimsEvent: str(r.claimsEvent),
         standing,
         supersession: joinSupersession(standing, claimsPath, identity, readablePaths)
         // `raw` is deliberately not carried. See CensusUnreadableRecord.
@@ -473,7 +482,7 @@ function joinSupersession(
   identity: string | null,
   readablePaths: ReadonlySet<string>
 ): SupersessionJoin | null {
-  if (!standing.available || standing.standing !== 'claims-an-agent') return null;
+  if (!standing.available || standing.verdict !== 'claims-an-agent') return null;
   if (claimsPath === null) return { outcome: 'could-not-run', identity };
   return readablePaths.has(claimsPath)
     ? { outcome: 'matched', claimsPath, matchedPath: claimsPath }

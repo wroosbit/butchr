@@ -90,7 +90,18 @@
 //        cd daemon && npm run build && cd .. \
 //          && node daemon/scripts/verify-crabcast-standing.mjs   # §3 red
 //
-// Real output of both is pasted in the PR body.
+//        # (c) leak the v7 quotations onto the below-v7 arm — THE DEFECT THIS
+//        #     TICKET'S OWN FIRST IMPLEMENTATION SHIPPED, caught in self-review
+//        #     rather than by anything mechanical. Append to the available:false
+//        #     arm in readUnreadableDisclosure:
+//        #       claimsAt: str(r.claimsAt), claimsEvent: str(r.claimsEvent)
+//        #     (it needs an `as StandingReading` to compile, which is itself the
+//        #     point: the union refuses the accidental form and only a cast gets
+//        #     past it)
+//        cd daemon && npm run build && cd .. \
+//          && node daemon/scripts/verify-crabcast-standing.mjs   # §2 red
+//
+// Real output of all three is pasted in the PR body.
 //
 // Sections:
 //   1. the vocabulary narrows, and an unrecognised value never becomes `retired`
@@ -194,7 +205,7 @@ section('1. THE VOCABULARY — an unrecognised standing is `unknown`, never `ret
     const r = only(readUnreadableDisclosure(frameWith({ standing: sent }), 7, pathsOf()));
     check(
       `\`${sent}\` survives narrowing as \`${expected}\``,
-      r.standing.available === true && r.standing.standing === expected,
+      r.standing.available === true && r.standing.verdict === expected,
       `got ${JSON.stringify(r.standing)}`,
       `standing=${expected}`
     );
@@ -205,7 +216,7 @@ section('1. THE VOCABULARY — an unrecognised standing is `unknown`, never `ret
     const r = only(readUnreadableDisclosure(frameWith({ standing: hostile }), 7, pathsOf()));
     check(
       `unrecognised standing ${JSON.stringify(hostile)} → \`unknown\`, not \`retired\``,
-      r.standing.available === true && r.standing.standing === 'unknown',
+      r.standing.available === true && r.standing.verdict === 'unknown',
       `got ${JSON.stringify(r.standing)} — collapsing an unknown member to \`retired\` is the all-clear this must never give`,
       'narrowed to unknown'
     );
@@ -263,7 +274,7 @@ section('2. THE DOOR — below v7 is "this peer cannot tell me", not a row verdi
     const open = only(readUnreadableDisclosure(frameWith({ standing: 'retired' }), v, pathsOf()));
     check(
       `v${v} peer → the door opens and the verdict is read`,
-      open.standing.available === true && open.standing.standing === 'retired',
+      open.standing.available === true && open.standing.verdict === 'retired',
       `got ${JSON.stringify(open.standing)}`
     );
   }
@@ -273,10 +284,82 @@ section('2. THE DOOR — below v7 is "this peer cannot tell me", not a row verdi
   // peer that actually exists.
   const stillReads = readUnreadableDisclosure(frameWith({ claimsPath: '/w/x' }), 6, pathsOf());
   check(
-    'the door is in front of `standing` ONLY — a v6 peer still discloses total and claimsPath',
+    'the door is in front of the v7 GROUP only — a v6 peer still discloses total and claimsPath',
     stillReads.unreadableRecordsTotal === 1 && only(stillReads).claimsPath === '/w/x',
     `got total=${stillReads.unreadableRecordsTotal} claimsPath=${JSON.stringify(only(stillReads).claimsPath)} — the v4 disclosure has been lost to the v7 gate`,
     'total=1, claimsPath read at v6'
+  );
+
+  // ALL THREE v7 fields are behind the door, not just `standing`.
+  //
+  // This assertion exists because the first implementation of this ticket got
+  // it wrong: `standing` was gated and `claimsAt`/`claimsEvent` were read in
+  // front of the gate. Against a v6 peer that yields `claimsAt: null` — and
+  // their contract guarantees `null` means THE ROW NAMED NONE, never "we could
+  // not see it", because a line that does not parse never becomes one of these
+  // rows at all. So an ungated `claimsAt` publishes the forbidden second
+  // meaning under the first one's name: the same collapse as `standing`, one
+  // field over, and invisible for exactly the same reason.
+  check(
+    'claimsAt and claimsEvent are NOT reachable on a v6 reading — they are v7, like `standing`',
+    !('claimsAt' in v6.standing) && !('claimsEvent' in v6.standing) && v6.standing.available === false,
+    `got ${JSON.stringify(v6.standing)} — a v7 quotation is being reported off a peer that cannot send one`
+  );
+  const v6WithClaims = only(
+    readUnreadableDisclosure(
+      frameWith({ claimsAt: '2026-08-03T20:37:38.900Z', claimsEvent: 'deactivated' }),
+      6,
+      pathsOf()
+    )
+  );
+  check(
+    'even when a v6 frame carries them, the reading refuses rather than widening `null`',
+    v6WithClaims.standing.available === false,
+    `got ${JSON.stringify(v6WithClaims.standing)}`
+  );
+  const v7Claims = only(
+    readUnreadableDisclosure(
+      frameWith({
+        standing: 'retired',
+        claimsAt: '2026-08-03T20:37:38.900Z',
+        claimsEvent: 'deactivated'
+      }),
+      7,
+      pathsOf()
+    )
+  );
+  check(
+    'at v7 the verdict arrives WITH its evidence — claimsEvent beside the verdict it explains',
+    v7Claims.standing.available === true &&
+      v7Claims.standing.verdict === 'retired' &&
+      v7Claims.standing.claimsEvent === 'deactivated' &&
+      v7Claims.standing.claimsAt === '2026-08-03T20:37:38.900Z',
+    `got ${JSON.stringify(v7Claims.standing)} — a verdict nobody can compare against its quote is one nobody can catch being wrong`,
+    JSON.stringify(v7Claims.standing)
+  );
+  check(
+    'claimsAt is carried as the STRING it is, never coerced to a date',
+    typeof v7Claims.standing.claimsAt === 'string',
+    `got ${typeof v7Claims.standing.claimsAt}`
+  );
+  const v7Garbage = only(
+    readUnreadableDisclosure(
+      frameWith({ standing: 'unknown', claimsAt: 'not a date at all', claimsEvent: 'nonsense-verb' }),
+      7,
+      pathsOf()
+    )
+  );
+  check(
+    'an unparseable claimsAt survives verbatim — it is a quotation, and a hand-edited row may hold anything',
+    v7Garbage.standing.available === true && v7Garbage.standing.claimsAt === 'not a date at all',
+    `got ${JSON.stringify(v7Garbage.standing)}`
+  );
+  check(
+    "and an event word we do not know comes back as the word it is, with the verdict abstaining",
+    v7Garbage.standing.available === true &&
+      v7Garbage.standing.claimsEvent === 'nonsense-verb' &&
+      v7Garbage.standing.verdict === 'unknown',
+    `got ${JSON.stringify(v7Garbage.standing)}`
   );
 }
 
@@ -342,9 +425,9 @@ section('3. THE JOIN — three outcomes, and `could-not-run` is not `ran-found-n
   check(
     'a retired tombstone and a lost agent are DISTINGUISHABLE',
     tombstone.standing.available === true &&
-      tombstone.standing.standing === 'retired' &&
+      tombstone.standing.verdict === 'retired' &&
       tombstone.supersession === null &&
-      lost.standing.standing === 'claims-an-agent' &&
+      lost.standing.verdict === 'claims-an-agent' &&
       lost.supersession?.outcome === 'ran-found-nothing',
     `tombstone=${JSON.stringify({ s: tombstone.standing, j: tombstone.supersession })}\nlost=${JSON.stringify({ s: lost.standing, j: lost.supersession })}\nIf these read the same, the count is back to being a number nobody can act on.`,
     'retired/null vs claims-an-agent/ran-found-nothing'

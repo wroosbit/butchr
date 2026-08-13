@@ -436,7 +436,7 @@ the join.** Both halves have a live counter-example on this machine:
 
 | field | why it is read the way it is |
 | --- | --- |
-| `standing` | Refused below `contractVersion: 7`, as `{available: false, because: 'peer-below-v7'}`. The peer here answers **6**, so the field is `undefined` on every row — and reading `undefined` as *"no standing recorded"* would collapse **this peer cannot tell me** into **this row has no standing**, which are different sentences. `StandingReading` is an object union precisely so that collapse does not compile |
+| `standing` | Refused below `contractVersion: 7`, as `{available: false, because: 'peer-below-v7'}` — and `claimsAt`/`claimsEvent` sit behind the SAME gate, because all three arrived in v7 and a peer below it sends none of them. The peer here answers **6**, so the field is `undefined` on every row — and reading `undefined` as *"no standing recorded"* would collapse **this peer cannot tell me** into **this row has no standing**, which are different sentences. `StandingReading` is an object union precisely so that collapse does not compile |
 | `claimsPath` | The join key. An agent in CrabCast **is** a canonical path, so `claimsPath` matches a readable row's `path` directly. `identity` is the row's own vocabulary — often `<type>/<key>` — so a failed match on it is indistinguishable from a genuine absence, and branching on it would fire the alarm on the ordinary case |
 | `claimsAt` | A **quotation, never a date type.** Their promise is that it is what the row said, not that it parses |
 

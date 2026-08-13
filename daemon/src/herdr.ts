@@ -459,6 +459,23 @@ export type RowStanding = 'retired' | 'claims-an-agent' | 'unknown';
  * hypothetical: as of 2026-08-13 the CrabCast serving this machine answers
  * `contractVersion: 6`, so every row on the wire takes the `available: false`
  * arm and there is no v7 peer anywhere to take the other one.
+ *
+ * ## All THREE v7 fields live behind this one gate, and that is not tidiness
+ *
+ * `claimsAt` and `claimsEvent` arrived in the same release as `standing` and
+ * are absent from the same peers, so they are on the `available: true` arm
+ * rather than beside it. **Putting them outside would reintroduce the very
+ * collapse this type exists to prevent, one field over**: their contract
+ * guarantees that a line which does not parse never becomes one of these rows
+ * at all, so `claimsAt: null` means *the row parsed and named no timestamp* and
+ * **never** *we could not see it*. Read off a v6 peer — where the key is not
+ * sent — a bare `claimsAt: null` would mean exactly the forbidden second thing,
+ * and nothing in its type could say so. Behind the gate, that value is not
+ * reachable unless a peer that publishes the field said it.
+ *
+ * `claimsPath` is **not** here, and that asymmetry is real rather than an
+ * oversight: it landed in v4, so a v6 peer genuinely sends it and its `null` on
+ * such a peer genuinely means *the row named no path*.
  */
 export type StandingReading =
   | {
@@ -480,7 +497,35 @@ export type StandingReading =
        */
       peerContractVersion: number | null;
     }
-  | { available: true; standing: RowStanding };
+  | {
+      available: true;
+      /** Their verdict on the row. */
+      verdict: RowStanding;
+      /**
+       * The timestamp the row gives for **itself**, quoted verbatim, or `null`
+       * where it named none.
+       *
+       * **A quotation, not a date, and typed `string` on purpose.** Their
+       * promise is that this is what the row said, never that it parses: the
+       * row came off a line nobody could read, and a hand-edited one may hold
+       * anything at all. A type asserting date-ness would assert something the
+       * value cannot honour. It is also **when the row was WRITTEN, not when it
+       * became unreadable.**
+       */
+      claimsAt: string | null;
+      /**
+       * The row's own `event`, verbatim, or `null` where it named none. **In
+       * the row's own vocabulary** — a word their daemon does not know arrives
+       * as the word it is rather than as a null.
+       *
+       * **This is the evidence under {@link verdict}**, and it travels beside
+       * it so the verdict can be checked. An interpretation nobody can compare
+       * against the underlying quote is one nobody can catch being wrong; that
+       * is their argument for shipping both, and it only works if a consumer
+       * carries both.
+       */
+      claimsEvent: string | null;
+    };
 
 /**
  * The supersession join CrabCast's contract prescribes — **three outcomes, and
@@ -553,34 +598,10 @@ export interface CensusUnreadableRecord {
    */
   claimsPath: string | null;
   /**
-   * The timestamp the row gives for **itself**, quoted verbatim — or `null`
-   * where it names none.
-   *
-   * **A quotation, not a date, and typed `string` on purpose.** CrabCast's
-   * promise is that this is what the row said, never that it parses: the row
-   * came off a line nobody could read, and a hand-edited one may hold anything
-   * at all. A type asserting date-ness would assert something the value cannot
-   * honour. Treat as evidence; never `new Date()` it without saying what you
-   * will do when it is not one.
-   *
-   * **It is when the row was WRITTEN, not when it became unreadable.**
-   */
-  claimsAt: string | null;
-  /**
-   * The row's own `event`, verbatim, or `null` where it names none. **In the
-   * row's own vocabulary** — a word their daemon does not know arrives as the
-   * word it is rather than as a null.
-   *
-   * **This is the evidence under {@link CensusUnreadableRecord.standing}**, and
-   * it travels beside the verdict so the verdict can be checked. An
-   * interpretation nobody can compare against the underlying quote is one
-   * nobody can catch being wrong.
-   */
-  claimsEvent: string | null;
-  /**
-   * CrabCast's verdict on this row, **or the fact that this peer is too old to
-   * have rendered one**. See {@link StandingReading} for why that is a union
-   * and not a nullable.
+   * **All three of read-path v7's fields, or the fact that this peer is too old
+   * to have sent any of them** — their verdict on the row plus the two
+   * quotations that are its evidence. See {@link StandingReading} for why this
+   * is a union rather than a nullable, and why the three travel together.
    *
    * **Required rather than optional**, for the same reason
    * {@link CensusReading.unreadableRecordsTotal} is: an optional field is one a
@@ -1426,15 +1447,16 @@ export class HerdrBridge implements AgentRuntime {
               'this row carried no string `name`, and a census row without one cannot be ' +
               'addressed, tailed or supervised. Naming it would be inventing the one value ' +
               'that identifies it.',
-            // The v7 fields are CrabCast's registry disclosure and herdr has no
-            // counterpart to any of them: no registry line, no event vocabulary,
-            // and no verdict it could render. `null` here is the same `null` the
-            // wire uses — this source named none — and the standing says
-            // `source-does-not-disclose` rather than borrowing a version
-            // complaint from a peer that is not on this leg at all.
+            // `claimsPath` is CrabCast's registry field and herdr has no
+            // counterpart: `herdr agent list` is a JSON array of panes, not a
+            // registry of rows that name directories. `null` here is the same
+            // `null` the wire uses — this source named none.
             claimsPath: null,
-            claimsAt: null,
-            claimsEvent: null,
+            // And the v7 group is refused outright rather than reported as
+            // three nulls. herdr has no registry line, no event vocabulary and
+            // no verdict it could render, so `source-does-not-disclose` says
+            // that in its own words rather than borrowing a version complaint
+            // from a peer that is not on this leg at all.
             standing: {
               available: false,
               because: 'source-does-not-disclose',
