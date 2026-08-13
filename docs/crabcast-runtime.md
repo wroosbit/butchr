@@ -14,15 +14,20 @@ human's decision of 2026-08-08, which is not lifted. Claims about their
 behaviour are claims about observations, and
 `daemon/scripts/verify-crabcast-runtime-live.mjs` re-runs them.
 
-**Three sentences on this page are pinned to the constants they quote** — the
-two rows below and the `contractVersion` sentence under *What the contract does
+**Four sentences on this page are pinned to the constants they quote** — the
+three rows below and the `contractVersion` sentence under *What the contract does
 not hold*. Each carries an invisible marker naming the declaration and a digest
 of it, and `daemon/scripts/verify-doc-constant-pins.mjs` recomputes that digest
-on every pull request. Move `CRABCAST_PIN` or `CRABCAST_CONTRACT_VERSION`
-without moving these sentences and CI goes red (KAN-347). **Nothing else on this
-page is pinned**, and no other document is: that script's header states the
-scope and `docs/doc-constant-drift.md` states why it is this narrow.
+on every pull request. Move `CRABCAST_PIN`, `CRABCAST_CONTRACT_VERSION` or the
+runtime switch without moving these sentences and CI goes red (KAN-347; the
+switch was added by KAN-378, whose `docs/crabcast-cutover-sequence.md` turns on
+the same value). **Nothing else on this page is pinned**: that script's header
+states the scope and `docs/doc-constant-drift.md` states why it is this narrow.
 
+<!-- constant-pin: RUNTIME_ENV_VAR
+     src: daemon/src/runtime-switch.ts
+     sha256: 28959b7fe578
+     says: **The runtime switch:** `BUTCHR_AGENT_RUNTIME`, read once at daemon construction. -->
 <!-- constant-pin: CRABCAST_PIN
      src: daemon/src/crabcast-link.ts
      sha256: 8b5c3f4072d9
@@ -32,6 +37,9 @@ scope and `docs/doc-constant-drift.md` states why it is this narrow.
      sha256: 26fc90873199
      says: **CrabCast read-path contract version:** **`7`** -->
 
+- **The runtime switch:** `BUTCHR_AGENT_RUNTIME`, read once at daemon construction.
+  Which runtime a *cutover* would move the fleet onto, and in what order, is
+  `docs/crabcast-cutover-sequence.md` rather than this page.
 - **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` (KAN-294; was
   `7c6d97f` under KAN-278). Read off `daemon_status.build.commit` of a real
   daemon built at that commit, not off a notice.
