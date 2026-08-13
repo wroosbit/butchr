@@ -130,13 +130,57 @@ export const STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** What a Jira issue key looks like, so a `shell` workspace is not polled. */
 const JIRA_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
 
+/**
+ * A fact and the moment it was observed — the only shape a state claim travels
+ * in once it leaves this module (KAN-367).
+ *
+ * WHY THE TIMESTAMP IS NOT OPTIONAL. `factsFor` used to hand out
+ * {@link IssueMemory.status} as a bare string while {@link IssueMemory.seenAt}
+ * sat one field away, documented as *"only used to expire rows; never compared
+ * for events"*. A bare string carries no way to ask how old it is, so every
+ * consumer of it is free to state it in the present tense — and one did.
+ *
+ * On 2026-08-13 the PR watcher announced that `wroosbit/CrabCast#86` had merged
+ * **and that KAN-361 was "still In Review"**. KAN-361 had been `Done` since 27
+ * seconds after that merge, two hours and fifty-one minutes earlier. Nothing was
+ * broken: `task/KAN-361` stood down after merging, this poller reads *only live
+ * agents' issues* (see `pollable` in the tick), so KAN-361 stopped being read
+ * and its row froze at the last status it had — held for a week by
+ * {@link STATE_TTL_MS}, which exists precisely so a memory outlives its agent.
+ *
+ * The defect was therefore not in the memory, which was honest, nor in the
+ * watcher's arithmetic, which was correct. It was that the **type let a stale
+ * fact and a fresh one be the same value**, so the sentence composed from it
+ * could not tell them apart and asserted the more useful of the two.
+ *
+ * `prompts/task.md`: prefer the type to the assertion where the invariant is
+ * about what the code is *able to say*. A consumer holding one of these cannot
+ * make an untimed claim, because there is no untimed value to make it from.
+ */
+export interface ObservedState {
+  /** The value observed. */
+  value: string;
+  /** ISO 8601 — when it was read. Never optional; that is the whole point. */
+  observedAt: string;
+}
+
 /** One watched issue, as last seen. */
 export interface IssueMemory {
   /** The Jira status name last seen, or null if the read carried none. */
   status: string | null;
   /** The highest comment id already accounted for, as a decimal string. */
   maxCommentId: string;
-  /** ISO 8601. Only used to expire rows; never compared for events. */
+  /**
+   * ISO 8601, when this row was last read from Jira.
+   *
+   * Never compared for events — a row's age decides nothing about whether
+   * something happened. It expires rows in {@link IssueEventState.save}, and
+   * since KAN-367 it is also the `observedAt` of the {@link ObservedState}
+   * `factsFor` hands to a second reader. That second use is the one that
+   * matters: this field is the difference between *"KAN-361 is still In Review"*
+   * and *"KAN-361 was In Review when last read, 2h51m ago"*, and it was sitting
+   * here unused while the first sentence was being sent.
+   */
   seenAt: string;
   /**
    * The board parent last seen, and the issues linked to this one.
@@ -431,14 +475,36 @@ export class JiraPollState {
    *
    * A read, never a write: nothing outside this file may move the baseline that
    * decides whether an event has been announced.
+   *
+   * THE STATUS COMES OUT TIMED (KAN-367). It is an {@link ObservedState} rather
+   * than a string, and the timestamp is {@link IssueMemory.seenAt} — a field
+   * this module has always held and always thrown away here. So this costs no
+   * additional Jira request, no additional field in the state file and no
+   * migration: it stops discarding something already on disk.
+   *
+   * `parentKey` and `linkedKeys` are deliberately NOT timed. They are read for
+   * *routing* — who to tell — and a recipient list that turns out to be one poll
+   * stale is a message delivered to almost the right set, which the reader can
+   * see and judge. A status is read to be *quoted*, and a quoted fact carries no
+   * such tell. Timing everything on principle would have made this change large
+   * and its point unfindable.
    */
   public factsFor(
     key: string
-  ): { status: string | null; parentKey: string | null; linkedKeys: string[] } | null {
+  ): {
+    status: ObservedState | null;
+    parentKey: string | null;
+    linkedKeys: string[];
+  } | null {
     const memory = this.issues.get(key.toUpperCase());
     if (!memory) return null;
     return {
-      status: memory.status,
+      // `null` for an issue polled and found to carry no status stays null: an
+      // absent status has nothing to timestamp, and inventing an `ObservedState`
+      // with an empty value would make "we read it and there was none" and "we
+      // read it and it said ''" the same value — this ticket's own mistake in
+      // miniature.
+      status: memory.status === null ? null : { value: memory.status, observedAt: memory.seenAt },
       parentKey: memory.parentKey ?? null,
       linkedKeys: memory.linkedKeys ?? []
     };

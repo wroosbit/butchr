@@ -238,7 +238,9 @@ const timeline = [];
     ),
     liveAgents: () => stages[stage].agents,
     issueFacts: (key) =>
-      key === 'KAN-999' ? { status: 'In Review', parentKey: 'KAN-39', linkedKeys: [] } : null,
+      key === 'KAN-999'
+        ? { status: { value: 'In Review', observedAt: new Date().toISOString() }, parentKey: 'KAN-39', linkedKeys: [] }
+        : null,
     supervisorFor: () => null,
     // NO `repos` OVERRIDE, deliberately: the subject of this proof is exactly
     // the set the watcher builds for itself.
