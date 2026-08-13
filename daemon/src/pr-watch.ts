@@ -8,6 +8,9 @@ import {
   GitHubReader,
   Mergeability,
   PullRequestSnapshot,
+  REPO_SOURCE_PHRASE,
+  RepoSource,
+  WatchedRepo,
   discoverRepos,
   mergeabilityOf
 } from './github.js';
@@ -72,6 +75,71 @@ import type { LiveAgent, NudgeRelation } from './jira-poll.js';
  * composer reach in `daemon/src` against a declared allowlist and this module is
  * deliberately not on it; §AC1b asserts that `daemon.ts` hands the channel-only
  * carrier to **all three** producers.
+ *
+ * ---------------------------------------------------------------------------
+ * THE WATCH SET DRAINS WITH THE FLEET, AND THE APPROVER IS NEVER IN IT (KAN-360)
+ * ---------------------------------------------------------------------------
+ *
+ * `discoverRepos` reads the repositories out of live agents' checkouts, which is
+ * the right primary path and has one property nobody had stated: **no supervisor
+ * holds a checkout.** Measured on this machine 2026-08-12 — `epic/kan-39`,
+ * `epic/kan-203`, `epic/kan-59`, none of them has one — because only task agents
+ * make worktrees. So the set is built entirely by the agents a PR notification
+ * is *not* for, and emptied by them standing down:
+ *
+ *   1. a task agent opens a pull request and finishes;
+ *   2. it stands down, and its worktree was the only thing holding that
+ *      repository in the set;
+ *   3. the repository leaves the set;
+ *   4. **the approver — still running, still responsible, holding no checkout —
+ *      stops being told anything about that pull request;**
+ *   5. the report says *"Watching 1 repository"* and nothing about having watched
+ *      two an hour ago.
+ *
+ * Observed as readings 35 minutes apart: `crabcast + butchr` → `butchr` only, as
+ * CrabCast's last live checkout went away. The shape is the wrong way round for
+ * an unattended fleet — the quiet hours are when a pull request sits longest and
+ * when the watcher covers least.
+ *
+ * WHAT WAS CHOSEN, AND WHAT WAS NOT
+ *
+ * **Chosen: retain a repository while the watcher's own durable memory says
+ * something there is still OPEN** — {@link PrWatchState.reposWithOpenPr}, unioned
+ * with discovery in {@link PrWatcher.resolveRepos}, each entry carrying the
+ * {@link RepoSource} it arrived by. It is derived from *responsibility* rather
+ * than from possession, it survives a daemon restart because the memory is
+ * durable, and it releases by itself when the last open pull request merges or
+ * closes.
+ *
+ * **Rejected: `BUTCHR_PR_WATCH_REPOS` as the answer.** It is kept and it is now
+ * documented (`docs/pr-watch-coverage.md`), but a list somebody has to maintain
+ * is a list that does not name the repository nobody thought of, and a variable
+ * set once on one machine is this ticket again after the next rebuild. It is an
+ * override, not coverage — so it is a floor here rather than a ceiling: naming
+ * repositories in it does not switch retention off, because "watch exactly these
+ * and nothing else" would reintroduce the blindness for anything opened later.
+ *
+ * **Rejected: derive the set from what each supervisor is responsible for.** It
+ * is the more faithful idea and it is not buildable, for a stated reason rather
+ * than a cost: **nothing maps a ticket to a repository.** Jira carries no such
+ * field, and KAN-360's own description names `wroosbit/butchr` in *prose*. The
+ * only route from a supervisor to a repository runs through the agents under it,
+ * which is the checkout path again and drains at exactly the same moment. What
+ * survives of the idea is its principle, and the retention rule is that
+ * principle applied to the one durable responsibility signal the daemon actually
+ * holds: an open pull request whose branch names a ticket of this fleet's.
+ *
+ * WHAT RETENTION STILL DOES NOT COVER, stated because it looks total
+ *
+ *   - **A pull request no tick ever saw open.** Retention is self-sustaining,
+ *     not self-starting: the repository has to be watched once, with the PR
+ *     open, for the memory to exist. An agent that opens a PR and stands down
+ *     inside one 60s tick — or one that opens it while the daemon is down and is
+ *     gone before it returns — leaves nothing behind to retain.
+ *   - **A repository nobody has ever worked in.** By construction.
+ *
+ * Both are what `BUTCHR_PR_WATCH_REPOS` is for, and both are why it was kept
+ * rather than deleted.
  */
 
 /**
@@ -150,6 +218,21 @@ export const BRANCH_ASSOCIATION = /^butchr\/([A-Z][A-Z0-9]*-\d+)(?:-.*)?$/;
 export function issueKeyForBranch(branch: string): string | null {
   const match = BRANCH_ASSOCIATION.exec((branch ?? '').trim());
   return match ? match[1].toUpperCase() : null;
+}
+
+/**
+ * The repository half of a `owner/name#number` memory key.
+ *
+ * `#` cannot occur in a GitHub owner or repository name, so the split is exact
+ * rather than a guess — and it is done here, once, because a second spelling of
+ * it somewhere else is how the retention set and the report would come to
+ * disagree about what a row is.
+ */
+export function repoOfPrId(id: string): string | null {
+  const hash = id.lastIndexOf('#');
+  if (hash <= 0) return null;
+  const repo = id.slice(0, hash);
+  return repo.includes('/') ? repo : null;
 }
 
 /**
@@ -405,7 +488,16 @@ export interface UnmatchedPr {
 
 /** What one tick did, so the caller can log it and a proof can assert on it. */
 export interface PrTick {
-  repos: string[];
+  /** The final watch set, each entry naming how it got in (KAN-360). */
+  repos: WatchedRepo[];
+  /**
+   * Repositories the memory has seen that are NOT being watched this tick.
+   *
+   * Never a fault — it is the honest release, and naming it is what lets a
+   * reader tell a set that narrowed because the work finished from one that
+   * narrowed because the fleet went quiet.
+   */
+  releasedRepos: string[];
   /**
    * Every PR read this tick that matched a ticket, as `repo#number` — including
    * the merged and closed ones, because the read window is `--state all`.
@@ -457,8 +549,17 @@ export interface PrTick {
  * {@link describeHealth} renders the second one in the words above.
  */
 export interface PrWatchHealth {
-  /** Repositories being watched, as discovered or configured. */
-  repos: string[];
+  /**
+   * Repositories being watched, each with the {@link RepoSource} it arrived by.
+   *
+   * KAN-360's AC3: *"a reader must be able to tell coverage from luck."* A bare
+   * list of names cannot, because a repository held by one agent's worktree and
+   * one retained because a pull request is outstanding in it read identically
+   * right up to the moment the first stops being true.
+   */
+  repos: WatchedRepo[];
+  /** See {@link PrTick.releasedRepos}. */
+  releasedRepos: string[];
   /** ISO 8601 of the last tick that ran at all, or null before the first. */
   lastAttemptAt: string | null;
   /** ISO 8601 of the last tick in which **every** repository read succeeded. */
@@ -496,18 +597,29 @@ export interface PrWatchHealth {
  */
 export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: number): string {
   if (!health.repos.length) {
-    return (
+    // AC4 OF KAN-339 AND AC4 OF KAN-360 BOTH GUARD THIS STRING, so it is
+    // reproduced here unchanged to the byte. With genuinely nothing to watch —
+    // no checkout, no configuration, and nothing outstanding in memory — this is
+    // the whole sentence, exactly as it was.
+    const inert =
       'No repository is being watched: no live agent holds a checkout with a GitHub ' +
       '`origin`, and BUTCHR_PR_WATCH_REPOS is unset. Nothing about any pull request is ' +
-      'being observed, which is not the same as nothing having changed.'
-    );
+      'being observed, which is not the same as nothing having changed.';
+    // Appended, never substituted: a reader who has seen this sentence before
+    // meets the same words and then learns which repositories it is being silent
+    // about. Silence about a named repository is a different fact from silence
+    // about nothing at all.
+    return health.releasedRepos.length
+      ? `${inert} Seen before and not watched now: ${health.releasedRepos.join(', ')} — nothing ` +
+        'there is outstanding either (no open pull request in memory).'
+      : inert;
   }
 
   if (!health.lastAttemptAt) {
     return (
-      `Watching ${health.repos.join(', ')}; the first look has not run yet, so nothing is ` +
-      'known about any pull request. This is the ordinary state for the first minute after a ' +
-      'daemon start.'
+      `Watching ${health.repos.map((r) => r.repo).join(', ')}; the first look has not run yet, ` +
+      'so nothing is known about any pull request. This is the ordinary state for the first ' +
+      'minute after a daemon start.'
     );
   }
 
@@ -545,7 +657,28 @@ export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: numbe
       : '') +
     '.';
 
-  const repos = `Watching ${health.repos.length} repositor${health.repos.length === 1 ? 'y' : 'ies'} (${health.repos.join(', ')}).`;
+  // EVERY REPOSITORY SAYS HOW IT GOT HERE (KAN-360, AC3).
+  //
+  // The sentence this replaces was `Watching 1 repository (wroosbit/butchr).`,
+  // and its defect was not what it said but what it could not: on 2026-08-12 the
+  // same sentence was true of a set that had been two an hour earlier, and a
+  // reader had no way to notice. Provenance is the half that makes coverage
+  // legible — `a live agent holds a checkout` is a fact about where the fleet is
+  // sitting, and it stops being true the moment that agent stands down.
+  const seen = new Set([...health.repos.map((r) => r.repo), ...health.releasedRepos]);
+  const scale = seen.size > health.repos.length ? ` of the ${seen.size} seen` : '';
+  const repos =
+    `Watching ${health.repos.length}${scale} repositor${health.repos.length === 1 ? 'y' : 'ies'}: ` +
+    health.repos.map((r) => `${r.repo} (${REPO_SOURCE_PHRASE[r.source]})`).join('; ') +
+    '.' +
+    // The released ones, named rather than silently absent. A set that narrows
+    // because the work in it finished and a set that narrows because the fleet
+    // went quiet are different facts, and only one of them is fine.
+    (health.releasedRepos.length
+      ? ` Not watched now, and seen before: ${health.releasedRepos.join(', ')} — nothing there is ` +
+        'outstanding (no live checkout, and no open pull request in memory). Anything opened ' +
+        'there while nobody holds a checkout would be unobserved until somebody does.'
+      : '');
 
   if (health.consecutiveFailures > 0) {
     const since = health.lastSuccessAt
@@ -752,6 +885,50 @@ export class PrWatchState {
     return [...this.prs.entries()];
   }
 
+  /**
+   * Every repository with a remembered pull request that was OPEN when last
+   * read — **the retention rule of KAN-360, and the whole of the fix.**
+   *
+   * A repository named here has outstanding work in it, established from the
+   * watcher's own durable memory rather than from anybody's filesystem. That
+   * matters because the memory outlives the thing discovery depends on: a task
+   * agent's worktree vanishes when it stands down, and this file does not.
+   *
+   * IT SELF-RELEASES, WHICH IS WHY IT IS SAFE. The tick that sees the pull
+   * request merge writes `MERGED` here, so the repository drops out of the set
+   * on the tick after the one that announced the merge — nothing is retained
+   * because it was once interesting, only while something is actually open.
+   * That is the difference between this and "watch it forever", which would pay
+   * GitHub three rate-limit points a minute in perpetuity for every repository
+   * anybody ever touched.
+   */
+  public reposWithOpenPr(): string[] {
+    const repos = new Set<string>();
+    for (const [id, memory] of this.prs) {
+      if (memory.state !== 'OPEN') continue;
+      const repo = repoOfPrId(id);
+      if (repo) repos.add(repo);
+    }
+    return [...repos].sort();
+  }
+
+  /**
+   * Every repository this memory has seen at all, in any state.
+   *
+   * Not a watch set — it is what lets the report say *"watching 1 of the 2
+   * repositories seen"* rather than *"watching 1 repository"*. `epic/KAN-203`
+   * asked for exactly that sentence, and the reason is that the current one
+   * gives a reader no way to notice the set shrank.
+   */
+  public knownRepos(): string[] {
+    const repos = new Set<string>();
+    for (const id of this.prs.keys()) {
+      const repo = repoOfPrId(id);
+      if (repo) repos.add(repo);
+    }
+    return [...repos].sort();
+  }
+
   /** Persist, dropping rows nothing has looked at in a week. Never throws. */
   public save(): void {
     const cutoff = this.now() - PR_STATE_TTL_MS;
@@ -818,8 +995,15 @@ export interface PrWatcherOptions {
   supervisorFor: (agentName: string) => SupervisorOfRecord | null;
   log: (...args: any[]) => void;
   /**
-   * Which repositories to watch. Defaults to discovery from live agents'
-   * checkouts; see `github.ts` for why that rather than configuration.
+   * An explicit watch set, replacing discovery from live agents' checkouts; see
+   * `github.ts` for why discovery is the default rather than configuration.
+   *
+   * Treated as `config` provenance, because a caller naming repositories is
+   * configuration by any other name — and, exactly like `BUTCHR_PR_WATCH_REPOS`,
+   * it is a **floor rather than a ceiling**: {@link PrWatcher.resolveRepos}
+   * still unions in anything the memory says is outstanding. "Watch exactly
+   * these and nothing else" would reintroduce KAN-360's blindness for every pull
+   * request opened after the list was written.
    */
   repos?: (agents: LiveAgent[]) => string[];
   state?: PrWatchState;
@@ -898,6 +1082,7 @@ export class PrWatcher {
 
   private health: Omit<PrWatchHealth, 'detail'> = {
     repos: [],
+    releasedRepos: [],
     lastAttemptAt: null,
     lastSuccessAt: null,
     consecutiveFailures: 0,
@@ -988,6 +1173,7 @@ export class PrWatcher {
   public async watchOnce(): Promise<PrTick> {
     const tick: PrTick = {
       repos: [],
+      releasedRepos: [],
       watched: [],
       openWatched: [],
       nobodyLive: [],
@@ -1022,16 +1208,19 @@ export class PrWatcher {
       else byKey.set(key, [agent]);
     }
 
-    let repos: string[];
+    let repos: WatchedRepo[];
+    let released: string[];
     try {
-      repos = this.opts.repos ? this.opts.repos(agents) : discoverRepos(agents);
+      ({ repos, released } = this.resolveRepos(agents));
     } catch (e: any) {
       this.opts.log(`[pr-watch] could not discover repositories: ${e?.message ?? String(e)}`);
       this.recordFailure(`could not discover repositories: ${e?.message ?? String(e)}`, false);
       return tick;
     }
     tick.repos = repos;
+    tick.releasedRepos = released;
     this.health.repos = repos;
+    this.health.releasedRepos = released;
 
     if (!repos.length) {
       // Not a failure: no live agent holds a checkout. The health sentence says
@@ -1048,7 +1237,7 @@ export class PrWatcher {
     let lastError: string | null = null;
     const pending: PrEvent[] = [];
 
-    for (const repo of repos) {
+    for (const { repo } of repos) {
       const outcome = await this.opts.github.listPullRequests(repo);
       if (!outcome.ok) {
         anyFailure = true;
@@ -1129,6 +1318,52 @@ export class PrWatcher {
     }
 
     return tick;
+  }
+
+  /**
+   * The final watch set, and what was released from it (KAN-360).
+   *
+   * Two sources unioned, and the order of precedence is the order of confidence
+   * about *why* a repository is being watched — an explicit instruction beats a
+   * live checkout, and a live checkout beats an inference from memory. Only the
+   * label differs; a repository present twice is read once either way.
+   *
+   * THE UNION IS THE FIX. Discovery answers "where is the fleet sitting?" and
+   * drains as the fleet does; the memory answers "where is something still
+   * open?" and does not. The approver a pull request notification is for is in
+   * the second answer and never in the first.
+   */
+  private resolveRepos(agents: LiveAgent[]): { repos: WatchedRepo[]; released: string[] } {
+    const discovered = this.opts.repos
+      ? // An explicit override from a caller — a proof, or a machine that has
+        // been told what to watch. Configuration by any other name.
+        this.opts.repos(agents).map((repo) => ({ repo, source: 'config' as const }))
+      : discoverRepos(agents);
+
+    // First writer wins, and there is no precedence rule here because there is
+    // nothing for one to arbitrate: `discoverRepos` returns `config` OR
+    // `checkout` and never both, and the memory is consulted only for
+    // repositories discovery did not already name. A tie-break written for a
+    // case that cannot arise would be a claim about behaviour nothing exercises.
+    const bySource = new Map<string, RepoSource>();
+    for (const { repo, source } of discovered) {
+      if (!bySource.has(repo)) bySource.set(repo, source);
+    }
+    for (const repo of this.state.reposWithOpenPr()) {
+      if (!bySource.has(repo)) bySource.set(repo, 'memory');
+    }
+
+    const repos = [...bySource.entries()]
+      .map(([repo, source]) => ({ repo, source }))
+      .sort((a, b) => a.repo.localeCompare(b.repo));
+
+    // Everything the memory knows of that did not make the set. It is bounded by
+    // `PR_STATE_TTL_MS`, so "seen before" means "seen in the last week" rather
+    // than "seen ever", and a repository the fleet has genuinely left behind
+    // stops being mentioned instead of accumulating forever.
+    const released = this.state.knownRepos().filter((repo) => !bySource.has(repo));
+
+    return { repos, released };
   }
 
   /**
