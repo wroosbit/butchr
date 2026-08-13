@@ -1,0 +1,424 @@
+{
+  "capturedAt": "2026-08-13T15:21:36.410Z",
+  "what": "Raw frames off a LIVE CrabCast daemon at read-path contract v6, build 6f47df7d05eb, captured for KAN-357.",
+  "why": "THE PEER THIS RECORDS IS PERISHABLE AND IS THE POINT OF THE FILE. KAN-357 consumes v7 fields (claimsAt, claimsEvent, standing) that this peer does not serve, so it is the only specimen of the below-v7 case there is - and it disappears the moment somebody deploys CrabCast, which needs a pull, a build and a restart and is the human's call. Captured so the refusal-at-the-door proof stays reproducible after the peer is gone.",
+  "theStateItHolds": "contractVersion 6. unreadableRecordsTotal 1 - the deliberately preserved 2026-08-03 tombstone, a pre-migration shell-demo row CrabCast keeps on purpose. The row carries claimsPath (v4) and does NOT carry standing, claimsAt or claimsEvent (v7). Its claimsPath is null and its identity is \"crabcast-shell-demo\", in the row's own vocabulary - so the supersession join CANNOT RUN against it. That is the could-not-run outcome, and this fixture is the reason that outcome had to be representable rather than folded into ran-found-nothing.",
+  "provenance": "Written by probe-crabcast-raw-frames.mjs, which speaks the wire directly rather than going through CrabCastLink - the point is what CrabCast sent, not what our adapter made of it. Not hand-edited; only this header was added.",
+  "socketPath": "/home/brooswit/.local/share/crabcast/crabcast.sock",
+  "daemon_status": {
+    "action": "daemon_status_response",
+    "success": true,
+    "pid": 872,
+    "configPath": "/home/brooswit/code/wroosbit/crabcast/crabcast.config.json",
+    "dataDir": "/home/brooswit/.local/share/crabcast",
+    "registryPath": "/home/brooswit/.local/share/crabcast/agents.jsonl",
+    "configuredAgents": 2,
+    "expectedAgents": 0,
+    "unreadableRecords": [
+      {
+        "line": 1,
+        "problem": "pre-migration",
+        "identity": "crabcast-shell-demo",
+        "reason": "was written by a CrabCast that addressed agents by <type>/<key>. Its `workDir` gives the path, but `priority`, the gate flags and `prompt` came from the `workspaceTypes` config that no longer exists, so they cannot be recovered from the row. Inventing them is the one thing this daemon refuses to do about a value nobody decided.",
+        "raw": "{\"agentName\":\"crabcast-shell-demo\",\"type\":\"shell\",\"key\":\"demo\",\"workDir\":\"\",\"event\":\"deactivated\",\"at\":\"2026-08-03T20:37:38.900Z\"}",
+        "rawTruncated": false,
+        "promptRedacted": false,
+        "claimsPath": null
+      }
+    ],
+    "unreadableRecordsTotal": 1,
+    "bootId": "89df56ee-360d-4eeb-98db-411d175f67e2",
+    "eventSeq": 77,
+    "startedAt": "2026-08-12T10:53:32.410Z",
+    "contractVersion": 6,
+    "build": {
+      "commit": "6f47df7d05ebcb8593469c740d7b6dc2aa149b13",
+      "clean": true,
+      "builtAt": "2026-08-12T09:20:04.513Z",
+      "gitRoot": "/home/brooswit/code/wroosbit/crabcast",
+      "distDir": "/home/brooswit/code/wroosbit/crabcast/dist",
+      "stampPath": "/home/brooswit/code/wroosbit/crabcast/dist/build-stamp.json",
+      "stampPresent": true,
+      "stampUsable": true,
+      "unknown": {},
+      "readAt": "2026-08-12T10:53:32.765Z"
+    },
+    "freshness": {
+      "state": "build-predates-sources",
+      "summary": "THE BUILD IS OLDER THAN ITS SOURCES. /home/brooswit/code/wroosbit/crabcast/src has changed since /home/brooswit/code/wroosbit/crabcast/dist was built (newest source capacity.ts at 2026-08-12T12:31:14.517Z, newest build output 2026-08-12T09:20:04.513Z). This daemon is running the build that is on disk, but that build does not include those edits. Run `npm run build`, then restart the daemon.",
+      "processIsCurrentBuild": true,
+      "sourcesNewerThanBuild": true,
+      "basis": "build-stamp",
+      "runningBuiltAt": "2026-08-12T09:20:04.513Z",
+      "runningCommit": "6f47df7d05ebcb8593469c740d7b6dc2aa149b13",
+      "onDiskBuiltAt": "2026-08-12T09:20:04.513Z",
+      "onDiskCommit": "6f47df7d05ebcb8593469c740d7b6dc2aa149b13",
+      "distNewestAt": "2026-08-12T09:20:04.513Z",
+      "sourceDir": "/home/brooswit/code/wroosbit/crabcast/src",
+      "sourceNewestAt": "2026-08-12T12:31:14.517Z",
+      "sourceNewestFile": "capacity.ts",
+      "unknown": {}
+    },
+    "id": "kan324-790147-1"
+  },
+  "list_agents": {
+    "action": "list_agents_response",
+    "success": true,
+    "agents": [],
+    "unbackedPanes": [],
+    "missingAgents": [],
+    "preemptedAgents": [],
+    "standbyAgents": [],
+    "unstartedAgents": [
+      {
+        "path": "/home/brooswit/.local/share/butchr/workspaces/task/kan-275",
+        "paneName": "crabcast-kan-275-368a0701be852ad5",
+        "label": null,
+        "launcher": "claude",
+        "config": {
+          "priority": 1,
+          "refusable": true,
+          "chargeable": true,
+          "preemptable": true,
+          "launcher": "claude",
+          "prompt": "[REDACTED BY KAN-357 CAPTURE: 63960 chars of another agent's system prompt, removed before committing. Not read by any assertion.]",
+          "mcpServers": {
+            "atlassian": {
+              "command": "/home/brooswit/.nvm/versions/node/v20.20.2/bin/npx",
+              "args": [
+                "-y",
+                "mcp-remote",
+                "https://mcp.atlassian.com/v1/mcp"
+              ],
+              "pathPrefix": [
+                "/home/brooswit/.nvm/versions/node/v20.20.2/bin"
+              ]
+            },
+            "butchr": {
+              "command": "/home/brooswit/.nvm/versions/node/v20.20.2/bin/node",
+              "args": [
+                "/home/brooswit/code/wroosbit/butchr/daemon/dist/mcp.js"
+              ]
+            }
+          }
+        },
+        "configVersion": 6,
+        "configuredAt": "2026-08-12T11:03:58.817Z",
+        "everActivated": false,
+        "activatedBy": null,
+        "since": "2026-08-12T11:03:58.817Z",
+        "reason": "Configured and never activated. It has no conversation, so activating it starts a fresh one with the prompt on its record — unlike a standby agent, where the same call resumes the conversation it was stopped in."
+      },
+      {
+        "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-203",
+        "paneName": "crabcast-kan-203-dc2fd266a48fae47",
+        "label": null,
+        "launcher": "claude",
+        "config": {
+          "priority": 1,
+          "refusable": true,
+          "chargeable": true,
+          "preemptable": true,
+          "launcher": "claude",
+          "prompt": "[REDACTED BY KAN-357 CAPTURE: 88141 chars of another agent's system prompt, removed before committing. Not read by any assertion.]",
+          "mcpServers": {
+            "atlassian": {
+              "command": "/home/brooswit/.nvm/versions/node/v20.20.2/bin/npx",
+              "args": [
+                "-y",
+                "mcp-remote",
+                "https://mcp.atlassian.com/v1/mcp"
+              ],
+              "pathPrefix": [
+                "/home/brooswit/.nvm/versions/node/v20.20.2/bin"
+              ]
+            },
+            "butchr": {
+              "command": "/home/brooswit/.nvm/versions/node/v20.20.2/bin/node",
+              "args": [
+                "/home/brooswit/code/wroosbit/butchr/daemon/dist/mcp.js"
+              ]
+            }
+          }
+        },
+        "configVersion": 2,
+        "configuredAt": "2026-08-12T11:00:57.703Z",
+        "everActivated": false,
+        "activatedBy": null,
+        "since": "2026-08-12T11:00:57.703Z",
+        "reason": "Configured and never activated. It has no conversation, so activating it starts a fresh one with the prompt on its record — unlike a standby agent, where the same call resumes the conversation it was stopped in."
+      }
+    ],
+    "foreignPanes": [
+      {
+        "paneName": "butchr-task-kan-370",
+        "paneId": "w65702dcc803d94-8",
+        "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-370",
+        "occupies": null,
+        "herdrStatus": "working",
+        "agentRuntime": "claude",
+        "occupiedAgent": null
+      },
+      {
+        "paneName": "butchr-task-kan-367",
+        "paneId": "w65702dcc803d94-9",
+        "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-367",
+        "occupies": null,
+        "herdrStatus": "working",
+        "agentRuntime": "claude",
+        "occupiedAgent": null
+      },
+      {
+        "paneName": "butchr-task-kan-357",
+        "paneId": "w65702dcc803d94-10",
+        "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-357",
+        "occupies": null,
+        "herdrStatus": "working",
+        "agentRuntime": "claude",
+        "occupiedAgent": null
+      },
+      {
+        "paneName": "butchr-epic-kan-59",
+        "paneId": "w65702dcc803d94-6",
+        "workDir": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-59",
+        "occupies": null,
+        "herdrStatus": "done",
+        "agentRuntime": "claude",
+        "occupiedAgent": null
+      },
+      {
+        "paneName": "butchr-epic-kan-39",
+        "paneId": "w65702dcc803d94-7",
+        "workDir": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39",
+        "occupies": null,
+        "herdrStatus": "done",
+        "agentRuntime": "claude",
+        "occupiedAgent": null
+      },
+      {
+        "paneName": "butchr-epic-kan-203",
+        "paneId": "w65702dcc803d94-5",
+        "workDir": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-203",
+        "occupies": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-203",
+        "herdrStatus": "done",
+        "agentRuntime": "claude",
+        "occupiedAgent": {
+          "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-203",
+          "state": "unstarted",
+          "config": {
+            "priority": 1,
+            "refusable": true,
+            "chargeable": true,
+            "preemptable": true,
+            "launcher": "claude",
+            "prompt": "[REDACTED BY KAN-357 CAPTURE: 88141 chars of another agent's system prompt, removed before committing. Not read by any assertion.]",
+            "mcpServers": {
+              "atlassian": {
+                "command": "/home/brooswit/.nvm/versions/node/v20.20.2/bin/npx",
+                "args": [
+                  "-y",
+                  "mcp-remote",
+                  "https://mcp.atlassian.com/v1/mcp"
+                ],
+                "pathPrefix": [
+                  "/home/brooswit/.nvm/versions/node/v20.20.2/bin"
+                ]
+              },
+              "butchr": {
+                "command": "/home/brooswit/.nvm/versions/node/v20.20.2/bin/node",
+                "args": [
+                  "/home/brooswit/code/wroosbit/butchr/daemon/dist/mcp.js"
+                ]
+              }
+            }
+          },
+          "configVersion": 2,
+          "configuredAt": "2026-08-12T11:00:57.703Z",
+          "everActivated": false,
+          "activatedBy": null
+        }
+      }
+    ],
+    "foreignPanesTotal": 6,
+    "missingTotal": 0,
+    "preemptedTotal": 0,
+    "standbyTotal": 0,
+    "unreadableRecords": [
+      {
+        "line": 1,
+        "problem": "pre-migration",
+        "identity": "crabcast-shell-demo",
+        "reason": "was written by a CrabCast that addressed agents by <type>/<key>. Its `workDir` gives the path, but `priority`, the gate flags and `prompt` came from the `workspaceTypes` config that no longer exists, so they cannot be recovered from the row. Inventing them is the one thing this daemon refuses to do about a value nobody decided.",
+        "raw": "{\"agentName\":\"crabcast-shell-demo\",\"type\":\"shell\",\"key\":\"demo\",\"workDir\":\"\",\"event\":\"deactivated\",\"at\":\"2026-08-03T20:37:38.900Z\"}",
+        "rawTruncated": false,
+        "promptRedacted": false,
+        "claimsPath": null
+      }
+    ],
+    "unreadableRecordsTotal": 1,
+    "unstartedTotal": 2,
+    "pages": {
+      "missingAgents": {
+        "returned": 0,
+        "total": 0,
+        "limit": 25,
+        "remaining": 0,
+        "nextCursor": null
+      },
+      "preemptedAgents": {
+        "returned": 0,
+        "total": 0,
+        "limit": 25,
+        "remaining": 0,
+        "nextCursor": null
+      },
+      "standbyAgents": {
+        "returned": 0,
+        "total": 0,
+        "limit": 25,
+        "remaining": 0,
+        "nextCursor": null
+      },
+      "unstartedAgents": {
+        "returned": 2,
+        "total": 2,
+        "limit": 25,
+        "remaining": 0,
+        "nextCursor": null
+      },
+      "foreignPanes": {
+        "returned": 6,
+        "total": 6,
+        "limit": 25,
+        "remaining": 0,
+        "nextCursor": null
+      }
+    },
+    "bootId": "89df56ee-360d-4eeb-98db-411d175f67e2",
+    "eventSeq": 77,
+    "startedAt": "2026-08-12T10:53:32.410Z",
+    "provenance": {
+      "durable": [
+        "path",
+        "config",
+        "configVersion",
+        "configuredAt",
+        "everActivated",
+        "activatedBy",
+        "configured",
+        "label",
+        "refusable",
+        "chargeable",
+        "preemptable",
+        "launcher",
+        "priority",
+        "since",
+        "at",
+        "wasPreempted",
+        "by",
+        "derivation",
+        "herdrStatusWhenPreempted",
+        "occupiedAgent",
+        "identity",
+        "raw",
+        "claimsPath"
+      ],
+      "observed": [
+        "paneId",
+        "herdrStatus",
+        "agentRuntime",
+        "status",
+        "sessionId",
+        "createdAt",
+        "sessionless",
+        "workDir"
+      ],
+      "derived": [
+        "paneName",
+        "state",
+        "occupies",
+        "reason",
+        "line",
+        "problem",
+        "rawTruncated",
+        "promptRedacted"
+      ],
+      "remembered": [
+        "statusSince"
+      ],
+      "observedAt": "2026-08-13T15:21:36.397Z",
+      "censusReachable": true,
+      "note": "durable fields come from the append-only agent registry and survive a daemon restart unchanged; observed fields were read from herdr for THIS response and are true as of observedAt; derived fields are computed from the two. paneId is observed, never durable — herdr pane ids are positions in a list that compacts. remembered fields are this daemon's own accumulated observation, held in memory and NOT surviving a restart: statusSince is when this process first saw the agent in the status beside it, and is null when it has not watched it change (which is every agent on a freshly started daemon). Null there is an answer, not a gap — a consumer wanting a window longer than one daemon's life keeps its own."
+    },
+    "capacity": {
+      "cap": 16,
+      "running": 0,
+      "exemptAgents": 0,
+      "headroom": 0,
+      "atCapacity": true,
+      "capBoundBy": "memory",
+      "headroomBoundBy": "cpu",
+      "reason": "3.17 cores are in use, against the 3.0 cores this machine leaves to agents (measured over 30s)",
+      "cores": 4,
+      "load1": 3.85,
+      "cpuBusyCores": 3.17,
+      "cpuWindowSeconds": 30,
+      "cpuObservedAt": "2026-08-13T15:21:34.110Z",
+      "startsCharged": 0,
+      "startsConsidered": 1,
+      "startsChargeCores": 0,
+      "startsChargeBasis": "cpu-window",
+      "startsChargeBecause": "no agent started after the CPU window opened at 2026-08-13T15:21:04.110Z, so this observation has already priced every agent it is being asked about (1 start(s) considered)",
+      "totalMb": 15737,
+      "availableMb": 8495,
+      "agentMemoryMb": 791,
+      "agentCores": 0.062,
+      "agentMemorySource": "measured",
+      "agentCoresSource": "measured",
+      "measuredAt": "2026-08-13T15:21:03.807Z",
+      "measuredWindowSeconds": 60,
+      "measuredAgentTrees": 6,
+      "capByCpu": 40,
+      "capByMemory": 16,
+      "headroomByCap": 16,
+      "headroomByCpu": 0,
+      "headroomByLoad": 0,
+      "headroomByMemory": 7,
+      "stallPercent": 0.01,
+      "stallSource": "io",
+      "stallInstrument": "measured",
+      "stalled": false,
+      "stallRefusePercent": 50,
+      "headroomBeforeStall": 0,
+      "summary": "cpu too busy — 3.17 cores are in use, against the 3.0 cores this machine leaves to agents (measured over 30s); 0/16 charged agents, room for 0 more (3.17 of 4 cores in use, load 3.85, 8.3 GiB available; bound by cpu)"
+    },
+    "priorities": [],
+    "herdrHealth": {
+      "pid": 3962903,
+      "openFds": 732,
+      "softLimit": 65536,
+      "headroomPanes": 12960,
+      "fdPressure": 0.01
+    },
+    "configEchoContract": {
+      "declared": [
+        "priority",
+        "refusable",
+        "chargeable",
+        "preemptable",
+        "launcher",
+        "prompt",
+        "mcpServers",
+        "label"
+      ],
+      "verbatim": [
+        "mcpServers"
+      ],
+      "drops": false,
+      "undeclared": [],
+      "note": "config on every row is the durable record VERBATIM, swept against the same declaration (CONFIG_FIELDS in src/events.ts) the MCP event projection enforces. Undeclared fields are REPORTED here and still delivered — this response drops nothing; the MCP event path drops what it names. Do not key behaviour off an undeclared field: it has not been designed for you and can change or vanish. See docs/event-contract.md §2 and §4."
+    },
+    "id": "kan324-790147-2"
+  },
+  "redaction": "Every config.prompt in list_agents was replaced with a marker naming its withheld length, by hand, before this file was committed. THREE of them, 63960 + 88141 + 88141 chars: they are other agents' full system prompts, they are what CrabCast puts on the wire, and NO ASSERTION IN verify-crabcast-standing.mjs READS list_agents AT ALL - it reads daemon_status. Copying an unbounded prompt into a committed fixture would move content across a boundary the proof never needed it to cross, which is the same argument CensusUnreadableRecord makes for not carrying the raw row. Nothing else in this file was altered; the unreadable row, its keys and daemon_status are verbatim."
+}
