@@ -81,7 +81,18 @@ import {
   loadCostEstimate,
   saveCostEstimate
 } from './agent-cost-store.js';
-import { AgentCost, MEASURED_AGENT_COST, sampleCpuBusy, setMeasuredAgentCost } from './capacity.js';
+import {
+  AgentCost,
+  MEASURED_AGENT_COST,
+  getMeasuredAgentCost,
+  sampleCpuBusy,
+  setMeasuredAgentCost
+} from './capacity.js';
+import {
+  decideOnMissingSample,
+  staleMeasurementMaxAgeMs,
+  type MeasurementGap
+} from './cost-sampler-policy.js';
 import { execFileSync } from 'child_process';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
@@ -1645,20 +1656,27 @@ let costEstimate: AgentCost | null = null;
  * minute of a healthy sampler. `restored` is its own state so the first real
  * window still announces itself, and so a degrade that discards a restored
  * estimate is not silent. */
-let costSamplerState: 'no-measurement' | 'restored' | 'live' = 'no-measurement';
+let costSamplerState: 'no-measurement' | 'restored' | 'stale' | 'live' = 'no-measurement';
 
 /**
- * Degrade, never guess: any failure — /proc unreadable, an empty fleet, a
- * sample that fails validation — clears the live measurement so capacity
- * falls back to MEASURED_AGENT_COST with the report labelling the figures as
- * seed. A stale estimate left posing as live would be the exact mislabelling
- * KAN-44 exists to correct.
+ * Degrade, never guess: an instrument failure — /proc unreadable, a sample that
+ * fails validation — clears the live measurement so capacity falls back to
+ * MEASURED_AGENT_COST with the report labelling the figures as seed. A stale
+ * estimate left posing as live would be the exact mislabelling KAN-44 exists to
+ * correct.
  *
  * KAN-204: the persisted copy goes with it. The whole point of writing the
  * estimate down is that a restart is not new information; a sampler that has
  * just decided its estimate is untrustworthy *is* new information, and leaving
  * a copy on disk would let the next start resurrect exactly what this call
  * threw away.
+ *
+ * KAN-365 narrowed what reaches here. "An empty fleet" used to be in the list
+ * above and is not any more: nothing is wrong with a measurement whose subject
+ * has gone home, and discarding it is what made the cap collapse on an idle
+ * machine. Which situations still land here is decided by
+ * cost-sampler-policy.ts, exhaustively and by type, rather than by whichever
+ * branch a future author happens to add.
  */
 function degradeCostMeasurement(reason: string) {
   costEstimate = null;
@@ -1667,6 +1685,38 @@ function degradeCostMeasurement(reason: string) {
   if (costSamplerState !== 'no-measurement') {
     costSamplerState = 'no-measurement';
     log(`Agent-cost sampler: ${reason}; capacity answers from the seed constants until sampling recovers`);
+  }
+}
+
+/**
+ * A window that measured nothing, routed by kind (KAN-365).
+ *
+ * The decision is `decideOnMissingSample`'s and lives there because it is pure
+ * and can therefore be proved; this function is the part that cannot be — the
+ * side effects, and the log line that says what happened.
+ *
+ * On `retain`, `costEstimate` is deliberately left alone as well. It is the
+ * damping filter's state, so keeping it means the first window after the fleet
+ * comes back resumes from what this fleet last cost instead of restarting the
+ * twenty-five-minute walk down from the seed — the same argument KAN-204 made
+ * for surviving a restart, applied to surviving a quiet spell.
+ */
+function noSampleThisWindow(gap: MeasurementGap) {
+  const decision = decideOnMissingSample(gap, getMeasuredAgentCost(), Date.now(), staleMeasurementMaxAgeMs());
+  if (decision.action === 'degrade') {
+    degradeCostMeasurement(decision.reason);
+    return;
+  }
+  setMeasuredAgentCost(decision.measured);
+  if (costSamplerState !== 'stale') {
+    costSamplerState = 'stale';
+    log(
+      `Agent-cost sampler: ${decision.reason}; holding the last measurement — ` +
+      `${Math.round(decision.measured.residentBytes / (1024 * 1024))} MB / ` +
+      `${decision.measured.cores} core per tree, sampled ` +
+      `${Math.round(decision.ageMs / 1000)}s ago. Reported as 'stale' with its age until a task ` +
+      `agent runs again; every start until then is charged the seed`
+    );
   }
 }
 
@@ -1720,26 +1770,38 @@ function sampleFleetCost() {
     costWindow = startMeasurement();
   } catch (e: any) {
     costWindow = null;
-    degradeCostMeasurement(`/proc sampling failed (${e?.message ?? String(e)})`);
+    noSampleThisWindow({
+      kind: 'instrument-failed',
+      reason: `/proc sampling failed (${e?.message ?? String(e)})`
+    });
     return;
   }
   if (!measurement) return; // first tick only opens the window
 
   const sample = sampleFromMeasurement(measurement, os.totalmem());
   if (!sample) {
-    degradeCostMeasurement(
+    noSampleThisWindow(
       measurement.chargeable.agents <= 0
         ? // Named separately from an empty machine because it is now a state a
           // busy fleet reaches: supervisors running and no task agent among
-          // them. The seed is the honest answer for the *next* task agent, and
-          // the reading that filed KAN-276 is what the alternative looks like —
+          // them. Neither is an instrument failure — there is no task agent to
+          // measure, which is a fact about the fleet and not about /proc. What
+          // stays refused is computing a figure out of the trees that *are*
+          // there: the reading that filed KAN-276 is what that looks like —
           // 0.123 core/agent published with `running: 0`, averaged entirely
-          // over supervisors.
-          measurement.totals.agents > 0
-          ? `no task-agent trees to measure (${measurement.supervisors.agents} supervisor(s), ` +
-            `${measurement.unmarked.agents} unmarked tree(s) held out)`
-          : 'no agent trees running, nothing to measure'
-        : 'sample failed validation'
+          // over supervisors. Retaining a measurement of task agents and
+          // inventing one out of supervisors are different acts (KAN-365).
+          {
+            kind: 'nothing-to-measure',
+            reason:
+              measurement.totals.agents > 0
+                ? `no task-agent trees to measure (${measurement.supervisors.agents} supervisor(s), ` +
+                  `${measurement.unmarked.agents} unmarked tree(s) held out)`
+                : 'no agent trees running, nothing to measure'
+          }
+        : // A window that had trees in it and produced an unusable figure is
+          // the instrument failing, whatever the trees were doing.
+          { kind: 'instrument-failed', reason: 'sample failed validation' }
     );
     return;
   }
