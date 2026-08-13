@@ -18,7 +18,10 @@ import {
   type HerdrAgentRecord,
   type HerdrAgentStatus,
   type HerdrSession,
+  type RowStanding,
   type SessionEndedEvent,
+  type StandingReading,
+  type SupersessionJoin,
   type TailSource
 } from './herdr.js';
 import type { McpServerDefinitions } from './integrations/integration.js';
@@ -327,8 +330,48 @@ export function readChannelEnabled(frame: Record<string, unknown>): boolean | nu
  * them"* — which is this ticket's own defect, reproduced inside the field
  * written to disclose it. `unreadableRecords` is therefore evidence about the
  * rows it names and never a count of the rows there are.
+ *
+ * ## v7's three fields, and the door they are read behind (KAN-357)
+ *
+ * v7 adds `claimsAt`, `claimsEvent` and `standing` to each row. `standing` is
+ * the one that turns `unreadableRecordsTotal` from a number nobody can act on
+ * into a branch: this machine's count has read **1** since 2026-08-03 — a
+ * tombstone CrabCast preserves on purpose — so a genuinely lost agent arrives
+ * as a `2` where the `1` has become background noise.
+ *
+ * **The version is read as the first act and the v7 fields are refused below
+ * it**, rather than being read optimistically and defaulted. That ordering is
+ * the whole of why this function takes `peerContractVersion` at all, and it is
+ * not academic: as of 2026-08-13 the CrabCast serving this machine answers
+ * `contractVersion: 6`, so `frame.standing` is `undefined` on every row here
+ * and will be until somebody deploys them. An implementation that read
+ * `undefined` as *"no standing recorded"* would pass its own tests, ship, and
+ * be wrong the moment that deploy happens — because it cannot distinguish
+ * **this peer is too old to have the field** from **this row has no standing**.
+ * That is absence-versus-zero arriving at the project boundary, and
+ * {@link StandingReading} is the type that makes the two un-collapsible.
+ *
+ * **The refusal is scoped to the v7 fields and to nothing else.** A v6 peer's
+ * `unreadableRecordsTotal`, its rows, and `claimsPath` are all still read
+ * exactly as before — refusing the whole census on a version mismatch would
+ * delete KAN-324's disclosure against the only peer that actually exists, and
+ * would be this daemon pressuring their release cadence, which is the one thing
+ * KAN-278 forbids outright. The door is in front of `standing`, not in front of
+ * the census.
+ *
+ * ## `null` on a claims-field has exactly one meaning
+ *
+ * **The row parsed and named none** — never *"we could not see it"*. That is
+ * theirs to guarantee and they do guarantee it: a line that does not
+ * `JSON.parse` never becomes one of these rows at all, so every row here
+ * parsed. It is invariant 11 arriving from the other side of the wire, and it
+ * is what makes these fields safe to branch on rather than merely to display.
  */
-export function readUnreadableDisclosure(frame: Record<string, unknown>): {
+export function readUnreadableDisclosure(
+  frame: Record<string, unknown>,
+  peerContractVersion: number | null,
+  readablePaths: ReadonlySet<string>
+): {
   unreadableRecordsTotal: number | null;
   unreadableRecords: CensusUnreadableRecord[];
 } {
@@ -337,21 +380,113 @@ export function readUnreadableDisclosure(frame: Record<string, unknown>): {
 
   const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
+  // The door. Read once per frame from what the peer published at handshake,
+  // never from the presence or absence of the fields themselves — inferring the
+  // version from `'standing' in row` would make a v7 peer that legitimately
+  // omitted a field indistinguishable from a v6 peer, which is the same
+  // absence-versus-zero mistake one level down.
+  const standingAvailable =
+    peerContractVersion !== null && peerContractVersion >= CRABCAST_STANDING_MIN_VERSION;
+
   return {
     unreadableRecordsTotal:
       typeof total === 'number' && Number.isInteger(total) && total >= 0 ? total : null,
     unreadableRecords: rows.map((raw) => {
       const r = (raw ?? {}) as Record<string, unknown>;
+      const identity = str(r.identity);
+      const claimsPath = str(r.claimsPath);
+      // All three v7 fields cross the door together, because they arrived
+      // together and are absent from the same peers. `claimsAt` outside it
+      // would be a `null` meaning "this peer cannot send it", and their
+      // contract guarantees that `null` means "the row named none" — the same
+      // collapse as `standing`, one field over.
+      const standing: StandingReading = standingAvailable
+        ? {
+            available: true,
+            verdict: narrowRowStanding(r.standing),
+            // Quotations. Carried as the strings they are and never parsed —
+            // see StandingReading.claimsAt for why a date type would be a lie.
+            claimsAt: str(r.claimsAt),
+            claimsEvent: str(r.claimsEvent)
+          }
+        : { available: false, because: 'peer-below-v7', peerContractVersion };
+
       return {
         source: 'crabcast-registry' as const,
         line: typeof r.line === 'number' && Number.isInteger(r.line) ? r.line : null,
         problem: str(r.problem),
-        identity: str(r.identity),
-        reason: str(r.reason)
+        identity,
+        reason: str(r.reason),
+        // v4, not v7 — on the wire from the peer this machine actually has, so
+        // it is read in front of the door rather than behind it.
+        claimsPath,
+        standing,
+        supersession: joinSupersession(standing, claimsPath, identity, readablePaths)
         // `raw` is deliberately not carried. See CensusUnreadableRecord.
       };
     })
   };
+}
+
+/**
+ * The read-path contract version at which `standing` appears. Separate from
+ * {@link CRABCAST_CONTRACT_VERSION} on purpose: that constant says what this
+ * adapter was *proved against* and moves whenever we consume anything new,
+ * while this one says when **this particular field** became available and must
+ * only ever move if CrabCast moves the field. Deriving the gate from the
+ * proved-against constant would silently re-open the door every time we bumped
+ * for an unrelated reason.
+ */
+const CRABCAST_STANDING_MIN_VERSION = 7;
+
+/**
+ * Narrow their `standing` to {@link RowStanding}, **collapsing an unrecognised
+ * value to `unknown` and never to `retired`**.
+ *
+ * Their contract is explicit that this is where the must-ignore clause bites
+ * hardest: `unknown` already means *we will not say*, which is the honest
+ * reading of a member we do not recognise, whereas reading *"not a word I
+ * know"* as *"harmless"* is the wrong-conclusion-from-a-short-list defect
+ * arriving one level up. A value they add in v8 therefore lands here as
+ * `unknown` — visible, and never as an all-clear.
+ *
+ * A missing value from a peer that *is* v7 also lands as `unknown`, and that is
+ * correct rather than a collapse: the peer is one we have established can speak
+ * this vocabulary, so a row on which it said nothing is a row it declined to
+ * rule on. The peer that cannot speak it at all never reaches this function.
+ */
+function narrowRowStanding(value: unknown): RowStanding {
+  return value === 'retired' || value === 'claims-an-agent' ? value : 'unknown';
+}
+
+/**
+ * The supersession join — CrabCast's own three-outcome table, implemented.
+ *
+ * Asked **only** of a row whose standing is available and reads
+ * `claims-an-agent`; every other row gets `null`, which is *"this question was
+ * not asked"* and is distinct from `could-not-run`, which is *"it was asked and
+ * could not be answered"*. `retired` needs no join: nothing was going to be
+ * restored from it either way.
+ *
+ * **Joins on `claimsPath` and never on `identity`.** An agent in CrabCast *is*
+ * a canonical filesystem path, so `claimsPath` is the only field in the row
+ * that speaks the readable list's vocabulary. `identity` is whatever the row
+ * called itself — very often `<type>/<key>` on a `pre-migration` row — and the
+ * wire does not say which form you are holding, so a failed match on it is
+ * indistinguishable from a genuinely absent agent. Branching on it would fire
+ * the alarm on the ordinary case, which is worse than no alarm at all.
+ */
+function joinSupersession(
+  standing: StandingReading,
+  claimsPath: string | null,
+  identity: string | null,
+  readablePaths: ReadonlySet<string>
+): SupersessionJoin | null {
+  if (!standing.available || standing.verdict !== 'claims-an-agent') return null;
+  if (claimsPath === null) return { outcome: 'could-not-run', identity };
+  return readablePaths.has(claimsPath)
+    ? { outcome: 'matched', claimsPath, matchedPath: claimsPath }
+    : { outcome: 'ran-found-nothing', claimsPath };
 }
 
 export interface CrabCastRuntimeOptions {
@@ -1302,12 +1437,31 @@ export class CrabCastRuntime implements AgentRuntime {
     };
     const agents = Array.isArray(frame.agents) ? frame.agents.map(toRow) : [];
     const foreign = Array.isArray(frame.foreignPanes) ? frame.foreignPanes.map(toRow) : [];
+
+    // The readable side of the supersession join (KAN-357). **Every category
+    // this frame carries, not just our own agents** — the question the join
+    // asks is whether ANYTHING readable already covers the agent an unreadable
+    // row mentions, and a foreign pane covers it exactly as well as one of
+    // ours does. Narrowing this to `agents` would report a superseded row as
+    // `ran-found-nothing`, which is the alarm-on-the-boring-case failure the
+    // join exists to avoid.
+    //
+    // Both `path` and `workDir` go in because `claimsPath` is built from
+    // whichever the row had — their `path`, else the retired `workDir` — so a
+    // set keyed on only one of them would fail to match a row that named the
+    // other and call it absent.
+    const readablePaths = new Set<string>();
+    for (const row of [...agents, ...foreign]) {
+      if (row.path) readablePaths.add(row.path);
+      if (row.workDir) readablePaths.add(row.workDir);
+    }
+
     return {
       reachable: true,
       at: Date.now(),
       rows: agents,
       foreign,
-      ...readUnreadableDisclosure(frame)
+      ...readUnreadableDisclosure(frame, this.link.describe().peerContractVersion, readablePaths)
     };
   }
 

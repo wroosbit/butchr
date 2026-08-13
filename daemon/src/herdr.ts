@@ -414,7 +414,152 @@ export interface HerdrAgentRecord {
 }
 
 /**
- * One row a census could not read, and therefore did not count (KAN-324).
+ * CrabCast read-path contract v7's `rowStanding` (their KAN-344).
+ *
+ * **A verdict about THE ROW, never about an agent**, and the obvious reading is
+ * the wrong one. Their registry is append-only and a row is one *event*, so a
+ * later readable row may supersede this one entirely. `claims-an-agent` says
+ * *this line asserts an agent* — it is not a claim that anything is running
+ * now, and their daemon cannot make that claim, because the line it would have
+ * to read is the line it could not read.
+ *
+ * **`unknown` must never be collapsed to `retired`.** Their contract states it
+ * outright: reading *"not a word I know"* as *"harmless"* is the
+ * wrong-conclusion-from-a-short-list defect arriving one level up. It is also
+ * what every `from-newer` row carries, deliberately, even where the event word
+ * is one they know.
+ */
+export type RowStanding = 'retired' | 'claims-an-agent' | 'unknown';
+
+/**
+ * A standing verdict, **or the fact that this peer could not offer one** —
+ * KAN-357, and the reason this is an object union rather than
+ * `RowStanding | null`.
+ *
+ * ## The state this type exists to make unrepresentable
+ *
+ * *"This peer is too old to have the field"* and *"this row has no standing we
+ * will name"* are different sentences, and only the second is a
+ * {@link RowStanding}. `unknown` is **a verdict about a row**; a peer below v7
+ * is **a fact about the connection**, which no member of their vocabulary can
+ * carry. Spelling the second as `'unknown'` would publish their daemon's
+ * verdict on a row it never rendered a verdict on.
+ *
+ * **A nullable `RowStanding | null` would not have stopped that**, because the
+ * collapse is one `??` away and reads as tidying — the same `?? 0` shape that
+ * {@link CensusReading.unreadableRecordsTotal} carries three paragraphs of
+ * prose to forbid. Prose is what you use when the type cannot say it. Here it
+ * can: a consumer **cannot** read `.verdict` off this value without first
+ * narrowing on `available`, so the collapse is not a bug to be caught in review
+ * but a shape that does not compile. That is the ordering KAN-357 asks for —
+ * the type where the invariant is about what the code can say, the assertion
+ * where it is about what happened.
+ *
+ * **And it is the state Butchr is actually in**, which is why it is not
+ * hypothetical: as of 2026-08-13 the CrabCast serving this machine answers
+ * `contractVersion: 6`, so every row on the wire takes the `available: false`
+ * arm and there is no v7 peer anywhere to take the other one.
+ *
+ * ## All THREE v7 fields live behind this one gate, and that is not tidiness
+ *
+ * `claimsAt` and `claimsEvent` arrived in the same release as `standing` and
+ * are absent from the same peers, so they are on the `available: true` arm
+ * rather than beside it. **Putting them outside would reintroduce the very
+ * collapse this type exists to prevent, one field over**: their contract
+ * guarantees that a line which does not parse never becomes one of these rows
+ * at all, so `claimsAt: null` means *the row parsed and named no timestamp* and
+ * **never** *we could not see it*. Read off a v6 peer — where the key is not
+ * sent — a bare `claimsAt: null` would mean exactly the forbidden second thing,
+ * and nothing in its type could say so. Behind the gate, that value is not
+ * reachable unless a peer that publishes the field said it.
+ *
+ * `claimsPath` is **not** here, and that asymmetry is real rather than an
+ * oversight: it landed in v4, so a v6 peer genuinely sends it and its `null` on
+ * such a peer genuinely means *the row named no path*.
+ */
+export type StandingReading =
+  | {
+      available: false;
+      /**
+       * Why no verdict was available, and the two reasons are **not
+       * interchangeable**: `peer-below-v7` is a CrabCast that will answer this
+       * once it is deployed, while `source-does-not-disclose` is a source with
+       * no such concept at all — herdr's census has no registry rows, no event
+       * vocabulary and nothing that could ever render a standing. Folding the
+       * second into the first would publish a version complaint about a leg
+       * that has no version.
+       */
+      because: 'peer-below-v7' | 'source-does-not-disclose';
+      /**
+       * What the peer actually published, so the refusal names its own
+       * evidence. `null` where the peer published none, and always `null` for
+       * `source-does-not-disclose`.
+       */
+      peerContractVersion: number | null;
+    }
+  | {
+      available: true;
+      /** Their verdict on the row. */
+      verdict: RowStanding;
+      /**
+       * The timestamp the row gives for **itself**, quoted verbatim, or `null`
+       * where it named none.
+       *
+       * **A quotation, not a date, and typed `string` on purpose.** Their
+       * promise is that this is what the row said, never that it parses: the
+       * row came off a line nobody could read, and a hand-edited one may hold
+       * anything at all. A type asserting date-ness would assert something the
+       * value cannot honour. It is also **when the row was WRITTEN, not when it
+       * became unreadable.**
+       */
+      claimsAt: string | null;
+      /**
+       * The row's own `event`, verbatim, or `null` where it named none. **In
+       * the row's own vocabulary** — a word their daemon does not know arrives
+       * as the word it is rather than as a null.
+       *
+       * **This is the evidence under {@link verdict}**, and it travels beside
+       * it so the verdict can be checked. An interpretation nobody can compare
+       * against the underlying quote is one nobody can catch being wrong; that
+       * is their argument for shipping both, and it only works if a consumer
+       * carries both.
+       */
+      claimsEvent: string | null;
+    };
+
+/**
+ * The supersession join CrabCast's contract prescribes — **three outcomes, and
+ * the third is the one an earlier draft of their own document left out.**
+ *
+ * A row whose {@link RowStanding} is `claims-an-agent` is published beside a
+ * whole fleet read, so a consumer can ask whether anything readable already
+ * covers the agent that line mentions. The join key is `claimsPath` and **not**
+ * `identity`: an agent *is* a canonical path, so `claimsPath` matches a
+ * readable row's `path` directly, while `identity` is deliberately the row's
+ * own vocabulary — `agentName`, else `<type>/<key>`, else `path` — because its
+ * job is letting a **human** find the line in the file.
+ *
+ * **`could-not-run` is not a hedge, and collapsing it into `ran-found-nothing`
+ * is the defect this type exists to prevent.** *"We could not join it"* and
+ * *"we joined it and found nothing"* are different answers. A `pre-migration`
+ * row identified as `shell/demo` will never match a path-keyed list, so reading
+ * that failed match as *"absent, therefore lost"* manufactures an alarm on the
+ * ordinary case — **an alarm that never clears**, which is the same failure as
+ * the permanently-`1` count KAN-357 exists to escape, rebuilt one layer up.
+ * That is not a hypothetical either: it is the state of the only real specimen
+ * on this machine.
+ */
+export type SupersessionJoin =
+  /** The path appears in a readable category: a later row superseded this line. The boring case. */
+  | { outcome: 'matched'; claimsPath: string; matchedPath: string }
+  /** The join RAN against a real path and nothing readable carries it. **This is the case the disclosure exists for.** */
+  | { outcome: 'ran-found-nothing'; claimsPath: string }
+  /** `claimsPath` is null, so there was nothing to join on. **Not evidence either way** — read `raw` and decide by hand. */
+  | { outcome: 'could-not-run'; identity: string | null };
+
+/**
+ * One row a census could not read, and therefore did not count (KAN-324,
+ * extended to read-path contract v7 by KAN-357).
  *
  * **Deliberately does not carry the row's raw text.** CrabCast's own
  * `unreadableRecords[].raw` is the registry line verbatim, with a
@@ -433,10 +578,49 @@ export interface CensusUnreadableRecord {
   line: number | null;
   /** The source's own machine-readable classification, verbatim. */
   problem: string | null;
-  /** The best identifier that survived the row, where one did. */
+  /**
+   * The best identifier that survived the row, where one did.
+   *
+   * **In the row's own vocabulary, and therefore not a join key** — see
+   * {@link SupersessionJoin}. Kept and published because it is what lets a
+   * human find the line in the file, which is the job it was built for.
+   */
   identity: string | null;
   /** The source's own explanation, verbatim. Never synthesised here. */
   reason: string | null;
+  /**
+   * A directory this row names — its `path`, else the retired `workDir` — or
+   * `null` where it names none. **The join key** ({@link SupersessionJoin}).
+   *
+   * On the wire from v4 onward, so this is readable against the v6 peer this
+   * machine actually has. `null` on the live specimen, which is precisely why
+   * `could-not-run` had to be a representable outcome.
+   */
+  claimsPath: string | null;
+  /**
+   * **All three of read-path v7's fields, or the fact that this peer is too old
+   * to have sent any of them** — their verdict on the row plus the two
+   * quotations that are its evidence. See {@link StandingReading} for why this
+   * is a union rather than a nullable, and why the three travel together.
+   *
+   * **Required rather than optional**, for the same reason
+   * {@link CensusReading.unreadableRecordsTotal} is: an optional field is one a
+   * future runtime can omit and still compile, which puts the silent collapse
+   * back one implementation later. A runtime that cannot disclose has to *say
+   * so*.
+   */
+  standing: StandingReading;
+  /**
+   * The supersession join, computed **only** where {@link standing} is
+   * available and reads `claims-an-agent`; `null` everywhere else.
+   *
+   * `null` here is *"this question was not asked"* — the row is retired, or
+   * unknown, or the peer could not tell us — and is distinct from
+   * `could-not-run`, which is *"the question was asked and could not be
+   * answered"*. `retired` needs none of this: nothing was going to be restored
+   * from it either way.
+   */
+  supersession: SupersessionJoin | null;
 }
 
 /**
@@ -1262,7 +1446,23 @@ export class HerdrBridge implements AgentRuntime {
             reason:
               'this row carried no string `name`, and a census row without one cannot be ' +
               'addressed, tailed or supervised. Naming it would be inventing the one value ' +
-              'that identifies it.'
+              'that identifies it.',
+            // `claimsPath` is CrabCast's registry field and herdr has no
+            // counterpart: `herdr agent list` is a JSON array of panes, not a
+            // registry of rows that name directories. `null` here is the same
+            // `null` the wire uses — this source named none.
+            claimsPath: null,
+            // And the v7 group is refused outright rather than reported as
+            // three nulls. herdr has no registry line, no event vocabulary and
+            // no verdict it could render, so `source-does-not-disclose` says
+            // that in its own words rather than borrowing a version complaint
+            // from a peer that is not on this leg at all.
+            standing: {
+              available: false,
+              because: 'source-does-not-disclose',
+              peerContractVersion: null
+            },
+            supersession: null
           });
           return;
         }

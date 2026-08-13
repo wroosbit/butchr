@@ -469,16 +469,22 @@ check(
   'CRABCAST_PIN is 8d7348f — the commit the three landings are at',
   CRABCAST_PIN
 );
-// Moved 3 → 4 by KAN-324, and the sentence moved with it because the number on
-// its own says nothing. v4 added `unreadableRecords`/`unreadableRecordsTotal` to
-// `list_agents`, and the constant was only allowed to move once the census
-// actually read them — a bump without that reproduces the defect one release
-// later with a green check on top. What proves the reading is
-// `verify-crabcast-census-disclosure.mjs`; what this line still pins is that
-// nobody moves the number again without going through it.
+// Moved 3 → 4 by KAN-324 and 4 → 7 by KAN-357, and the sentence moved with it
+// both times because the number on its own says nothing. v4 added
+// `unreadableRecords`/`unreadableRecordsTotal` to `list_agents`; v7 added
+// `claimsAt`, `claimsEvent` and `standing` to the row shape. The constant was
+// only allowed to move once the census actually read them — a bump without that
+// reproduces the defect one release later with a green check on top. What
+// proves the v4 reading is `verify-crabcast-census-disclosure.mjs` and the v7
+// reading is `verify-crabcast-standing.mjs`; what this line still pins is that
+// nobody moves the number again without going through one of them.
+//
+// **This assertion is a tripwire and it fired as designed on KAN-357**, which
+// is the only evidence that it works: the bump made it red, and clearing it
+// meant naming the proof above rather than editing a number.
 check(
-  CRABCAST_CONTRACT_VERSION === 4,
-  'CRABCAST_CONTRACT_VERSION is 4 — the v4 fields are read, not just the number bumped (KAN-324)',
+  CRABCAST_CONTRACT_VERSION === 7,
+  'CRABCAST_CONTRACT_VERSION is 7 — the v7 fields are read, not just the number bumped (KAN-357)',
   String(CRABCAST_CONTRACT_VERSION)
 );
 
