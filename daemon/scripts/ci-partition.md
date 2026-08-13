@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 74 |
+| `yes` | 75 |
 | `partial` | 7 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **98** |
+| **total** | **99** |
 
-**81 of 98** run on every pull request.
+**82 of 99** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -86,6 +86,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-doc-constant-pins` | yes | reads `docs/*.md` and `daemon/src/*.ts` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-idle-fleet-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Section 1 reads this machine's real /proc for its machine facts and says so. |
 | `verify-integration-enablement` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-integration-pluggability` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-io-stall-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
