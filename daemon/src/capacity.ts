@@ -1317,7 +1317,7 @@ export function computeCapacity(
     const override = options.supervisorMemoryOverride;
     if (override !== undefined && override !== null) return { value: override, source: 'override' };
     const m = measured?.supervisorResidentBytes;
-    if (typeof m === 'number' && Number.isFinite(m) && m > 0 && measured) {
+    if (measured && typeof m === 'number' && Number.isFinite(m) && m > 0) {
       return { value: m, source: costSourceOf(measured) };
     }
     return { value: SUPERVISOR_MEMORY_BYTES, source: 'seed' };
