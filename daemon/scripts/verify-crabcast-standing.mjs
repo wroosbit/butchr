@@ -58,11 +58,12 @@
 //
 // ── MADE TO GO RED ─────────────────────────────────────────────────────────
 //
-// Two mutations, and they are different KINDS of red, which matters:
+// Four mutations. Three are this script's and one is the compiler's, and the
+// difference between those two kinds of red is the point of listing them apart:
 //
 //   1. THE COMPILER'S, not this script's. Collapsing the reading to a bare
 //      string — `standing: RowStanding` instead of `StandingReading` — does not
-//      compile, because a consumer cannot reach `.standing` without narrowing
+//      compile, because a consumer cannot reach `.verdict` without narrowing
 //      on `available` first:
 //
 //        # in daemon/src/herdr.ts, replace the StandingReading union with
@@ -74,7 +75,9 @@
 //      must not be credited with it. A proof run after a failed build ran on the
 //      previous `dist` (H-22).
 //
-//   2. THIS SCRIPT'S. Both of these COMPILE, so the proof actually sees them:
+//   2. THIS SCRIPT'S. All three of these COMPILE, so the proof actually sees
+//      them — which is the whole reason they were chosen over the tempting
+//      one-line edits that fail to build:
 //
 //        # (a) remove the door: read `standing` regardless of peer version
 //        #     in readUnreadableDisclosure, replace the `standingAvailable`

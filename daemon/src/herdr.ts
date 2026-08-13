@@ -449,7 +449,7 @@ export type RowStanding = 'retired' | 'claims-an-agent' | 'unknown';
  * collapse is one `??` away and reads as tidying — the same `?? 0` shape that
  * {@link CensusReading.unreadableRecordsTotal} carries three paragraphs of
  * prose to forbid. Prose is what you use when the type cannot say it. Here it
- * can: a consumer **cannot** read `.standing` off this value without first
+ * can: a consumer **cannot** read `.verdict` off this value without first
  * narrowing on `available`, so the collapse is not a bug to be caught in review
  * but a shape that does not compile. That is the ordering KAN-357 asks for —
  * the type where the invariant is about what the code can say, the assertion
