@@ -8,7 +8,7 @@ import {
   GitHubReader,
   Mergeability,
   PullRequestSnapshot,
-  REPO_SOURCE_PHRASE,
+  repoSourcePhrase,
   RepoSource,
   WatchedRepo,
   discoverRepos,
@@ -665,11 +665,17 @@ export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: numbe
   // reader had no way to notice. Provenance is the half that makes coverage
   // legible — `a live agent holds a checkout` is a fact about where the fleet is
   // sitting, and it stops being true the moment that agent stands down.
+  //
+  // KAN-370: the `checkout` phrase now names WHICH agent. The bare version was
+  // true and uncheckable, and a reader who could not check it from the report
+  // went looking with a `find` that could not see a checkout, then filed the
+  // truth as a falsehood. Naming the holder is what makes the claim cheap to
+  // falsify — which is the only thing that makes it worth printing.
   const seen = new Set([...health.repos.map((r) => r.repo), ...health.releasedRepos]);
   const scale = seen.size > health.repos.length ? ` of the ${seen.size} seen` : '';
   const repos =
     `Watching ${health.repos.length}${scale} repositor${health.repos.length === 1 ? 'y' : 'ies'}: ` +
-    health.repos.map((r) => `${r.repo} (${REPO_SOURCE_PHRASE[r.source]})`).join('; ') +
+    health.repos.map((r) => `${r.repo} (${repoSourcePhrase(r)})`).join('; ') +
     '.' +
     // The released ones, named rather than silently absent. A set that narrows
     // because the work in it finished and a set that narrows because the fleet
@@ -1345,23 +1351,24 @@ export class PrWatcher {
     // `checkout` and never both, and the memory is consulted only for
     // repositories discovery did not already name. A tie-break written for a
     // case that cannot arise would be a claim about behaviour nothing exercises.
-    const bySource = new Map<string, RepoSource>();
-    for (const { repo, source } of discovered) {
-      if (!bySource.has(repo)) bySource.set(repo, source);
+    // The whole entry is carried rather than just its source (KAN-370): a
+    // `checkout` names the agents holding it, and reducing it to a bare source
+    // here would drop exactly the evidence the report exists to print.
+    const byRepo = new Map<string, WatchedRepo>();
+    for (const entry of discovered) {
+      if (!byRepo.has(entry.repo)) byRepo.set(entry.repo, entry);
     }
     for (const repo of this.state.reposWithOpenPr()) {
-      if (!bySource.has(repo)) bySource.set(repo, 'memory');
+      if (!byRepo.has(repo)) byRepo.set(repo, { repo, source: 'memory' });
     }
 
-    const repos = [...bySource.entries()]
-      .map(([repo, source]) => ({ repo, source }))
-      .sort((a, b) => a.repo.localeCompare(b.repo));
+    const repos = [...byRepo.values()].sort((a, b) => a.repo.localeCompare(b.repo));
 
     // Everything the memory knows of that did not make the set. It is bounded by
     // `PR_STATE_TTL_MS`, so "seen before" means "seen in the last week" rather
     // than "seen ever", and a repository the fleet has genuinely left behind
     // stops being mentioned instead of accumulating forever.
-    const released = this.state.knownRepos().filter((repo) => !bySource.has(repo));
+    const released = this.state.knownRepos().filter((repo) => !byRepo.has(repo));
 
     return { repos, released };
   }
