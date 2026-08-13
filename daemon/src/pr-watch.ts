@@ -1340,10 +1340,14 @@ export class PrWatcher {
         this.opts.repos(agents).map((repo) => ({ repo, source: 'config' as const }))
       : discoverRepos(agents);
 
+    // First writer wins, and there is no precedence rule here because there is
+    // nothing for one to arbitrate: `discoverRepos` returns `config` OR
+    // `checkout` and never both, and the memory is consulted only for
+    // repositories discovery did not already name. A tie-break written for a
+    // case that cannot arise would be a claim about behaviour nothing exercises.
     const bySource = new Map<string, RepoSource>();
     for (const { repo, source } of discovered) {
-      const held = bySource.get(repo);
-      if (!held || (held === 'checkout' && source === 'config')) bySource.set(repo, source);
+      if (!bySource.has(repo)) bySource.set(repo, source);
     }
     for (const repo of this.state.reposWithOpenPr()) {
       if (!bySource.has(repo)) bySource.set(repo, 'memory');
