@@ -16,7 +16,7 @@ import {
 } from './github.js';
 import { NotifyFn, refuseWithoutCarrier } from './notify.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
-import type { LiveAgent, NudgeRelation } from './jira-poll.js';
+import type { LiveAgent, NudgeRelation, ObservedState } from './jira-poll.js';
 
 /**
  * ---------------------------------------------------------------------------
@@ -140,6 +140,63 @@ import type { LiveAgent, NudgeRelation } from './jira-poll.js';
  *
  * Both are what `BUTCHR_PR_WATCH_REPOS` is for, and both are why it was kept
  * rather than deleted.
+ *
+ * ---------------------------------------------------------------------------
+ * A NOTICE MUST NOT CLAIM THE PRESENT FROM EVIDENCE ABOUT THE PAST (KAN-367)
+ * ---------------------------------------------------------------------------
+ *
+ * At 02:45Z on 2026-08-13 this watcher told `epic/KAN-59`:
+ *
+ *   > `wroosbit/CrabCast#86` has **MERGED**, and KAN-361 **is still In Review**
+ *
+ * Read from the Jira changelog and `gh` rather than from anyone's recollection:
+ *
+ *   23:37:04Z  KAN-361  In Progress -> In Review
+ *   23:53:31Z  PR #86   MERGED
+ *   23:53:58Z  KAN-361  In Review -> Done      <- 27 SECONDS after the merge
+ *   02:45Z     the notice arrives saying "is still In Review"
+ *
+ * **The state claim was wrong by two hours and fifty-one minutes, and it was
+ * made in the present tense.** Both halves of the sentence were derived from
+ * evidence, and both were stale; only the second was phrased as though it were
+ * being observed as it was said.
+ *
+ * TWO SEPARABLE DEFECTS, AND FIXING THE FIRST DOES NOT FIX THE SECOND
+ *
+ *   1. **Coverage.** `prWatch` was not watching CrabCast when #86 merged, so the
+ *      merge was announced three hours late, on the tick after an unrelated
+ *      agent's checkout put the repository back in the set. That is KAN-360's
+ *      subject, and KAN-360 shipped: the repository is now RETAINED while the
+ *      memory says something in it is open, so this exact trigger no longer
+ *      fires. It is not the only way to lose a look — a daemon that is down and
+ *      a GitHub that is unreachable both produce the same gap, and the recovery
+ *      path says so itself: *"anything that changed while it was not is diffed
+ *      against the memory and announced now."*
+ *   2. **Tense.** Any delay between an event and its delivery makes a
+ *      present-tense claim a guess. **Perfect coverage would not fix this**, and
+ *      it is the cheaper of the two by a wide margin.
+ *
+ * WHERE THE STALE `In Review` CAME FROM — mechanism, not candidate
+ *
+ * Not a state captured when the PR row was first seen and carried with it: the
+ * status is read where the event is constructed, on the tick that recognises the
+ * merge. It was read *fresh from a memory that was itself three hours old*.
+ * `jira-poll.ts` polls **only live agents' issues**; `task/KAN-361` stood down
+ * after merging, so KAN-361 stopped being polled, and its row froze at `In
+ * Review` — held for a week by `STATE_TTL_MS`, whose docblock says outliving the
+ * agent is the point. `factsFor` then returned the status as a **bare string**
+ * with `seenAt` sitting one field away.
+ *
+ * THE RULE THIS ENFORCES, and it is a type rather than a convention
+ *
+ *   **Every state claim in a notice is either present-tense and freshly read, or
+ *   past-tense and timestamped. There is no third option.**
+ *
+ * A bare string is the third option, so the bare string is gone:
+ * {@link ObservedState} carries the moment it was read and has no untimed
+ * spelling, and {@link PrEvent.observation} is **required**, so an event cannot
+ * be constructed without saying whether it was seen live or backfilled after a
+ * gap. Deleting the disclosure is a compile error rather than a quieter notice.
  */
 
 /**
@@ -417,6 +474,101 @@ export function readinessOf(pr: PullRequestSnapshot): PrReadiness {
   return { ready: true };
 }
 
+/**
+ * How long an observation stays quotable in the present tense (KAN-367).
+ *
+ * Two minutes: one {@link PR_POLL_INTERVAL_MS} for the fact to have been read,
+ * and one for this watcher's own tick to carry it. It is the smallest bound that
+ * cannot call an ordinary, on-time pair of ticks a gap — a one-interval bound
+ * would flap on every tick that started a second late, and a notice whose tense
+ * changes with scheduler jitter teaches its reader to ignore the distinction.
+ *
+ * It is a **ceiling on the claim, not a promise about the fact**: inside it the
+ * fact may still have changed a second ago. What the present tense asserts here
+ * is *"this was read just now"*, which is all any watcher can honestly say, and
+ * exactly what the 02:45Z notice asserted while being three hours old.
+ */
+export const PRESENT_TENSE_LIMIT_MS = 2 * PR_POLL_INTERVAL_MS;
+
+/**
+ * Whether a notice is a live announcement or a backfilled one (KAN-367, AC4).
+ *
+ * **The reader must be able to tell them apart**, and before this they read
+ * identically: the 02:45Z notice announcing a 23:53:31Z merge was worded exactly
+ * as one announcing a merge forty seconds old. A recipient acting on the first
+ * is acting on news that has had three hours to be overtaken.
+ *
+ * `live` means the previous look at this pull request was recent enough that
+ * nothing could have gone unobserved for long — the ordinary case, and it says
+ * nothing, because a notice that qualifies itself every minute is a notice
+ * nobody finishes reading. The other arm carries the gap it is disclosing, so
+ * the sentence is composed from the measurement rather than from a flag.
+ */
+export type NoticeObservation =
+  | { live: true }
+  | {
+      live: false;
+      /** ISO 8601 — the last look at this pull request before this one. */
+      lastObservedAt: string;
+      /** How long this pull request went unobserved, in milliseconds. */
+      gapMs: number;
+    };
+
+/**
+ * A duration a person reads, from milliseconds. `2h51m`, `45s`, `3d4h`.
+ *
+ * Exported because the notice and the proof must not spell a gap two different
+ * ways — a disclosure a proof cannot match by construction is a disclosure
+ * nothing checks.
+ */
+export function describeDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (days) return `${days}d${hours}h`;
+  if (hours) return `${hours}h${minutes}m`;
+  if (minutes) return `${minutes}m${seconds}s`;
+  return `${seconds}s`;
+}
+
+/**
+ * The one place a state claim becomes words — AC3, enforced in a single call.
+ *
+ * Both branches exist and both are honest; what is *not* available is a third
+ * one. The signature is why: there is no argument list here that produces a
+ * sentence without an `observedAt`, so an untimed claim cannot be composed by
+ * calling this, and {@link ObservedState} is the only shape a status arrives in.
+ *
+ * `what` is the subject (`KAN-361`), `now` the moment the sentence is being
+ * written. The past-tense branch names the timestamp **and** the age: the
+ * timestamp is what makes it true forever, and the age is what makes a reader
+ * notice how stale it is without doing arithmetic.
+ */
+export function describeObservedState(
+  what: string,
+  observed: ObservedState,
+  now: number,
+  limitMs: number = PRESENT_TENSE_LIMIT_MS
+): string {
+  const observedMs = Date.parse(observed.observedAt);
+  const age = Number.isFinite(observedMs) ? now - observedMs : NaN;
+
+  // An unparseable or future timestamp is not a licence for the present tense.
+  // It is the one input that could smuggle the third option back in — `NaN < x`
+  // is false for every x, so an accidental `age < limit` test would have fallen
+  // through to "fresh" on exactly the malformed input least worth trusting.
+  if (Number.isFinite(age) && age >= 0 && age <= limitMs) {
+    return `${what} is still ${observed.value} (read ${describeDuration(age)} ago)`;
+  }
+  return (
+    `${what} was ${observed.value} when its status was last read, at ${observed.observedAt}` +
+    (Number.isFinite(age) && age >= 0 ? ` — ${describeDuration(age)} ago` : '') +
+    '. That is what was true then, and this notice does not know what it is now'
+  );
+}
+
 /** What kind of news a pull request produced. One per row of the ticket's table. */
 export type PrEventKind =
   | 'merged'
@@ -455,15 +607,46 @@ export interface PrEvent {
   /** `comment` only: how many are new. */
   newComments?: number;
   /**
-   * `merged` only: the ticket's Jira status as the poller last saw it, or null.
+   * `merged` only: when GitHub says it merged, ISO 8601, or null if it did not
+   * say.
    *
-   * **This is what makes AC2 expressible.** "Merged but not transitioned" is a
-   * conjunction of a GitHub fact and a Jira fact, and a watcher holding only the
-   * first can announce a merge but cannot announce the thing that went wrong
-   * three times in one day. It is read from `JiraPoller`'s existing memory, so
-   * it costs no additional Jira request and is at most one poll interval old.
+   * Fetched by `github.ts` since that module was written and read by nothing
+   * until KAN-367. A merge is the one fact in a notice that is true forever
+   * once stated with its time, so this is what turns *"has MERGED"* — a claim
+   * whose reader cannot tell forty seconds from three hours — into a sentence
+   * that does not decay.
    */
-  jiraStatus?: string | null;
+  mergedAt?: string | null;
+  /**
+   * `merged` only: the ticket's Jira status as the poller last saw it, **with
+   * the moment it saw it**, or null.
+   *
+   * **This is what makes KAN-304's AC2 expressible.** "Merged but not
+   * transitioned" is a conjunction of a GitHub fact and a Jira fact, and a
+   * watcher holding only the first can announce a merge but cannot announce the
+   * thing that went wrong three times in one day. It is read from
+   * `JiraPoller`'s existing memory, so it costs no additional Jira request.
+   *
+   * IT USED TO BE A BARE STRING, AND THE DOCBLOCK HERE CLAIMED IT WAS *"at most
+   * one poll interval old"* (KAN-367). That claim was true only while the
+   * ticket's own agent was live, and false in precisely the case this event
+   * exists for: a task agent merges and stands down, its issue stops being
+   * polled, and the row is then held for a week by `STATE_TTL_MS`. The comment
+   * asserted a freshness the data structure had no way to deliver — which is
+   * the whole argument for {@link ObservedState}, and for not fixing this with
+   * a better comment.
+   */
+  jiraStatus?: ObservedState | null;
+  /**
+   * Whether this event was seen live or backfilled after a gap (AC4).
+   *
+   * **Required, and that is the design.** Every event is built by spreading one
+   * `base` computed once per pull request per tick, so this costs one line at
+   * the single place that can measure it — and an event kind added later that
+   * forgets to disclose its provenance does not compile. The alternative, an
+   * optional field, makes the honest notice the one that remembered.
+   */
+  observation: NoticeObservation;
 }
 
 /** One notification the watcher decided to send. */
@@ -730,20 +913,32 @@ export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: numbe
  * *act* is a sentence that can produce another notification, another ticket
  * comment, or a reply to a daemon that is not listening.
  */
-export function prEventNoticeText(events: PrEvent[], relation: NudgeRelation): string {
+export function prEventNoticeText(
+  events: PrEvent[],
+  relation: NudgeRelation,
+  now: number
+): string {
   const first = events[0];
   const pr = `${first.repo}#${first.number}`;
 
   const clause = (event: PrEvent): string => {
     switch (event.kind) {
-      case 'merged':
+      case 'merged': {
+        // The merge itself, timestamped. `has MERGED` alone reads as news
+        // whether it is forty seconds or three hours old, and on 2026-08-13 it
+        // was three hours old.
+        const when = event.mergedAt
+          ? `MERGED at ${event.mergedAt}`
+          : 'has MERGED (GitHub reported no merge time)';
+        // The ticket's status, which is a claim about a *state* and therefore
+        // the one that has to carry its own age. `describeObservedState` is the
+        // only way to say it, and it has no untimed branch.
+        if (!event.jiraStatus || event.jiraStatus.value.toLowerCase() === 'done') return when;
         return (
-          'has MERGED' +
-          (event.jiraStatus && event.jiraStatus.toLowerCase() !== 'done'
-            ? `, and ${event.issueKey} is still ${event.jiraStatus} — a merge is not a ` +
-              'transition, so nothing on the board will say so'
-            : '')
+          `${when}, and ${describeObservedState(event.issueKey, event.jiraStatus, now)} — a ` +
+          'merge is not a transition, so nothing on the board will say so'
         );
+      }
       case 'closed':
         return 'was CLOSED without merging';
       case 'approved':
@@ -805,8 +1000,22 @@ export function prEventNoticeText(events: PrEvent[], relation: NudgeRelation): s
     linked: `${first.issueKey} is linked to a ticket of yours.`
   };
 
+  // AC4: a backfilled announcement says so, and says how big the hole was.
+  //
+  // It goes BEFORE the URL and after the news, because a reader who stops at the
+  // first sentence has to have met it. The live case adds nothing at all — a
+  // qualification on every notice is a qualification nobody reads, and the
+  // distinction only means something if it is rare.
+  const backfill = first.observation.live
+    ? ''
+    : ` BACKFILLED, not live: this pull request was not looked at between ` +
+      `${first.observation.lastObservedAt} and now, a gap of ` +
+      `${describeDuration(first.observation.gapMs)}, so anything above happened at some point ` +
+      'in that window rather than just now.';
+
   return (
-    `${DAEMON_SENDER_TAG} ${pr} (${first.headRefName}) ${events.map(clause).join('; and it ')}. ` +
+    `${DAEMON_SENDER_TAG} ${pr} (${first.headRefName}) ${events.map(clause).join('; and it ')}.` +
+    `${backfill} ` +
     `${whose[relation]} ${first.url} — this is a notification, not an instruction, and no ` +
     'reply is expected.'
   );
@@ -985,7 +1194,15 @@ export class PrWatchState {
  * question during the window between their ticks.
  */
 export interface IssueFacts {
-  status: string | null;
+  /**
+   * The ticket's status **and when it was read** (KAN-367).
+   *
+   * Timed because it is *quoted* into a notice, where a stale value is
+   * indistinguishable from a fresh one. `parentKey` and `linkedKeys` are not,
+   * because they are used to *route* rather than to quote — see `factsFor` in
+   * `jira-poll.ts` for the distinction and why it is not applied to all three.
+   */
+  status: ObservedState | null;
   parentKey: string | null;
   linkedKeys: string[];
 }
@@ -1390,13 +1607,28 @@ export class PrWatcher {
     const seen = this.state.get(id);
     const seenAt = new Date(this.now()).toISOString();
 
+    // WAS THIS SEEN LIVE, OR IS IT BEING BACKFILLED AFTER A GAP? (KAN-367, AC4)
+    //
+    // Measured here, once, from the memory's own `seenAt` — the last tick that
+    // actually read this pull request — because this is the only place that
+    // holds both the previous look and the current one. A repository can stop
+    // being looked at for several unrelated reasons (its last checkout goes away
+    // and nothing in it is open, the daemon is down, GitHub is unreachable for
+    // an hour), and none of them is distinguishable at the moment of composing
+    // a sentence. The gap is, and the gap is what the reader actually needs.
+    //
+    // Spread into `base` so every event of this tick carries it. That is what
+    // makes {@link PrEvent.observation} affordable as a REQUIRED field.
+    const observation = this.observationSince(seen?.seenAt);
+
     const base = {
       repo: pr.repo,
       number: pr.number,
       title: pr.title,
       url: pr.url,
       issueKey,
-      headRefName: pr.headRefName
+      headRefName: pr.headRefName,
+      observation
     };
 
     // Both of these read the SAME classifier the readiness answer reads, so
@@ -1452,6 +1684,7 @@ export class PrWatcher {
         events.push({
           ...base,
           kind: 'merged',
+          mergedAt: pr.mergedAt,
           jiraStatus: this.opts.issueFacts(issueKey)?.status ?? null
         });
       } else if (pr.state === 'CLOSED') {
@@ -1544,6 +1777,39 @@ export class PrWatcher {
     });
 
     return events;
+  }
+
+  /**
+   * How long this pull request went unobserved before the look happening now
+   * (KAN-367, AC4).
+   *
+   * THE BOUND IS THE CURRENT CADENCE, DOUBLED, and it has to be read at call
+   * time rather than fixed at construction: while GitHub is asking to be left
+   * alone the interval is {@link DEGRADED_PR_POLL_INTERVAL_MS}, and a five
+   * minute gap is then the *ordinary* spacing of two consecutive looks. A fixed
+   * 60s bound would have labelled every notice during a degradation as
+   * backfilled — which is the failure mode this disclosure most needs to avoid,
+   * because a qualification that fires constantly is one a reader learns to skip
+   * and is then not read on the notice that meant it.
+   *
+   * Doubled for the reason {@link PRESENT_TENSE_LIMIT_MS} is: one interval is
+   * the cadence and one absorbs a late tick, so an on-time pair of looks is
+   * never called a gap.
+   *
+   * A pull request with no memory returns `live`. That is the first-sight rule
+   * one step on: first sight announces nothing at all, so there is no notice for
+   * this value to qualify — and claiming a gap of *"since the beginning of
+   * time"* would be inventing an observation window nobody ever had.
+   */
+  private observationSince(lastSeenAt: string | undefined): NoticeObservation {
+    if (!lastSeenAt) return { live: true };
+    const previous = Date.parse(lastSeenAt);
+    if (!Number.isFinite(previous)) return { live: true };
+
+    const gapMs = this.now() - previous;
+    const cadence = this.degraded ? this.degradedIntervalMs : this.intervalMs;
+    if (gapMs <= cadence * 2) return { live: true };
+    return { live: false, lastObservedAt: lastSeenAt, gapMs };
   }
 
   private updatePace(sawBackOff: boolean, allSucceeded: boolean): void {
@@ -1686,7 +1952,7 @@ export class PrWatcher {
         herdrBridge,
         type: agent.type,
         key: agent.key,
-        message: prEventNoticeText(mine, relation),
+        message: prEventNoticeText(mine, relation, this.now()),
         log
       });
       tick.notices.push({

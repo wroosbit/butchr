@@ -141,7 +141,7 @@ async function harness({ reads, agents = [OWN, APPROVER] }) {
       }
     ),
     liveAgents: () => agents,
-    issueFacts: () => ({ status: 'In Review', parentKey: 'KAN-39', linkedKeys: [] }),
+    issueFacts: () => ({ status: { value: 'In Review', observedAt: new Date().toISOString() }, parentKey: 'KAN-39', linkedKeys: [] }),
     supervisorFor: () => null,
     repos: () => ['wroosbit/butchr'],
     state: new PrWatchState(nextStateFile(), () => Date.now()),
@@ -316,7 +316,7 @@ rule('§4 — DIRTY and BEHIND are told apart, and each names its own remedy');
     const stale = prRow({ headRefOid: sha.repeat(40), mergeStateStatus: state });
     const { ticks } = await harness({ reads: [[clean], [stale]] });
     const event = ticks[1].events.find((e) => e.kind === 'head-stale');
-    words[state] = event ? prEventNoticeText([event], 'own') : '(no head-stale event)';
+    words[state] = event ? prEventNoticeText([event], 'own', Date.now()) : '(no head-stale event)';
   }
 
   for (const [state, text] of Object.entries(words)) console.log(`\n  ${state}:\n    ${text}`);

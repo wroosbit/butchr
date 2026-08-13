@@ -256,10 +256,14 @@ async function harness({ reads, status = 'In Review', agents = [OWN, APPROVER], 
     },
     herdrBridge: tripWireHerdr,
     liveAgents: () => agents,
+    // KAN-367: a status now arrives as an `ObservedState` — the value AND when
+    // it was read. Stamped at `now` here, so these sections go on exercising the
+    // FRESH branch, which is what they were always about; the stale branch is
+    // `verify-pr-watch-notice-tense.mjs`, deliberately not duplicated here.
     issueFacts: (key) =>
       key === 'KAN-309'
-        ? { status, parentKey: 'KAN-39', linkedKeys: [] }
-        : { status: 'In Progress', parentKey: null, linkedKeys: [] },
+        ? { status: { value: status, observedAt: new Date().toISOString() }, parentKey: 'KAN-39', linkedKeys: [] }
+        : { status: { value: 'In Progress', observedAt: new Date().toISOString() }, parentKey: null, linkedKeys: [] },
     supervisorFor: () => null,
     repos: () => ['wroosbit/butchr'],
     state: new PrWatchState(nextStateFile(), () => Date.now()),
@@ -615,7 +619,7 @@ rule('AC — first sight is silent, an unchanged world is silent, and a restart 
       github: { listPullRequests: async () => ({ ok: true, prs: stable }) },
       herdrBridge: tripWireHerdr,
       liveAgents: () => [OWN, APPROVER],
-      issueFacts: () => ({ status: 'In Review', parentKey: 'KAN-39', linkedKeys: [] }),
+      issueFacts: () => ({ status: { value: 'In Review', observedAt: new Date().toISOString() }, parentKey: 'KAN-39', linkedKeys: [] }),
       supervisorFor: () => null,
       repos: () => ['wroosbit/butchr'],
       // The SAME file across both watchers, which is what makes the second one a
@@ -694,7 +698,7 @@ rule('AC5 — a watcher that cannot see GitHub says so, and does not report a cl
       },
       herdrBridge: tripWireHerdr,
       liveAgents: () => [OWN, APPROVER],
-      issueFacts: () => ({ status: 'In Review', parentKey: 'KAN-39', linkedKeys: [] }),
+      issueFacts: () => ({ status: { value: 'In Review', observedAt: new Date().toISOString() }, parentKey: 'KAN-39', linkedKeys: [] }),
       supervisorFor: () => null,
       repos: () => ['wroosbit/butchr'],
       state: new PrWatchState(nextStateFile(), () => Date.now()),
