@@ -267,7 +267,10 @@ const preFixCapacity = (running, supervisors) =>
 
 /** The gate with KAN-258's term, using the real pure function to count. */
 const postFixCapacity = (running, supervisors, startedAt = []) => {
-  const u = unobservedStartsAmong(startedAt, RESTORED_COST);
+  // `now` is passed since KAN-365, which bounds how long a start can be counted
+  // as in flight. Every `startedAt` this script builds is seconds old, so the
+  // bound is inert here and the sections below assert exactly what they did.
+  const u = unobservedStartsAmong(startedAt, RESTORED_COST, Date.now());
   return computeCapacity(BOOT_MACHINE, running, {
     measured: RESTORED_COST,
     supervisorsRunning: supervisors,

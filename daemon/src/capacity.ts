@@ -312,6 +312,114 @@ import * as os from 'os';
  * daemon/scripts/verify-io-stall-gate.mjs is the proof; it drives the reader
  * from fixture files, so the arithmetic and the parsing are both exercised, and
  * it removes the term to show the same machine admitted.
+ *
+ * KAN-365 is about the moment there is nothing to measure, which this file had
+ * treated as a kind of breakage since KAN-56. Measured on this machine on
+ * 2026-08-12, thirteen minutes apart and with nothing changed but elapsed time:
+ *
+ *     13:02Z  agentCoresSource: measured  agentCores 0.195  cap 12  headroom 6
+ *     21:5xZ  agentCoresSource: seed      agentCores 0.75   cap  3  headroom 2
+ *
+ * The divisor reverted to a constant 3.8x the measured figure and the cap fell
+ * to a quarter, because the last task agent had finished. **An idle fleet is
+ * the cheapest possible moment to start work, and this is where the machine
+ * claimed it could afford least** — and self-reinforcingly so, since the
+ * measurement that would correct the estimate requires the very agents the
+ * estimate is refusing. `epic/KAN-59` was refused three activations against a
+ * 68-ticket backlog with nothing running.
+ *
+ * THE DISTINCTION THAT WAS MISSING: NO SUBJECT IS NOT A BROKEN INSTRUMENT
+ *
+ * The sampler's doctrine is *degrade, never guess*, and it is right. What it
+ * collapsed together is two situations that differ in what is actually wrong:
+ *
+ *   - **The instrument failed** — /proc unreadable, a sample that fails
+ *     validation. The estimate may be wrong and nothing can say by how much.
+ *     Discarding it is the only honest answer, and that is unchanged.
+ *   - **There is nothing to measure** — every task agent has finished. The last
+ *     measurement is not wrong. It was taken over the right population, by this
+ *     daemon, and the only thing that has changed about it is its age. An empty
+ *     fleet is evidence about *how busy the machine is*, and none at all about
+ *     *what an agent costs on it*.
+ *
+ * So the second case now retains what it measured, labelled {@link CostSource}
+ * `stale` with its age in every report, and only the first discards. The rule
+ * this narrows is agent-cost-damping.ts's — *"nothing to measure means the seed
+ * is the only honest answer for the next agent"* — which was written (KAN-276)
+ * about publishing a figure **derived from the wrong population**, supervisors
+ * standing in for task agents. That remains refused: nothing here computes a
+ * new figure out of an empty window. Retaining a measurement of the right
+ * population and computing one out of the wrong one are different acts, and
+ * only the second is a guess.
+ *
+ * AND THE SEED IS STILL THERE, WHICH IS WHAT KEEPS THIS FROM BEING A LOOSENING
+ *
+ * A retained figure is lower than the seed on this fleet, so it raises the cap,
+ * and the failure that matters in that direction is a machine the human is
+ * using becoming unusable. Four things bound it, and none of them is new:
+ *
+ *   1. **The cap is not the gate.** `cap` is a statement about hardware; every
+ *      admission still goes through live headroom, which divides CPU and memory
+ *      measured seconds ago.
+ *   2. **Every start against a stale figure is charged the seed.** Its window
+ *      closed before any agent running now existed, so `unobservedStartsAmong`
+ *      returns every one of them and {@link startingAgentCost} charges 0.75
+ *      core each until an instrument has priced them. The cap opens; the ramp
+ *      does not. On this 4-core machine that is three or four starts before the
+ *      live term closes again — after which the first real window replaces the
+ *      stale figure outright, sixty seconds in.
+ *   3. **The retention ceiling.** Past it the figure is dropped and the seed is
+ *      the answer again — which is today's behaviour, so the change can never
+ *      be worse than what it replaces, only better for as long as the ceiling
+ *      lasts. See cost-sampler-policy.ts, which owns that decision.
+ *   4. **{@link boundCoresByObservedCpu} is unmoved**, and it can only ever
+ *      lower a divisor, never raise one.
+ *
+ * ALL THREE FIGURES REVERT TOGETHER, SO ALL THREE ARE RETAINED TOGETHER
+ *
+ * The first version of this ticket read as a CPU-cost problem and it is not:
+ * `epic/KAN-203` measured `agentMemoryMb` (650) and the per-supervisor reserve
+ * (650) falling back to seed in the same breath as `agentCores`, because they
+ * come from one {@link MeasuredAgentCost} record and one `pick()`. A fix for
+ * cores alone would have left two thirds of it. Retention is of the record, so
+ * `costSource.residentBytes`, `costSource.cores` and
+ * `supervisorReserve.source` move to `stale` together — they were never
+ * separable and nothing here separates them.
+ *
+ * "WHICH LAST MEASUREMENT?" — THE OBJECTION, AND WHY THE ANSWER IS DIRECTIONAL
+ *
+ * `epic/KAN-203` measured the same two trees over the same 60s window six
+ * minutes apart and got `agentCores` 0.262 then 0.184 — a 30% move with nothing
+ * changing about the subject — while `agentMemoryMb` went 682 → 709, *rising*
+ * as cores fell. Both readings are honestly labelled `measured`, so "persist
+ * the last measurement" has a question inside it: a fleet that runs briefly and
+ * stops leaves behind a still-settling figure that "was never wrong and was
+ * never right either".
+ *
+ * That is real, and it does not need a settledness rule, because of where a
+ * settling figure sits. The damping filter starts each dimension from the seed
+ * and walks toward the truth (agent-cost-damping.ts), so an unsettled figure is
+ * always **between the seed and the settled answer**:
+ *
+ *     cores:   seed 0.75  ≥  settling 0.262  ≥  settled 0.184
+ *     memory:  seed 650   ≤  settling 682    ≤  settled 709
+ *
+ * On cores — the term that binds on this hardware — a retained early figure is
+ * therefore *higher* than the truth, which is the conservative direction: it
+ * under-opens the cap rather than over-opening it, and the error shrinks the
+ * longer the fleet ran. On memory the interval runs the other way, so an early
+ * figure can understate the per-agent cost by up to the seed-to-truth gap
+ * (~8% in the reading above) — named rather than buried, and bounded by
+ * {@link startingAgentCost}, which charges every start in flight the larger of
+ * the estimate and the seed **on both dimensions**, memory included.
+ *
+ * So the answer to "which measurement" is "the last one, whatever it was" — and
+ * the reason that is safe is that the interval it can be wrong within is the
+ * interval between the two answers this file would otherwise have chosen
+ * between anyway.
+ *
+ * daemon/scripts/verify-idle-fleet-capacity.mjs is the proof, and it reproduces
+ * the collapse before showing its absence.
  */
 
 export const GIB = 1024 ** 3;
@@ -482,8 +590,48 @@ export const SUPERVISOR_MEMORY_BYTES = 650 * MIB;
  * still not a measurement of the process that is dividing by it, and KAN-44
  * exists because a figure nobody measured on this fleet was labelled as though
  * somebody had.
+ *
+ * `stale` (KAN-365) is this daemon's own measurement, of the right population,
+ * held on past the window that produced it because there is nothing left to
+ * re-measure — every task agent has finished. It is a fourth word rather than
+ * `measured` for exactly KAN-44's reason: the fleet it describes is not running
+ * any more, so a report must be able to say "this is what agents cost here, and
+ * it was N minutes ago" rather than implying somebody is measuring now. See
+ * cost-sampler-policy.ts for why an idle fleet retains it and a broken
+ * instrument does not.
  */
-export type CostSource = 'override' | 'measured' | 'restored' | 'seed';
+export type CostSource = 'override' | 'measured' | 'restored' | 'stale' | 'seed';
+
+/**
+ * How a measurement reached the process that is publishing it.
+ *
+ * Named rather than spelled inline at each use so that {@link
+ * COST_SOURCE_BY_PROVENANCE} can be exhaustive over it — adding a fifth way for
+ * a figure to arrive is then a compile error at the one place that decides what
+ * a report calls it, instead of being silently labelled `measured` by a chain
+ * of equality tests. Two such chains existed before KAN-365 and a new
+ * provenance would have slipped through both.
+ */
+export type MeasurementProvenance = 'measured' | 'restored' | 'stale';
+
+/**
+ * What a report calls a measurement, given how it arrived.
+ *
+ * A total function over {@link MeasurementProvenance}, which is the point: the
+ * mapping is the only place the two vocabularies meet, and `Record` makes
+ * leaving a provenance out unrepresentable rather than merely untested.
+ */
+export const COST_SOURCE_BY_PROVENANCE: Record<MeasurementProvenance, CostSource> = {
+  measured: 'measured',
+  restored: 'restored',
+  stale: 'stale'
+};
+
+/** The label for a measurement, or `measured` for a record written before
+ * provenance was tracked at all. */
+export function costSourceOf(measured: Pick<MeasuredAgentCost, 'provenance'>): CostSource {
+  return COST_SOURCE_BY_PROVENANCE[measured.provenance ?? 'measured'];
+}
 
 /**
  * A damped live measurement of what one agent tree costs, with the metadata a
@@ -518,11 +666,13 @@ export interface MeasuredAgentCost extends AgentCost {
   /**
    * Set to `'restored'` by agent-cost-store.ts when this figure was read back
    * from disk after a daemon restart rather than sampled by the process that
-   * is publishing it. Absent means the running daemon measured it. It travels
-   * on the measurement rather than in a separate option so it cannot be lost
-   * on the way to the report that has to say it (KAN-204).
+   * is publishing it, and to `'stale'` by cost-sampler-policy.ts when this
+   * daemon measured it and then ran out of task agents to re-measure (KAN-365).
+   * Absent means the running daemon measured it over a window that has just
+   * closed. It travels on the measurement rather than in a separate option so
+   * it cannot be lost on the way to the report that has to say it (KAN-204).
    */
-  provenance?: 'measured' | 'restored';
+  provenance?: MeasurementProvenance;
   /**
    * Mean resident memory of one *supervisor* tree over the same window, for
    * {@link SUPERVISOR_MEMORY_BYTES}'s reserve (KAN-276). Null or absent when
@@ -711,25 +861,74 @@ export function startingAgentCost(cost: AgentCost): AgentCost {
 }
 
 /**
+ * How long a start can still be *in flight*.
+ *
+ * A start is charged here because no instrument can have priced it yet. That is
+ * a claim with a shelf life: an agent that started two minutes ago has either
+ * reached the census — in which case it is counted in `running`, its CPU is
+ * inside `cpuBusyCores` and its pages are already out of `availableBytes` — or
+ * it never will, because the pane died on the way up. In the first case the
+ * charge has become a double charge; in the second it is a charge for an agent
+ * that does not exist. Neither is the thing KAN-258 set out to price.
+ *
+ * Two minutes, matching {@link CPU_SAMPLE_MAX_AGE_SECONDS}, because it is the
+ * same question in a different dimension — how long may an observation still be
+ * said to describe *now* — and two answers to one question drift apart.
+ *
+ * WHAT THIS FIXES, AND WHY IT IS NOT A LOOSENING (KAN-365)
+ *
+ * The `after-window` branch below was always bounded: a start older than the
+ * current window is not counted, and the window is 60s. The other two branches
+ * were not bounded by anything, and router.ts's own leak guard asserted in
+ * prose that they were — *"it stops being charged on its own, because
+ * `unobservedStartsAmong` ignores anything older than the current measurement
+ * window"*. That sentence is false exactly when there is no window to be older
+ * than, which is the `no-measurement` branch, which is the state an idle fleet
+ * is in permanently. So a single start that never reached the census charged
+ * 0.75 core for as long as the daemon ran, on the machine least able to explain
+ * why: `epic/KAN-59` was refused three activations by it while nothing was
+ * running. This restores the bound the caller already believed it had.
+ */
+export const UNOBSERVED_START_MAX_AGE_SECONDS = 120;
+
+/**
  * How many of `startedAt` the measurement cannot have contained.
  *
- * Pure, and drivable from a script with no daemon, no clock and no /proc —
- * which is what lets a proof exercise the cold-boot case without booting
- * anything. `startedAt` is wall-clock ms per *currently running* agent this
- * daemon started; the caller prunes agents that have gone.
+ * Pure, and drivable from a script with no daemon and no /proc — which is what
+ * lets a proof exercise the cold-boot case without booting anything. `now` is
+ * passed rather than read so that stays true of the clock as well: a horizon
+ * measured against `Date.now()` inside here would make every case below
+ * untestable except in real time.
+ *
+ * `startedAt` is wall-clock ms per *currently running* agent this daemon
+ * started; the caller prunes agents that have gone, and {@link
+ * UNOBSERVED_START_MAX_AGE_SECONDS} bounds what a failure of that pruning can
+ * cost.
  *
  * The `restored` branch is the one that matters and it is not a special case
  * bolted on: a restored figure was sampled by the previous daemon, so by
  * definition it contains nothing this one has started. Charging all of them is
  * not conservatism, it is the literal truth about what that figure measured.
+ *
+ * A `stale` figure (KAN-365) deliberately takes no branch of its own. It was
+ * sampled by this daemon over a fleet that has since gone, so its window closed
+ * before any agent running now started — the ordinary `after-window`
+ * comparison already charges every one of them, and a branch that said the same
+ * thing in different words would be one more place to keep in step.
  */
 export function unobservedStartsAmong(
   startedAt: readonly number[],
-  measured: MeasuredAgentCost | null
+  measured: MeasuredAgentCost | null,
+  now: number
 ): { count: number; because: UnobservedReason } {
-  if (!measured) return { count: startedAt.length, because: 'no-measurement' };
+  // Applied before the branches rather than inside each of them: the bound is
+  // about the start, not about which figure happens to be published, and a
+  // per-branch version is how the two unbounded branches came to exist.
+  const horizon = now - UNOBSERVED_START_MAX_AGE_SECONDS * 1000;
+  const inFlight = startedAt.filter((at) => at > horizon);
+  if (!measured) return { count: inFlight.length, because: 'no-measurement' };
   if (measured.provenance === 'restored') {
-    return { count: startedAt.length, because: 'restored' };
+    return { count: inFlight.length, because: 'restored' };
   }
   // The window's opening edge, not its close: a window from t0 to t1 contains
   // the full cost only of an agent that existed for all of it, so an agent that
@@ -737,7 +936,7 @@ export function unobservedStartsAmong(
   // from.
   const windowOpenedAt = measured.sampledAt - measured.windowSeconds * 1000;
   let count = 0;
-  for (const at of startedAt) {
+  for (const at of inFlight) {
     if (at > windowOpenedAt) count++;
   }
   return { count, because: 'after-window' };
@@ -1086,12 +1285,13 @@ export function computeCapacity(
   const pick = (dim: keyof AgentCost): { value: number; source: CostSource } => {
     const override = overrides[dim];
     if (override !== undefined) return { value: override, source: 'override' };
-    // A restored figure is a real measurement of this fleet and beats the seed
-    // for the same reason a fresh one does — it is the only number anybody has
-    // actually taken here. It is labelled differently because it was taken by
-    // a process that is no longer running.
+    // A restored or stale figure is a real measurement of this fleet and beats
+    // the seed for the same reason a fresh one does — it is the only number
+    // anybody has actually taken here. Each is labelled differently because of
+    // what is no longer true of it: `restored` was taken by a process that is
+    // no longer running, `stale` over a fleet that is no longer running.
     if (measured) {
-      return { value: measured[dim], source: measured.provenance === 'restored' ? 'restored' : 'measured' };
+      return { value: measured[dim], source: costSourceOf(measured) };
     }
     return { value: MEASURED_AGENT_COST[dim], source: 'seed' };
   };
@@ -1117,8 +1317,8 @@ export function computeCapacity(
     const override = options.supervisorMemoryOverride;
     if (override !== undefined && override !== null) return { value: override, source: 'override' };
     const m = measured?.supervisorResidentBytes;
-    if (typeof m === 'number' && Number.isFinite(m) && m > 0) {
-      return { value: m, source: measured?.provenance === 'restored' ? 'restored' : 'measured' };
+    if (measured && typeof m === 'number' && Number.isFinite(m) && m > 0) {
+      return { value: m, source: costSourceOf(measured) };
     }
     return { value: SUPERVISOR_MEMORY_BYTES, source: 'seed' };
   })();
@@ -1638,7 +1838,7 @@ export function readCapacity(
    */
   startedAt: readonly number[] = []
 ): Capacity {
-  const unobserved = unobservedStartsAmong(startedAt, liveMeasuredCost);
+  const unobserved = unobservedStartsAmong(startedAt, liveMeasuredCost, Date.now());
   return computeCapacity(readMachineFacts(), running, {
     ...optionsFromEnv(),
     measured: liveMeasuredCost,
@@ -1737,6 +1937,11 @@ export function describeCapacity(c: Capacity): string {
       beaten.push(`BUTCHR_AGENT_CORES overrides its ${c.measured.cores} core`);
     }
     const restored = c.measured.provenance === 'restored';
+    const stale = c.measured.provenance === 'stale';
+    // Disclosed in the derivation rather than left as a timestamp the reader has
+    // to subtract, because the age *is* the caveat: a retained figure is a real
+    // measurement of this fleet whose only defect is when it was taken (KAN-365).
+    const staleMinutes = Math.round((Date.now() - c.measured.sampledAt) / 60000);
     // The two figures are averaged over two populations since KAN-276 — cores
     // over the task-agent trees, memory over every tree — so the line names the
     // population beside each figure rather than printing one tree count and
@@ -1746,7 +1951,7 @@ export function describeCapacity(c: Capacity): string {
     const memoryTrees = c.measured.memoryAgentTrees ?? c.measured.agentTrees;
     const split = memoryTrees !== c.measured.agentTrees;
     lines.push(
-      `  ${restored ? 'restored (damped)' : 'measured (damped)'}: ` +
+      `  ${restored ? 'restored (damped)' : stale ? 'stale (damped)' : 'measured (damped)'}: ` +
       `${Math.round(c.measured.residentBytes / MIB)} MB` +
       (split ? ` over ${memoryTrees} agent tree(s)` : '') + ', ' +
       `${c.measured.cores} core per ${split ? 'task ' : ''}agent tree — ` +
@@ -1760,6 +1965,15 @@ export function describeCapacity(c: Capacity): string {
       (restored
         ? ', carried across a daemon restart — sampled by the previous daemon, not this one; ' +
           'the next window replaces it with a measurement of this fleet'
+        : '') +
+      (stale
+        ? `, held on for ${staleMinutes} minute(s) because no task agent has been running to ` +
+          're-measure — this is what agents cost on this machine, taken over the fleet named ' +
+          'above and not refreshed since it finished. It is kept rather than discarded because ' +
+          'an idle fleet is the cheapest moment to start work and reverting to the seed makes ' +
+          'the machine claim it can afford least exactly then (KAN-365). The first agent to ' +
+          'start is charged the seed until a window has priced it, so this figure opens the cap ' +
+          'without opening the gate; past the retention ceiling it is dropped for the seed'
         : '') +
       (beaten.length ? `; ignored: ${beaten.join(', ')}` : '')
     );
@@ -1887,10 +2101,26 @@ export function summarizeCapacity(c: Capacity): string {
   // figure nothing gated on sends the reader after the wrong lever, which is
   // the KAN-60 defect in a new costume. The load average is one line down in
   // the derivation for anyone who wants to compare the two.
+  // Where the divisor came from, on the one line a caller may be reading
+  // (KAN-365). The ticket's candidate 2 — "make its use loud in `summary`
+  // rather than only in `derivation`" — kept, and kept for BOTH of the figures
+  // that are not a live measurement of this fleet: a seed nobody took here, and
+  // a measurement whose fleet has gone. Silent in the ordinary case, so this
+  // says something exactly when there is something to say.
+  const provenanceNote =
+    c.costSource.cores === 'seed'
+      ? '; cost figures are the 2026-07-31 seed — nothing has been measured on this fleet'
+      : c.costSource.cores === 'stale'
+        ? `; cost figures were measured ${Math.round((Date.now() - (c.measured?.sampledAt ?? 0)) / 60000)} ` +
+          'minute(s) ago and held — no task agent has run since'
+        : c.costSource.cores === 'restored'
+          ? '; cost figures were carried across a daemon restart'
+          : '';
   const figures =
     `${c.running}/${c.cap} task agents, room for ${c.headroom} more ` +
     `(${c.machine.cores} cores, ${c.cpuBusyCores.toFixed(2)} in use, ` +
     `${gib(c.machine.availableBytes)} available` +
+    provenanceNote +
     // Only when it fired: a stall figure on every line would be noise, and its
     // absence must not read as "measured and fine" on a machine that has no
     // instrument at all — the derivation is where that distinction lives.

@@ -26,6 +26,7 @@ import {
   workspaceDirFor
 } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
+import { StartLedger, sharedStartLedger } from './start-ledger.js';
 import type { RuntimeSwitchReport } from './runtime-switch.js';
 import { readWorkState } from './work-state.js';
 import { readFdUsage, isFdPressureHigh, PTMX_FDS_PER_PANE } from './herdr-health.js';
@@ -350,9 +351,11 @@ function capacityDto(c: Capacity) {
     agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
     agentCores: c.cost.cores,
     // Where the two cost figures came from (KAN-56): 'override', 'measured',
-    // 'restored' or 'seed', plus the sample's metadata when a measurement was
-    // consulted. A caller deciding whether to trust the cap can see whether
-    // anyone measured it.
+    // 'restored', 'stale' or 'seed', plus the sample's metadata when a
+    // measurement was consulted. A caller deciding whether to trust the cap can
+    // see whether anyone measured it — and, since KAN-365, whether the fleet it
+    // was measured over is still running. `measuredAt` is what gives 'stale'
+    // its age.
     agentMemorySource: c.costSource.residentBytes,
     agentCoresSource: c.costSource.cores,
     // Starts already admitted that no instrument has priced (KAN-258). Sent
@@ -360,12 +363,32 @@ function capacityDto(c: Capacity) {
     // — because a caller cannot otherwise tell a machine with no starts in
     // flight from a build where this term does not exist. That distinction is
     // the whole of what a reader needs to know this gate is protecting them.
+    //
+    // A RATE AND AN AMOUNT, AND WHY THEY ARE NOW NAMED AS SUCH (KAN-365)
+    //
+    // These four numbers are two pairs, and the names used to say so only to
+    // whoever wrote them. `cores` was the amount actually taken off the live
+    // terms; `chargedCores` was the rate that *would* apply per start. On an
+    // idle machine they read:
+    //
+    //     count: 0   cores: 0   chargedCores: 0.75
+    //
+    // and `epic/KAN-59` reported a phantom 0.75 core being charged with nothing
+    // running. That was a reasonable reading of that block: "charged" is a past
+    // participle, it sat one line under an amount, and nothing in the shape
+    // distinguished the two. The field was honest and the adjacency was not.
+    //
+    // `total…` against `perStart…` puts the distinction in the names, so
+    // `perStartCores: 0.75` beside `count: 0` reads as the tariff it is —
+    // nought starts at 0.75 each. The derivation string says the same thing in
+    // words, but only when the term fires, and this block is what a caller
+    // parses when it does not.
     unobservedStarts: {
       count: c.unobservedStarts.count,
-      cores: Math.round(c.unobservedStarts.cores * 100) / 100,
-      memoryMb: Math.round(c.unobservedStarts.bytes / (1024 * 1024)),
-      chargedCores: c.unobservedStarts.cost.cores,
-      chargedMemoryMb: Math.round(c.unobservedStarts.cost.residentBytes / (1024 * 1024)),
+      totalCores: Math.round(c.unobservedStarts.cores * 100) / 100,
+      totalMemoryMb: Math.round(c.unobservedStarts.bytes / (1024 * 1024)),
+      perStartCores: c.unobservedStarts.cost.cores,
+      perStartMemoryMb: Math.round(c.unobservedStarts.cost.residentBytes / (1024 * 1024)),
       because: c.unobservedStarts.because
     },
     // Null in the ordinary case. Set when the per-agent estimate implied more
@@ -1006,6 +1029,17 @@ export interface MessageRouterOptions {
    * cannot be confused with "this daemon does not watch pull requests".
    */
   prWatch?: () => PrWatchHealth;
+
+  /**
+   * The record of starts this daemon has made that no instrument has priced
+   * yet (KAN-258), shared across every router in the process by default
+   * (KAN-365).
+   *
+   * Injectable only so a proof can give two routers two ledgers and reproduce
+   * the reading that made `unobservedStarts` look like it oscillated —
+   * production wants the shared one, which is what omitting this gives.
+   */
+  startLedger?: StartLedger;
 }
 
 /**
@@ -1038,7 +1072,8 @@ const MESSAGE_ROUTER_OPTION_NAMES = [
   'agentRuntimeReport',
   'pendingNotifications',
   'guardian',
-  'prWatch'
+  'prWatch',
+  'startLedger'
 ] as const satisfies readonly (keyof MessageRouterOptions)[];
 
 // The other direction. `satisfies` above catches a name in the array that is
@@ -1071,8 +1106,8 @@ export class MessageRouter {
     startedAt: readonly number[]
   ) => Capacity;
   /**
-   * When this router started each agent, and whether the fleet census has ever
-   * reported it (KAN-258).
+   * When this *daemon* started each agent, and whether the fleet census has
+   * ever reported it (KAN-258).
    *
    * The capacity gate divides figures that describe *settled* agents, so it
    * cannot see one it started three seconds ago; this is the record that lets
@@ -1080,14 +1115,13 @@ export class MessageRouter {
    * which of these end up being charged — the rule lives there, next to the
    * measurement whose staleness it is about, rather than here.
    *
-   * `seen` is what makes the pruning exact instead of a race. An entry is
-   * dropped only once the census has reported that agent *and* it has since
-   * gone — never merely because it is absent, which is the state every start
-   * is in for its first moments and is precisely the state this term exists to
-   * charge for. Dropping on absence would have reintroduced the defect through
-   * the cleanup.
+   * **Shared across routers, and that is the fix rather than an implementation
+   * detail (KAN-365).** This was a `Map` field, and daemon.ts builds one router
+   * per connection, so each client got its own ledger and `unobservedStarts`
+   * answered a different question per socket. See start-ledger.ts, which holds
+   * the readings that were taken of it.
    */
-  private readonly startLedger = new Map<string, { at: number; seen: boolean }>();
+  private readonly startLedger: StartLedger;
   /** See {@link MessageRouterOptions.boardControl}. */
   private readonly boardControl?: (agents: AddressableAgent[]) => BoardControlReport;
   /** See {@link MessageRouterOptions.channelRoute}. */
@@ -1146,6 +1180,10 @@ export class MessageRouter {
     this.pendingNotifications = opts.pendingNotifications;
     this.guardian = opts.guardian;
     this.prWatch = opts.prWatch;
+    // The shared ledger unless a proof injected one: a start is a fact about
+    // the machine, and every router in this process must answer for the same
+    // machine (KAN-365).
+    this.startLedger = opts.startLedger ?? sharedStartLedger;
   }
 
   /**
@@ -4564,15 +4602,11 @@ export class MessageRouter {
     }
 
     // Reconcile the start ledger against the census, in the one order that is
-    // safe: mark first, drop second. See `startLedger` for why absence alone
+    // safe: mark first, drop second. See start-ledger.ts for why absence alone
     // must never drop an entry.
-    for (const [name, entry] of this.startLedger) {
-      if (live.has(name)) entry.seen = true;
-      else if (entry.seen) this.startLedger.delete(name);
-    }
-    this.boundStartLedger();
+    this.startLedger.reconcile(live);
 
-    return this.capacitySource(fleet, supervisors, [...this.startLedger.values()].map((e) => e.at));
+    return this.capacitySource(fleet, supervisors, this.startLedger.startedAt());
   }
 
   /**
@@ -4580,28 +4614,7 @@ export class MessageRouter {
    * term (KAN-258). Called on the success path of both activation routes.
    */
   private recordStart(agentName: string): void {
-    this.startLedger.set(agentName, { at: Date.now(), seen: false });
-    this.boundStartLedger();
-  }
-
-  /**
-   * A leak guard, and named as one so nobody reads it as policy.
-   *
-   * An entry whose agent never reaches the census — an activation that
-   * succeeded onto a pane that then died — is never marked `seen` and so is
-   * never dropped by the reconciliation above. It stops being *charged* on its
-   * own, because `unobservedStartsAmong` ignores anything older than the
-   * current measurement window; this only stops the map growing without bound
-   * on a daemon that runs for weeks. The oldest go first, which is also the
-   * order in which they stopped mattering.
-   */
-  private boundStartLedger(): void {
-    const LIMIT = 256;
-    if (this.startLedger.size <= LIMIT) return;
-    const oldest = [...this.startLedger.entries()].sort((a, b) => a[1].at - b[1].at);
-    for (const [name] of oldest.slice(0, this.startLedger.size - LIMIT)) {
-      this.startLedger.delete(name);
-    }
+    this.startLedger.record(agentName, Date.now());
   }
 
   /**
