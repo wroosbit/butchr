@@ -209,6 +209,34 @@ export interface HerdrSession {
    * read wherever "does an agent exist here?" is answered: for every other
    * launcher, a pane herdr reports no runtime for is not an agent, however
    * many name registrations point at it (KAN-58).
+   *
+   * ## KAN-395 ruled on this field, and the ruling is that it keeps its meaning
+   *
+   * The question was live and worth asking: KAN-395 shrank the fleet to
+   * `claude`, and a flag whose only false case has been deleted is a mechanism
+   * that goes on reporting after the question it answered stopped existing.
+   * Four sites are defined by negation against `shell` — here, `router.ts`'s
+   * `expectsRuntime()`, and both `crabcast-runtime.ts` producers.
+   *
+   * **The false case was not deleted, so the field is not a constant.** `shell`
+   * stayed in `AGENT_LAUNCHERS` for a reason named there and in
+   * `daemon/scripts/lib/channel-probe.mjs` note 3: it is how every channel probe
+   * brings up a pane it can drive, through the real daemon. Those are real
+   * activations that really produce a runtime-less pane, so `false` here is
+   * still produced, still read, and still the thing standing between a probe's
+   * bash prompt and `initPty` tearing it down as a stale registration.
+   *
+   * **What DID change is who can produce one, and that is the part worth
+   * writing down.** Before KAN-395 the answer was "any activation that omitted
+   * or misspelled `defaultAgent` in the extension" — the sidepanel's service
+   * worker defaulted the field to `'shell'`. Now it is "a caller that names
+   * `shell` explicitly", which in this repository is the probe harness and
+   * nothing else. So this field is no longer a property of ordinary fleet
+   * traffic; it is a property of fixtures. Read a `false` here as *"a probe is
+   * holding this pane"*, and if that ever stops being true, this field has
+   * become the constant KAN-395 looked for and should be deleted rather than
+   * pinned to `true` — a `true` nobody can falsify is the same defect wearing
+   * the answer's clothes.
    */
   expectsRuntime?: boolean;
 }

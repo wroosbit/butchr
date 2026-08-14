@@ -49,32 +49,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       connectNativeHost();
     }
     if (nativePort) {
-      chrome.storage.sync.get(['defaultAgent'], (result) => {
-        nativePort.postMessage({
-          action: 'activate',
-          url: message.url,
-          tabId: message.tabId,
-          defaultAgent: result.defaultAgent || 'shell',
-          // Only ever set by the "Start anyway" button on a capacity refusal.
-          // Forwarded rather than defaulted so an ordinary activate carries no
-          // override at all, and the daemon's record of one means a person
-          // asked for it.
-          ...(message.override ? { override: true } : {}),
-          // Same rule, and it matters more here: this one ends another agent's
-          // turn. It is set only by the "Stand down <agent> and start" button,
-          // which exists only on a refusal that has already named the agent —
-          // so a preempt reaching the daemon means a person read the name.
-          ...(message.preempt ? { preempt: true } : {}),
-          // Same rule again, inverted in whose favour it works: this one is set
-          // only by the panel's automatic re-attach, and it *removes* a power
-          // rather than granting one. Forwarded rather than defaulted so that
-          // an activate arriving without it is one a person asked for — which
-          // is the distinction the daemon refuses on. See KAN-196 and the
-          // comment on the re-attach effect in useWorkspaceSession.js.
-          ...(message.reattachOnly ? { reattachOnly: true } : {})
-        });
-        sendResponse({ status: 'sent' });
+      // NO `defaultAgent`, AND ITS ABSENCE IS THE MESSAGE (KAN-395).
+      //
+      // This read `chrome.storage.sync.get(['defaultAgent'])` and sent
+      // `result.defaultAgent || 'shell'`. The key was written by the *Default
+      // Agent* select on the options page, whose own initial state was
+      // `'shell'` — so EVERY SIDEPANEL ACTIVATION ASKED THE DAEMON FOR A BARE
+      // BASH PROMPT unless a human had gone to Settings and deliberately chosen
+      // Claude: Save-without-touching-the-dropdown stored `'shell'`, and never
+      // opening Settings left the key unset and the `||` supplied the same
+      // thing. That is KAN-53's incident (a story agent was a shell for twenty
+      // minutes, executing its messages as shell commands) surviving one layer
+      // above the fix that removed it from `resolveLauncher`. The select is
+      // gone; see `extension/options.jsx`.
+      //
+      // The field is omitted rather than set to `'claude'` so that there is one
+      // place that decides what a new agent is, and it is `DEFAULT_AGENT` in
+      // `daemon/src/launchers.ts`. A `'claude'` written here would be a second
+      // copy of that decision in a file that ships on a different cadence.
+      nativePort.postMessage({
+        action: 'activate',
+        url: message.url,
+        tabId: message.tabId,
+        // Only ever set by the "Start anyway" button on a capacity refusal.
+        // Forwarded rather than defaulted so an ordinary activate carries no
+        // override at all, and the daemon's record of one means a person
+        // asked for it.
+        ...(message.override ? { override: true } : {}),
+        // Same rule, and it matters more here: this one ends another agent's
+        // turn. It is set only by the "Stand down <agent> and start" button,
+        // which exists only on a refusal that has already named the agent —
+        // so a preempt reaching the daemon means a person read the name.
+        ...(message.preempt ? { preempt: true } : {}),
+        // Same rule again, inverted in whose favour it works: this one is set
+        // only by the panel's automatic re-attach, and it *removes* a power
+        // rather than granting one. Forwarded rather than defaulted so that
+        // an activate arriving without it is one a person asked for — which
+        // is the distinction the daemon refuses on. See KAN-196 and the
+        // comment on the re-attach effect in useWorkspaceSession.js.
+        ...(message.reattachOnly ? { reattachOnly: true } : {})
       });
+      sendResponse({ status: 'sent' });
     } else {
       sendResponse({ status: 'error', error: 'Native host not connected' });
     }
@@ -87,29 +102,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // this service worker never exposed.
     //
     // `defaultAgent` comes from the registry's record of what the agent last
-    // ran, not from extension storage: switching an agent back on must bring
-    // back what was there, and the storage default describes what a *new*
-    // agent would be. It falls back to the stored default only when the
-    // registry has nothing, which is the pre-KAN-38 records.
+    // ran, and from nowhere else (KAN-395): switching an agent back on must
+    // bring back what was there. It used to fall through to a
+    // `chrome.storage.sync` key and then to `|| 'shell'`, and neither survived
+    // — the key was never written by anything, so the fallback was not a
+    // fallback but the ordinary path. See the note on ACTIVATE_BUTCHR above.
+    //
+    // Absent — the pre-KAN-38 records, which recorded no launcher — the field
+    // is omitted and the daemon's DEFAULT_AGENT decides, which is what those
+    // agents were.
     if (!isConnected || !nativePort) {
       connectNativeHost();
     }
     if (nativePort) {
-      chrome.storage.sync.get(['defaultAgent'], (result) => {
-        nativePort.postMessage({
-          action: 'activate_by_key',
-          type: message.workspaceType,
-          key: message.key,
-          ...(message.url ? { url: message.url } : {}),
-          defaultAgent: message.defaultAgent || result.defaultAgent || 'shell',
-          // Same rule as ACTIVATE_BUTCHR: forwarded rather than defaulted, so
-          // that the daemon's record of one means a person pressed a button
-          // that said what it would do.
-          ...(message.override ? { override: true } : {}),
-          ...(message.preempt ? { preempt: true } : {})
-        });
-        sendResponse({ status: 'sent' });
+      nativePort.postMessage({
+        action: 'activate_by_key',
+        type: message.workspaceType,
+        key: message.key,
+        ...(message.url ? { url: message.url } : {}),
+        ...(message.defaultAgent ? { defaultAgent: message.defaultAgent } : {}),
+        // Same rule as ACTIVATE_BUTCHR: forwarded rather than defaulted, so
+        // that the daemon's record of one means a person pressed a button
+        // that said what it would do.
+        ...(message.override ? { override: true } : {}),
+        ...(message.preempt ? { preempt: true } : {})
       });
+      sendResponse({ status: 'sent' });
     } else {
       sendResponse({ status: 'error', error: 'Native host not connected' });
     }

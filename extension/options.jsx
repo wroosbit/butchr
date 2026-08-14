@@ -1,52 +1,39 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './sidepanel.css'; // Just re-use general styles or write inline
 import { IntegrationsSection } from './src/components/IntegrationsSection.jsx';
 import { GuardianCard } from './src/components/GuardianCard.jsx';
 
+/*
+ * THE "DEFAULT AGENT" CARD WAS HERE, AND KAN-395 DELETED IT RATHER THAN
+ * NARROWING IT TO ONE OPTION.
+ *
+ * The human's decision, relayed 2026-08-14: *"we should shrink the scope to
+ * only use claude, with no shell or antigravity. no select option at all, only
+ * claude."* A select with one entry is still a select — it is a control that
+ * says a choice exists — so the card goes and `DEFAULT_AGENT` in
+ * `daemon/src/launchers.ts` becomes the only place that answers "what does a
+ * new agent run".
+ *
+ * WHAT IT ACTUALLY DID, which is worse than "it offered a choice nobody wanted".
+ * The select's initial state was `'shell'`, and it wrote
+ * `chrome.storage.sync.defaultAgent`; the service worker read that key and fell
+ * back to `|| 'shell'`. So BOTH BRANCHES ENDED AT A BARE BASH PROMPT — a user
+ * who opened Settings and pressed Save without touching the dropdown pinned the
+ * fleet to `shell`, and a user who never opened Settings at all got `undefined
+ * || 'shell'` and the same result. That is KAN-53's incident (a story agent was
+ * a shell for twenty minutes, executing its messages as shell commands) living
+ * one layer above the `resolveLauncher` fix that removed it.
+ *
+ * The storage key is not migrated and does not need to be: nothing reads it any
+ * more, and the `storage` permission has gone from the manifest with it.
+ */
 function Options() {
-  const [defaultAgent, setDefaultAgent] = useState('shell');
-  const [status, setStatus] = useState('');
-
-  useEffect(() => {
-    chrome.storage.sync.get(['defaultAgent'], (result) => {
-      if (result.defaultAgent) {
-        setDefaultAgent(result.defaultAgent);
-      }
-    });
-  }, []);
-
-  const handleSave = () => {
-    chrome.storage.sync.set({ defaultAgent }, () => {
-      setStatus('Settings saved.');
-      setTimeout(() => setStatus(''), 2000);
-    });
-  };
-
   return (
     <div className="container" style={{ maxWidth: '600px', margin: '40px auto', padding: '20px', color: '#f8fafc', fontFamily: 'sans-serif' }}>
       <div className="header" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '30px', paddingBottom: '20px', borderBottom: '1px solid #334155' }}>
         <span style={{ fontSize: '24px' }}>⚙️</span>
         <div className="title" style={{ fontSize: '24px', fontWeight: 700 }}>Butchr Settings</div>
-      </div>
-
-      <div className="card" style={{ backgroundColor: '#111827', borderRadius: '8px', border: '1px solid #334155', padding: '20px' }}>
-        <div style={{ marginBottom: '20px' }}>
-          <label style={{ display: 'block', fontWeight: 600, marginBottom: '8px' }}>Default Agent</label>
-          <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '12px' }}>Choose which agent to launch when you open a terminal session.</div>
-          <select
-            value={defaultAgent}
-            onChange={(e) => setDefaultAgent(e.target.value)}
-            style={{ width: '100%', padding: '10px', borderRadius: '6px', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', fontSize: '14px' }}
-          >
-            <option value="shell">Shell (No start command)</option>
-            <option value="claude">Claude</option>
-            <option value="anti-gravity">Anti-Gravity</option>
-          </select>
-        </div>
-
-        <button onClick={handleSave} className="btn btn-primary">Save Settings</button>
-        <div style={{ marginTop: '10px', color: '#10b981', fontSize: '14px', height: '20px' }}>{status}</div>
       </div>
 
       {/*

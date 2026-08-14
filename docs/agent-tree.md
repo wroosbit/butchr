@@ -61,21 +61,24 @@ Three things about that are decisions rather than details:
   not a secret, and already on every surface — so putting them in `env` would
   have hidden the core server's command line for no security reason and made a
   security rule bend for a plumbing fix. Nothing about that rule was loosened.
-* **Never in the global agy config.** `configureAgyMcp` writes one file for
-  every workspace, so a per-workspace identity written there would name whichever
-  agent was activated last. Anti-gravity agents are therefore parentless until
-  that CLI grows a project-scoped config: recording the wrong supervisor is worse
-  than recording none.
+* **Never in a config outside the workspace — and since KAN-395 there is no such
+  config.** This bullet used to be about `configureAgyMcp`, which wrote the
+  anti-gravity CLI's *global* file: one file for every workspace, so a
+  per-workspace identity written there would have named whichever agent was
+  activated last, and recording the wrong supervisor is worse than recording
+  none. It stripped the identity flags before writing for exactly that reason
+  (KAN-398 — the property had until then rested on `initPty` happening to pass
+  `launcher.setup` an unstamped assembly, and **a property that depends on what a
+  caller remembers to pass is not enforced**).
 
-  **Since KAN-398 that is enforced by `configureAgyMcp` itself**, which strips the
-  identity flags before writing. It used to hold because `initPty` happened to
-  hand `launcher.setup` the unstamped assembly — the stamp was applied one branch
-  further along. KAN-398 moved both MCP transforms above the runtime seam so that
-  neither runtime can omit them, which means what reaches `launcher.setup` is now
-  stamped. **A property that depends on what a caller remembers to pass is not
-  enforced**, so it moved to the writer that owns the file. The positive control
-  is in `verify-workspace-mcp-preparation.mjs` §6: the same prepared assembly
-  goes through both writers, and only the workspace one keeps the flags.
+  **KAN-395 deleted the anti-gravity launcher, and `configureAgyMcp` went with
+  it.** The hazard has no writer left to come from, so what survives is the rule
+  rather than its exception: the identity is written into the workspace's own
+  `.mcp.json` and nowhere else. `verify-workspace-mcp-preparation.mjs` §6 keeps
+  the positive control — a prepared assembly through the workspace writer does
+  carry the flags — and adds the assertion that replaced the pair: `launchers.ts`
+  exports no writer of a config outside the workspace, so a new global writer
+  goes red rather than quietly reopening this.
 * **No backfill.** Parentage is recorded at activation, and there is nothing to
   recover it from for an agent already running — its MCP server was spawned from
   the old file and cannot be told anything now. Every agent live at the moment

@@ -87,13 +87,14 @@ export interface WorkspaceIdentity {
  *      `ps` and `/proc/<pid>/cmdline`, which is precisely what nobody could
  *      check while this bug was live.
  *
- * Applied to the workspace `.mcp.json` only, never to the global agy config
- * (`configureAgyMcp`): that file is one file for every workspace, so a
- * per-workspace identity written into it would name whichever agent was
- * activated last. Recording the wrong supervisor is worse than recording none,
- * so anti-gravity agents stay parentless until their CLI grows a
- * project-scoped config. Stated in docs/agent-tree.md rather than left to be
- * discovered.
+ * Applied to the workspace `.mcp.json`, which since KAN-395 is the only config
+ * this module writes. It used to have a second writer — `configureAgyMcp`,
+ * which merged into the anti-gravity CLI's *global* file and therefore had to
+ * strip this stamp again, because one file serving every workspace would have
+ * named whichever agent was activated last. That launcher is gone and so is the
+ * writer, so the exemption this paragraph used to carry has nothing left to be
+ * about; what remains is the rule, which never had an exception for a
+ * workspace-scoped file. See docs/agent-tree.md.
  *
  * Takes freshly-built definitions (`coreMcpServerDefinitions()` resolves on
  * every call, by design) so appending cannot accumulate across activations.
@@ -161,6 +162,10 @@ export function materializeMcpServers(defs: McpServerDefinitions): McpServerDefi
  * Both transforms, in the one order that is correct, producing the only value
  * {@link AgentRuntime.spawnSession} accepts (KAN-398).
  *
+ * **KAN-395 removed the second consumer of this pair.** `configureAgyMcp` took
+ * a prepared assembly and undid half of it; with the anti-gravity launcher gone
+ * there is one writer left, so "prepared" and "written" no longer come apart.
+ *
  * **Identity first, then materialisation, and the order is load-bearing rather
  * than stylistic.** `withWorkspaceIdentity` appends to the core server's `args`;
  * `materializeMcpServers` rewrites `pathPrefix` into `env.PATH` and strips
@@ -188,29 +193,6 @@ export function prepareWorkspaceMcpServers(
   identity: WorkspaceIdentity
 ): WorkspaceMcpServers {
   return materializeMcpServers(withWorkspaceIdentity(defs, identity)) as WorkspaceMcpServers;
-}
-
-/**
- * Remove the workspace identity `withWorkspaceIdentity` stamped, for the one
- * writer whose file is not a workspace's (KAN-398).
- *
- * See `configureAgyMcp`, its only caller. This exists so that the invariant is
- * enforced by the writer that owns the global file, rather than resting on
- * every caller happening to pass an unstamped assembly — which is what it
- * rested on until the transforms moved above the runtime seam.
- */
-function withoutWorkspaceIdentity(defs: McpServerDefinitions): McpServerDefinitions {
-  const core = defs[CORE_MCP_SERVER];
-  if (!core) return defs;
-  const args: string[] = [];
-  for (let i = 0; i < core.args.length; i += 1) {
-    if (core.args[i] === WORKSPACE_TYPE_FLAG || core.args[i] === WORKSPACE_KEY_FLAG) {
-      i += 1; // skip the flag's value too
-      continue;
-    }
-    args.push(core.args[i]);
-  }
-  return { ...defs, [CORE_MCP_SERVER]: { ...core, args } };
 }
 
 /**
@@ -261,52 +243,6 @@ export function writeWorkspaceMcpConfig(workDir: string, defs: McpServerDefiniti
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   } catch (e) {
     console.error('[Launchers] Failed to write workspace .mcp.json', e);
-  }
-}
-
-// The antigravity CLI has no project-scoped equivalent, so its global config
-// is merged into — and never written when the existing file cannot be parsed,
-// which would otherwise replace the user's config with just our entries.
-//
-// THE WORKSPACE IDENTITY IS STRIPPED HERE, AND THIS IS THE PLACE THAT HAS TO DO
-// IT (KAN-398). One file serves every workspace, so a per-workspace stamp
-// written into it names whichever agent was activated last — `activatedBy`
-// pointing at the wrong supervisor, which `withWorkspaceIdentity` argues at
-// length is worse than pointing at nobody. Anti-gravity agents stay parentless
-// until the CLI grows a project-scoped config; see docs/agent-tree.md.
-//
-// Until KAN-398 this held because `initPty` happened to hand `launcher.setup`
-// the unstamped assembly, one branch above. The transforms now run above the
-// runtime seam, so what arrives here is stamped and this function is the only
-// thing standing between that stamp and the user's global config. **A property
-// that depends on what a caller remembers to pass is not enforced** — so it is
-// enforced by the writer that owns the file instead.
-export function configureAgyMcp(defs: McpServerDefinitions, configPath?: string): void {
-  // Nothing to contribute: leave the user's global config alone entirely.
-  if (Object.keys(defs).length === 0) return;
-
-  const agyConfigPath = configPath ?? path.join(os.homedir(), '.gemini', 'antigravity-cli', 'mcp.json');
-  const agyConfigDir = path.dirname(agyConfigPath);
-  let config: any = {};
-  if (fs.existsSync(agyConfigPath)) {
-    try {
-      config = JSON.parse(fs.readFileSync(agyConfigPath, 'utf8'));
-    } catch (e) {
-      console.error('[Launchers] agy mcp.json exists but is unparseable; refusing to overwrite it', e);
-      return;
-    }
-  }
-
-  config.mcpServers = {
-    ...config.mcpServers,
-    ...materializeMcpServers(withoutWorkspaceIdentity(defs))
-  };
-
-  try {
-    fs.mkdirSync(agyConfigDir, { recursive: true });
-    fs.writeFileSync(agyConfigPath, JSON.stringify(config, null, 2));
-  } catch (e) {
-    console.error('[Launchers] Failed to write agy mcp.json', e);
   }
 }
 
@@ -678,9 +614,27 @@ export interface AgentLauncher {
   preSpawnCheck?: (workDir: string) => void;
 }
 
-// The only agents Butchr will launch. defaultAgent arrives from extension
-// storage and from MCP tool arguments; it selects from this table and is
-// never itself executed as shell.
+/**
+ * Every name {@link AGENT_LAUNCHERS} can hold — a union, not `string`, and the
+ * union is the enforcement rather than a comment about one (KAN-395).
+ *
+ * `AGENT_LAUNCHERS` is keyed by it and {@link resolveLauncher} returns it, so a
+ * comparison against a name this fleet no longer has — `'anti-gravity'`, the
+ * one KAN-395 deleted — is `error TS2367` at the comparison site rather than a
+ * branch that is quietly never taken. That is the whole reason the type exists:
+ * a deleted launcher leaves `!== 'anti-gravity'` tests behind it, they all read
+ * as working code, and every one of them is now constantly true.
+ *
+ * **The same trapdoor as every other narrow type here: widening a parameter
+ * back to `string` makes those comparisons compile again, silently.** See the
+ * docblock on `AgentRuntime.confirmAgentPresent` for the measured version of
+ * that (KAN-406). Do not widen `resolveLauncher`'s return.
+ */
+export type LauncherName = 'claude' | 'shell';
+
+// The only agents Butchr will launch. defaultAgent arrives from MCP tool
+// arguments and from what the registry recorded for an agent being switched
+// back on; it selects from this table and is never itself executed as shell.
 //
 // The resolution rule (KAN-53): an omitted defaultAgent means DEFAULT_AGENT
 // (`claude`); an unknown one refuses the activation. Nothing resolves to
@@ -700,16 +654,47 @@ export interface AgentLauncher {
 // the user no way to amend, while under the default they come back as the
 // claude agents they were. Refuse-when-absent is the more honest shape, but
 // it spends its honesty on exactly the callers who cannot supply the field.
-// The cost of the default is a silent wrong choice if a second default-worthy
-// runtime ever ships; the day the fleet stops being all-claude, revisit
-// DEFAULT_AGENT rather than assume it.
 //
-// `shell` stays in the table because it is a legitimate *explicit* request —
-// verify scripts activate it as a fixture, and expectsRuntime() in router.ts
-// reads the recorded value to excuse a pane that is a bare prompt on purpose
-// — but it is reachable only by `defaultAgent: 'shell'`, never by omission
-// and never by fallback.
-export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
+// ---------------------------------------------------------------------------
+// KAN-395: WHAT THIS TABLE HELD, AND WHY IT NOW HOLDS TWO ENTRIES RATHER THAN
+// ONE. The human's decision, relayed 2026-08-14: *"we should shrink the scope
+// to only use claude, with no shell or antigravity. no select option at all,
+// only claude."*
+// ---------------------------------------------------------------------------
+//
+// `anti-gravity` IS GONE, and nothing named it. No fixture activated it, no
+// stored registry row carried it (53 rows read on 2026-08-14: 45 `claude`, 8
+// with the field absent, 0 of either retired name), and the global config its
+// setup wrote — `~/.gemini/antigravity-cli/mcp.json` — did not exist on the
+// machine that has been running this fleet since July. It went with
+// `configureAgyMcp`, which was its only reason to exist.
+//
+// `shell` STAYS, AND IT IS A FINDING RATHER THAN AN OMISSION. It is not a
+// product surface and no longer reachable by any accident — see the extension
+// note below — but it is load-bearing for the channel evidence base, and the
+// reason is named in `daemon/scripts/lib/channel-probe.mjs` note 3: activating
+// as `shell` "leaves the probe holding the pane at a bash prompt, which is the
+// only way to start `claude` with an extra flag without editing the product."
+// Every channel probe (KAN-217, KAN-219, KAN-244, KAN-249, KAN-250) brings its
+// agent up that way, THROUGH THE DAEMON, which is what licenses their claims
+// about the shipped path. Deleting `shell` does not delete a launcher anybody
+// selects; it deletes the only bring-up those proofs have, and with it the
+// measurements the storm guards in `prompts/task.md` rest on. That cost is
+// larger than the tidiness, so it is stated here rather than paid quietly.
+//
+// **WHAT DID CHANGE IS THAT NOTHING CHOOSES IT ANY MORE, AND THAT IS THE
+// PRODUCT HALF OF THIS TICKET.** Until KAN-395 the extension had a *Default
+// Agent* select — `options.jsx`, three entries, initial state `'shell'` — which
+// wrote `chrome.storage.sync.defaultAgent`; the service worker read that key
+// and fell back to `|| 'shell'`. **Both branches ended at a bare bash prompt**:
+// pressing Save without touching the dropdown pinned the fleet to `shell`, and
+// never opening Settings at all gave `undefined || 'shell'` and the same
+// result. That is KAN-53's incident living one layer above the fix that removed
+// it from `resolveLauncher`. The select, both reads and both fallbacks are
+// gone; the sidepanel now sends no launcher at all and gets DEFAULT_AGENT.
+// `shell` is reachable only by a caller naming it, which in this repository is
+// the probe harness and nothing else.
+export const AGENT_LAUNCHERS: Record<LauncherName, AgentLauncher> = {
   shell: {
     // `false`, not `null`: a bare bash prompt is a spawn that decided, and what
     // it decided is that there is no channel here. `null` would claim nobody
@@ -765,23 +750,36 @@ export const AGENT_LAUNCHERS: Record<string, AgentLauncher> = {
         throw new Error(`Refusing to spawn claude: ${trust.error}`);
       }
     }
-  },
-  'anti-gravity': {
-    // `false` for the same reason as `shell`, and it is a statement about this
-    // launcher rather than about agy: nothing here passes a channel flag and
-    // `configureAgyMcp` writes agy's own MCP config, not Claude Code's channel
-    // server. If agy ever grows one, this is the line that decides — which is
-    // the point of the decision living at the composing site.
-    command: (promptCommand = PROMPT_CMD) => ({
-      command: `agy --continue || agy -i ${shellQuote(promptCommand)}`,
-      channelEnabled: false
-    }),
-    setup: (_workDir, mcpServers) => configureAgyMcp(mcpServers)
   }
 };
 
 /** What an omitted defaultAgent means. See the block above AGENT_LAUNCHERS. */
-export const DEFAULT_AGENT = 'claude';
+export const DEFAULT_AGENT: LauncherName = 'claude';
+
+/**
+ * Launchers this fleet used to have, and the sentence a caller that still asks
+ * for one is answered with (KAN-395).
+ *
+ * **A retired name is refused, never substituted** — the KAN-53 rule, and this
+ * table does not soften it. What it buys is that the refusal SAYS SO: a stored
+ * record asking for `anti-gravity` gets *"retired, ask for claude"* instead of
+ * *"unknown agent"*, which is the difference between a reader knowing the name
+ * was deliberately removed and a reader hunting a typo. Nothing on this machine
+ * carries one — measured, see the block above `AGENT_LAUNCHERS` — so this is a
+ * message written for a record that may exist somewhere rather than a migration
+ * for records known to exist.
+ *
+ * The alternative was to quietly resolve a retired name to `claude`, and it is
+ * exactly the fallback KAN-53 removed: an activation getting a launcher nobody
+ * asked for, reporting success. A refusal that names its remedy is loud and
+ * fixable; a substitution is neither.
+ */
+const RETIRED_LAUNCHERS: Record<string, string> = {
+  'anti-gravity':
+    "the 'anti-gravity' launcher was removed in KAN-395 (2026-08-14) — Butchr launches " +
+    "'claude' only. Nothing is started. Re-activate with defaultAgent: 'claude', or omit " +
+    'the field entirely, and this agent comes back as a claude agent.'
+};
 
 /**
  * Map a requested agent name to its launcher.
@@ -791,16 +789,26 @@ export const DEFAULT_AGENT = 'claude';
  * unknown sessionId: refuse rather than substitute something plausible.
  * initPty turns the throw into session.spawnError, the channel activate
  * already answers `success: false` from, so the refusal reaches the caller
- * without new vocabulary.
+ * without new vocabulary. A *retired* name throws too, with its own sentence;
+ * see {@link RETIRED_LAUNCHERS}.
+ *
+ * **The return is {@link LauncherName}, not `string`, and that is load-bearing
+ * rather than tidy.** It is what makes a comparison against a name this table
+ * no longer holds a compile error at the reading site. Widening it back would
+ * compile, and would take the compile errors with it.
  */
-export function resolveLauncher(name?: string): { name: string; launcher: AgentLauncher } {
+export function resolveLauncher(name?: string): { name: LauncherName; launcher: AgentLauncher } {
   const requested = name?.trim() ? name.trim() : DEFAULT_AGENT;
-  const launcher = AGENT_LAUNCHERS[requested];
+  const retired = RETIRED_LAUNCHERS[requested];
+  if (retired) {
+    throw new Error(`Refusing to start '${requested}': ${retired}`);
+  }
+  const launcher = AGENT_LAUNCHERS[requested as LauncherName];
   if (!launcher) {
     throw new Error(
       `Unknown agent '${requested}'. Valid launchers: ${Object.keys(AGENT_LAUNCHERS).join(', ')}. ` +
       `Pass one of these as defaultAgent, or omit it to get '${DEFAULT_AGENT}'.`
     );
   }
-  return { name: requested, launcher };
+  return { name: requested as LauncherName, launcher };
 }

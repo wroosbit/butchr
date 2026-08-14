@@ -253,7 +253,31 @@ for (const [label, got] of [['off', off], ['on', on], ['unset', unset]]) {
 
 // Every launcher answers, and none of them answers `undefined` — which would be
 // a fourth state nothing has a meaning for.
-for (const name of ['shell', 'anti-gravity']) {
+//
+// THE LIST IS READ OUT OF THE TABLE, NOT TYPED HERE (KAN-395). It was
+// `['shell', 'anti-gravity']`, and when KAN-395 deleted `anti-gravity` this
+// section did not report a launcher that had stopped answering — it crashed with
+// a TypeError on `undefined.command()`, which is a red for the wrong reason and
+// would have read as this proof catching the deletion. Deriving the names means
+// a launcher ADDED later is covered by this assertion without anyone editing it,
+// which is the half a hardcoded list gets wrong silently.
+const tableNames = JSON.parse(
+  execFileSync(
+    process.execPath,
+    [
+      '-e',
+      `import(${JSON.stringify(fileUrl(path.join(distUnderTest, 'launchers.js')))}).then((m) => ` +
+        `process.stdout.write(JSON.stringify(Object.keys(m.AGENT_LAUNCHERS))))`
+    ],
+    { encoding: 'utf8' }
+  )
+);
+check(
+  tableNames.includes('claude'),
+  'the launcher table read back is the real one — it contains `claude`',
+  `AGENT_LAUNCHERS keys=${JSON.stringify(tableNames)}`
+);
+for (const name of tableNames.filter((n) => n !== 'claude')) {
   const got = launchUnderSwitch(name, true);
   check(
     got.channelEnabled === false,
