@@ -221,6 +221,39 @@ type Pending = {
   timer: NodeJS.Timeout;
 };
 
+/**
+ * A transition of the connection itself, announced to whoever owns state that
+ * the connection carries (KAN-381).
+ *
+ * **This exists because a reconnect restores the link and not the things built
+ * on it.** CrabCast's pty subscriptions belong to a connection: when the socket
+ * goes, they go, and the next socket starts with none. Nothing about
+ * `connected` returning true again says the mirrors are live, so the owner of
+ * those mirrors has to be *told* rather than left to poll a boolean that has
+ * already gone back to what it was before.
+ *
+ * A discriminated union rather than a boolean and a timestamp: `at` means the
+ * drop on one arm and the connect on the other, and a single flat shape is
+ * where a reader takes the second for the first.
+ */
+export type LinkStateEvent =
+  | {
+      state: 'connected';
+      /** `Date.now()` at the moment the socket became usable. */
+      at: number;
+      /** 1 for the first connection this link ever made. */
+      connectionSeq: number;
+    }
+  | {
+      state: 'disconnected';
+      /** `Date.now()` at the moment the socket closed. */
+      at: number;
+      /** The connection that just ended. */
+      connectionSeq: number;
+      /** Node's errno where one was recorded, else null. */
+      errno: string | null;
+    };
+
 export interface CrabCastLinkOptions {
   socketPath: string;
   /** Per-request ceiling, so a wedged CrabCast cannot hang this daemon. */
@@ -250,6 +283,10 @@ export class CrabCastLink {
   private readonly pending = new Map<string, Pending>();
   private readonly ptyHandlers = new Map<string, (data: string) => void>();
   private readonly eventHandlers = new Set<(frame: Record<string, unknown>) => void>();
+  private readonly linkStateHandlers = new Set<(event: LinkStateEvent) => void>();
+
+  /** How many connections this link has made. 0 until the first one lands. */
+  private connectionSeq = 0;
 
   private connecting = false;
   private closed = false;
@@ -342,20 +379,37 @@ export class CrabCastLink {
       this.connecting = false;
       this.socket = socket;
       this.lastErrno = null;
-      this.log(`connected to ${this.socketPath}`);
+      this.connectionSeq++;
+      this.log(`connected to ${this.socketPath} (connection #${this.connectionSeq})`);
+      // Announced BEFORE the handshake is awaited, deliberately. The handshake
+      // is a round trip; a mirror owner that waited for it would leave its
+      // subscription down for the length of one, and the frames CrabCast sends
+      // in that window would be lost with nothing recording that they were.
+      // Nothing the handshake reads is needed to re-subscribe.
+      this.emitLinkState({ state: 'connected', at: Date.now(), connectionSeq: this.connectionSeq });
       void this.handshake();
     });
 
     socket.on('error', (err: NodeJS.ErrnoException) => {
       this.connecting = false;
       this.lastErrno = err.code ?? err.message;
-      if (this.socket === socket) this.socket = null;
+      // **`this.socket` is deliberately NOT cleared here** (KAN-381). It used
+      // to be, and that quietly stole the disconnect notice from the one path
+      // most likely to produce it: node always follows `error` with `close`, so
+      // clearing the reference here made `close`'s "was this the current
+      // connection?" test answer *no* for every ECONNRESET, and the mirrors
+      // that connection carried were never marked stale. A peer that dies
+      // rather than closing politely is the ordinary case, so the hole was in
+      // the common path rather than an exotic one. `close` owns the teardown;
+      // this handler owns the errno. An errored socket is already destroyed, so
+      // `connected` answers false in the window between the two events.
       this.scheduleReconnect();
     });
 
     socket.on('close', () => {
       this.connecting = false;
-      if (this.socket === socket) {
+      const wasCurrent = this.socket === socket;
+      if (wasCurrent) {
         this.socket = null;
         this.downSince = Date.now();
         this.log('connection closed');
@@ -368,7 +422,20 @@ export class CrabCastLink {
         this.pending.delete(id);
       }
       // A dropped socket takes CrabCast's own pty subscriptions with it, so
-      // every mirror is stale. Owners re-subscribe; see CrabCastRuntime.
+      // every mirror is stale. **This is where the owner is told** — until
+      // KAN-381 the comment said "owners re-subscribe" and no owner was ever
+      // informed, so nothing did. The handlers in `ptyHandlers` are kept: they
+      // are what `subscribedSessions` reads to say which mirrors the drop
+      // invalidated, and a re-subscribe replaces the entry rather than needing
+      // a fresh one.
+      if (wasCurrent) {
+        this.emitLinkState({
+          state: 'disconnected',
+          at: this.downSince,
+          connectionSeq: this.connectionSeq,
+          errno: this.lastErrno
+        });
+      }
       this.scheduleReconnect();
     });
   }
@@ -503,6 +570,33 @@ export class CrabCastLink {
   }
 
   /**
+   * Subscribe to connection transitions. Returns an unsubscribe function.
+   *
+   * **A handler that throws must not take the link down with it**, so each is
+   * called inside its own try. A mirror owner failing to re-subscribe one
+   * session is a bad outcome for that session; it is not a reason for the other
+   * handlers to go unnotified, and it is certainly not a reason to unwind
+   * through a socket event.
+   */
+  onLinkState(handler: (event: LinkStateEvent) => void): () => void {
+    this.linkStateHandlers.add(handler);
+    return () => this.linkStateHandlers.delete(handler);
+  }
+
+  private emitLinkState(event: LinkStateEvent): void {
+    for (const handler of this.linkStateHandlers) {
+      try {
+        handler(event);
+      } catch (err) {
+        this.log(
+          `a link-state handler threw on ${event.state}: ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  }
+
+  /**
    * One request, correlated by id.
    *
    * Rejects rather than resolving `{success:false}` when the *link* could not
@@ -595,7 +689,15 @@ export class CrabCastLink {
     this.ptyHandlers.delete(sessionId);
   }
 
-  /** Session ids we currently mirror — used to re-subscribe after a reconnect. */
+  /**
+   * CrabCast session ids we currently mirror.
+   *
+   * **This existed and was called from nowhere until KAN-381**, which is the
+   * fossil of the gap that ticket closed: the accessor for re-subscribing after
+   * a reconnect was written, the comment on the `close` handler said owners
+   * would use it, and no owner was ever told a reconnect had happened. It is
+   * read now by `CrabCastRuntime`'s link-state handler.
+   */
   subscribedSessions(): string[] {
     return [...this.ptyHandlers.keys()];
   }
@@ -618,6 +720,13 @@ export class CrabCastLink {
     pinnedContractVersion: number;
     peerContractVersion: number | null;
     attempts: number;
+    /**
+     * Connections made. **`> 1` means this link has reconnected**, which is the
+     * one figure that distinguishes a link that has been up since boot from one
+     * that has been up since a drop — and those two answer `connected: true`
+     * identically (KAN-381).
+     */
+    connections: number;
     lastErrno: string | null;
     lastGoodAt: string | null;
   } {
@@ -632,6 +741,7 @@ export class CrabCastLink {
       // the pinned value: an absent contract version is not a matching one.
       peerContractVersion: this.peerContractVersion,
       attempts: this.attempts,
+      connections: this.connectionSeq,
       lastErrno: this.lastErrno,
       lastGoodAt: this.lastGoodAt ? this.lastGoodAt.toISOString() : null
     };

@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 79 |
+| `yes` | 80 |
 | `partial` | 8 |
 | `quarantined` | 3 |
-| `no` | 14 |
-| **total** | **104** |
+| `no` | 15 |
+| **total** | **106** |
 
-**87 of 104** run on every pull request.
+**88 of 106** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -80,6 +80,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-confluence-workspaces` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cost-estimate-plausibility` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-crabcast-reconnect-resync` | yes | stands up its own Unix socket and answers its own frames in process; no live daemon, no herdr, no PTY, no credential, no peer, no network. It writes nothing to disk outside os.tmpdir(). |
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cutover-sequence` | yes | reads `docs/*.md`, `daemon/src/*.ts` and `daemon/scripts/install-service.sh` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
@@ -158,6 +159,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-activate-verified-existence` | no | shells out to `which herdr` and activates a real agent through it; it throws outright when herdr is not on PATH. |
 | `verify-capacity-survives-daemon-restart` | no | starts a real daemon and then warms up for 780 s across 13 cost windows so the estimate can walk down off its seed. Both the daemon and the wall clock put it out of reach of a per-PR check. |
 | `verify-comment-authorship-live` | no | checks comment ids against the live Jira API and needs a real Atlassian credential; without one it correctly reports that it is not evidence of anything. |
+| `verify-crabcast-reconnect-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`, a real herdr and a real pty; it attempts nothing without one. |
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
 | `verify-message-provenance-live` | no | needs a real daemon, herdr, a pane and a live Claude Code agent — the provenance it checks is what a model actually received. |

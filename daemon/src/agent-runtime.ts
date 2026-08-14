@@ -7,6 +7,8 @@ import type {
   HerdrAgentRecord,
   HerdrAgentStatus,
   HerdrSession,
+  PtyDiscontinuity,
+  PtyStreamListener,
   SessionEndedEvent,
   TailSource
 } from './herdr.js';
@@ -315,9 +317,28 @@ export interface AgentRuntime {
 
   resizePty(sessionId: string | undefined, cols: number, rows: number): boolean;
 
-  /** Returns an unsubscribe function, or undefined when the session is gone. */
+  /**
+   * Returns an unsubscribe function, or undefined when the session is gone.
+   *
+   * **The listener takes an event, not a string** (KAN-381). A runtime whose
+   * pty subscription lives across a process boundary can lose it — a reconnect
+   * re-establishes the link and not the subscription — and the window in which
+   * that happened is something a consumer must be able to see rather than
+   * infer. So the stream carries two arms: output, and
+   * {@link PtyDiscontinuity}, the news that output was missed and over what
+   * window.
+   *
+   * The shape is a union rather than an extra optional argument on purpose.
+   * An optional argument is one every existing consumer keeps compiling
+   * without reading, which would deliver the gap to code that renders it as
+   * nothing — the same defect one layer up. A union has no `.data` on the
+   * other arm, so a consumer has to say what a gap means to it.
+   *
+   * A runtime with an in-process pty never delivers the second arm and is
+   * right not to; see `HerdrBridge.registerDataListener`.
+   */
   registerDataListener(
     sessionId: string | undefined,
-    listener: (data: string) => void
+    listener: PtyStreamListener
   ): (() => void) | undefined;
 }

@@ -13,6 +13,36 @@ const REPAINT_NUDGE_MS = 50;
 const COPY_NOTICE_MS = 2000;
 
 /**
+ * Renders a pty discontinuity as a line in the terminal itself (KAN-381).
+ *
+ * **The banner is the whole point of the daemon telling us.** A mirror that
+ * reconnected without resyncing answers every question promptly with stale
+ * output and nothing errors, so a reader cannot tell it from a healthy pane —
+ * which is exactly why the disclosure has to appear where the reader is looking
+ * rather than in a field somebody might query.
+ *
+ * Written in-band, in the pane, because that is the only surface that is
+ * necessarily in front of whoever is reading the stale bytes. It says the
+ * window rather than "reconnected", because the window is what a reader needs
+ * to judge what might be missing.
+ */
+function discontinuityBanner(d) {
+  const open = d.restoredAt === null;
+  const when = open
+    ? `since ${d.lostAt} — still unsubscribed`
+    : `${d.lostAt} → ${d.restoredAt} (${d.windowMs}ms)`;
+  const verdict =
+    d.resync === 'succeeded'
+      ? 'resynced; output produced in that window was not streamed to this terminal'
+      : d.resync === 'failed'
+        ? `resync FAILED${d.error ? `: ${d.error}` : ''}`
+        : 'not yet resynced';
+  // Yellow, bold, its own lines, and a carriage return first so it cannot land
+  // mid-line in whatever the pane was drawing when the link went.
+  return `\r\n\x1b[1;33m── output gap #${d.sequence}: ${when} — ${verdict} ──\x1b[0m\r\n`;
+}
+
+/**
  * Opens a URL printed into the terminal.
  *
  * The addon's default handler calls window.open(), which has nothing sensible
@@ -264,6 +294,15 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
             // screen, and writing it over the old contents would double it.
             termRef.current.reset();
             if (payload.buffer) termRef.current.write(payload.buffer);
+            // A client attaching now was not here for any gap this session has
+            // had, so the daemon hands them over with the buffer. Replayed
+            // after it, because they are claims ABOUT that buffer — what it
+            // could not see — and a reader meets them having just read it.
+            if (Array.isArray(payload.discontinuities)) {
+              for (const d of payload.discontinuities) {
+                termRef.current.write(discontinuityBanner(d));
+              }
+            }
             if (reinitPendingRef.current) {
               reinitPendingRef.current = false;
               nudgeRepaint();
@@ -272,6 +311,14 @@ export function useTerminal(activeTabView, supported, active, sessionData, termR
         } else if (payload.action === 'pty_output') {
           if (termRef.current && payload.data && payload.sessionId === sessionData.sessionId) {
             termRef.current.write(payload.data);
+          }
+        } else if (payload.action === 'pty_discontinuity') {
+          // Its own frame rather than a field on pty_output, because there is
+          // no output to hang it on: the gap is the absence of frames, so a
+          // field would have to wait for the next byte to be delivered — and a
+          // pane that has gone quiet is precisely the case where none comes.
+          if (termRef.current && payload.discontinuity && payload.sessionId === sessionData.sessionId) {
+            termRef.current.write(discontinuityBanner(payload.discontinuity));
           }
         }
       }

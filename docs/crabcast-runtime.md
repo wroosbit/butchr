@@ -182,7 +182,7 @@ that is a real capability gap rather than a detail.
 | 20 | `sendToAgent` | **served (superset)** | `send_to_agent` answers `delivered`, `verdict`, `interrupts`, `submits` and an `evidence` block. We map **`delivered`**, not `success` — `success` says the call worked, `delivered` says the keystrokes landed, and this method's contract is about the typing. |
 | 21 | `writePty` | **served** | `pty_input`, fire-and-forget with no `id` (CrabCast only acks a frame carrying one). Returns "do I have this session?", the same meaning as in-process. |
 | 22 | `resizePty` | **served** | `pty_resize`. |
-| 23 | `registerDataListener` | **different-shaped** | KAN-224's design, implemented. One long-lived `pty_init` per **session**; this call never touches the socket, pushing onto a local array and returning a closure that filters it out. |
+| 23 | `registerDataListener` | **different-shaped** | KAN-224's design, implemented. One long-lived `pty_init` per **session**; this call never touches the socket, pushing onto a local array and returning a closure that filters it out. **Its listener takes a `PtyStreamEvent` since KAN-381** — `data`, or `discontinuity` naming a window in which output was produced and not seen. `HerdrBridge` never delivers the second arm and is right not to: an in-process pty callback cannot be detached behind your back, so there is no window there. |
 
 **Totals: 12 served, 8 different-shaped, 3 absent** (methods 2, 6, 19). One of
 the three remaining absences is ours rather than CrabCast's: `resetWorkspace` is
@@ -330,11 +330,102 @@ frame is **appended and** fanned out. Two destinations, no overlap, nothing to
 deduplicate. The demux is registered **before** the `pty_init` request is
 written — KAN-224 §3.3's one rule, and the gap that would otherwise be ours.
 
-**What is not implemented from KAN-224:** the reconnect resync and its
-discontinuity signal (§3.5, §6.2). The link reconnects, but mirrors are not
-re-subscribed and no `{discontinuity: true}` is delivered, because that requires
-the interface change §6 prescribes and KAN-278 is not interface work. **Nobody
-covers this yet**; it is cutover work.
+**KAN-224's reconnect resync and its discontinuity signal (§3.5, §6.2) are
+implemented — KAN-381, cutover gate 5.** This paragraph read *"the link
+reconnects, but mirrors are not re-subscribed and no `{discontinuity: true}` is
+delivered … **nobody covers this yet**"* until then, and it was accurate: the
+accessor for doing it, `CrabCastLink.subscribedSessions()`, existed and was
+called from nowhere, while the `close` handler's comment said *"owners
+re-subscribe"* and no owner was ever told a drop had happened. See *The
+reconnect resync* below.
+
+---
+
+## The reconnect resync, and why the marker matters more than the repair
+
+**KAN-381.** A link that is **down** is visible — calls fail and a caller can
+act on that. A link that has **reconnected without resyncing** answers every
+question, promptly, with stale data and no disclosure. Nothing errors, nothing
+is slow, and no field says *"this may have missed events."* From outside it is
+indistinguishable from a healthy link, so a consumer will not check, so the
+staleness propagates into whatever it decides. That is why the resync alone was
+never the fix.
+
+### What happens on a drop
+
+`CrabCastLink` announces connection transitions on `onLinkState`, and
+`CrabCastRuntime` is the owner that acts on them:
+
+1. Every mirror that was `live` or `subscribing` becomes **`stale`** — a fourth
+   state, added because the third did not exist and a reconnected-but-
+   unsubscribed mirror therefore had to be reported as `live`. A state nothing
+   can name is a state nothing can branch on.
+2. A `PtyDiscontinuity` is opened on it: `sequence`, `lostAt`, `cause:
+   'link-dropped'`, and `resync: 'pending'` with `restoredAt` and `windowMs`
+   **`null` rather than `0`** — the gap is still growing, and zero would be a
+   duration.
+3. It is fanned out to that mirror's listeners **immediately**, while the link
+   is still down, and appended to `HerdrSession.ptyDiscontinuities`.
+
+On reconnect each stale mirror gets a fresh `pty_init`, and the record is
+settled — `restoredAt`, `windowMs`, and `resync: 'succeeded' | 'failed'` — and
+re-emitted **under the same `sequence`**, so one drop reported twice is not two
+drops.
+
+### Three choices worth stating, because each has a plausible-looking alternative
+
+- **The window is disclosed whether or not the resync worked.** A resync that
+  silently succeeded and one that silently half-succeeded look identical without
+  a marker. The snapshot is bounded on both sides, so a long enough gap loses
+  bytes off the front whatever either end does — and a consumer that was
+  *appending deltas* has a hole in its own copy regardless, because the snapshot
+  **replaces** the mirror rather than extending it.
+- **The listener takes a discriminated union, not an optional second argument.**
+  An optional argument is one every existing consumer keeps compiling without
+  reading, which delivers the gap to code that renders it as nothing — this
+  ticket's own defect, one layer up. A union has no `.data` on the other arm, so
+  every consumer is made to say what a gap means to it. The same argument
+  retired a separate `registerDiscontinuityListener`: an opt-in disclosure is
+  one a consumer that has never heard of it silently does not get.
+- **The record is durable as well as live.** A live event only reaches whoever
+  was listening at the time, and the extension re-issues `pty_init` on every
+  reconnect of its *own* link — so the consumer that most needs this is
+  routinely one that was not present. `pty_init_response` carries
+  `discontinuities` beside `buffer`: what the mirror has, and what it could not
+  see. That pairing is KAN-367's rule arriving on the transport.
+
+### Failed reconnect attempts do not multiply the gap
+
+One drop is one gap for the length of the outage, however many retries fail
+inside it — a gap per attempt would turn a thirty-second outage into two hundred
+records and bury the one that matters. That is also what makes `pending` a state
+worth having rather than a placeholder: it is what an operator sees while the
+link is still down.
+
+### Does Butchr poll independently?
+
+KAN-59's contract says a missed event should degrade to slower convergence
+rather than divergence, **but only for a consumer that independently polls** —
+which they restate as a consumer requirement rather than a guarantee. So the
+answer, per surface:
+
+| surface | polls? | what that means here |
+| --- | --- | --- |
+| the census (`list_agents`) | **yes**, every 2s | Fleet state converges by itself after a gap. `reachable` already discloses a census that could not be taken. |
+| the pty mirror | **no** — it is a subscription, not a poll | Nothing converges it. This is the surface the discontinuity exists for, and the reason the answer could not be *"we poll, so CrabCast's caveat is satisfied."* |
+
+The resync is what makes the mirror converge *at all*, and the marker is what
+makes the window in which it had not converged legible. Neither is a poll.
+
+### What is proved, and what is not
+
+| claim | established by |
+| --- | --- |
+| a real drop against a real peer re-subscribes the mirror, and the snapshot carries what the pane printed during the outage | `verify-crabcast-reconnect-live.mjs`, against the machine's CrabCast |
+| the gap is opened on the drop, settled on the repair, and its window is arithmetic on its own endpoints | both proofs |
+| a stale mirror and a fresh one are reported **differently** | `verify-crabcast-reconnect-resync.mjs` §5 — the assertion that carries the property |
+| **a peer that RESTARTS** — `bootId` and `build.commit` moving under a reconnect | **nobody.** The live proof cuts a relay; CrabCast stays up throughout. This is the ordinary deploy case and it is the honest gap. |
+| **the errno path** — a disconnect announced when `error` precedes `close` | **statically only.** AF_UNIX has no RST, so no socket in either proof produces `ECONNRESET`; `verify-crabcast-reconnect-resync.mjs` §4b asserts the shape of the fix and says so in as many words. |
 
 ---
 

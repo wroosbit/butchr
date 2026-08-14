@@ -19,6 +19,96 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * A window in which a pty mirror was not subscribed, and therefore a window in
+ * which output may have been produced and not seen (KAN-381).
+ *
+ * ## Why this exists at all
+ *
+ * A link that is **down** is visible: calls fail and a caller can act on that. A
+ * link that has **reconnected without resyncing** answers every question,
+ * promptly, with stale data and no disclosure — nothing errors, nothing is slow,
+ * and no field says *"this may have missed events"*. That is indistinguishable
+ * from a healthy link from the outside, which is why the resync alone is not the
+ * fix and this record is.
+ *
+ * ## Why it is emitted even when the resync worked
+ *
+ * Because a resync that silently succeeded and one that silently half-succeeded
+ * look identical without a marker. The snapshot CrabCast returns on
+ * re-subscription is bounded and so is ours, so a long enough gap loses bytes
+ * off the front whatever either side does; and a consumer that was *appending
+ * deltas* has a hole in its own copy regardless, because the snapshot replaces
+ * the mirror rather than extending it. {@link resync} records how the repair
+ * went; it never decides whether the gap is worth mentioning.
+ */
+export interface PtyDiscontinuity {
+  /**
+   * 1 for this session's first gap, incrementing per session.
+   *
+   * A consumer that is told about a gap twice — once as it opens and once as it
+   * closes — needs to know it is the same gap. It is also how a reader notices
+   * it missed one: sequences do not skip.
+   */
+  sequence: number;
+  /**
+   * ISO 8601 — the last moment the mirror is known to have been subscribed.
+   *
+   * That is the moment the link dropped, and it bounds the window on the early
+   * side. It is not a claim that output stopped then.
+   */
+  lostAt: string;
+  /**
+   * ISO 8601 when the re-subscription settled, or `null` while it has not.
+   *
+   * `null` is the live state of an unrepaired gap and must not be read as "no
+   * time elapsed" — the gap is open and still growing.
+   */
+  restoredAt: string | null;
+  /** `restoredAt - lostAt` in milliseconds, or `null` while the gap is open. */
+  windowMs: number | null;
+  /**
+   * How the repair went. **`pending` is a real answer**, not a placeholder: it
+   * is what an operator sees while the link is still down, and collapsing it
+   * into `failed` would claim a verdict on an attempt that has not finished.
+   */
+  resync: 'pending' | 'succeeded' | 'failed';
+  /**
+   * Why the subscription was lost. One value today, and a union rather than a
+   * string so a second cause has to be declared here before it can be reported.
+   */
+  cause: 'link-dropped';
+  /** The refusal, verbatim, when `resync` is `failed`. Absent otherwise. */
+  error?: string;
+}
+
+/**
+ * What a pty listener receives: either output, or the news that output was
+ * missed (KAN-381).
+ *
+ * **This is a union rather than a second optional argument, and that is the
+ * point of the shape.** An optional `discontinuity` parameter is one every
+ * existing consumer keeps compiling without reading — so the gap would be
+ * delivered to code that renders it as nothing, which is the precise failure
+ * this ticket exists to close, reintroduced one layer up. A union makes
+ * "handle the bytes, ignore the gap" a thing the code cannot *say*: there is no
+ * `.data` to read on the other arm, so every consumer of this stream is made to
+ * decide what a gap looks like to it.
+ *
+ * The narrower alternative — a separate `registerDiscontinuityListener` — was
+ * rejected for the same reason. It is opt-in, and an opt-in disclosure is one a
+ * consumer that has never heard of it silently does not get.
+ */
+export type PtyStreamEvent =
+  | { kind: 'data'; data: string }
+  | { kind: 'discontinuity'; discontinuity: PtyDiscontinuity };
+
+/** The callback shape both runtimes fan {@link PtyStreamEvent} out to. */
+export type PtyStreamListener = (event: PtyStreamEvent) => void;
+
+/** How many gaps a session remembers before the oldest is dropped. */
+export const PTY_DISCONTINUITY_LIMIT = 50;
+
 export interface HerdrSession {
   sessionId: string;
   type: string;
@@ -30,7 +120,34 @@ export interface HerdrSession {
   workDir: string;
   ptyProcess?: pty.IPty;
   ptyBuffer: string;
-  onDataListeners: Array<(data: string) => void>;
+  onDataListeners: Array<PtyStreamListener>;
+  /**
+   * Every gap in this session's pty stream that this daemon knows about, oldest
+   * first (KAN-381).
+   *
+   * **It sits beside {@link ptyBuffer} because it is the same claim's other
+   * half.** The buffer is what the mirror has; this is what the mirror could not
+   * see. KAN-367's rule on the notification surface — a state claim is either
+   * freshly read, or timestamped and saying what it could not observe — arrives
+   * here as two fields on one object, and reading the first without the second
+   * is how a stale mirror renders as a fresh one.
+   *
+   * **Required rather than optional, and that is the load-bearing choice.** An
+   * optional array is one a producer may omit and a consumer may treat as empty,
+   * and those two mistakes are indistinguishable from a session that genuinely
+   * had no gap. Required means every session that can hold a buffer has a place
+   * to record what the buffer missed, so "nobody wrote the gap down" is not a
+   * state this type can be in.
+   *
+   * **Empty is a claim, and it is `HerdrBridge`'s honest one.** An in-process
+   * pty has no subscription to lose: the listener is a callback on a `node-pty`
+   * handle in this process, so it cannot be silently detached while the process
+   * lives, and when the process dies the session ends rather than going quiet.
+   * So an empty array there says "no gap was possible", not "no gap was
+   * recorded". Under {@link CrabCastRuntime} the subscription lives across a
+   * socket and is exactly what a reconnect loses.
+   */
+  ptyDiscontinuities: PtyDiscontinuity[];
   /**
    * Set when `herdr agent start` failed, to herdr's own message plus whatever
    * we can say about the cause. Its presence is the difference between "this
@@ -804,6 +921,10 @@ export class HerdrBridge implements AgentRuntime {
       workDir: defaultWorkDir,
       ptyBuffer: '',
       onDataListeners: [],
+      // Empty here is a claim rather than an omission, and it stays empty for
+      // the life of this session: an in-process pty listener cannot be
+      // detached behind our back. See PtyDiscontinuity on HerdrSession.
+      ptyDiscontinuities: [],
       ...(resume ? { resume, resumedConversation } : {})
     };
 
@@ -1309,7 +1430,7 @@ export class HerdrBridge implements AgentRuntime {
 
       ptyProcess.onData((data: string) => {
         session.ptyBuffer = (session.ptyBuffer + data).slice(-100000);
-        session.onDataListeners.forEach(fn => fn(data));
+        session.onDataListeners.forEach(fn => fn({ kind: 'data', data }));
       });
 
       ptyProcess.onExit(({ exitCode }) => {
@@ -2143,10 +2264,21 @@ export class HerdrBridge implements AgentRuntime {
     return session ? session.ptyBuffer : undefined;
   }
 
-  /** The unsubscribe, or `undefined` when there is no such session to listen to. */
+  /**
+   * The unsubscribe, or `undefined` when there is no such session to listen to.
+   *
+   * **This runtime never delivers the `discontinuity` arm and that is correct
+   * rather than unimplemented** (KAN-381). The subscription is a `node-pty`
+   * callback in this process: nothing can detach it while the process lives,
+   * and when the process dies the session ends — which the caller learns from
+   * `setSessionEndedListener`, not from a gap. So there is no window here in
+   * which output is produced and unseen. The arm exists on the type because
+   * {@link CrabCastRuntime}, whose subscription lives across a socket, has
+   * exactly such a window.
+   */
   public registerDataListener(
     sessionId: string | undefined,
-    listener: (data: string) => void
+    listener: PtyStreamListener
   ): (() => void) | undefined {
     const session = sessionId ? this.getSession(sessionId) : undefined;
     if (!session) return undefined;

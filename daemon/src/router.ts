@@ -5155,7 +5155,13 @@ export class MessageRouter {
       action: 'pty_init_response',
       success: true,
       sessionId,
-      buffer: session.ptyBuffer
+      buffer: session.ptyBuffer,
+      // **The buffer's other half** (KAN-381). A client attaching now was not
+      // here for the gaps, so a live event cannot reach it — disclosure that
+      // depended on who happened to be watching would leave every fresh
+      // attach reading a holed buffer as a whole one. Empty means no gap was
+      // recorded, which under `HerdrBridge` also means none was possible.
+      discontinuities: session.ptyDiscontinuities
     });
 
     const oldCleanup = this.activePtyListeners.get(sessionId);
@@ -5163,11 +5169,25 @@ export class MessageRouter {
 
     // Streamed output is unsolicited: it must not carry the pty_init id, or
     // a correlating transport would try to answer a request already closed.
-    const cleanup = this.herdrBridge.registerDataListener(sessionId, (ptyData) => {
+    //
+    // **Two arms, and the second is not optional to handle** (KAN-381). The
+    // runtime's stream says either "here are bytes" or "bytes were missed, over
+    // this window". Forwarding only the first is what makes a stale terminal
+    // look like a quiet one, so the gap gets a frame of its own rather than a
+    // field on a frame nobody reads.
+    const cleanup = this.herdrBridge.registerDataListener(sessionId, (event) => {
+      if (event.kind === 'data') {
+        this.send({
+          action: 'pty_output',
+          sessionId,
+          data: event.data
+        });
+        return;
+      }
       this.send({
-        action: 'pty_output',
+        action: 'pty_discontinuity',
         sessionId,
-        data: ptyData
+        discontinuity: event.discontinuity
       });
     });
 
