@@ -70,6 +70,48 @@
 //
 // Every setup failure prints "setup:" and asserts nothing. None of them may be
 // read as a red against this ticket.
+//
+// ── WHAT THIS RUN LEAVES BEHIND, AND WHAT SWEEPS IT (KAN-408) ─────────────
+//
+// This script provisions by writing a raw `configure_agent` frame straight at
+// the socket — it calls `spawnSession` ZERO times — which is why KAN-405's first
+// class sweep could not see it and it was caught only on a second pass. Three
+// paths used to exit having left the configured record behind:
+//
+//   - `activate_agent` refused even with `override: true`;
+//   - the runtime never adopted the pane from the census;
+//   - **the success path**, which printed a note asking a human to run
+//     `crabcast forget` by hand — so it leaked on every CLEAN run, not only on
+//     failures, and asked for a sweep of `~/.local/share/crabcast/agents.jsonl`
+//     that no Butchr agent is permitted to perform.
+//
+// `cleanup()` below is declared once, before the relay, and called on all three.
+// The record goes before the directory, each half independently guarded, and the
+// stand-down before the forget — see the comment on `cleanup()` for why each of
+// those is load-bearing rather than tidy.
+//
+// The path where `configure_agent` ITSELF is refused deliberately does not call
+// it: nothing was configured, so there is no record to remove.
+//
+// WHAT THIS FIX DOES NOT COVER, named rather than left to inference:
+//
+//   - **This script writes the record it then asserts on.** The success path
+//     configures the agent and later checks that the record is gone, so it
+//     proves the sweep works on a record THIS run made. It does not prove
+//     anything about records made by anything else, and nothing here should be
+//     read as a fleet-wide sweep.
+//   - **The two early paths are asserted on by nothing.** They exit before the
+//     verdict section by design, so their cleanup is exercised only when the
+//     world produces the failure — a real capacity refusal, or a real adoption
+//     miss. `cleanup()` returning its answer rather than asserting inside itself
+//     is what keeps that honest instead of counting a check that would be
+//     discarded. Whoever next meets one of those refusals is the coverage, and
+//     the run pasted on the PR for this ticket is the only observation of it.
+//   - **The `mkdtemp` scratch holding the relay socket** is removed on the
+//     success path only, exactly as before this fix. It is left alone
+//     deliberately: it is a temp directory rather than shared state, which is
+//     the same class KAN-405's sweep classified as not-a-leak, and widening this
+//     ticket to it would change what is being claimed here.
 
 import fs from 'fs';
 import net from 'net';
@@ -147,6 +189,174 @@ console.log(`real CrabCast   : ${realSocket}`);
 console.log(`relay           : ${relayPath}`);
 console.log(`probe agent     : ${TYPE}/${KEY}`);
 console.log(`workspace       : ${workDir}`);
+
+/**
+ * Undo everything this run CONFIGURED, on every path that got as far as
+ * configuring one.
+ *
+ * Declared here — before the relay, and immediately after `workDir` is known —
+ * because the paths that need it most are the ones that exit long before the
+ * script's own cleanup section is reached. `configure_agent` is accepted at the
+ * setup block below and the two paths after it can both exit having left a
+ * record behind: a run whose activation is refused has still been configured,
+ * so it is not a path that provisioned nothing.
+ *
+ * **THE RECORD GOES FIRST, AND THE ORDER IS LOAD-BEARING.** The two halves are
+ * not equally recoverable. The probe workspace is an ordinary directory anybody
+ * may delete; the configured record lands in
+ * `~/.local/share/crabcast/agents.jsonl`, which is on the standing never-touch
+ * list for every Butchr agent — so **nobody downstream is permitted to sweep the
+ * record half**. If only one half can be undone it must be that one, so it runs
+ * before anything that could throw and take the rest with it. (KAN-405
+ * established the order, KAN-407 carried it to the sibling script, this is the
+ * third instance.)
+ *
+ * Note what the order does NOT rest on, because the plausible reason is false
+ * and was measured rather than assumed: `crabcast forget --help` says the path
+ * "Must already exist", but a `forget` naming a directory that does not exist
+ * still exits 0 (measured 2026-08-14 on this machine, against a path that was
+ * never configured). So removing the directory first would not have broken the
+ * forget. Recoverability is the whole of the reason.
+ *
+ * **THE `deactivate` IS NOT DECORATION, AND IT IS WHY THIS IS NOT KAN-407's
+ * `cleanup()` COPIED.** `crabcast forget --help`: *"Refuses while it is
+ * running."* The path below that never adopts the pane from the census is
+ * reached with the probe **activated and running**, so a bare `forget` there is
+ * refused and the record survives the fix that was supposed to remove it. The
+ * sibling script had no such path — its early exit follows a spawn refusal, so
+ * nothing was ever running. Standing the agent down first is what makes the
+ * forget reachable on the one path this script has and that one did not.
+ *
+ * **Each half is guarded in its own right, and deliberately NOT chained.**
+ * `deactivate` exits 1 with `refused: not-configured` when nothing is
+ * configured (measured, same run), so `crabcast deactivate X && crabcast forget
+ * X` silently drops the forget in exactly the case where it would have
+ * succeeded on its own. A failure in the stand-down must not decide whether the
+ * removal is attempted.
+ *
+ * `crabcast forget` is CrabCast's own published surface for this and the only
+ * sanctioned removal — reaching into `agents.jsonl` directly would trade a leak
+ * for a much worse defect, and reading CrabCast's source is Invariant 10.
+ * `AgentRuntime` has no forget verb, so this is the CLI rather than the adapter,
+ * and it names only the path this run created.
+ *
+ * The CLI addresses the daemon at its **default data dir**, not
+ * `BUTCHR_CRABCAST_SOCKET` — which this script rewrites to the relay a few lines
+ * below, and which the CLI does not read. On this fleet the two are the same
+ * daemon. A run pointed by `BUTCHR_CRABCAST_SOCKET` at some *other* CrabCast
+ * would configure its record there and sweep against the default one, and this
+ * cleanup would not reach it; that is stated rather than guarded, because the
+ * script's own header already requires the real socket.
+ *
+ * The answer is RETURNED rather than asserted on here: the early paths exit
+ * before the verdict section, so a `check()` counted inside cleanup would be
+ * discarded on precisely the paths it was added for.
+ */
+/**
+ * Does CrabCast hold a configured record for the probe path, right now?
+ *
+ * This is the instrument that makes the leak OBSERVABLE rather than merely
+ * argued: `crabcast forget` exits 0 for a path that was never configured, so a
+ * successful forget establishes the state afterwards and nothing about whether
+ * there was ever anything to remove. Reading `configured` on either side of the
+ * sweep is what turns "the record is gone" into a before-and-after measurement.
+ *
+ * `crabcast status --json` prints the daemon's own response verbatim and carries
+ * a published `configured` boolean. It **exits 1 for an unconfigured path** —
+ * that is the ordinary answer here and not a failure — so the exit code is not
+ * read and the JSON on stdout is, from `err.stdout` when the CLI exits non-zero.
+ * Returns `null` if no answer could be parsed at all, which is a third state and
+ * must not be collapsed into `false`: "we could not see" is not "there is
+ * nothing there".
+ */
+async function recordConfigured() {
+  const { execFileSync } = await import('child_process');
+  let out;
+  try {
+    out = execFileSync('crabcast', ['status', workDir, '--json'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 20_000,
+      encoding: 'utf8'
+    });
+  } catch (err) {
+    out = typeof err?.stdout === 'string' ? err.stdout : null;
+  }
+  if (!out) return null;
+  try {
+    const parsed = JSON.parse(out);
+    return typeof parsed.configured === 'boolean' ? parsed.configured : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cleanup() {
+  const { execFileSync } = await import('child_process');
+  const run = (args) =>
+    execFileSync('crabcast', args, { stdio: 'pipe', timeout: 20_000, encoding: 'utf8' });
+
+  // ── the record half, first ──
+  // Stand it down so the `forget` is not refused for a running agent. A refusal
+  // here is ordinary and not a fault: it is what CrabCast answers when there is
+  // nothing configured at the path, which is the state every path that never
+  // configured anything is in. It must not stop the forget.
+  try {
+    run(['deactivate', workDir]);
+    console.log(`   crabcast deactivate: stood the probe down at ${workDir}`);
+  } catch (err) {
+    if (verbose) {
+      console.log(
+        `   crabcast deactivate declined (ordinary if nothing was running there): ` +
+          `${err instanceof Error ? err.message.split('\n')[0] : String(err)}`
+      );
+    }
+  }
+
+  let recordGone = false;
+  try {
+    run(['forget', workDir]);
+    recordGone = true;
+    // Deliberately "no record remains" rather than "forgot the record": measured
+    // 2026-08-14, `crabcast forget` exits 0 for a path that was never configured
+    // at all, so a success here does NOT establish there was something to remove.
+    // What it establishes is the state afterwards, which is the thing anybody
+    // actually cares about — and saying only that keeps this line's claim inside
+    // what its mechanism covers.
+    console.log(`   crabcast forget returned OK — no record remains for ${workDir}`);
+  } catch (err) {
+    console.log(
+      `   could NOT forget CrabCast's record for ${workDir} — remove it by hand.\n` +
+        `         Run these as two commands, not chained: a deactivate that declines\n` +
+        `         would swallow the forget.\n` +
+        `           crabcast deactivate ${workDir}\n` +
+        `           crabcast forget ${workDir}\n` +
+        `         (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`
+    );
+  }
+
+  // ── the directory half, second ──
+  // Unchanged in behaviour from what stood in the cleanup section before this
+  // fix, including the guard: only a path inside butchr/workspaces is removed,
+  // so a `KAN381_PROBE_KEY` pointing somewhere unexpected deletes nothing.
+  const inWorkspaces = workDir.includes(`${path.sep}butchr${path.sep}workspaces${path.sep}`);
+  let dirGone = false;
+  try {
+    const existedBefore = fs.existsSync(workDir);
+    if (inWorkspaces && existedBefore) {
+      fs.rmSync(workDir, { recursive: true, force: true });
+      console.log(`   removed probe workspace ${workDir}`);
+    }
+    dirGone = !fs.existsSync(workDir);
+    return { recordGone, inWorkspaces, existedBefore, dirGone };
+  } catch (err) {
+    console.log(
+      `   could NOT remove probe workspace ${workDir} — remove it by hand:\n` +
+        `         rm -rf ${workDir}\n` +
+        `         (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`
+    );
+    return { recordGone, inWorkspaces, existedBefore: true, dirGone: false };
+  }
+}
 
 // ── the relay ──────────────────────────────────────────────────────────────
 let relayServer = null;
@@ -303,6 +513,11 @@ if (activated.success !== true) {
   console.error(`\nsetup: activate_agent refused even with override. Nothing was asserted.\n${activated.error}\n`);
   runtime.dispose();
   await cutRelay();
+  // `configure_agent` was accepted above, so this path HAS provisioned a record
+  // even though no agent ever ran. Nothing is running here, so the `deactivate`
+  // inside `cleanup()` is the one that declines and the `forget` is the one that
+  // does the work.
+  await cleanup();
   process.exit(1);
 }
 console.log(`   setup: CrabCast started it as session ${activated.sessionId}`);
@@ -317,6 +532,11 @@ if (!session) {
   );
   runtime.dispose();
   await cutRelay();
+  // THE PATH THAT MAKES THE `deactivate` NECESSARY. `activate_agent` succeeded
+  // above, so a real pane is RUNNING here — only the adoption failed. `forget`
+  // refuses while an agent is running, so without the stand-down this cleanup
+  // would leave behind exactly the record it exists to remove.
+  await cleanup();
   process.exit(1);
 }
 check("the runtime adopted the running pane from CrabCast's own census", !!session);
@@ -570,14 +790,45 @@ runtime.dispose();
 await cutRelay();
 fs.rmSync(work, { recursive: true, force: true });
 
-const inWorkspaces = workDir.includes(`${path.sep}butchr${path.sep}workspaces${path.sep}`);
-if (inWorkspaces && fs.existsSync(workDir)) {
-  fs.rmSync(workDir, { recursive: true, force: true });
-  console.log(`   removed probe workspace ${workDir}`);
-}
-console.log(
-  `   NOTE: CrabCast still holds a configured record for that path. Remove it with:\n` +
-    `         crabcast forget ${workDir}`
+// **WHAT USED TO STAND HERE WAS A PRINTED NOTE ASKING A HUMAN TO RUN `crabcast
+// forget` BY HAND**, and it was on the SUCCESS path — so this script asked for
+// that sweep on every clean run, not only on failures. It asked for something
+// nobody is permitted to do: the record lives in `agents.jsonl`, on the standing
+// never-touch list for every Butchr agent. The reassuring assumption behind the
+// note — somebody will sweep it — was false rather than merely unlikely.
+//
+// `terminateSession` above ends the pane, but ending a session is not the same
+// as removing the record CrabCast holds for the path: `deactivate` itself
+// documents that "the record survives". The `forget` is what removes it, and
+// `cleanup()` is the only thing in this script that performs one.
+// Read the record BEFORE sweeping it. This is the half that makes the check
+// below a measurement: it establishes that there was something there to remove,
+// which a `forget` returning OK cannot establish on its own.
+const configuredBefore = await recordConfigured();
+check(
+  'the run really did leave a configured record behind — the thing being swept exists',
+  configuredBefore === true,
+  `crabcast status answered configured=${JSON.stringify(configuredBefore)} (null = could not read it)`
+);
+
+const swept = await cleanup();
+check(
+  "CrabCast holds no configured record for the probe path — the run swept what it configured",
+  swept.recordGone === true,
+  'crabcast forget did not return OK — see the cleanup output above for the manual remedy'
+);
+// And read it back, because a write that reports success is not a write that
+// stored what you sent. `forget` returning 0 is a claim about the request.
+const configuredAfter = await recordConfigured();
+check(
+  'and CrabCast itself now says so — configured=false, read back after the forget',
+  configuredAfter === false,
+  `crabcast status answered configured=${JSON.stringify(configuredAfter)} (null = could not read it)`
+);
+check(
+  'and the probe workspace directory is gone too',
+  swept.dirGone === true,
+  `inWorkspaces=${swept.inWorkspaces} existedBefore=${swept.existedBefore} dirGone=${swept.dirGone}`
 );
 
 console.log(
