@@ -5,7 +5,11 @@ import { PromptLoader } from './prompt.js';
 import { JiraIssueTypeService } from './jira.js';
 import { LaunchDarklyIntegration } from './integrations/launchdarkly.js';
 import { Integration, McpServerDefinitions } from './integrations/integration.js';
-import { coreMcpServerDefinitions } from './launchers.js';
+import {
+  coreMcpServerDefinitions,
+  prepareWorkspaceMcpServers,
+  unusableMcpServers
+} from './launchers.js';
 // `HerdrSession` stays the FIRST name in this import, on the line directly
 // below the brace. `verify-agent-runtime-seam.mjs` §1 reverts the runtime seam
 // by textually replacing `import {\n  HerdrSession,` here, and anything between
@@ -720,6 +724,73 @@ export interface ProvidedMcpServer {
  * for the settings page is `coreMcpServerDefinitions()` — the unstamped
  * definition, since "what every agent gets" has no one workspace to name.
  */
+/**
+ * The activation refusal for a server that cannot start on this machine —
+ * KAN-157's, moved here from `HerdrBridge.initPty` by KAN-398. Returns the
+ * message to refuse with, or `null` when every server is startable, which is
+ * the normal answer.
+ *
+ * ## Why it moved, and why it could not stay
+ *
+ * It reads `McpServerDefinition.unusable`, and `prepareWorkspaceMcpServers`
+ * strips that field on its way to producing what the runtime seam accepts. Left
+ * where it was, it would have run *after* the strip and found an empty list on
+ * every activation for ever — **a check that can only return the reassuring
+ * answer, which is worse than no check because it still looks like one.** So the
+ * strip decided where this lives, and above the seam is the only side of it
+ * where the field still exists.
+ *
+ * ## What that buys, beyond staying alive
+ *
+ * `CrabCastRuntime` never had this refusal — the ticket that moved it (KAN-398)
+ * records it as the third thing `provision()` did not do. Here it covers both
+ * runtimes and any third, because it runs before the seam rather than inside one
+ * implementation of it.
+ *
+ * ## KAN-157's argument, unchanged, in KAN-84's voice
+ *
+ * REFUSE RATHER THAN WARN, DELIBERATELY. The failure this replaces is not "the
+ * agent has fewer tools" — it is that *nobody finds out*. Claude Code reports a
+ * server that dies at parse time nowhere the agent can see, so an epic agent
+ * with no Jira coordinated a board it could not read for two hours and blamed
+ * everything else first. A warning goes to the daemon log, which is the one
+ * place the affected agent cannot look; the agent would still boot believing it
+ * had the tools its brief tells it to use, and would still spend its budget
+ * discovering otherwise. The activation is where a human is present and where a
+ * message is unmissable, so that is where this is said.
+ *
+ * WHAT MAKES REFUSING SAFE, which is the other half of the decision: an operator
+ * is never stuck. A disabled integration contributes no servers at all
+ * (registry.ts), so switching Atlassian off returns the fleet to service
+ * immediately, and the refusal says so. And the resolver prefers the daemon's
+ * own Node — the interpreter already running this code — so on any machine where
+ * the daemon itself runs, this branch is unreachable by construction. It is a
+ * backstop that fires when the machine genuinely cannot host the server, not a
+ * hurdle on the normal path.
+ *
+ * ## THE ONE BEHAVIOURAL DIFFERENCE, NAMED RATHER THAN DISCOVERED
+ *
+ * `initPty` refused a session it had already created, so a refused activation
+ * left a `'terminated'` session carrying `spawnError`. Refusing here happens
+ * before `spawnSession`, so **no session record is made at all.** The client
+ * response is unchanged — `activate_response` with `success: false` and this
+ * same message, which is the branch both call sites already had for
+ * `session.spawnError` — and the message's own words ("Nothing was started") are
+ * more true now than they were. Both call sites check inside their
+ * `if (!session)` branch, so an activation that reuses a live agent is not
+ * refused, exactly as before.
+ */
+function refuseUnusableMcpServers(defs: McpServerDefinitions): string | null {
+  const unusable = unusableMcpServers(defs);
+  if (unusable.length === 0) return null;
+  return (
+    `MCP server${unusable.length > 1 ? 's' : ''} that cannot start on this machine: ` +
+    unusable.map(([name, why]) => `${name} — ${why}`).join(' ') +
+    ` Nothing was started — an agent spawned without the tools its brief tells it to use ` +
+    `has no way to find out they are missing.`
+  );
+}
+
 function describeMcpServers(defs: McpServerDefinitions): ProvidedMcpServer[] {
   return Object.entries(defs).map(([name, definition]) => {
     // KAN-157 added `pathPrefix` and `unusable`, and neither loosens the rule
@@ -2171,10 +2242,33 @@ export class MessageRouter {
         });
         return;
       }
+      // Before anything is written or spawned, and before the assembly is
+      // prepared — `prepareWorkspaceMcpServers` strips the field this reads.
+      const refusal = refuseUnusableMcpServers(mcpServers);
+      if (refusal) {
+        console.error(`[Router] Refusing to start ${agentName}: ${refusal}`);
+        respond({
+          action: 'activate_response',
+          success: false,
+          type: config.type,
+          key,
+          url: data.url,
+          error: refusal
+        });
+        return;
+      }
       // A preempted agent switched back on is resuming interrupted work, not
       // starting it. See resumeCauseFor.
       const resume = this.resumeCauseFor(agentName);
-      session = this.herdrBridge.spawnSession(config.type, key, data.url, renderedPrompt, data.defaultAgent, mcpServers, resume);
+      session = this.herdrBridge.spawnSession(
+        config.type,
+        key,
+        data.url,
+        renderedPrompt,
+        data.defaultAgent,
+        prepareWorkspaceMcpServers(mcpServers, { type: config.type, key }),
+        resume
+      );
       if (!session.spawnError) this.nudgeIfResumed(session, data.defaultAgent);
     }
 
@@ -2362,7 +2456,31 @@ export class MessageRouter {
         data.resume === 'reboot' || data.resume === 'daemon-restart' ? data.resume : undefined;
       const resume = this.resumeCauseFor(agentName, explicit);
 
-      session = this.herdrBridge.spawnSession(type, key, url, renderedPrompt, defaultAgent, mcpServers, resume);
+      // Before anything is written or spawned, and before the assembly is
+      // prepared — `prepareWorkspaceMcpServers` strips the field this reads.
+      const refusal = refuseUnusableMcpServers(mcpServers);
+      if (refusal) {
+        console.error(`[Router] Refusing to start ${agentName}: ${refusal}`);
+        respond({
+          action: 'activate_response',
+          success: false,
+          type,
+          key,
+          url,
+          error: refusal
+        });
+        return;
+      }
+
+      session = this.herdrBridge.spawnSession(
+        type,
+        key,
+        url,
+        renderedPrompt,
+        defaultAgent,
+        prepareWorkspaceMcpServers(mcpServers, { type, key }),
+        resume
+      );
 
       // Reconciliation nudges its own restores, in sequence and with the
       // stagger it needs; it passes an explicit cause, which is how the two are

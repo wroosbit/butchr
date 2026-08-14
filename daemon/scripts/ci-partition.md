@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 86 |
+| `yes` | 87 |
 | `partial` | 8 |
 | `quarantined` | 3 |
 | `no` | 18 |
-| **total** | **115** |
+| **total** | **116** |
 
-**94 of 115** run on every pull request.
+**95 of 116** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -132,6 +132,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-tail-async-awaited` | yes | imports the built daemon modules and reads `daemon/src` off the checkout; the only herdr is a shim this file writes onto PATH. No live daemon, no real herdr, no credential, no peer, no terminal, no network. |
 | `verify-working-agent-cost` | yes | every section drives pure exported functions over hand-built fixtures. No /proc, no herdr, no daemon, no fleet. That is deliberate and it is the same argument aggregateTrees carries: CI runs on a box with no agents on it, so a proof that could only measure a live fleet would assert nothing there and go green on an empty sample. |
 | `verify-workspace-deps-are-shared` | yes | reads files off the checkout and asserts on their contents; node builtins only. |
+| `verify-workspace-mcp-preparation` | yes | reads `daemon/src/*.ts` as TEXT and imports `daemon/dist/launchers.js` in process. No live daemon, no herdr, no CrabCast peer, no credential, no terminal. §6 writes two files, both under `os.tmpdir()` and never into the repository tree. |
 | `verify-workspace-reclaim` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-workspace-reset-boundary` | yes | imports the built daemon modules, builds every fixture inside a temporary directory it creates and removes, and reads three source files off the checkout; no live daemon, no herdr, no CrabCast, no credential, no network, no terminal. |
 | `verify-agent-tree` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

@@ -3,6 +3,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { McpServerDefinitions } from './integrations/integration.js';
+// Type-only, and it has to be: `agent-runtime.ts` reaches `herdr.ts`, which
+// imports this module for real. `import type` is erased at emit, so the cycle
+// exists only in the type graph, where TypeScript resolves it.
+import type { WorkspaceMcpServers } from './agent-runtime.js';
 import { channelEmissionEnabled, CHANNEL_SWITCH_PATH } from './channel.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -154,6 +158,62 @@ export function materializeMcpServers(defs: McpServerDefinitions): McpServerDefi
 }
 
 /**
+ * Both transforms, in the one order that is correct, producing the only value
+ * {@link AgentRuntime.spawnSession} accepts (KAN-398).
+ *
+ * **Identity first, then materialisation, and the order is load-bearing rather
+ * than stylistic.** `withWorkspaceIdentity` appends to the core server's `args`;
+ * `materializeMcpServers` rewrites `pathPrefix` into `env.PATH` and strips
+ * `unusable`. Materialising first would still stamp correctly today, but it
+ * would mean the stamp is applied to a definition that has already been
+ * declared finished — and the herdr path has always run them this way round
+ * (`withWorkspaceIdentity` at the call, `materializeMcpServers` inside
+ * `writeWorkspaceMcpConfig`), so this is that order preserved rather than a new
+ * one chosen.
+ *
+ * **`unusableMcpServers` must be consulted BEFORE this, and that is not a
+ * caller's option.** This function strips the field, so a refusal check placed
+ * after it reads an empty list every time — a check that can only ever return
+ * the reassuring answer, which is worse than no check because it looks like
+ * one. `MessageRouter` asks first and refuses there; see the call sites.
+ *
+ * Byte-identical output to the pre-KAN-398 herdr path, deliberately:
+ * `writeWorkspaceMcpConfig` still runs `materializeMcpServers` on its way to
+ * disk, and it is idempotent — a definition whose `pathPrefix` is already gone
+ * is returned unchanged — so passing a prepared assembly through it produces
+ * the file it produced before.
+ */
+export function prepareWorkspaceMcpServers(
+  defs: McpServerDefinitions,
+  identity: WorkspaceIdentity
+): WorkspaceMcpServers {
+  return materializeMcpServers(withWorkspaceIdentity(defs, identity)) as WorkspaceMcpServers;
+}
+
+/**
+ * Remove the workspace identity `withWorkspaceIdentity` stamped, for the one
+ * writer whose file is not a workspace's (KAN-398).
+ *
+ * See `configureAgyMcp`, its only caller. This exists so that the invariant is
+ * enforced by the writer that owns the global file, rather than resting on
+ * every caller happening to pass an unstamped assembly — which is what it
+ * rested on until the transforms moved above the runtime seam.
+ */
+function withoutWorkspaceIdentity(defs: McpServerDefinitions): McpServerDefinitions {
+  const core = defs[CORE_MCP_SERVER];
+  if (!core) return defs;
+  const args: string[] = [];
+  for (let i = 0; i < core.args.length; i += 1) {
+    if (core.args[i] === WORKSPACE_TYPE_FLAG || core.args[i] === WORKSPACE_KEY_FLAG) {
+      i += 1; // skip the flag's value too
+      continue;
+    }
+    args.push(core.args[i]);
+  }
+  return { ...defs, [CORE_MCP_SERVER]: { ...core, args } };
+}
+
+/**
  * The servers that cannot start on this machine, as `name: why` pairs.
  *
  * Separated from the writers because the answer is needed *before* anything is
@@ -207,6 +267,20 @@ export function writeWorkspaceMcpConfig(workDir: string, defs: McpServerDefiniti
 // The antigravity CLI has no project-scoped equivalent, so its global config
 // is merged into — and never written when the existing file cannot be parsed,
 // which would otherwise replace the user's config with just our entries.
+//
+// THE WORKSPACE IDENTITY IS STRIPPED HERE, AND THIS IS THE PLACE THAT HAS TO DO
+// IT (KAN-398). One file serves every workspace, so a per-workspace stamp
+// written into it names whichever agent was activated last — `activatedBy`
+// pointing at the wrong supervisor, which `withWorkspaceIdentity` argues at
+// length is worse than pointing at nobody. Anti-gravity agents stay parentless
+// until the CLI grows a project-scoped config; see docs/agent-tree.md.
+//
+// Until KAN-398 this held because `initPty` happened to hand `launcher.setup`
+// the unstamped assembly, one branch above. The transforms now run above the
+// runtime seam, so what arrives here is stamped and this function is the only
+// thing standing between that stamp and the user's global config. **A property
+// that depends on what a caller remembers to pass is not enforced** — so it is
+// enforced by the writer that owns the file instead.
 export function configureAgyMcp(defs: McpServerDefinitions, configPath?: string): void {
   // Nothing to contribute: leave the user's global config alone entirely.
   if (Object.keys(defs).length === 0) return;
@@ -223,7 +297,10 @@ export function configureAgyMcp(defs: McpServerDefinitions, configPath?: string)
     }
   }
 
-  config.mcpServers = { ...config.mcpServers, ...materializeMcpServers(defs) };
+  config.mcpServers = {
+    ...config.mcpServers,
+    ...materializeMcpServers(withoutWorkspaceIdentity(defs))
+  };
 
   try {
     fs.mkdirSync(agyConfigDir, { recursive: true });
