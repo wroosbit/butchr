@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 78 |
-| `partial` | 7 |
+| `yes` | 79 |
+| `partial` | 8 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **102** |
+| **total** | **104** |
 
-**85 of 102** run on every pull request.
+**87 of 104** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -82,6 +82,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-cutover-sequence` | yes | reads `docs/*.md`, `daemon/src/*.ts` and `daemon/scripts/install-service.sh` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-diagnostic-evidence-visible` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no network, no terminal. Section 5 additionally shells out to the repo's own `tsc`, as verify-absence-is-not-intent.mjs §5 does. |
 | `verify-doc-constant-pins` | yes | reads `docs/*.md` and `daemon/src/*.ts` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -134,8 +135,8 @@ classification is the deliverable and the CI job is downstream of it.
 | script | class | reason |
 | --- | --- | --- |
 | `verify-crabcast-census-disclosure` | partial | sections 1-7 assert in CI. They stand up their own Unix socket and a fake `herdr` on PATH, and need no peer, no real herdr, no PTY, no credential and no network. Section 8 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
-| `verify-crabcast-standing` | partial | sections 1-4 assert in CI. They import the built daemon modules and run over frames this script constructs and a committed capture, and need no peer, no herdr, no PTY, no credential and no network. Section 5 reads a live CrabCast socket and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-session-restore` | partial | sections 1-4 assert in CI. They stand up their own Unix socket and their own agent registry under os.tmpdir(), and need no peer, no herdr, no PTY, no credential and no network. Section 5 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
+| `verify-crabcast-standing` | partial | sections 1-4 assert in CI. They import the built daemon modules and run over frames this script constructs and a committed capture, and need no peer, no herdr, no PTY, no credential and no network. Section 5 reads a live CrabCast socket and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-jira-nudge-coalescing` | partial | the coalescing assertions run in CI. The CONTROL leg needs an `--unfixed` build to show the defect it prevents, and AC3d needs `--live`; both are skipped without them and both are named in the run output. |
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
