@@ -10,6 +10,10 @@ dist-unfixed/
 # fleet being torn down. It removes it on exit; this is for the run that
 # crashes before it can.
 dist-guardless-*/
+# Same shape, from verify-absence-is-not-intent.mjs's red drive. Added by
+# KAN-368 after `git add -A` swept 58 of its files into a commit: the two
+# patterns above exist because that had already happened twice.
+dist-kan342-red-*/
 
 # Logs
 *.log

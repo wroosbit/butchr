@@ -91,9 +91,13 @@ function tree({ pid, type, key, cores, residentMb }) {
   return {
     root: pid,
     procs: [
-      { pid, comm: 'claude', ppid: 1, cpuTicks: ticks, rssBytes: Math.round((pages * PAGE) / 2) },
-      { pid: pid + 1, comm: 'node', ppid: pid, cpuTicks: 0, rssBytes: Math.round((pages * PAGE) / 2) },
-      { pid: pid + 2, comm: 'node', ppid: pid, cpuTicks: 0, rssBytes: 0 }
+      // `childCpuTicks` is the reaped-children half of a tree's cost (KAN-368).
+      // Zero throughout this fixture on purpose: these trees spawn nothing that
+      // exits, so every tick is the root's own and the arithmetic this file
+      // asserts on is unchanged by that ticket.
+      { pid, comm: 'claude', ppid: 1, cpuTicks: ticks, childCpuTicks: 0, rssBytes: Math.round((pages * PAGE) / 2) },
+      { pid: pid + 1, comm: 'node', ppid: pid, cpuTicks: 0, childCpuTicks: 0, rssBytes: Math.round((pages * PAGE) / 2) },
+      { pid: pid + 2, comm: 'node', ppid: pid, cpuTicks: 0, childCpuTicks: 0, rssBytes: 0 }
     ],
     // The marker sits on the MCP child, exactly where launchers.ts puts it.
     argv: type === null ? {} : { [pid + 1]: ['node', 'mcp.js', '--workspace-type', type, '--workspace-key', key] }
