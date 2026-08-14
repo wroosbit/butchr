@@ -517,6 +517,24 @@ rule('4b. the errno path — asserted statically, because AF_UNIX cannot produce
 // So this asserts the SHAPE of the fix rather than its effect, and says so.
 // **Nothing exercises the real errno path** — not this script, not the live one,
 // which drops a link the same polite way. That is the honest edge of both.
+//
+// **DRIVEN RED, and this is the input that does it** (H-28: a green is a claim
+// about your check, so name what turns it red and confirm the world can supply
+// one). Reinstating the single line this fix removed —
+// `if (this.socket === socket) this.socket = null;` in `crabcast-link.ts`'s
+// `error` handler — and rebuilding gives, measured 2026-08-14:
+//
+//     BUILD_EXIT=0        <- compiles, so the proof saw the mutation
+//     PROOF_EXIT=1        FAILED — 1 check(s)
+//     4b  FAIL  the 'error' handler does not clear this.socket
+//
+// **Exactly one check fails, and it is this one.** Every behavioural section
+// above stays green, because AF_UNIX cannot produce the errno path they would
+// need to notice — which is the whole reason this section is static, and is why
+// a defect that reached production here would be invisible to all of them. A
+// check with no reachable failing branch is not a weak check, it is one that
+// does not exist while appearing to; this one has a branch and it has been
+// walked.
 const linkSource = fs.readFileSync(
   new URL('../src/crabcast-link.ts', import.meta.url),
   'utf8'
