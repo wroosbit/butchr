@@ -435,7 +435,36 @@ await until(() => session.status === 'active' || !!session.spawnError, 90_000);
 // that is the ordinary answer, not a finding. Exit 2 and say so, so a wrapper can
 // retry and a reader cannot mistake it for red. This is KAN-373's class from the
 // other direction — there a skip read as a pass; here a refusal read as a red.
-const refusedForCapacity = !!session.spawnError && /cpu too busy|memory|at capacity|headroom/i.test(session.spawnError);
+//
+// ── AND THE CLASSIFIER IS STRUCTURAL FIRST, BY REASON ONLY SECOND ──────────
+//
+// **`session.spawnError` is not a refusal channel.** It carries ANY thrown
+// error's message — `crabcast-runtime.ts` sets `session.spawnError = err
+// instanceof Error ? err.message : String(err)` for whatever escapes the spawn
+// path. So a classifier that matches only *reason words* lets an ordinary crash
+// wear a refusal's clothes: `JavaScript heap out of memory` and `Cannot allocate
+// memory` both contain "memory", and either would be announced as "no agent ran,
+// this is NOT a verdict" and exit 2. **That fails toward the comfortable
+// answer** — a genuine failure reported as a run that never happened, in the
+// direction nobody investigates. It is this ticket's own class with its sign
+// flipped: KAN-405 fixed a refusal reading as a red; this would be a red reading
+// as a refusal. (Found in review of #172 by `epic/KAN-39`.)
+//
+// `activate_agent refused:` is composed at exactly one place — the branch where
+// CrabCast declined the activation — so it, not the reason, is what separates a
+// refusal from a crash. It is required here.
+const refusedByCrabCast = /activate_agent refused/i;
+// The capacity reasons MEASURED on this fleet, and deliberately no others. A
+// memory-bound refusal has never been observed, so its wording is not guessed
+// at: if one arrives it will fail this test and exit 1 with CrabCast's full text
+// visible, which is the safe direction and is how the real string gets learned.
+// Writing a matcher for a string nobody has seen is the guess this epic keeps
+// paying for.
+const capacityReason = /cpu too busy|at capacity|headroom/i;
+const refusedForCapacity =
+  !!session.spawnError &&
+  refusedByCrabCast.test(session.spawnError) &&
+  capacityReason.test(session.spawnError);
 if (session.status !== 'active' && refusedForCapacity) {
   console.log('\n   SKIPPED — CrabCast refused the activation for capacity, so no agent ran.');
   console.log('   This is NOT a verdict on gate 2. Retry when the machine is quieter.\n');
