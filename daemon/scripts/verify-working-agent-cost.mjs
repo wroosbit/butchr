@@ -105,6 +105,16 @@ const markerArgv = (type, key) => ['node', 'mcp.js', '--workspace-type', type, '
  * Kept as executable code so section 6 can falsify against the real thing. A
  * prose claim that "the old form missed it" would be a claim nobody could check
  * once the old code was gone.
+ *
+ * **DO NOT DELETE THIS AS DEAD CODE.** It has no caller outside section 6 and
+ * it will read as litter to anybody tidying up — which is exactly why the
+ * warning is here rather than left to be worked out. Once `aggregateTrees` is
+ * corrected the old form exists nowhere a test can reach it, so every claim
+ * about it becomes permanently uncheckable at the moment it becomes
+ * load-bearing. Deleting this function does not make section 6 fail; it makes
+ * section 6 stop meaning anything, which is worse, because a green proof that
+ * has quietly stopped testing its subject is the defect this whole epic keeps
+ * re-finding. (Asked for by `epic/KAN-39` reviewing #169.)
  */
 function oldStyleTreeTicks(before, after, pids) {
   let ticks = 0;
