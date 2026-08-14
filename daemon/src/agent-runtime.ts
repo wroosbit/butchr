@@ -1,5 +1,5 @@
 import type { McpServerDefinitions } from './integrations/integration.js';
-import type { ResumeCause } from './resume.js';
+import type { BriefLocation, ResumeCause } from './resume.js';
 import type {
   AgentPresence,
   CensusReading,
@@ -22,14 +22,15 @@ import type {
  *
  * ## Derived from call sites, not from the class
  *
- * The 23 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
+ * The 24 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
  * `nudge.ts`, `reconcile.ts` and `router.ts` actually call. (KAN-223 derived 20
  * from 43 call sites; KAN-246 added `setAgentSpawnedListener` and
- * `pressPaneKey`, both called from `daemon.ts`, and KAN-247 added
- * `resolveAddress` with its caller in `router.ts` — all by the same rule, that
- * a method is on this interface because daemon code calls it.) `HerdrBridge`
- * declares 34 methods (25 public, 9 private); the other 11 are implementation
- * and are deliberately absent:
+ * `pressPaneKey`, both called from `daemon.ts`; KAN-247 added `resolveAddress`
+ * with its caller in `router.ts`; and KAN-400 added `briefLocation` with its
+ * caller in `nudge.ts` — all by the same rule, that a method is on this
+ * interface because daemon code calls it.) `HerdrBridge` declares 35 methods
+ * (26 public, 9 private); the other 11 are implementation and are deliberately
+ * absent:
  *
  * - **9 are private** — `liveAttachFor`, `startAgentInOwnTab`,
  *   `createAgentTab`, `closeTabPlaceholder`, `initPty`, `runHerdr`,
@@ -42,9 +43,9 @@ import type {
  *   from daemon code. Test scaffolding is not the contract.
  * - **`getPtyBuffer`** is public and called from nowhere at all.
  *
- * An interface mirroring all 34 would have copied the implementation instead
+ * An interface mirroring all 35 would have copied the implementation instead
  * of declaring the contract, and would make a second implementation harder
- * rather than easier — so the 11 stay out. (34 − 11 = 23.)
+ * rather than easier — so the 11 stay out. (35 − 11 = 24.)
  *
  * **The three counts in this header were all wrong until KAN-278**, which is
  * worth a sentence because of how they got that way rather than for its own
@@ -159,6 +160,33 @@ export interface AgentRuntime {
     mcpServers?: McpServerDefinitions,
     resume?: ResumeCause
   ): HerdrSession;
+
+  /**
+   * Where this runtime puts an agent's brief (KAN-400).
+   *
+   * On the interface because the daemon composes messages telling an agent to
+   * go and read it, and until this ticket those messages named
+   * `.butchr-prompt.md` — a fact about `HerdrBridge` that three call sites had
+   * each hardcoded. It is false under CrabCast, whose published contract moved
+   * the bootstrap prompt into a sidecar of their own; see {@link BriefLocation}
+   * for the reading and for why the answer is a union rather than a path.
+   *
+   * **Deterministic from the address, and deliberately not from a session.**
+   * The obvious shape was a field on `HerdrSession`, and it has a hole in it:
+   * `nudge.ts` is reached from `reconcile.ts` with an activation *response*
+   * rather than a session, so it would have had to look one up and decide what
+   * to say when it found none — an "impossible" branch that would have had to
+   * invent a location or omit the sentence. Both runtimes can answer this from
+   * `(type, key)` alone, so neither the caller nor the implementation ever has
+   * a "don't know" case to get wrong.
+   *
+   * Both parameters are required for the same reason. Every other lookup here
+   * takes an optional `type` and infers it, which is right for addressing an
+   * agent that exists; this answers a question about where a *runtime* writes,
+   * and inferring the type would make the answer depend on which agent happened
+   * to be running.
+   */
+  briefLocation(type: string, key: string): BriefLocation;
 
   abandonSession(sessionId: string, error: string): void;
 

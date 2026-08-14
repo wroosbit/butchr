@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 85 |
+| `yes` | 86 |
 | `partial` | 8 |
 | `quarantined` | 3 |
-| `no` | 17 |
-| **total** | **113** |
+| `no` | 18 |
+| **total** | **115** |
 
-**93 of 113** run on every pull request.
+**94 of 115** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -67,6 +67,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-atlassian-proxy-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-atlassian-proxy-write-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-board-reconciler-guard` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-brief-location` | yes | §1 and §2 read `daemon/src/*.ts` as text; §3 and §4 import the built daemon modules and call them over values this script constructs. It needs no peer, no herdr, no PTY, no credential and no network, and it writes nothing. The `--static-only` flag below is for a human running this against a build that just failed, not for CI, which builds first. |
 | `verify-channel-emission-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-launch-flag` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-liveness` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -164,6 +165,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-activate-verified-existence` | no | shells out to `which herdr` and activates a real agent through it; it throws outright when herdr is not on PATH. |
 | `verify-capacity-survives-daemon-restart` | no | starts a real daemon and then warms up for 780 s across 13 cost windows so the estimate can walk down off its seed. Both the daemon and the wall clock put it out of reach of a per-PR check. |
 | `verify-comment-authorship-live` | no | checks comment ids against the live Jira API and needs a real Atlassian credential; without one it correctly reports that it is not evidence of anything. |
+| `verify-crabcast-brief-reachable-live` | no | it needs a live CrabCast daemon on a Unix socket, room in that daemon's capacity gate for one more agent, and it starts a real `claude` process that spends real tokens. `verify-brief-location.mjs` is the offline half of the same claim and does run in CI. |
 | `verify-crabcast-claude-launcher-live` | no | needs a real CrabCast daemon, real capacity for one more agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-crabcast-confirm-present-name-join` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET` (or the default socket path) and it spawns a real `claude` agent. It attempts nothing without one. Its output goes on the pull request. |
 | `verify-crabcast-reconnect-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`, a real herdr and a real pty; it attempts nothing without one. |
