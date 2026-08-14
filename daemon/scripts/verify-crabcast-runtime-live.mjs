@@ -44,10 +44,14 @@
 //     it does not prove the daemon's own routers behave once one is installed.
 //     Nothing covers that, because nothing is migrated onto this runtime by
 //     KAN-278 and there is nothing yet to observe.
-//   - **`pressPaneKey`, `resetWorkspace`, `setAgentSpawnedListener`.** All three
-//     are `absent` or `different-shaped` on purpose; the switch script asserts
-//     they refuse honestly, and asserting them here would be asserting the same
-//     thing twice. **`tailAgent` was the fourth entry on this list and is now
+//   - **`pressPaneKey` and `setAgentSpawnedListener`.** Both are `absent` on
+//     purpose; the switch script asserts they refuse honestly, and asserting
+//     them here would be asserting the same thing twice. **`resetWorkspace` was
+//     the third entry on this list until KAN-380** and has left it in the same
+//     way `tailAgent` did: the deletion is Butchr's own job under this runtime
+//     now, so it is exercised rather than merely refused — see the cleanup
+//     section, which deletes the probe workspace *through* the method instead of
+//     around it. **`tailAgent` was the fourth entry on this list and is now
 //     section 4c** — KAN-283 made the interface async and the method is served
 //     over the wire, so it moved from "refuses honestly" to "must be shown
 //     working against a real peer", which is this script's job rather than the
@@ -503,15 +507,21 @@ rule('cleanup');
 runtime.dispose();
 
 // Butchr owns this directory at both ends — CrabCast never made it and will
-// never delete it. Removing it here is the same asymmetry `resetWorkspace`
-// refuses to hide.
-const inWorkspaces = workDir.includes(`${path.sep}butchr${path.sep}workspaces${path.sep}`);
-if (inWorkspaces && fs.existsSync(workDir)) {
-  fs.rmSync(workDir, { recursive: true, force: true });
-  console.log(`   removed probe workspace ${workDir}`);
-} else {
-  console.log(`   left ${workDir} alone — it is not inside the workspaces tree`);
-}
+// never delete it. Until KAN-380 this script had to hand-roll that deletion,
+// because `resetWorkspace` refused under this runtime; it does not any more, so
+// the cleanup goes through the method rather than around it. That is not
+// tidiness: routing it through the runtime makes this one observation of gate 4
+// against a REAL CrabCast daemon, in the directory a real agent just ran in,
+// which is a thing `verify-workspace-reset-boundary.mjs` cannot be — it builds
+// its own fixtures and never spawns anything.
+const existedBefore = fs.existsSync(workDir);
+const cleanup = runtime.resetWorkspace(TYPE, KEY);
+console.log(`   resetWorkspace(${TYPE}, ${KEY}) → ${JSON.stringify(cleanup)}`);
+check(
+  'the probe workspace a real CrabCast agent ran in is deleted by resetWorkspace (KAN-380)',
+  existedBefore ? cleanup.success === true && !fs.existsSync(workDir) : !fs.existsSync(workDir),
+  `existedBefore=${existedBefore} stillThere=${fs.existsSync(workDir)} ${JSON.stringify(cleanup)}`
+);
 console.log(
   `   NOTE: CrabCast still holds a configured record for that path. Remove it with:\n` +
     `         crabcast forget ${workDir}`
