@@ -26,6 +26,7 @@ import {
   HerdrAgentStatus,
   addressFromAgentName,
   agentNameFor,
+  type ButchrAgentName,
   typeFromAgentName,
   workspaceDirFor
 } from './herdr.js';
@@ -2122,7 +2123,7 @@ export class MessageRouter {
    */
   private async confirmActivation(
     session: HerdrSession,
-    agentName: string
+    agentName: ButchrAgentName
   ): Promise<string | undefined> {
     // Existence means a live runtime for every launcher but `shell` — a name
     // registration over a dead pane must not verify (KAN-58). Sessions that

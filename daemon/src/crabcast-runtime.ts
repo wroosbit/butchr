@@ -13,6 +13,7 @@ import {
   workspaceDirFor,
   workspacesRoot,
   type AgentPresence,
+  type ButchrAgentName,
   type CensusReading,
   type CensusUnreadableRecord,
   type HerdrAgentDescription,
@@ -106,10 +107,36 @@ function addressForPath(dir: string): { type: string; key: string } | null {
   return { type: parts[0], key: parts[1] };
 }
 
+declare const PANE_NAME_BRAND: unique symbol;
+
+/**
+ * **CrabCast's name for a pane — the other string that means "the name of an
+ * agent", and the one that is NOT Butchr's (KAN-406).**
+ *
+ * Whatever process started a pane chose this name. herdr names its own panes
+ * `butchr-<type>-<key>`, so for a herdr-started pane this is *equal* to the
+ * {@link ButchrAgentName}; CrabCast names the panes it starts
+ * `crabcast-<key>-<hash>`, so for those it is not. **The equality is a
+ * coincidence of one starter's naming convention, not a property of pane
+ * names** — which is precisely why reading it as one cost KAN-346 and KAN-397
+ * the same defect twice, and why the two are now different types.
+ *
+ * Joining a census row on this instead of on its derived Butchr name is
+ * `error TS2367` rather than a review catch. **The conversion to a Butchr name
+ * has exactly one home, {@link butchrNameForCensusRow}**, and the single
+ * legitimate *comparison* between the two spellings has exactly one home too,
+ * {@link paneIsNamedAsHerdrWouldName} — which is a comparison and not a
+ * conversion, so it produces no Butchr name and adds no second derivation.
+ *
+ * `readCensus` is the only producer: this is CrabCast's string, so the one cast
+ * sits where CrabCast's frame is read and nowhere else.
+ */
+type PaneName = string & { readonly [PANE_NAME_BRAND]: 'pane-name' };
+
 /** One row of CrabCast's `list_agents.agents`, narrowed to what we branch on. */
 interface CensusRow {
   path: string;
-  paneName: string;
+  paneName: PaneName;
   sessionId: string | null;
   status: string | null;
   herdrStatus: string | null;
@@ -159,10 +186,54 @@ interface CensusRow {
  *
  * A row outside Butchr's workspace tree has no Butchr name to give it and keeps
  * `paneName`, which is what it always was.
+ *
+ * **KAN-406 made that last sentence the only cast of a {@link PaneName} to a
+ * {@link ButchrAgentName} in `daemon/src`, and it is deliberately the awkward
+ * branch.** The derivation proper — `addressForPath` then `agentNameFor` —
+ * needs no cast at all, because `agentNameFor` produces the branded type
+ * itself. Only the fallback asserts something the types cannot check: that for
+ * a pane outside the workspace tree, `paneName` is the best name Butchr has,
+ * which is true because there is no other and NOT because the two spellings
+ * agree. A second cast written elsewhere would be a second derivation, which is
+ * the defect this function exists to end.
  */
-function butchrNameForCensusRow(row: Pick<CensusRow, 'paneName' | 'path' | 'workDir'>): string {
+function butchrNameForCensusRow(
+  row: Pick<CensusRow, 'paneName' | 'path' | 'workDir'>
+): ButchrAgentName {
   const address = addressForPath(row.workDir ?? row.path);
-  return address ? agentNameFor(address.type, address.key) : row.paneName;
+  return address
+    ? agentNameFor(address.type, address.key)
+    : (row.paneName as string as ButchrAgentName);
+}
+
+/**
+ * **The one place the two spellings may legitimately be compared, and the
+ * reason it is a comparison rather than a conversion (KAN-406 AC3).**
+ *
+ * `describeAgent` searches `census.foreign` — panes CrabCast can see and does
+ * not own — for one named the way herdr names a pane it started itself. **For
+ * that population `paneName` IS the Butchr name**, because herdr spells its own
+ * pane names `butchr-<type>-<key>`, which is exactly what {@link agentNameFor}
+ * produces. So the comparison is correct, and #168 established that it must
+ * stay: substituting {@link butchrNameForCensusRow} here would be identical for
+ * every pane outside the workspace tree and would CHANGE behaviour for one case
+ * — a foreign pane whose `workDir` is inside a Butchr workspace, which is a
+ * human's own terminal opened there, and which would start being reported as
+ * that workspace's agent. Uniform, and wrong.
+ *
+ * **The brands must permit this, and they do — through here and nowhere else.**
+ * Both sides widen to `string` for the one comparison, so no {@link PaneName}
+ * becomes a {@link ButchrAgentName} and no second derivation is created; what
+ * the brands take away is the ability to write this same comparison *by
+ * accident*, spelled `r.paneName === agentName`, which is indistinguishable
+ * from the defect KAN-397 fixed. Here the by-construction equality is named,
+ * greppable, and carries its own justification.
+ */
+function paneIsNamedAsHerdrWouldName(
+  row: Pick<CensusRow, 'paneName'>,
+  agentName: ButchrAgentName
+): boolean {
+  return (row.paneName as string) === (agentName as string);
 }
 
 /** A census reading, with the timestamp that makes its staleness legible. */
@@ -1044,7 +1115,18 @@ export class CrabCastRuntime implements AgentRuntime {
 
   describeAgent(key: string, type?: string): HerdrAgentDescription {
     const resolvedType = type ?? this.sessionForKey(key)?.type ?? null;
-    const agentName = resolvedType ? agentNameFor(resolvedType, key) : `butchr-?-${key.toLowerCase()}`;
+    // `agentNameFor('?', key)` rather than a hand-built `butchr-?-<key>`
+    // template (KAN-406). The two produce the identical string — `?` is simply
+    // the type, spelled as the unknown it is — so this is the same name it
+    // always was, produced through the one producer instead of alongside it.
+    // Writing the template here would have needed a second cast to
+    // `ButchrAgentName`, and a brand with scattered casts means only "somebody
+    // asserted this here", which is the review catch the brand replaces.
+    // `||` and not `??`, deliberately: the original was a TRUTHY test, so an
+    // empty-string type fell to the `?` placeholder. `??` would only catch
+    // null/undefined and would spell an empty type `butchr--<key>` — a
+    // different string, and this change is required to alter no behaviour.
+    const agentName = agentNameFor(resolvedType || '?', key);
     const dir = resolvedType ? pathForAddress(resolvedType, key) : null;
     // **The `paneName` join below is RIGHT, and stays (KAN-397 AC3).** It reads
     // like the defect that ticket fixed and is not one, for two reasons worth
@@ -1067,9 +1149,16 @@ export class CrabCastRuntime implements AgentRuntime {
     // about: a foreign pane whose `workDir` is inside a Butchr workspace — a
     // human's own terminal opened there — which would start being reported as
     // that workspace's agent. Uniform, and wrong. So it is left alone.
+    //
+    // KAN-406 branded the two name types, which makes the raw
+    // `r.paneName === agentName` spelling of this line a compile error. **The
+    // comparison is unchanged** — it moved into
+    // `paneIsNamedAsHerdrWouldName`, which widens both sides for exactly this
+    // case and carries the two reasons above in its own docblock. The point is
+    // that the correct comparison no longer LOOKS identical to the defect.
     const row =
       (dir ? this.census.rows.find((r) => r.path === dir) : undefined) ??
-      this.census.foreign.find((r) => r.paneName === agentName);
+      this.census.foreign.find((r) => paneIsNamedAsHerdrWouldName(r, agentName));
     return {
       agentName,
       type: resolvedType,
@@ -1141,7 +1230,7 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   async confirmAgentPresent(
-    agentName: string,
+    agentName: ButchrAgentName,
     requireRuntime: boolean,
     timeoutMs = 10_000
   ): Promise<AgentPresence> {
@@ -1788,7 +1877,9 @@ export class CrabCastRuntime implements AgentRuntime {
       const r = (raw ?? {}) as Record<string, unknown>;
       return {
         path: typeof r.path === 'string' ? r.path : '',
-        paneName: typeof r.paneName === 'string' ? r.paneName : '',
+        // The only producer of a `PaneName` (KAN-406): this is CrabCast's
+        // string, so the cast sits where CrabCast's frame is read.
+        paneName: (typeof r.paneName === 'string' ? r.paneName : '') as PaneName,
         sessionId: typeof r.sessionId === 'string' ? r.sessionId : null,
         status: typeof r.status === 'string' ? r.status : null,
         herdrStatus: typeof r.herdrStatus === 'string' ? r.herdrStatus : null,
