@@ -418,6 +418,18 @@ import * as os from 'os';
  * interval between the two answers this file would otherwise have chosen
  * between anyway.
  *
+ * **KAN-368 narrowed one premise of that argument and left its conclusion
+ * standing.** Both `cores` readings above were taken through an instrument that
+ * could not see a child process which exited inside its window, so `0.262 ≥
+ * 0.184` is a comparison of two undercounts and neither is "the settled
+ * answer": the same fleet measured properly runs 0.16–0.43 core, and a
+ * compiling agent 1.03. What is unaffected is the *directional* claim this
+ * section actually rests on — a settling figure lies between the seed and
+ * wherever the filter is walking, and `startingAgentCost` bounds the memory
+ * side either way. What is affected is any reader taking `0.184` from here as
+ * what an agent costs. It is not; see {@link MEASURED_AGENT_COST} for figures
+ * taken over a population known to be working.
+ *
  * daemon/scripts/verify-idle-fleet-capacity.mjs is the proof, and it reproduces
  * the collapse before showing its absence.
  */
@@ -477,6 +489,52 @@ export interface AgentCost {
  * not. A capacity report built from them says `seed`, because a figure nobody
  * measured on this fleet must be labelled as such — that mislabelling is the
  * exact failure story KAN-44 exists to correct.
+ *
+ * ---------------------------------------------------------------------------
+ * THE SEED'S ERROR AGAINST A KNOWN-WORKING POPULATION (KAN-368)
+ * ---------------------------------------------------------------------------
+ *
+ * "Re-measure it before trusting it" was never done against the right
+ * population — every reading since had been taken over whatever the fleet
+ * happened to be doing, and through an instrument that could not see a child
+ * process that exited inside its window (agent-cost.ts's `subtreeTicks`). So
+ * the *"6x–9x pessimistic"* verdict recorded on KAN-365 was a comparison
+ * between two different quantities, and KAN-368 exists to replace it with one.
+ *
+ * Measured on the filing machine (4 cores, 15.4 GiB) on 2026-08-14, over
+ * task-agent trees herdr called `working` at **both** ends of the window:
+ *
+ *     120s, 5 working trees, ordinary fleet:      0.160 core,  852 MB each
+ *      90s, 6 working trees, two compiling:       0.426 core,  900 MB each
+ *      90s, one agent sustaining `tsc`:           1.03  core,  984 MB
+ *
+ * The last figure is externally corroborated: `/usr/bin/time` put the same
+ * compiles at 101.32 core-seconds over 103.0s — 0.98 core — and the tree
+ * measured 1.03 with its own idle baseline on top. The instrument and the
+ * ground truth agree to ~1%.
+ *
+ * So, against `cores: 0.75`:
+ *
+ *   - a working agent at ordinary load costs **0.160 core** — the seed is 4.7x
+ *     high;
+ *   - a working agent on a busy fleet costs **0.426 core** — 1.8x high;
+ *   - an agent actually spending CPU costs **1.03 core** — the seed is **27%
+ *     LOW**.
+ *
+ * **The seed is not wrong, and the direction of its error is not constant.** It
+ * was calibrated as a budget share on a fleet observed to be fine, and it lands
+ * between what a working agent averages and what one costs at its peak — which
+ * is what a divisor with one number for a bursty cost can do at best. What was
+ * wrong was every measurement it had been compared against.
+ *
+ * `residentBytes` is the dimension where the seed is *optimistic and always in
+ * the same direction*: 650 MB against 852–984 MB measured, a 31–51%
+ * understatement, on the dimension this file's own comment calls the one that
+ * "kills rather than slows". It is not raised here, because the live divisor
+ * already measures ~800 MB over the whole fleet and damps up quickly, so the
+ * seed binds only in the seconds before a first window closes — but a reader
+ * reaching for this constant as a memory figure should know it is a floor and
+ * not an estimate.
  */
 export const MEASURED_AGENT_COST: AgentCost = {
   residentBytes: 650 * MIB,
