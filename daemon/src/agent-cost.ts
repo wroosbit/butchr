@@ -13,11 +13,17 @@
 // under the nearest `claude` ancestor that has no `claude` ancestor of its
 // own, and CPU is summed per group.
 //
-// CPU is measured as cores, not as a load average: utime+stime deltas from
+// CPU is measured as cores, not as a load average: clock ticks from
 // /proc/<pid>/stat divided by wall-clock seconds. That is the quantity the
 // machine actually spends. The load average, reported alongside it, is the
 // queue that quantity produces — the number the human feels, and always the
 // larger of the two once the machine is contended.
+//
+// Those ticks include the CPU of children that have already exited, and until
+// KAN-368 they did not — which meant a compiling agent measured 9x cheaper than
+// it was, because the compile was over before the window closed. See
+// {@link subtreeTicks} for the arithmetic and for the measurement against an
+// external ground truth that established the size of it.
 //
 // ---------------------------------------------------------------------------
 // WHICH TREES THE DIVISOR IS AVERAGED OVER (KAN-276)
@@ -49,6 +55,15 @@
 // costs, and the fleet reading taken with **zero** task agents running divided
 // by 0.123 — a per-task-agent cost computed from a sample containing no task
 // agents at all.
+//
+// **Every CPU figure in the paragraph above is an undercount, and KAN-368 is why
+// — read them as a ratio and not as a cost.** They were taken through the
+// per-process-delta form of this instrument, which could not see a child that
+// exited inside the window; a task agent measured 0.198 core there reads ~1.0
+// core when it is compiling and counted properly (see {@link subtreeTicks}).
+// What survives untouched is the *comparison*, because both populations were
+// measured the same wrong way and a supervisor spawns no compiles to lose: the
+// exclusion KAN-276 argues for is if anything understated by these numbers.
 //
 // The two dimensions are not the same shape, and that is the finding worth
 // carrying: over those windows supervisors were ~14x cheaper on **CPU** and 92%
@@ -83,6 +98,52 @@
 // degrades to the labelled seed (agent-cost-damping.ts), which is higher still.
 // The failure mode this leaves is a visible one — reports say `seed` — rather
 // than a silent contamination of the kind this comment exists because of.
+//
+// ---------------------------------------------------------------------------
+// WHETHER THE TREES WERE DOING ANYTHING (KAN-368)
+// ---------------------------------------------------------------------------
+//
+// KAN-276 fixed *which kind* of agent is averaged. It left untouched the
+// question of *what those agents were doing while they were averaged*, and the
+// two are the same shape of defect arriving from a different side.
+//
+// `agentCores` fell 0.262 → 0.184 → 0.081 across four readings on one unchanged
+// machine while `cap` rose 9 → 13 → 15. Nothing about the fleet changed except
+// how busy it was: a task agent sitting at its prompt is still a chargeable
+// tree, and it measures near zero. So the divisor is a duty cycle, and `cap` —
+// which reads as a statement about the hardware — moves with what the fleet
+// happens to be doing. `epic/KAN-203`'s sentence is the whole of it: *the seed
+// is too pessimistic when the fleet is idle; the measurement is too optimistic
+// when the measured agents are idle.*
+//
+// This file's contribution is to make the population **separable and reported**,
+// not to change the divisor. `activity` splits the chargeable trees three ways
+// and every split is published; nothing here decides what capacity.ts should do
+// with them. That is deliberate — KAN-368's first acceptance criterion is a
+// *measurement*, and every candidate fix is downstream of it.
+//
+// WHY THE VERDICT COMES FROM OUTSIDE, AND MUST
+//
+// The obvious classifier — "a tree that spent CPU was working" — is selection on
+// the quantity being measured. Averaging the cores of the trees picked *for*
+// having cores answers a question nobody asked, and it cannot fail: any
+// threshold produces a confident figure above it. So the verdict is injected,
+// and every caller in this repository sources it from herdr's own
+// `agent_status`, which is a reading of the agent's terminal and knows nothing
+// about /proc. The measurement is then free to disagree with it, and the whole
+// finding on KAN-368 is a disagreement of exactly that kind: herdr-`working`
+// trees spent ~0.05 core, which is not what "working" sounds like.
+//
+// WHY THREE STATES AND NOT A BOOLEAN
+//
+// A tree nobody classified must not be *nameable* as working. With a boolean
+// there is no way to say "nothing established this", so the missing case would
+// have to borrow one of the two answers, and whichever it borrowed would
+// silently populate one of the two figures a reader trusts most. `unknown` is
+// its own arm, it is what an absent classifier returns for every tree, and it is
+// charged to neither total — so a caller that forgot to establish activity gets
+// an **empty** `working` population and a report that says so, which is the same
+// visible-degradation direction as an unmarked tree above.
 
 import * as fs from 'fs';
 
@@ -101,8 +162,19 @@ export interface ProcessSample {
   pid: number;
   comm: string;
   ppid: number;
-  /** utime + stime, in clock ticks. */
+  /** utime + stime, in clock ticks. This process's own CPU, alive or zombie. */
   cpuTicks: number;
+  /**
+   * cutime + cstime, in clock ticks: the CPU of every descendant this process
+   * has **reaped** (KAN-368).
+   *
+   * Without it a tree's cost is invisible, because an agent spends almost none
+   * of its own CPU — the work is `tsc`, `npm`, `git`, `rg`, each of which starts
+   * and exits inside one sampling window and is therefore absent from the
+   * closing sample. See {@link aggregateTrees} for the arithmetic and for the
+   * measurement that established the size of it.
+   */
+  childCpuTicks: number;
   rssBytes: number;
 }
 
@@ -113,6 +185,26 @@ export interface MeasurementStart {
   /** Wall-clock ms (Date.now()) when the sample was taken. */
   startedAt: number;
 }
+
+/**
+ * Whether a tree was doing work across the window it was measured over.
+ *
+ * Three arms rather than two, and `unknown` is not a degree of the other two —
+ * see the header. `not-working` is a positive finding that the agent was idle;
+ * `unknown` is the absence of a finding, which includes a tree whose state
+ * *changed* mid-window and is therefore neither.
+ */
+export type AgentActivity = 'working' | 'not-working' | 'unknown';
+
+/**
+ * Establishes {@link AgentActivity} for a tree from its workspace marker.
+ *
+ * Injected for the reason the header gives: a classifier that reads the CPU
+ * figure would be selecting on the quantity being measured. It takes the
+ * marker, never the tree's cores, so the two are independent by construction —
+ * the compiler will not let this function see a number it could threshold.
+ */
+export type ActivityOf = (workspaceType: string, workspaceKey: string | null) => AgentActivity;
 
 /** One agent tree's cost over the window. */
 export interface AgentTreeCost {
@@ -134,6 +226,13 @@ export interface AgentTreeCost {
   workspaceType: string | null;
   /** The issue key from the same marker, for reports. Null with the type. */
   workspaceKey: string | null;
+  /**
+   * What the injected {@link ActivityOf} said about this tree (KAN-368).
+   *
+   * `unknown` for every unmarked tree without asking — there is no workspace to
+   * ask about — and for every tree when no classifier was supplied.
+   */
+  activity: AgentActivity;
 }
 
 /** The summed figures for some population of trees. */
@@ -198,6 +297,25 @@ export interface AgentCostMeasurement {
    * that shows up as capacity degrading to the seed.
    */
   unmarked: AgentCostTotals;
+  /**
+   * The chargeable trees an injected {@link ActivityOf} said were working
+   * (KAN-368). **This is the population KAN-368's first acceptance criterion
+   * asks for**, and it is the only one of the three below whose average can
+   * honestly be called "what a working agent costs on this machine".
+   *
+   * Empty when no classifier was supplied, which is the visible-degradation
+   * direction rather than a figure nobody established — see the header.
+   */
+  working: AgentCostTotals;
+  /** The chargeable trees the classifier said were idle. */
+  notWorking: AgentCostTotals;
+  /**
+   * The chargeable trees it could not say either way — no verdict, or a verdict
+   * that changed across the window. Reported rather than dropped, because a
+   * reading where this holds most of the fleet is a reading whose `working`
+   * figure is an average over whatever was left.
+   */
+  activityUnknown: AgentCostTotals;
 }
 
 /**
@@ -228,6 +346,7 @@ export function sampleProcesses(): Map<number, ProcessSample> {
         comm,
         ppid: Number(rest[1]),          // field 4
         cpuTicks: Number(rest[11]) + Number(rest[12]), // fields 14, 15
+        childCpuTicks: Number(rest[13]) + Number(rest[14]), // fields 16, 17
         rssBytes: Number(rest[21]) * PAGE_SIZE          // field 24
       });
     } catch {
@@ -326,6 +445,73 @@ export function classifyTree(
 }
 
 /**
+ * All the CPU a tree has *ever* spent, as of one sample: own ticks plus reaped
+ * descendants' ticks, summed over the processes alive at that instant (KAN-368).
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE WINDOW'S COST IS A DIFFERENCE OF THESE AND NOT A SUM OF PER-PROCESS
+ * DELTAS
+ * ---------------------------------------------------------------------------
+ *
+ * The sum-of-deltas form this replaced could only see processes present in
+ * *both* samples, so a child that started and exited inside the window
+ * contributed **nothing**. That is not an edge case — it is where an agent's
+ * CPU actually goes. An agent is a process that waits on an API and
+ * occasionally spawns `tsc`, `npm`, `git` or `rg`; each of those runs for
+ * seconds and exits, and the sampler closes its window sixty seconds later with
+ * no trace of any of them.
+ *
+ * Measured on the filing machine on 2026-08-14, against `/usr/bin/time` as an
+ * external ground truth, over one 30s window with one `tsc --noEmit` run inside
+ * it:
+ *
+ *     ground truth (/usr/bin/time):   14.06 user + 0.39 sys = 14.45 core-seconds
+ *     sum of per-process deltas:       1.8 core-seconds   ->  0.059 core
+ *     difference of subtree totals:   16.3 core-seconds   ->  0.540 core
+ *
+ * A **9x** undercount, on a tree that was compiling for half the window. It is
+ * the reason KAN-368 could say "nobody knows what a working agent costs": the
+ * instrument could not see the work. Every figure derived from it — the
+ * 0.262 → 0.184 → 0.081 drift, the "6x–9x pessimistic" verdict on the seed — was
+ * taken through it.
+ *
+ * WHY THE DIFFERENCE IS EXACT, WHICH IS THE PART WORTH CHECKING
+ *
+ * `cutime`/`cstime` accrue to a parent at the moment it reaps a child, and what
+ * transfers is the child's *whole* subtree total. So when a child dies its
+ * contribution leaves the sum in one place and arrives in another **within the
+ * same tree**, and this total is conserved across the reap. It is therefore
+ * monotone non-decreasing for as long as the root lives, and the difference
+ * between two samples of it is exactly the CPU the tree accrued between them —
+ * for processes that came, went, or never existed at either end alike.
+ *
+ * The same conservation is what makes the per-process form wrong rather than
+ * merely incomplete: it double-counts nothing and misses everything that ended.
+ *
+ * WHERE IT IS STILL NOT EXACT, SAID RATHER THAN LEFT TO BE FOUND
+ *
+ * A process that dies while its own children live orphans them, and the kernel
+ * reparents those to init — out of this tree, taking their future CPU with them
+ * and their accrued CPU too. The tree total can then fall between samples. That
+ * is why the difference is clamped at zero rather than trusted: a negative cost
+ * is not a measurement, and the honest floor for a window whose bookkeeping
+ * escaped is "nothing observed", which degrades toward the seed exactly as an
+ * empty sample does. It is rare — an agent's children are reaped by the shell
+ * that started them — and it is the only direction in which this undercounts.
+ */
+export function subtreeTicks(
+  procs: Map<number, ProcessSample>,
+  pids: readonly number[]
+): number {
+  let ticks = 0;
+  for (const pid of pids) {
+    const p = procs.get(pid);
+    if (p) ticks += p.cpuTicks + p.childCpuTicks;
+  }
+  return ticks;
+}
+
+/**
  * Sum a set of trees. Trivial, and named because three populations are summed
  * the same way and a fourth will be.
  */
@@ -361,13 +547,14 @@ export function startMeasurement(): MeasurementStart {
 export function finishMeasurement(
   start: MeasurementStart,
   isSupervisor: IsSupervisorType,
-  readArgv: (pid: number) => string[] = readCmdline
+  readArgv: (pid: number) => string[] = readCmdline,
+  activityOf: ActivityOf = () => 'unknown'
 ): AgentCostMeasurement {
   const after = sampleProcesses();
   const elapsed = (Date.now() - start.startedAt) / 1000;
   const loadEnd = loadNow();
   return {
-    ...aggregateTrees(start.procs, after, elapsed, isSupervisor, readArgv),
+    ...aggregateTrees(start.procs, after, elapsed, isSupervisor, readArgv, activityOf),
     elapsed,
     loadStart: start.loadStart,
     loadEnd
@@ -392,30 +579,53 @@ export function aggregateTrees(
   after: Map<number, ProcessSample>,
   elapsed: number,
   isSupervisor: IsSupervisorType,
-  readArgv: (pid: number) => string[] = readCmdline
-): Pick<AgentCostMeasurement, 'agents' | 'totals' | 'chargeable' | 'supervisors' | 'unmarked'> {
+  readArgv: (pid: number) => string[] = readCmdline,
+  activityOf: ActivityOf = () => 'unknown'
+): Pick<
+  AgentCostMeasurement,
+  | 'agents'
+  | 'totals'
+  | 'chargeable'
+  | 'supervisors'
+  | 'unmarked'
+  | 'working'
+  | 'notWorking'
+  | 'activityUnknown'
+> {
   // Group on the *later* sample so processes started mid-window are included;
   // their CPU counts from zero, which is what "cost over this window" means.
   const groups = groupByAgent(after);
+  // And on the earlier one, which KAN-368 needs: the window's cost is the
+  // difference of two whole-tree totals rather than a sum of per-process
+  // deltas. See {@link subtreeTicks} for why that is the only form that counts
+  // a child which exited inside the window.
+  const groupsBefore = groupByAgent(before);
 
   const agents: AgentTreeCost[] = [];
   for (const [root, pids] of groups) {
-    let ticks = 0;
+    const ticks = Math.max(
+      0,
+      subtreeTicks(after, pids) - subtreeTicks(before, groupsBefore.get(root) ?? [])
+    );
     let rss = 0;
     for (const pid of pids) {
       const now = after.get(pid);
-      if (!now) continue;
-      const then = before.get(pid);
-      // A pid absent from `before` is new: all of its CPU falls in the window.
-      ticks += now.cpuTicks - (then?.cpuTicks ?? 0);
-      rss += now.rssBytes;
+      if (now) rss += now.rssBytes;
     }
+    const marker = classifyTree(pids, readArgv);
     agents.push({
       pid: root,
       processes: pids.length,
       cores: ticks / CLK_TCK / elapsed,
       residentMb: rss / (1024 * 1024),
-      ...classifyTree(pids, readArgv)
+      ...marker,
+      // An unmarked tree names no workspace, so there is nothing to ask the
+      // classifier about — `unknown` without asking, rather than a call with a
+      // null type that every classifier would have to invent an answer for.
+      activity:
+        marker.workspaceType === null
+          ? 'unknown'
+          : activityOf(marker.workspaceType, marker.workspaceKey)
     });
   }
   agents.sort((a, b) => b.cores - a.cores);
@@ -429,12 +639,25 @@ export function aggregateTrees(
   const chargeableTrees = marked.filter((a) => !isSupervisor(a.workspaceType as string));
   const unmarkedTrees = agents.filter((a) => a.workspaceType === null);
 
+  // And a second partition, of `chargeable` alone, by what the trees were
+  // doing (KAN-368). Three arms again, disjoint again, and summing back to
+  // `chargeable` again — the same "a reader can add them back up" property,
+  // applied to the split that KAN-368 exists to make visible. Supervisors are
+  // not split: they are not in the divisor on CPU at all, so their duty cycle
+  // is capacity.ts's SUPERVISOR_MEMORY_BYTES argument rather than this one.
+  const workingTrees = chargeableTrees.filter((a) => a.activity === 'working');
+  const notWorkingTrees = chargeableTrees.filter((a) => a.activity === 'not-working');
+  const unknownActivityTrees = chargeableTrees.filter((a) => a.activity === 'unknown');
+
   return {
     agents,
     totals: totalsOf(agents),
     chargeable: totalsOf(chargeableTrees),
     supervisors: totalsOf(supervisorTrees),
-    unmarked: totalsOf(unmarkedTrees)
+    unmarked: totalsOf(unmarkedTrees),
+    working: totalsOf(workingTrees),
+    notWorking: totalsOf(notWorkingTrees),
+    activityUnknown: totalsOf(unknownActivityTrees)
   };
 }
 
@@ -444,9 +667,10 @@ export function aggregateTrees(
  */
 export async function measureAgentCost(
   seconds: number,
-  isSupervisor: IsSupervisorType
+  isSupervisor: IsSupervisorType,
+  activityOf: ActivityOf = () => 'unknown'
 ): Promise<AgentCostMeasurement> {
   const start = startMeasurement();
   await new Promise((r) => setTimeout(r, seconds * 1000));
-  return finishMeasurement(start, isSupervisor);
+  return finishMeasurement(start, isSupervisor, readCmdline, activityOf);
 }
