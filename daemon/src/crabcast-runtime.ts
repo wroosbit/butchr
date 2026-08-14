@@ -1123,9 +1123,13 @@ export class CrabCastRuntime implements AgentRuntime {
     // `ButchrAgentName`, and a brand with scattered casts means only "somebody
     // asserted this here", which is the review catch the brand replaces.
     // `||` and not `??`, deliberately: the original was a TRUTHY test, so an
-    // empty-string type fell to the `?` placeholder. `??` would only catch
-    // null/undefined and would spell an empty type `butchr--<key>` — a
-    // different string, and this change is required to alter no behaviour.
+    // empty-string type fell to the `?` placeholder. `??` catches only
+    // null/undefined, so it would diverge on **two** members of the domain
+    // rather than one, silently in both cases — `''` would spell
+    // `butchr--<key>` and `0` would spell `butchr-0-<key>`. `resolvedType` is
+    // typed `string | null` so `0` should not arrive; it is named because the
+    // truthy/nullish distinction is what makes this line correct, and a later
+    // reader retyping the field is exactly who needs to know that.
     const agentName = agentNameFor(resolvedType || '?', key);
     const dir = resolvedType ? pathForAddress(resolvedType, key) : null;
     // **The `paneName` join below is RIGHT, and stays (KAN-397 AC3).** It reads
