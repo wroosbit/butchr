@@ -66,6 +66,75 @@
 //     the transcript is on the KAN-294 pull request. **No script owns the live
 //     `true` case**, and that is the honest edge of this one.
 //
+// ── EXIT 0 GREEN, 1 RED, AND 2 DID NOT RUN (KAN-407) ───────────────────────
+//
+// CrabCast gates activation on measured CPU and refuses outright when the
+// machine is busy. On a loaded fleet **that is the ordinary answer, not the rare
+// one** — `task/KAN-397` measured six consecutive refusals over half an hour —
+// and it is not a verdict about the switch, the pty mirror, `tailAgent` or
+// `agent.detached`, none of which were reached. So it is given its own code
+// rather than being allowed to read as a mechanism finding. Retry when the
+// machine is quieter. Carried from `verify-crabcast-claude-launcher-live.mjs`
+// (KAN-405) and `verify-crabcast-confirm-present-name-join.mjs` (KAN-397).
+//
+// ── THIS RUN REMOVES WHAT THIS RUN MADE, ON EVERY PATH (KAN-407) ───────────
+//
+// `cleanup()` is declared BEFORE the spawn and called on the refusal path, on
+// the early-failure path and at the end. Until KAN-407 neither half of that was
+// true here:
+//
+//   - the early-exit path (`session` never went active, which INCLUDES a
+//     capacity refusal) called `dispose()` and `process.exit(1)`, reaching
+//     neither the workspace removal nor any `forget`; and
+//   - the happy path removed the directory and then *printed a note* asking a
+//     human to run `crabcast forget <workDir>` by hand.
+//
+// **The note asked for something nobody is permitted to do.** The configured
+// record lands in `~/.local/share/crabcast/agents.jsonl`, which is on the
+// standing never-touch list for every Butchr agent, so "somebody will sweep it"
+// was false rather than merely optimistic — and this script was asking for that
+// sweep on every SUCCESSFUL run, not only on failures. It spawns a `shell`
+// agent rather than a `claude` one, so it is cheap and has plausibly been run
+// many times.
+//
+// ── WHAT THE KAN-407 CLEANUP IS AND IS NOT DEMONSTRATED AGAINST ────────────
+//
+// Measured live on 2026-08-14, against the real daemon, and stated here because
+// the gap is between the cases rather than inside any one of them:
+//
+//   - **The happy path is demonstrated end to end.** Before the fix, a fully
+//     green exit-0 run took CrabCast's record for this path from `config v2` to
+//     `config v3` and left it; after, `crabcast status` answers *"Nothing here
+//     has ever been an agent."* Both halves, observed.
+//   - **The early-exit path is demonstrated for reachability and for the
+//     directory half**, by a deliberately broken fixture — the launcher changed
+//     to a name CrabCast does not have. That is a REAL refusal from the real
+//     daemon, not a forced branch. Pre-fix it exited 1 leaving the workspace on
+//     disk; post-fix it exits 1 having swept it.
+//   - **The capacity-refusal path is demonstrated on a REAL refusal, both
+//     halves, and it was not manufactured.** The gate refused this probe of its
+//     own accord while these runs were being made — `cpu too busy — 3.51 cores
+//     are in use, against the 3.0 cores this machine leaves to agents` — which
+//     is the one state that leaves a record behind, because `configure_agent` is
+//     accepted and only `activate_agent` is refused. Run back to back on that
+//     same live refusal: the pre-fix script exited **1** and left BOTH
+//     `configured: true, config v1` and the workspace directory on disk; this one
+//     exits **2** with `crabcast status` answering *"Nothing here has ever been
+//     an agent"* and the directory gone. The gate was not bypassed to get there
+//     and must not be — waiting for a busy machine is the only sanctioned way to
+//     re-run this, which is why the evidence is pasted on the KAN-407 PR rather
+//     than left as an instruction to reproduce.
+//   - **The classifier is exercised in BOTH directions, and re-measured in one.**
+//     Positive: the real refusal above carries `activate_agent refused:` and
+//     `cpu too busy`, and is classified as a refusal. Negative: the bogus-launcher
+//     fixture produces `configure_agent refused:`, which this classifier
+//     correctly declines to call a capacity refusal — so that run reads as red
+//     rather than as "did not run", which is the safe direction and is the whole
+//     point of requiring the structural half. The classifier itself is carried
+//     verbatim from `verify-crabcast-claude-launcher-live.mjs`, where
+//     `epic/KAN-39`'s review of #172 measured it against a real refusal string
+//     plus three crash strings; it is not re-derived here.
+//
 // ── RUNNING IT ─────────────────────────────────────────────────────────────
 //
 //   BUTCHR_CRABCAST_SOCKET=<path to a live crabcast.sock> \
@@ -206,6 +275,72 @@ rule('2. spawnSession — a real pane, through CrabCast, through herdr');
 const ended = [];
 runtime.setSessionEndedListener((event) => ended.push(event));
 
+/**
+ * Undo everything this run made, on EVERY exit path including the early ones.
+ *
+ * Declared BEFORE the spawn, because the paths that need it most are the ones
+ * that return before the script's own cleanup section is ever reached. A run
+ * whose activation is REFUSED has still had `configure_agent` accepted, so it
+ * leaves a CrabCast record behind — the refusal path is not a path that
+ * provisioned nothing.
+ *
+ * **THE RECORD GOES FIRST, AND THE ORDER IS LOAD-BEARING RATHER THAN
+ * ARBITRARY.** The two halves are not equally recoverable. The probe workspace
+ * is an ordinary directory that anybody may remove; the configured record lands
+ * in `~/.local/share/crabcast/agents.jsonl`, which is on the standing
+ * never-touch list for every Butchr agent, so **nobody downstream is permitted
+ * to sweep the record half.** If only one half can be undone it must be that
+ * one, so it runs before anything that could throw and take the rest with it,
+ * and each half is guarded in its own right. (KAN-405 established this order one
+ * file away; KAN-407 carries it here.)
+ *
+ * `crabcast forget` is CrabCast's own published surface for this and the only
+ * sanctioned removal — reaching into `agents.jsonl` directly would trade a leak
+ * for a much worse defect. `AgentRuntime` has no forget verb, so this is the CLI
+ * rather than the adapter, and it names only the path this run created.
+ *
+ * The directory half stays with `resetWorkspace` deliberately: routing it
+ * through the runtime is this script's one live observation of gate 4 (KAN-380)
+ * against a real CrabCast daemon, in the directory a real agent just ran in, and
+ * that observation must not be lost to the fix. `resetWorkspace` makes no wire
+ * call — it is `deleteWorkspaceDir` — so it is as available on the refusal path
+ * as on the happy one. Its answer is returned rather than asserted on here,
+ * because the early paths exit before the verdict and a check counted there
+ * would be discarded; the cleanup section below makes the assertion.
+ */
+async function cleanup() {
+  try {
+    const { execFileSync } = await import('child_process');
+    execFileSync('crabcast', ['forget', workDir], { stdio: 'pipe', timeout: 20_000 });
+    // Deliberately "no record remains" rather than "forgot the record": measured
+    // 2026-08-14, `crabcast forget` exits 0 for a path that was never configured
+    // at all, so a success here does NOT establish that there was something to
+    // remove. What it does establish is the state afterwards, which is the thing
+    // anybody actually cares about — and saying only that keeps this line's claim
+    // inside what its mechanism covers.
+    console.log(`   crabcast forget returned OK — no record remains for ${workDir}`);
+  } catch (err) {
+    console.log(
+      `   could NOT forget CrabCast's record for ${workDir} — remove it by hand:\n` +
+        `         crabcast deactivate ${workDir} && crabcast forget ${workDir}\n` +
+        `         (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`
+    );
+  }
+  try {
+    const existedBefore = fs.existsSync(workDir);
+    const reset = runtime.resetWorkspace(TYPE, KEY);
+    console.log(`   resetWorkspace(${TYPE}, ${KEY}) → ${JSON.stringify(reset)}`);
+    return { existedBefore, reset, stillThere: fs.existsSync(workDir) };
+  } catch (err) {
+    console.log(
+      `   could NOT remove probe workspace ${workDir} — remove it by hand:\n` +
+        `         rm -rf ${workDir}\n` +
+        `         (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`
+    );
+    return null;
+  }
+}
+
 const session = runtime.spawnSession(TYPE, KEY, undefined, 'KAN-278 live probe agent.', 'shell');
 check('spawnSession returned a session synchronously', !!session?.sessionId, JSON.stringify(session));
 check(
@@ -216,6 +351,50 @@ check(
 check('the workspace directory was created by Butchr, not CrabCast', fs.existsSync(workDir));
 
 const became = await until(() => session.status === 'active' || !!session.spawnError, 60_000);
+
+// A CAPACITY REFUSAL IS NOT A VERDICT ABOUT ANY MECHANISM BELOW, and exiting 1
+// on one reports the switch, the mirror and `tailAgent` as broken when not one
+// of them was tested. CrabCast gates activation on measured CPU and refuses in
+// so many words; on a busy fleet that is the ordinary answer, not a finding.
+// Exit 2 and say so, so a wrapper can retry and a reader cannot mistake it for
+// red.
+//
+// ── AND THE CLASSIFIER IS STRUCTURAL FIRST, BY REASON ONLY SECOND ──────────
+//
+// **`session.spawnError` is not a refusal channel.** `crabcast-runtime.ts` sets
+// it from whatever escapes the spawn path — `err instanceof Error ? err.message
+// : String(err)` — so a classifier matching only *reason words* lets an ordinary
+// crash wear a refusal's clothes: `JavaScript heap out of memory` and `Cannot
+// allocate memory` both contain "memory", and either would be announced here as
+// "no agent ran, this is NOT a verdict" and exit 2. **That fails toward the
+// comfortable answer** — a genuine failure reported as a run that never
+// happened, in the direction nobody investigates.
+//
+// `activate_agent refused:` is composed at exactly one place — the branch where
+// CrabCast declined the activation — so it, and not the reason, is what
+// separates a refusal from a crash. It is required here, and the reason must
+// ALSO match one of the phrases measured on this fleet. (Both halves are
+// `epic/KAN-39`'s review finding on #172, fixed there for KAN-405 and carried
+// here rather than re-derived.)
+const refusedByCrabCast = /activate_agent refused/i;
+// The capacity reasons MEASURED on this fleet, and deliberately no others. A
+// memory-bound refusal has never been observed, so its wording is not guessed
+// at: if one arrives it fails this test and exits 1 with CrabCast's full text
+// visible, which is the safe direction and is how the real string gets learned.
+const capacityReason = /cpu too busy|at capacity|headroom/i;
+const refusedForCapacity =
+  !!session.spawnError &&
+  refusedByCrabCast.test(session.spawnError) &&
+  capacityReason.test(session.spawnError);
+if (session.status !== 'active' && refusedForCapacity) {
+  console.log('\n   SKIPPED — CrabCast refused the activation for capacity, so no agent ran.');
+  console.log('   This is NOT a verdict on any mechanism below. Retry when the machine is quieter.\n');
+  console.log(`   ${session.spawnError.split('\n').slice(0, 3).join('\n   ')}`);
+  runtime.dispose();
+  await cleanup();
+  process.exit(2);
+}
+
 check(
   'the session went active',
   session.status === 'active',
@@ -228,6 +407,7 @@ if (session.status !== 'active') {
       `${session.spawnError ?? ''}\n`
   );
   runtime.dispose();
+  await cleanup();
   process.exit(1);
 }
 
@@ -525,25 +705,33 @@ if (ended.length) {
 rule('cleanup');
 runtime.dispose();
 
-// Butchr owns this directory at both ends — CrabCast never made it and will
-// never delete it. Until KAN-380 this script had to hand-roll that deletion,
-// because `resetWorkspace` refused under this runtime; it does not any more, so
-// the cleanup goes through the method rather than around it. That is not
-// tidiness: routing it through the runtime makes this one observation of gate 4
-// against a REAL CrabCast daemon, in the directory a real agent just ran in,
-// which is a thing `verify-workspace-reset-boundary.mjs` cannot be — it builds
-// its own fixtures and never spawns anything.
-const existedBefore = fs.existsSync(workDir);
-const cleanup = runtime.resetWorkspace(TYPE, KEY);
-console.log(`   resetWorkspace(${TYPE}, ${KEY}) → ${JSON.stringify(cleanup)}`);
+// Both halves go through `cleanup()` — the record first, then the directory.
+//
+// Butchr owns this directory at both ends: CrabCast never made it and will never
+// delete it. Until KAN-380 this script had to hand-roll that deletion, because
+// `resetWorkspace` refused under this runtime; it does not any more, so the
+// removal goes through the method rather than around it. That is not tidiness —
+// routing it through the runtime makes this one observation of gate 4 against a
+// REAL CrabCast daemon, in the directory a real agent just ran in, which is a
+// thing `verify-workspace-reset-boundary.mjs` cannot be: it builds its own
+// fixtures and never spawns anything. That observation is what the assertion
+// below reads, and it is why the fix moved the call into `cleanup()` rather than
+// replacing it.
+//
+// **What USED to stand where the `forget` now runs was a printed note asking a
+// human to run `crabcast forget` by hand.** It asked for something nobody is
+// permitted to do: the record lives in `agents.jsonl`, on the never-touch list
+// for every Butchr agent. So the reassuring assumption behind the note —
+// somebody will sweep it — was false, and the sweep was being requested on every
+// successful run.
+const swept = await cleanup();
 check(
   'the probe workspace a real CrabCast agent ran in is deleted by resetWorkspace (KAN-380)',
-  existedBefore ? cleanup.success === true && !fs.existsSync(workDir) : !fs.existsSync(workDir),
-  `existedBefore=${existedBefore} stillThere=${fs.existsSync(workDir)} ${JSON.stringify(cleanup)}`
-);
-console.log(
-  `   NOTE: CrabCast still holds a configured record for that path. Remove it with:\n` +
-    `         crabcast forget ${workDir}`
+  swept !== null &&
+    (swept.existedBefore ? swept.reset.success === true && !swept.stillThere : !swept.stillThere),
+  swept === null
+    ? 'resetWorkspace threw — see the cleanup output above for the manual remedy'
+    : `existedBefore=${swept.existedBefore} stillThere=${swept.stillThere} ${JSON.stringify(swept.reset)}`
 );
 
 // ── verdict ────────────────────────────────────────────────────────────────
