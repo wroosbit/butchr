@@ -23,6 +23,21 @@ Nothing refreshes that file while the agent lives — and the half that matters
 more, **nothing makes the agent re-read it if something does.** The `--continue`
 arm restores a conversation that already contains the bytes read the first time.
 
+**Two of those four rows are herdr's, not Butchr's** (KAN-400). The render is
+common to both runtimes; the *delivery* is not. `HerdrBridge` writes the rendered
+brief into the workspace and its launcher points the agent at that file.
+`CrabCastRuntime` hands the same bytes to `configure_agent` as its `prompt`
+field, and CrabCast writes them into a sidecar it owns — their published
+contract has the bootstrap prompt *"moved out entirely"* from the caller's
+directory — and types an absolute pointer at the pane. **So there is no
+`.butchr-prompt.md` under CrabCast at all**, and the daemon cannot name where the
+brief went: `<dataDir>` is their config knob, the sidecar is keyed by their hash,
+and no path crosses the wire. Anything the daemon says to an agent about its
+brief therefore takes a `BriefLocation` from the runtime (`daemon/src/resume.ts`)
+rather than spelling a filename. **Nothing above this paragraph changes**: the
+staleness defect, and the provenance block that makes it checkable, are
+properties of the render and are identical on both paths.
+
 ### It has cost two hours, measured
 
 `task/KAN-234` sat In Review from 09:50 to 12:18 on 2026-08-08 believing

@@ -283,19 +283,56 @@ check('the transcript path matches Claude Code\'s own mangling', () => {
   );
 });
 
+// KAN-400: both builders now take the brief's location from the runtime that
+// delivered it, so these two fixtures stand for the two runtimes. `HERDR_BRIEF`
+// is the shape `HerdrBridge.briefLocation` returns; `SIDECAR_BRIEF` the shape
+// `CrabCastRuntime` returns, where no path exists to name.
+const HERDR_BRIEF = {
+  kind: 'workspace-file',
+  path: '/home/someone/.local/share/butchr/workspaces/task/kan-21/.butchr-prompt.md'
+};
+const SIDECAR_BRIEF = { kind: 'runtime-owned', pointer: 'the pointer line at the top of this session' };
+
 check('the degraded prompt tells the agent it lost its memory and points at the ticket', () => {
-  const prompt = degradedResumePrompt('task', 'KAN-21');
-  for (const phrase of ['NO memory', 'KAN-21', '.butchr-prompt.md', 'not restart the task']) {
+  const prompt = degradedResumePrompt('task', 'KAN-21', HERDR_BRIEF);
+  for (const phrase of ['NO memory', 'KAN-21', HERDR_BRIEF.path, 'not restart the task']) {
     assert.ok(prompt.includes(phrase), `degraded prompt is missing ${JSON.stringify(phrase)}`);
   }
 });
 
+// KAN-400's own assertion, and the one that would have caught the defect: this
+// is the COLD-START path, so its first numbered instruction is the first thing
+// a memoryless agent is told to do. Under a runtime that writes no brief into
+// the workspace it must not name a file in the workspace — the whole failure was
+// a first instruction pointing at something that is not there.
+check('the degraded prompt names no workspace file under a runtime that writes none', () => {
+  const prompt = degradedResumePrompt('task', 'KAN-21', SIDECAR_BRIEF);
+  assert.ok(
+    !prompt.includes('.butchr-prompt.md'),
+    'the cold-start prompt named .butchr-prompt.md for a runtime that does not write one'
+  );
+  assert.ok(prompt.includes(SIDECAR_BRIEF.pointer), 'it must carry the runtime\'s own pointer instead');
+});
+
 check('the nudge frames the interruption and forbids starting over', () => {
-  const nudge = resumeNudge('task', 'KAN-21');
+  const nudge = resumeNudge('task', 'KAN-21', HERDR_BRIEF);
   for (const phrase of ['interrupted mid-work', 'KAN-21', 'Do not start over']) {
     assert.ok(nudge.includes(phrase), `nudge is missing ${JSON.stringify(phrase)}`);
   }
   assert.ok(!nudge.includes('\n'), 'the nudge is typed into a TUI and must be one line');
+});
+
+// The other half of KAN-400, and it is about a CLAIM rather than a path: the
+// nudge used to assert *"your .butchr-prompt.md was rewritten by this restart"*
+// — a rewrite that does not happen under a runtime that writes no such file.
+check('the nudge asserts no rewrite of a file the runtime never wrote', () => {
+  const nudge = resumeNudge('task', 'KAN-21', SIDECAR_BRIEF);
+  assert.ok(
+    !nudge.includes('.butchr-prompt.md'),
+    'the resume nudge asserted a rewrite of .butchr-prompt.md under a runtime that writes none'
+  );
+  assert.ok(nudge.includes(SIDECAR_BRIEF.pointer), 'it must carry the runtime\'s own pointer instead');
+  assert.ok(nudge.includes('re-rendered'), 'the staleness claim itself must survive — it is true on both paths');
 });
 
 // ---------------------------------------------------------------------------
@@ -307,7 +344,7 @@ check('the claude launcher still tries --continue first', () => {
 });
 
 check('a degraded prompt reaches the fallback, correctly quoted', () => {
-  const prompt = degradedResumePrompt('task', 'KAN-21');
+  const prompt = degradedResumePrompt('task', 'KAN-21', HERDR_BRIEF);
   const { command } = AGENT_LAUNCHERS.claude.command(prompt);
   assert.ok(command.includes("'"), 'the prompt must be single-quoted for bash');
   const quoted = command.slice(command.indexOf('||') + 2);

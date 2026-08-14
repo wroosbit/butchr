@@ -28,7 +28,7 @@ import type {
   SessionEndedEvent
 } from '../src/herdr.js';
 import type { McpServerDefinitions } from '../src/integrations/integration.js';
-import type { ResumeCause } from '../src/resume.js';
+import type { BriefLocation, ResumeCause } from '../src/resume.js';
 
 import type { MessageRouter } from '../src/router.js';
 import type { JiraPollerOptions } from '../src/jira-poll.js';
@@ -108,6 +108,13 @@ class StubRuntime implements AgentRuntime {
 
   resolveAddress(_key: string, _type?: string): { type: string; key: string } {
     return unimplemented();
+  }
+
+  // A third runtime has to say where it puts an agent's brief, and the union is
+  // what stops it answering with a path it does not have (KAN-400). This stub
+  // writes no brief anywhere, so the honest answer is the `runtime-owned` arm.
+  briefLocation(_type: string, _key: string): BriefLocation {
+    return { kind: 'runtime-owned', pointer: 'nowhere — this stub starts no agents' };
   }
 
   herdrReachable(): boolean {
