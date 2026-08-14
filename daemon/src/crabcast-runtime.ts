@@ -29,7 +29,7 @@ import {
   type TailSource
 } from './herdr.js';
 import type { McpServerDefinitions } from './integrations/integration.js';
-import type { ResumeCause } from './resume.js';
+import type { BriefLocation, ResumeCause } from './resume.js';
 import { deleteWorkspaceDir } from './workspace-dir.js';
 
 /**
@@ -707,6 +707,47 @@ export class CrabCastRuntime implements AgentRuntime {
         "daemon.ts's listener would return at its first line anyway. " +
         'Gate 3 is not a cutover blocker. See the docblock for what would re-open it.'
     );
+  }
+
+  /**
+   * CrabCast owns the brief file, and does not tell us where it put it
+   * (KAN-400).
+   *
+   * **This is their decision, stated in their published contract, and it is a
+   * good one.** `docs/callers-directory.md` at the pin records the bootstrap
+   * prompt as *"moved out entirely"* into the agent's sidecar,
+   * `<dataDir>/agents/<hash>/prompt.md`, and calls it *"the highest-value single
+   * change here, because it was the file rewritten on every activation and
+   * therefore the likeliest to show up as a spurious diff or be committed by
+   * accident."* Their principle is that the caller's directory is the caller's;
+   * `.mcp.json` is the one exception, and only because Claude Code reads MCP
+   * configuration from the project root *"and from nowhere else"*.
+   *
+   * **So this returns prose and not a path, because a path is not obtainable.**
+   * Three independent reasons, any one of which is enough: `<dataDir>` is a
+   * config knob of theirs (default `~/.local/share/crabcast`), the sidecar is
+   * keyed by a hash they mint, and no prompt path crosses the wire at all —
+   * `configure_agent` echoes the prompt as a **character count**. Composing a
+   * path out of their layout would be reading their internals by another route,
+   * and it would break silently the day either half moved. Invariant 10 is why
+   * we would not, and the wire is why we could not.
+   *
+   * **What the agent gets instead is strictly better than a path we invented**,
+   * because CrabCast already hands it one: it types
+   * `Please read and follow the instructions in <abs path> to begin.` at the
+   * pane, which is how the agent read the brief in the first place. The pointer
+   * is in the agent's own first turn. Naming that is naming something it can
+   * act on; naming `.butchr-prompt.md` was naming a file that is not there.
+   */
+  briefLocation(_type: string, _key: string): BriefLocation {
+    return {
+      kind: 'runtime-owned',
+      pointer:
+        'the file named by the "Please read and follow the instructions in … to begin." ' +
+        'line at the start of this session (CrabCast, the runtime that started you, ' +
+        'writes the brief into a directory of its own and discloses no path for it, ' +
+        'so that pointer line is the only thing that names it)'
+    };
   }
 
   /**

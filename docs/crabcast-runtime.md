@@ -496,6 +496,62 @@ list and moves nothing else.
 
 ---
 
+## Where the brief lives — gate 9, decided (KAN-400)
+
+Gate 2 measured, in passing, that **`.butchr-prompt.md` is never written on this
+path**. The consequence was three daemon-composed messages telling an agent to
+read a file that is not there — `resume.ts`'s nudge and cold-start prompt, and
+the `butchr` MCP server's own `instructions` string, which is the one of the
+three that reaches a CrabCast agent **today** (the two resume messages are
+unreachable on this path until KAN-396 lands a resume signal; `resumedConversation`
+is set in `herdr.ts` and nowhere else).
+
+**The decision was where the brief lives, not how to patch a sentence**, and it
+is settled by their published contract rather than by preference.
+`docs/callers-directory.md` records the bootstrap prompt as **"moved out
+entirely"** into the agent's sidecar, `<dataDir>/agents/<hash>/prompt.md` —
+*"the highest-value single change here, because it was the file rewritten on
+every activation and therefore the likeliest to show up as a spurious diff or be
+committed by accident."* The caller's directory gets exactly one exception,
+`.mcp.json`, and only because Claude Code reads MCP configuration from the
+project root *"and from nowhere else"*. So:
+
+| answer considered | verdict |
+| --- | --- |
+| ask `configure_agent` to put the brief in the workspace | **not available.** It asks them to undo a decision their contract states and defends, and `configure` has no destination knob — `--prompt`/`--prompt-file` and nothing else. |
+| write a second `.butchr-prompt.md` ourselves under this runtime | **rejected.** Two copies with *different update rules*: herdr's is rewritten on every activation, while `configure_agent` **refuses** a prompt change under a running agent (*"the agent running there has already read it"*). The pointer at the pane would still name theirs. |
+| **stop naming a path; take the location from the runtime** | **taken.** `BriefLocation` in `daemon/src/resume.ts`, answered by `AgentRuntime.briefLocation(type, key)`. |
+
+**The daemon could not name their path even if it wanted to**, which is what
+makes the third answer cheap rather than a compromise: `<dataDir>` is their
+config knob, the sidecar is keyed by a hash they mint, and **no prompt path
+crosses the wire** — `configure_agent` echoes the prompt as a *character count*.
+The union has a `workspace-file` arm carrying an absolute path, which herdr still
+uses, and a `runtime-owned` arm carrying prose. Nothing lost findability: what
+this runtime's arm names is the pointer line CrabCast types at the pane, which is
+in the agent's own first turn and carries an absolute path.
+
+**Demonstrated rather than reasoned about** —
+`daemon/scripts/verify-crabcast-brief-reachable-live.mjs` starts a real
+cold-started `claude` agent here and has it run both arms. Measured on a live
+peer: the workspace is **empty** (`[]` — CrabCast wrote nothing into it at all,
+this agent having asked for no MCP servers), and the agent followed the new
+wording to `/home/brooswit/.local/share/crabcast/agents/<hash>/prompt.md`,
+reporting the marker planted at the **end** of the brief and that the file sits
+outside its working directory. **The pointer it followed came from CrabCast**;
+nothing in the probe tells it where its brief is, which is the leg a constructed
+test cannot fake.
+
+**One instrument limit, recorded because it produced a false red first.** The
+agent is read by tailing its pane, and **a pane is a screen rather than a
+scrollback**: the probe's first run asked for its answers step by step, and the
+step-1 answer had scrolled off by the time the tail was taken — absent marker,
+correct agent. An absent marker is not a negative answer. The probe now asks for
+every answer together at the end, and prints the tail's line count and
+CrabCast's own `truncated` flag beside the verdict.
+
+---
+
 ## Does KAN-224's PTY design survive contact? Yes, and its key claims verified
 
 KAN-224 read CrabCast's source. This ticket may not, so its claims were
