@@ -359,10 +359,28 @@ check(
   JSON.stringify(checked)
 );
 
-const reset = deadRuntime.resetWorkspace('task', 'kan-1');
+// CHANGED BY KAN-380, AND THE LINE IT REPLACES WAS ABOUT TO BECOME AN `rm -rf`
+// OF A REAL WORKSPACE. This read `resetWorkspace('task', 'kan-1')` and asserted
+// a refusal, which was true and inert for exactly as long as CrabCast's reset
+// was a refusal. Gate 4 wired the deletion up, and that same line — in a script
+// this runs against the real `HOME` when an agent runs it by hand — would have
+// deleted `~/.local/share/butchr/workspaces/task/kan-1`, which exists.
+//
+// So the address is now one that cannot resolve to anything Butchr owns, and
+// the assertion is the half that still belongs in *this* script: `resetWorkspace`
+// makes no wire call, so a runtime whose peer is absent still answers it. The
+// deletion itself, its containment, and the herdr/CrabCast equivalence are
+// `verify-workspace-reset-boundary.mjs`, which relocates `HOME` before it
+// deletes anything.
+const reset = deadRuntime.resetWorkspace('task', '../../../kan380-must-not-exist');
 check(
-  'resetWorkspace refuses and explains that CrabCast removed reset by design',
-  reset.success === false && /reset` was removed|no CrabCast counterpart/.test(String(reset.error)),
+  'resetWorkspace answers locally with no peer, and refuses a target outside the root',
+  reset.success === false && /Refusing to reset workspace/.test(String(reset.error)),
+  JSON.stringify(reset)
+);
+check(
+  'it no longer refuses on CrabCast’s behalf — the deletion is Butchr’s job now (KAN-380)',
+  !/reset` was removed|no CrabCast counterpart/.test(String(reset.error)),
   JSON.stringify(reset)
 );
 

@@ -402,36 +402,25 @@ export function agentNameFor(type: string, key: string): string {
 }
 
 /**
- * The one directory tree Butchr owns and may therefore destroy. Every
- * workspace is created under it (see `initPty`), and reset refuses to delete
- * anything that does not resolve to a place strictly inside it.
+ * Where a workspace lives, and whether Butchr may delete one, now live in
+ * `workspace-dir.ts` (KAN-380) — because a *second* runtime needed them and
+ * they were sitting inside this one as private detail. They are re-exported
+ * from here unchanged so the twenty-odd modules and scripts that import them
+ * from `herdr.js` keep working; nothing about their meaning moved.
  */
-export function workspacesRoot(): string {
-  return path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces');
-}
+export {
+  containWorkspaceDir,
+  deleteWorkspaceDir,
+  isStrictlyInside,
+  workspaceDirFor,
+  workspacesRoot,
+  type ContainedWorkspaceDir,
+  type WorkspaceContainment
+} from './workspace-dir.js';
 
-/** Where a workspace of this type and key lives. Must match `initPty`. */
-export function workspaceDirFor(type: string, key: string): string {
-  return path.join(workspacesRoot(), type, key.toLowerCase());
-}
-
-/**
- * Whether `target` sits strictly below `root` — the root itself is not
- * "inside" it, because deleting the root would take every workspace with it.
- *
- * `path.relative` rather than a `startsWith` prefix test: the latter says yes
- * to `/…/workspaces-old` for root `/…/workspaces`, and both paths must
- * already be real (symlinks resolved) for either test to mean anything.
- *
- * Exported because `reclaim.ts` deletes inside the same tree under the same
- * rule (KAN-259). It is shared rather than copied so the two cannot drift: a
- * second definition of "may Butchr delete this" is a second thing to get
- * wrong, and only one of them would be the one anybody audits.
- */
-export function isStrictlyInside(root: string, target: string): boolean {
-  const rel = path.relative(root, target);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
+// A re-export creates no local binding, so this file's own uses of the two it
+// calls are imported as well. Same module, same functions.
+import { deleteWorkspaceDir, workspaceDirFor, workspacesRoot } from './workspace-dir.js';
 
 /**
  * Inverse of agentNameFor. When an agent is resolved through the herdr-list
@@ -2161,61 +2150,20 @@ export class HerdrBridge implements AgentRuntime {
   }
 
   /**
-   * Delete a workspace directory, and nothing else. This is a recursive
-   * delete, so the containment check in front of it is the only thing standing
-   * between a malformed key (`../..`), a symlinked workspace, or some future
-   * caller that invents its own workspace location, and an `rm -rf` pointed
-   * somewhere Butchr does not own. Refusals return an error rather than
-   * falling through: there is no path here that deletes an unvalidated target.
+   * Delete a workspace directory, and nothing else.
    *
-   * `error` is set only when the delete was *refused*; a workspace that was
-   * already gone reports `success: false` with no error, as before.
+   * **The body of this method moved to `workspace-dir.ts` in KAN-380 and did
+   * not change on the way.** The containment discipline it carried — lexical
+   * check first, then `realpath` on both sides — is the same code, called from
+   * the same place in the same order; what changed is that `CrabCastRuntime`
+   * can now call it too, which is the whole of that ticket. The behaviour a
+   * caller sees here is byte-identical, and
+   * `verify-workspace-reset-boundary.mjs` §2 is what says so rather than this
+   * sentence: it drives both runtimes through the same battery and asserts
+   * their answers match, refusal texts included.
    */
   public resetWorkspace(type: string, key: string): { success: boolean; error?: string } {
-    const root = workspacesRoot();
-    const workDir = workspaceDirFor(type, key);
-
-    const refuse = (reason: string) => {
-      const error =
-        `Refusing to reset workspace '${type}/${key}': ${reason}. ` +
-        `Only directories strictly inside '${root}' may be deleted.`;
-      console.error(`[HerdrBridge] ${error}`);
-      return { success: false, error };
-    };
-
-    // Lexical check first, so a traversal key is rejected by name even when it
-    // points at nothing — the answer must not depend on what happens to exist.
-    if (!isStrictlyInside(root, workDir)) {
-      return refuse(`'${workDir}' is not inside the workspaces root`);
-    }
-
-    try {
-      if (!fs.existsSync(workDir)) {
-        return { success: false }; // Already gone
-      }
-
-      // Then the real check. A symlink at (or above) the workspace passes the
-      // lexical test while pointing anywhere on the filesystem, so both sides
-      // are resolved before they are compared.
-      let realRoot: string;
-      let realTarget: string;
-      try {
-        realRoot = fs.realpathSync(root);
-        realTarget = fs.realpathSync(workDir);
-      } catch (e: any) {
-        return refuse(`'${workDir}' could not be resolved (${e?.message ?? String(e)})`);
-      }
-      if (!isStrictlyInside(realRoot, realTarget)) {
-        return refuse(`'${workDir}' resolves to '${realTarget}', outside the workspaces root`);
-      }
-
-      fs.rmSync(workDir, { recursive: true, force: true });
-      return { success: true };
-    } catch (e: any) {
-      const error = `Failed to reset workspace '${workDir}': ${e?.message ?? String(e)}`;
-      console.error('[HerdrBridge]', error);
-      return { success: false, error };
-    }
+    return deleteWorkspaceDir(type, key);
   }
 
   /**
