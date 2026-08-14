@@ -605,55 +605,107 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   /**
-   * **Still never fired — but the reason changed at `8d7348f`, and the new one
-   * is smaller and worth stating exactly** (KAN-294).
+   * **Never fired, and as of KAN-393 that is a RULING rather than a shortfall.**
    *
-   * **The old reason is gone.** It was that CrabCast publishes no command line,
-   * and that the command line was what made *"was this a channel-enabled
-   * spawn?"* answerable — so there was nothing to pass. Both halves have moved:
-   * the interface no longer carries a command string as its contract (it
-   * carries {@link AgentSpawn.channelEnabled}), and CrabCast now publishes
-   * exactly that verdict as `activate_response.channelEnabled`. **The question
-   * this listener exists to answer is now answerable under this runtime**, and
-   * {@link provision} reads and keeps the answer — see {@link channelEnabledFor}.
+   * ---------------------------------------------------------------------------
+   * THE RULING (KAN-393, `epic/KAN-39`, 2026-08-14) — READ THIS BEFORE RE-DERIVING
+   * ---------------------------------------------------------------------------
    *
-   * **The remaining reason is the consumer, not the datum.** The one caller
-   * (`daemon.ts` → `superviseChannelStartup`, KAN-246) does not merely want to
-   * know the verdict; it then *supervises* the startup, and supervision is built
-   * out of two methods — {@link tailAgent} and {@link pressPaneKey}.
+   * **Cutover gate 3 is NOT a cutover blocker, and this method not firing IS the
+   * deliberate disablement of channel-startup supervision under CrabCast.** It
+   * is written here because the alternative — leaving it to decline to start for
+   * reasons a future reader has to reconstruct — is the defect this epic keeps
+   * paying for: *a mechanism that is off because somebody decided so is a
+   * decision; a mechanism that is off because it cannot find its footing is a
+   * defect wearing a decision's clothes.*
    *
-   * **KAN-283 fixed half of that, and half is not enough to fire on.**
-   * `tailAgent` is served over the wire now, so the *observation* half works:
-   * the watcher could read the pane for real. `pressPaneKey` still throws,
-   * because CrabCast has no `press_pane_key` and its `send_to_agent` opens with
-   * a Ctrl+C — which is the one thing a startup dialog must not receive, since
-   * the Ctrl+C would cancel the boot the Enter exists to unblock. So firing here
-   * would start a watcher that **sees the dialog correctly and cannot answer
-   * it**, retrying until its deadline. That is a worse failure than the old one
-   * rather than a better one: it burns a real socket read every three seconds to
-   * reach a conclusion it was never able to act on.
+   * So: nothing below is a leg to be closed. If you arrived here intending to
+   * make this fire, the thing to change first is the ruling, not the code.
    *
-   * The interface still anticipates this: *"A runtime that never spawns a pane
-   * of its own may leave this unfired; the daemon installs a listener and does
-   * not require it to be called."*
+   * ---------------------------------------------------------------------------
+   * WHY THERE IS NOTHING TO SUPERVISE — THREE INDEPENDENT REASONS
+   * ---------------------------------------------------------------------------
    *
-   * **The cost, named rather than buried, and it is unchanged: channel-startup
-   * supervision does not run under this runtime.** What changed is which leg is
-   * missing. It was two; it is now one, and that one is CrabCast's absent verb
-   * rather than our signature — an interface observation for KAN-59, not
-   * something this side can close. That is gate 3, and it is one of the reasons
-   * the switch is off by default.
+   * The one caller (`daemon.ts` → `superviseChannelStartup`, KAN-246) exists to
+   * answer **one specific dialog**: the full-screen confirmation Claude Code
+   * raises for `--dangerously-load-development-channels`. Each of the following
+   * is on its own sufficient to make that job empty here.
+   *
+   * **1. The dialog cannot be raised on this path — structural, not observed.**
+   * That flag is composed in exactly one place, `launchers.ts`
+   * `developmentChannelFlags()`, and reaches an agent only as argv on a `claude`
+   * command line. **`configure_agent` has no argv field**: {@link provision}
+   * sends `path`, `priority`, `launcher`, `prompt` and `mcpServers`, and there is
+   * no member of that frame through which a flag could travel. This file imports
+   * nothing from `launchers.js`, so the flag has no route in even by accident.
+   * A dialog whose trigger cannot be spelled cannot be met — and that is a claim
+   * about the wire's shape rather than about how many spawns happened to be
+   * clean.
+   *
+   * **2. Even if it fired, the listener returns immediately.** `daemon.ts` gates
+   * on `spawn.channelEnabled !== true`, and {@link provision} deliberately does
+   * not send CrabCast's `{"crabcast": "builtin"}` sentinel — giving Butchr's
+   * agents a CrabCast channel is a cutover decision (KAN-294 item 5). So every
+   * agent spawned through this runtime answers `channelEnabled: false`, honestly,
+   * and `false` is a non-supervising verdict.
+   *
+   * **3. CrabCast publishes no spawn command line**, which is what made this
+   * unfireable before either of the above was established. `activate_response`
+   * carries `launcher` and twenty other fields and no argv. The interface
+   * anticipates exactly this: *"A runtime that never spawns a pane of its own may
+   * leave this unfired; the daemon installs a listener and does not require it to
+   * be called."*
+   *
+   * ---------------------------------------------------------------------------
+   * WHAT WAS MEASURED, AND THE BOUND ON IT
+   * ---------------------------------------------------------------------------
+   *
+   * Reason 1 is the load-bearing one and it is structural. **The corroboration is
+   * inherited and is cited as inherited**: `task/KAN-278` saw two cold `claude`
+   * starts under this runtime meet no dialog, and `task/KAN-379` saw five more
+   * (PR #164) — seven spawns on one machine, which is an observation rather than
+   * a guarantee, and would be worth little on its own.
+   *
+   * **The bound, stated because reason 1 is narrower than "no dialog ever".** It
+   * is a claim about the **dev-channels** dialog — the only one this supervision
+   * answers. Other Claude Code startup dialogs exist, and what covers them here
+   * is only the seven observations plus KAN-278's finding that CrabCast handles
+   * folder trust itself (`hasTrustDialogAccepted: true` written by nothing on
+   * Butchr's side). Those are `startup-dialog.ts`'s `FOREIGN_DIALOGS`
+   * population, which this daemon refuses to answer anywhere — so a foreign
+   * dialog under CrabCast is an agent that starts late and says so, not a channel
+   * defect, and it is not what gate 3 asked about.
+   *
+   * ---------------------------------------------------------------------------
+   * WHAT WOULD RE-OPEN THIS
+   * ---------------------------------------------------------------------------
+   *
+   * Any one of: `configure_agent` growing a way to pass argv; this file acquiring
+   * an import from `launchers.js`; or {@link provision} beginning to send the
+   * `"builtin"` channel sentinel. The first two are what
+   * `verify-crabcast-channel-startup-disablement.mjs` watches, because they are
+   * the premises above rather than the conclusion — the conclusion is prose and
+   * prose cannot go red.
+   *
+   * **`pressPaneKey` remains absent and that is now a fact about a capability we
+   * do not need on this path, not an open gate.** `press_pane_key` answers
+   * `Unknown action` — re-measured against the live peer at `contractVersion 8`,
+   * build `9d4d999c`, on 2026-08-14 — and `send_to_agent` is not a substitute
+   * because it opens with a Ctrl+C. It stays recorded as an interface observation
+   * for KAN-59 (`epic/KAN-59` ruled the `pty_input` route out as a foundation),
+   * and it stays out of the way of the cutover.
    */
   setAgentSpawnedListener(
     _listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {
     this.log(
-      'setAgentSpawnedListener: registered and never fired. The spawn verdict IS available ' +
-        'now (activate_response.channelEnabled, kept per session) and tailAgent IS served ' +
-        'since KAN-283, so the watcher could read the pane — but pressPaneKey still throws, ' +
-        'because CrabCast has no press_pane_key and send_to_agent opens with a Ctrl+C. ' +
-        'Firing would start a watcher that sees the startup dialog correctly and cannot ' +
-        'answer it. One leg missing rather than two, and it is theirs rather than ours.'
+      'setAgentSpawnedListener: registered and never fired, DELIBERATELY (KAN-393 ruling). ' +
+        'Channel-startup supervision is disabled under this runtime, not merely inert: the ' +
+        'dev-channels dialog it exists to answer cannot be raised here, because configure_agent ' +
+        'carries no argv and DEV_CHANNELS_FLAG reaches an agent only as argv. Independently, ' +
+        'provision does not send the "builtin" channel sentinel, so channelEnabled is false and ' +
+        "daemon.ts's listener would return at its first line anyway. " +
+        'Gate 3 is not a cutover blocker. See the docblock for what would re-open it.'
     );
   }
 
