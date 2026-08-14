@@ -13,8 +13,10 @@ import {
   RESUME_ENV,
   ResumeCause,
   degradedResumePrompt,
-  hasRestorableConversation
+  hasRestorableConversation,
+  workspaceBrief
 } from './resume.js';
+import type { BriefLocation } from './resume.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -866,6 +868,22 @@ export class HerdrBridge implements AgentRuntime {
     return undefined;
   }
 
+  /**
+   * herdr writes the brief into the workspace, so it can name the file.
+   *
+   * Derived from the same {@link workspaceBrief} the write goes through
+   * (`initPty`), which is the whole reason that helper exists: the file this
+   * daemon writes and the file it sends an agent to are one expression, not two
+   * that happen to agree today.
+   *
+   * Answers from the address rather than from a live session, per the interface
+   * — the workspace path is a function of `(type, key)` here, exactly as
+   * `initPty` computes it, so there is no state to be missing.
+   */
+  public briefLocation(type: string, key: string): BriefLocation {
+    return workspaceBrief(workspaceDirFor(type, key));
+  }
+
   // `url` is `string | undefined` rather than optional: it sits in front of
   // required parameters, and callers who have no URL must pass nothing rather
   // than a placeholder.
@@ -1168,7 +1186,10 @@ export class HerdrBridge implements AgentRuntime {
     // above. When there is no initialPrompt (resumes, launchers without
     // briefs) there is nothing to write and nothing to refuse over.
     if (initialPrompt) {
-      const promptFile = path.join(session.workDir, '.butchr-prompt.md');
+      // Through `workspaceBrief`, not a join of its own: this is the write that
+      // `briefLocation` above promises an agent, and KAN-400 is the ticket about
+      // those two coming apart. One expression, two readers.
+      const promptFile = workspaceBrief(session.workDir).path;
       let writeError: string | undefined;
       for (let attempt = 1; attempt <= PROMPT_WRITE_ATTEMPTS; attempt++) {
         try {
@@ -1260,7 +1281,12 @@ export class HerdrBridge implements AgentRuntime {
       // already committed. See resume.ts.
       const fallbackPrompt =
         session.resume && session.resumedConversation === false
-          ? degradedResumePrompt(session.type, session.key, session.resume)
+          ? degradedResumePrompt(
+              session.type,
+              session.key,
+              this.briefLocation(session.type, session.key),
+              session.resume
+            )
           : undefined;
 
       // The last daemon-side moment to look (KAN-54). Between setup and here

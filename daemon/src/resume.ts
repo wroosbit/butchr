@@ -122,6 +122,101 @@ export function hasRestorableConversation(workDir: string): boolean {
  */
 export type ResumeCause = 'reboot' | 'daemon-restart' | 'preempted';
 
+/**
+ * The filename herdr's own brief is written under, and the one place it is
+ * spelled.
+ *
+ * Not exported: everything outside this module asks {@link workspaceBrief} for
+ * the location rather than joining this onto a directory, so the file that gets
+ * written and the file an agent is sent to cannot come apart. That mattered
+ * enough to be worth the indirection — `herdr.ts` writes it in one function and
+ * two messages in this one named it independently, which is three copies of a
+ * string that must agree.
+ */
+const BRIEF_FILENAME = '.butchr-prompt.md';
+
+/**
+ * WHERE AN AGENT'S BRIEF ACTUALLY IS — and why this is a union rather than a
+ * path (KAN-400).
+ *
+ * Until this ticket, three daemon-side messages told an agent to read
+ * `.butchr-prompt.md` "in this directory". That is a fact about **herdr**, not
+ * about Butchr: `herdr.ts` writes the rendered brief into the workspace, so the
+ * sentence was true for as long as herdr was the only runtime.
+ *
+ * It is false under CrabCast, and false by their design rather than by
+ * oversight. Their published contract (`docs/callers-directory.md`, pin
+ * `8d7348fa`) records the bootstrap prompt as *"moved out entirely"* into a
+ * sidecar CrabCast owns — *"the highest-value single change here, because it was
+ * the file rewritten on every activation and therefore the likeliest to show up
+ * as a spurious diff or be committed by accident."* The caller's directory gets
+ * exactly one exception, `.mcp.json`, and only because Claude Code reads MCP
+ * configuration from the project root *"and from nowhere else"*. A brief has no
+ * such excuse: an agent can be pointed anywhere, and CrabCast points it at the
+ * sidecar by typing the absolute path at its pane.
+ *
+ * **So the daemon cannot name that path, and this type says so rather than
+ * guessing.** `<dataDir>` is configurable, the sidecar is keyed by CrabCast's
+ * own hash, and no prompt path crosses the wire — `configure_agent` echoes the
+ * prompt as a character count. A `string` here would have had to be either a
+ * lie or an empty string that every call site then had to remember to check.
+ *
+ * **This is the type standing in for the assertion** (`prompts/task.md`): with
+ * two variants, *"assume the brief is in the workspace"* is not a sentence a
+ * call site can say. Adding a third runtime that delivers its brief some third
+ * way is a compile error at every message that mentions one, which is exactly
+ * the set of places that would otherwise go quietly wrong.
+ */
+export type BriefLocation =
+  | WorkspaceBrief
+  /**
+   * The runtime delivered the brief by a route it owns and discloses no path
+   * for. `pointer` is prose naming what the *agent* can follow instead — it is
+   * read by an agent, never parsed, and it must make sense mid-sentence.
+   */
+  | { readonly kind: 'runtime-owned'; readonly pointer: string };
+
+/** The runtime wrote the brief into the agent's own workspace, at `path`. */
+export interface WorkspaceBrief {
+  readonly kind: 'workspace-file';
+  readonly path: string;
+}
+
+/**
+ * The brief location of a runtime that writes the file into the workspace.
+ *
+ * The single source of truth for herdr's answer: `HerdrBridge` calls it both
+ * where it *writes* the brief and where it *names* it, so the two cannot drift.
+ *
+ * Returns the **narrow** {@link WorkspaceBrief} rather than the union, so the
+ * writer can reach `.path` without a narrowing check. The first draft of this
+ * returned `BriefLocation` and made the write site test a `kind` it had just
+ * constructed — a branch that could never be taken, standing where a reader
+ * would look for a real one.
+ */
+export function workspaceBrief(workDir: string): WorkspaceBrief {
+  return { kind: 'workspace-file', path: path.join(workDir, BRIEF_FILENAME) };
+}
+
+/**
+ * How to refer to the brief in a sentence addressed to an agent.
+ *
+ * Deliberately a noun phrase and not a whole sentence: the two messages below
+ * need it in different grammatical positions, and a renderer that emitted
+ * sentences would have produced two spellings of the same fact — which is the
+ * defect this ticket is fixing, one layer up.
+ *
+ * **Findability is kept wherever it is available.** The concern with "name the
+ * concept, not the path" was that an agent loses a thing it can `cat`. It only
+ * loses it where no path exists: the `workspace-file` arm still prints the
+ * absolute path, and the `runtime-owned` arm prints the runtime's own account of
+ * what the agent should follow — which for CrabCast is a pointer line carrying
+ * an absolute path, sitting in the agent's first turn.
+ */
+export function briefReference(where: BriefLocation): string {
+  return where.kind === 'workspace-file' ? `the file at ${where.path}` : where.pointer;
+}
+
 function causeSentence(cause: ResumeCause): string {
   if (cause === 'reboot') {
     return 'The machine you were running on restarted (a reboot or a power cut), which destroyed your terminal mid-task.';
@@ -152,16 +247,27 @@ function causeSentence(cause: ResumeCause): string {
  *
  * KAN-242 ADDED THE BRIEF TO THAT LIST OF THINGS THAT MOVED WHILE IT WAS GONE,
  * AND THIS IS THE SHARPEST PLACE IN THE DAEMON TO SAY IT. An agent on this path
- * kept its conversation, so it is carrying the `.butchr-prompt.md` it read at
- * the *start* of that conversation — while the activation that just restored it
- * re-rendered and rewrote that same file underneath it (router.ts renders on
- * every `!session` activation; herdr.ts writes it). Both halves are true at
- * once and neither is visible from the agent's side: the file on disk is
- * current, the agent's context is not, and its mtime now testifies to the
- * restart rather than to the agent. `epic/KAN-203` is the worked example — one
+ * kept its conversation, so it is carrying the brief it read at the *start* of
+ * that conversation — while the activation that just restored it re-rendered
+ * that same brief underneath it (router.ts renders on every `!session`
+ * activation; the runtime delivers it). Both halves are true at once and
+ * neither is visible from the agent's side: what it would read now is current,
+ * the agent's context is not. `epic/KAN-203` is the worked example — one
  * conversation since 2026-08-06, exactly one read of its brief (line 11 of
  * 4035), and a rewrite on every restart since. This is the one moment the
  * daemon knows both facts, so it is the one moment it can say so.
+ *
+ * KAN-400 TOOK THE PATH OUT OF THAT SENTENCE, AND THE SENTENCE IS WHY. It read
+ * *"your `.butchr-prompt.md` was rewritten by this restart"*, which asserts two
+ * things — that a file by that name is the agent's brief, and that this restart
+ * rewrote it. Under CrabCast **neither** holds: the brief is in a sidecar
+ * CrabCast owns, and no file by that name is ever written into the workspace.
+ * The claim that survives both runtimes is the one that was load-bearing all
+ * along — *the brief was re-rendered by the activation that restored you, and
+ * you have not re-read it* — so that is what it now says, with {@link
+ * BriefLocation} supplying where. A message asserting a mechanism that is
+ * absent is this epic's recurring defect, and it is worst in the message an
+ * agent reads when it is most disoriented.
  *
  * It opens with {@link DAEMON_SENDER_TAG} for the reason every injected message
  * does (KAN-149): it arrives by being *typed*, so an untagged one is
@@ -171,12 +277,17 @@ function causeSentence(cause: ResumeCause): string {
  * The spelling now comes from the shared constant, so a fourth builder cannot
  * invent a fourth.
  */
-export function resumeNudge(type: string, key: string, cause: ResumeCause = 'reboot'): string {
+export function resumeNudge(
+  type: string,
+  key: string,
+  where: BriefLocation,
+  cause: ResumeCause = 'reboot'
+): string {
   return [
     `${DAEMON_SENDER_TAG} You were interrupted mid-work. ${causeSentence(cause)}`,
     `You have been restored automatically and this conversation is your own history — but your last remembered action may not have finished, and nothing has been done on your behalf since.`,
     `Do not start over. First establish what already exists: check this workspace and, if you have a git worktree here, its status, diff, branch, commits and whether a PR is already open. Re-read ${key} for anything recorded there while you were gone.`,
-    `Your .butchr-prompt.md was rewritten by this restart and you have NOT re-read it — you are still working from the copy you read when you started, which may predate a rule that has since changed. Before you act on a governance rule, run the check in its "This brief is a snapshot" section.`,
+    `Your brief — ${briefReference(where)} — was re-rendered by the activation that restored you, and you have NOT re-read it: you are still working from the copy you read when you started, which may predate a rule that has since changed. Before you act on a governance rule, re-read it and run the check in its "This brief is a snapshot" section.`,
     `Then continue the task from wherever that evidence says you actually got to, and say in one line what state you found before you resume work.`
   ].join(' ');
 }
@@ -205,10 +316,20 @@ export function resumeNudge(type: string, key: string, cause: ResumeCause = 'reb
  * settles it. The daemon can tell an agent where its instructions are; only the
  * instructions themselves can tell it how old they are, which is why the
  * substance of this lives in `prompts/*.md` and not here.
+ *
+ * AND STEP 1 NO LONGER NAMES A FILE THIS RUNTIME MAY NOT HAVE WRITTEN (KAN-400).
+ * *"Read `.butchr-prompt.md` in this directory"* was the sharpest instance of
+ * the defect, because this is the **cold-start** path: it is handed to an agent
+ * that has just been told its memory is gone, as its first numbered instruction,
+ * with nothing else in its context to cross-check against. Under CrabCast that
+ * first instruction names a file that is not there. It takes its location from
+ * {@link BriefLocation} now, so the runtime that delivered the brief is what
+ * says where it went.
  */
 export function degradedResumePrompt(
   type: string,
   key: string,
+  where: BriefLocation,
   cause: ResumeCause = 'reboot'
 ): string {
   return [
@@ -217,7 +338,7 @@ export function degradedResumePrompt(
     `Your prior conversation could not be recovered, so treat everything you would normally remember as lost — but assume work was already done.`,
     ``,
     `Before doing anything else, find out what you already did:`,
-    `1. Read .butchr-prompt.md in this directory for your instructions. It is a snapshot rendered when you were first activated, not a live copy of the rules — it names the commit it came from and the command that tells you whether anything has changed since. Run that check before you act on any governance rule in it.`,
+    `1. Read your brief — ${briefReference(where)} — for your instructions. It is a snapshot rendered when you were activated, not a live copy of the rules — it names the commit it came from and the command that tells you whether anything has changed since. Run that check before you act on any governance rule in it.`,
     `2. Inspect this workspace. If it contains a git worktree, check its branch, status, diff, log, and whether a pull request is already open.`,
     `3. Re-read ${key} — including your own earlier comments on it, which are the only notes your previous self may have left you.`,
     ``,
