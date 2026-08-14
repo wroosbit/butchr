@@ -254,7 +254,16 @@ check('confirmAgentPresent finds it', presence.present === true, JSON.stringify(
 rule('3. pty — the mirror joins the snapshot to the stream, over a real socket');
 
 const received = [];
-const dispose = runtime.registerDataListener(session.sessionId, (data) => received.push(data));
+// KAN-381: the listener takes a PtyStreamEvent. This section is about the
+// data arm — the snapshot/stream join — so it collects that arm and counts
+// discontinuities separately, because one arriving mid-section would mean the
+// link dropped under this proof and every chunk assertion below it would be
+// measuring something else.
+const gapsSeen = [];
+const dispose = runtime.registerDataListener(session.sessionId, (event) => {
+  if (event.kind === 'data') received.push(event.data);
+  else gapsSeen.push(event.discontinuity);
+});
 check('registerDataListener returned a disposer', typeof dispose === 'function');
 
 // The snapshot lands first and is NEVER fanned out to listeners. So at this
@@ -314,6 +323,16 @@ check(
 check(
   'and refused for one that does not exist',
   runtime.resizePty('no-such-session', 100, 30) === false
+);
+
+// Asserted at the END of the section rather than the start, where it would
+// have been trivially true: what has to hold is that the link stayed up for
+// the whole of it. A gap here would mean every chunk count above was
+// measuring a stream that had been severed and re-established (KAN-381).
+check(
+  'no discontinuity arrived during this section — the link held, so the chunk counts below mean what they say',
+  gapsSeen.length === 0,
+  JSON.stringify(gapsSeen)
 );
 
 // ── 4. sendToAgent ─────────────────────────────────────────────────────────

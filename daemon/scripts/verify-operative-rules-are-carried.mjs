@@ -1362,6 +1362,164 @@ const RULES = [
       ])
     ),
   },
+  {
+    // KAN-388. THE CLASS THE OTHER ENTRIES HERE ARE INSTANCES OF: an instrument
+    // structurally incapable of returning the answer it was asked for, whose
+    // null result is then read as an answer about the world. Two faces, one
+    // defect — **an empty result is a claim about your search**, and **a green
+    // is a claim about your check**.
+    //
+    // WHY A PROMPT RULE. Eight instances across three agents in roughly
+    // twenty-four hours on 2026-08-13/14, every one of them already on the board
+    // as a ticket comment or a PR thread, which is the problem rather than the
+    // record: the rule was being re-derived from incidents at the cost of an
+    // incident each time. Its failure mode is an agent drawing a wrong
+    // conclusion in the next thirty seconds from a well-formed empty output, so
+    // by `prompts/epic.md`'s own boundary test — *must an agent have read it
+    // before it acts, or it acts wrongly?* — it is `prompts/<type>.md` and not a
+    // design-doc page. The incident belongs on a page; the rule belongs here.
+    //
+    // ALL FOUR PROMPTS, AND THE COUNTER-ARGUMENT IS THE TICKET'S OWN: *three
+    // copies of a rule is three things that drift.* Decided for four anyway,
+    // deliberately:
+    //   - The class is instrument-shaped rather than role-shaped. An epic greps
+    //     the board, a story greps the repo, a task greps the source tree, a
+    //     confluence agent runs CQL against a space, and all four read a green
+    //     off a check they wrote. There is no agent type here whose reader
+    //     cannot act on it — which is the test every file-set decision in this
+    //     array is made by, and the reason H-15 and H-11 are `task.md` only.
+    //   - **All four already carry two narrower members of this same family** —
+    //     H-5's write side (*a response is a claim about the request*) and the
+    //     read-side pagination paragraph beside it. A file set smaller than four
+    //     would leave a prompt carrying the instances and not the class.
+    //   - Drift is exactly what this entry buys. The phrases are pinned in all
+    //     four, so a rewrite that drops the rule from one file goes red before
+    //     review. That is the same answer already given for H-3, H-4, H-5, H-12,
+    //     H-13, H-16 and H-17.
+    //
+    // PLACEMENT — a review question this script cannot answer, so it is recorded
+    // rather than asserted: the rule sits immediately after H-5's section in all
+    // four files, next to the two narrower siblings above, as its own `###`
+    // section in `epic`/`story`/`confluence` and as the closing bullet of
+    // *3. Task Execution & Resolution* in `task.md`, which is that file's form
+    // at that depth and puts it directly before the proof rules of section 4
+    // that are the green-face instances.
+    //
+    // SEVEN PATTERNS, EACH A HALF THE RULE CANNOT SHIP WITHOUT:
+    //   - `claim about your search` / `claim about your check` — the two faces.
+    //     Either alone is a rule half the size it claims to be, and dropping the
+    //     second is the likelier tidy-up: it is what extends this from greps to
+    //     proofs, which is where instances 3, 4 and 7 lived.
+    //   - `what the instrument would have printed` — **the act**, and without it
+    //     this is exhortation. The ticket is explicit that the operative form
+    //     must be actionable rather than exhortative, and an entry that pinned
+    //     only the claim would hold a sentiment in place while the instruction
+    //     evaporated.
+    //   - `could have reached you` — the half that makes the act answerable by
+    //     the world rather than by imagination. "Say what it would have printed"
+    //     is satisfiable by inventing a plausible string; confirming that string
+    //     could have arrived is the part that fails when the instrument is the
+    //     wrong shape.
+    //   - `no failing branch` — the dangerous sub-shape, and the first casualty
+    //     of an edit for length because it reads as rhetoric. A check that could
+    //     only ever return the hoped-for answer is not a weak check; it is a
+    //     check that does not exist while appearing to. Instances 3, 4 and 7
+    //     were all of this kind and none of them looked broken.
+    //   - `runs as its own command` — INSTANCE #9's sub-shape, contributed by
+    //     `epic/KAN-203` on this ticket and taken because the eight do not cover
+    //     it. Instances 3, 4 and 7 are checks with no failing branch reachable
+    //     by the world; this is a check with no branch reachable at all, because
+    //     it never ran — `cmd-a && your-check || echo "not there"` fires the
+    //     reassuring branch off `cmd-a`'s exit status, so an unrelated upstream
+    //     failure is rendered as a substantive finding about the filesystem, and
+    //     it fails toward *absent*, which is the comfortable answer. It is the
+    //     same defect as H-22's `PIPESTATUS` trapdoor — an exit status read off
+    //     the wrong process — and the generative cause is an economy: bundling
+    //     the check onto another command to save a round trip. Pinned separately
+    //     because it is the one half here that is a *procedure* rather than a
+    //     claim, and a tidier cutting for length would take the procedure first.
+    //   - `does not replace the sharp rule` — THE LIMIT, and it is load-bearing
+    //     rather than a hedge. `epic/KAN-39` ruled at review of #136 that H-21
+    //     must NOT be folded into H-22 nor either generalised into one rule
+    //     about epistemics, because *a sharp rule about builds beats a vague
+    //     rule about epistemics* and the fix differs every time. This entry does
+    //     not disturb that ruling and must not be read as superseding it: what
+    //     KAN-388 asks for is a floor for the instruments that have no sharp
+    //     rule yet. Drop this clause and a later editor reads H-21 and H-22 as
+    //     redundant with the general one and deletes them, which is a strictly
+    //     worse artifact than the one we started with — and is this epic's own
+    //     defect shape, committed by the rule against committing it.
+    //
+    // DELIBERATELY NOT PINNED: the two measurements in the prose. Every pattern
+    // here pins a *rule*; a pattern over `270` or `-maxdepth 3` would pin a
+    // *value* that the workspace tree owns, which is the failure KAN-351 removed
+    // from H-19 and which fails in both directions at once — move the thing and
+    // nothing notices, correct the prompt and this required check goes red at
+    // the contributor who fixed it. The numbers are dated instance citations, of
+    // the same species as H-22's "13 source files" and R-3's, and no assertion
+    // depends on them.
+    //
+    // WATCH IT GO RED, AND FOR THIS ENTRY THAT IS AN ACCEPTANCE CRITERION RATHER
+    // THAN A HABIT, BECAUSE A RULE ABOUT SELF-SATISFYING CHECKS MUST NOT BE
+    // VERIFIED BY A SELF-SATISFYING CHECK. Two reds, and they answer different
+    // questions:
+    //
+    //   1. The plausible regression — an editor keeps the claim and drops the
+    //      instruction, which is the shape that degrades toward looking
+    //      finished:
+    //        perl -0pi -e 's/say what the instrument would have printed had the thing\nbeen there, and confirm that exact output could have reached you/say so/s'
+    //          prompts/epic.md
+    //        node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, epic.md only
+    //        git checkout -- prompts/epic.md
+    //      Two patterns fail and four pass, in one file, with the section
+    //      heading and both faces of the claim still sitting there.
+    //
+    //   2. The self-satisfaction test, which is the one this entry owes. The
+    //      rule's text also exists in THIS DOCBLOCK and in `rule-inventory.md`.
+    //      Delete the rule from all four prompts, leave both of those intact,
+    //      and the sweep must still go red in all four — proving the assertion
+    //      is answered by `prompts/` and by nothing the machinery says about
+    //      itself. Section 1 reads only the four `PROMPTS` paths, so this is
+    //      structurally true; it was nonetheless run rather than reasoned, and
+    //      the output is in KAN-388's PR body. Separately, all six patterns were
+    //      confirmed to have **zero** matches across the four prompts at
+    //      `origin/main` before the rule was written, so nothing pre-existing
+    //      answers them either.
+    //
+    // WHAT THIS ENTRY CANNOT CHECK, AND THE TICKET IS EXPLICIT THAT IT MUST NOT
+    // IMPLY OTHERWISE: that the class is closed. A prompt rule lowers the rate
+    // and makes the defect no less reachable — six of the eight instances were
+    // caught by another agent or by luck, and the prompt cannot make an agent
+    // run the positive control any more than H-12 can make one act on a channel
+    // event. WHO COVERS THE REST: nobody mechanical. It is the reviewer, and the
+    // red drive, which is the only method on this board with a record of
+    // catching this class — it caught instance #7.
+    //
+    // ID: H-23 THROUGH H-27 WERE ALREADY CLAIMED by `butchr/KAN-399` (PR #166)
+    // while this branch was being written, so this is H-28. Read off that branch
+    // rather than off the next free number in the inventory, which is the read
+    // that produced five collisions in three days — KAN-268 is the ticket for
+    // the fact that detecting a collision is not preventing one. Per the
+    // `2a24912` precedent the id stays with whichever lands first; if KAN-399
+    // lands after this, nothing moves, because nothing here overlaps it.
+    id: 'H-28',
+    title:
+      'an empty result is a claim about your search and a green is a claim about your check — say what the instrument would have printed, and confirm it could have reached you',
+    carriedBy: Object.fromEntries(
+      PROMPTS.map((f) => [
+        f,
+        [
+          /claim about your search/i,
+          /claim about your check/i,
+          /what the instrument would have printed/i,
+          /could have reached you/i,
+          /no failing branch/i,
+          /runs as its own command/i,
+          /does not replace the sharp rule/i,
+        ],
+      ])
+    ),
+  },
 ];
 
 /**
