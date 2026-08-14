@@ -66,6 +66,16 @@ Three things about that are decisions rather than details:
   agent was activated last. Anti-gravity agents are therefore parentless until
   that CLI grows a project-scoped config: recording the wrong supervisor is worse
   than recording none.
+
+  **Since KAN-398 that is enforced by `configureAgyMcp` itself**, which strips the
+  identity flags before writing. It used to hold because `initPty` happened to
+  hand `launcher.setup` the unstamped assembly — the stamp was applied one branch
+  further along. KAN-398 moved both MCP transforms above the runtime seam so that
+  neither runtime can omit them, which means what reaches `launcher.setup` is now
+  stamped. **A property that depends on what a caller remembers to pass is not
+  enforced**, so it moved to the writer that owns the file. The positive control
+  is in `verify-workspace-mcp-preparation.mjs` §6: the same prepared assembly
+  goes through both writers, and only the workspace one keeps the flags.
 * **No backfill.** Parentage is recorded at activation, and there is nothing to
   recover it from for an agent already running — its MCP server was spawned from
   the old file and cannot be told anything now. Every agent live at the moment

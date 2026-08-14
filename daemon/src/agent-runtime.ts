@@ -84,6 +84,46 @@ import type {
  * it would only move that dependency rather than remove it. The type-only
  * import keeps the implementation swappable, which is what this ticket is for.
  */
+declare const WORKSPACE_MCP_BRAND: unique symbol;
+
+/**
+ * MCP definitions that have been made ready for a workspace — and the reason
+ * this is a distinct type rather than a convention (KAN-398).
+ *
+ * Two transforms stand between what the integrations assemble and what an MCP
+ * client can read, and both are named on `McpServerDefinition`'s own fields:
+ * `withWorkspaceIdentity` stamps the core server's argv so the agent can be
+ * placed on the org chart (KAN-145), and `materializeMcpServers` turns
+ * `pathPrefix` into `env.PATH` and strips `unusable` (KAN-157). A definition
+ * that reaches disk without them is not a smaller config — it is a config with
+ * a Butchr-only key in it that no client reads, belonging to an agent nothing
+ * can find a parent for.
+ *
+ * **KAN-398 is what happens when the transforms live below this seam.** They
+ * were applied inside `HerdrBridge`, so they were `HerdrBridge`'s to remember;
+ * `CrabCastRuntime.provision()` sent `configure_agent` the raw assembly and
+ * CrabCast wrote it verbatim, undoing KAN-157 and KAN-145 together on that
+ * path. Nothing was wrong with either implementation in isolation. **The gap
+ * was between them, and the type system could not see it**, because both
+ * accepted the same `McpServerDefinitions` whether or not anything had been
+ * done to it.
+ *
+ * So the seam accepts only this. {@link spawnSession} cannot be handed a raw
+ * assembly — that is a compile error at the call site, not a review catch — and
+ * a third runtime added later inherits the guarantee without being told about
+ * it. The brand is phantom: it exists only in the type system, so a value of
+ * this type is an ordinary `McpServerDefinitions` at runtime and every
+ * `Object.entries` over it is unchanged.
+ *
+ * **`prepareWorkspaceMcpServers` in `launchers.ts` is the only producer**, and
+ * it is the only place the cast is written. Casting to this type anywhere else
+ * is claiming a transform ran when it did not, which is the defect above with
+ * an extra step.
+ */
+export type WorkspaceMcpServers = McpServerDefinitions & {
+  readonly [WORKSPACE_MCP_BRAND]: 'prepared';
+};
+
 /**
  * What a runtime reports about a spawn it just made (KAN-294).
  *
@@ -151,13 +191,19 @@ export interface AgentRuntime {
     listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void;
 
+  /**
+   * `mcpServers` arrives {@link WorkspaceMcpServers prepared}, never raw — see
+   * that type for why the transforms sit above this seam rather than inside
+   * each implementation. An implementation writes what it is given and applies
+   * nothing further.
+   */
   spawnSession(
     type: string,
     key: string,
     url: string | undefined,
     promptContent: string,
     defaultAgent?: string,
-    mcpServers?: McpServerDefinitions,
+    mcpServers?: WorkspaceMcpServers,
     resume?: ResumeCause
   ): HerdrSession;
 

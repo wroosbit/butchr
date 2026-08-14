@@ -382,24 +382,58 @@ activation `success: false` — so every CrabCast-started `claude` agent is
 reported as a failed activation and has its session torn down **while it keeps
 running**, leaving a live pane no Butchr session addresses.
 
-**2. `pathPrefix` crosses the wire and is written verbatim.** `provision()`
-sends raw `McpServerDefinitions`; every Butchr writer runs `materializeMcpServers`
-first, which turns `pathPrefix` into `env.PATH` and drops `unusable`. CrabCast
-writes what it is sent — as their own `configure_agent` refusal text says — so
-the workspace `.mcp.json` carries a `pathPrefix` key no MCP client reads, and
-**no `env.PATH`**. KAN-157 added that field to decide *which Node runs an
-npx-based server*, `npx` and `mcp-remote` both being `#!/usr/bin/env node`.
-**It did not bite on this machine** — the inherited PATH happened to resolve the
-same Node — and that is precisely what makes it worth writing down: it is a
-latent defect that works by luck, not a visible one.
+**2. `pathPrefix` crossed the wire and was written verbatim.** *(FIXED by
+KAN-398 — the finding is kept because the shape of it is the lesson.)*
+`provision()` sent raw `McpServerDefinitions`; every Butchr writer runs
+`materializeMcpServers` first, which turns `pathPrefix` into `env.PATH` and drops
+`unusable`. CrabCast writes what it is sent — as their own `configure_agent`
+refusal text says — so the workspace `.mcp.json` carried a `pathPrefix` key no
+MCP client reads, and **no `env.PATH`**. KAN-157 added that field to decide
+*which Node runs an npx-based server*, `npx` and `mcp-remote` both being
+`#!/usr/bin/env node`. **It did not bite on this machine** — the inherited PATH
+happened to resolve the same Node — and that is precisely what makes it worth
+writing down: it was a latent defect that worked by luck, not a visible one.
 
-**3. The core server is sent unstamped.** `withWorkspaceIdentity` is applied in
-`herdr.ts`, and `crabcast-runtime.ts` imports nothing from `launchers.js`, so the
-`butchr` entry reaches disk without `--workspace-type` / `--workspace-key`.
-**That is the KAN-145 defect returning by a new road**: a value written where
-nothing reads it, leaving `activatedBy` null and the org chart with nothing to
-draw. The tools still work — `mcp.ts` reads the flags for *parentage*, not for
-reachability — which is why this is invisible from the agent's side.
+**3. The core server was sent unstamped.** *(FIXED by KAN-398.)*
+`withWorkspaceIdentity` was applied in `herdr.ts`, and `crabcast-runtime.ts`
+imports nothing from `launchers.js`, so the `butchr` entry reached disk without
+`--workspace-type` / `--workspace-key`. **That is the KAN-145 defect returning by
+a new road**: a value written where nothing reads it, leaving `activatedBy` null
+and the org chart with nothing to draw. The tools still work — `mcp.ts` reads the
+flags for *parentage*, not for reachability — which is why this was invisible
+from the agent's side.
+
+**How 2 and 3 were fixed, and why it is one fix rather than two.** They had a
+single root cause: the transforms lived *inside* `HerdrBridge`, so they were
+`HerdrBridge`'s to remember and `CrabCastRuntime` had nothing to inherit. **The
+fix moved them above the runtime seam** — `MessageRouter` now calls
+`prepareWorkspaceMcpServers` and `AgentRuntime.spawnSession` accepts only the
+branded `WorkspaceMcpServers` that function produces, so **handing a runtime a
+raw assembly is a compile error** rather than a defect somebody has to notice in
+review. A third runtime added later inherits the guarantee without being told
+about it.
+
+Three consequences worth knowing:
+
+- **`crabcast-runtime.ts` still imports nothing from `launchers.js`**, so §1 of
+  gate 3's guard below stayed an allow-list and was not narrowed. The obvious
+  implementation — applying the transforms inside `provision()` — would have
+  required that import and cost the guard its strength.
+- **KAN-157's unusable-server refusal moved with them**, to
+  `MessageRouter.refuseUnusableMcpServers`. It had to: `materializeMcpServers`
+  strips the `unusable` field it reads, so left below the seam it would have
+  read an empty list on every activation for ever. **CrabCast never had that
+  refusal at all**; it now does, because the check runs before the seam rather
+  than inside one implementation of it.
+- **`configureAgyMcp` now strips the identity itself.** agy's config is global —
+  one file for every workspace — and a per-workspace stamp written there names
+  whichever agent was activated last. That invariant used to hold because
+  `initPty` happened to pass an unstamped assembly to `launcher.setup`; it is now
+  enforced by the writer that owns the file.
+
+`daemon/scripts/verify-workspace-mcp-preparation.mjs` covers all of it except the
+live leg — that a real peer writes what we sent — which stays with
+`verify-crabcast-claude-launcher-live.mjs` §5 and needs a peer.
 
 ### What CrabCast does that Butchr's own `claude` launcher also does
 
