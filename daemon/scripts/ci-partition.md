@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 79 |
+| `yes` | 80 |
 | `partial` | 8 |
 | `quarantined` | 3 |
 | `no` | 14 |
-| **total** | **104** |
+| **total** | **105** |
 
-**87 of 104** run on every pull request.
+**88 of 105** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -127,6 +127,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-tail-async-awaited` | yes | imports the built daemon modules and reads `daemon/src` off the checkout; the only herdr is a shim this file writes onto PATH. No live daemon, no real herdr, no credential, no peer, no terminal, no network. |
 | `verify-workspace-deps-are-shared` | yes | reads files off the checkout and asserts on their contents; node builtins only. |
 | `verify-workspace-reclaim` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-workspace-reset-boundary` | yes | imports the built daemon modules, builds every fixture inside a temporary directory it creates and removes, and reads three source files off the checkout; no live daemon, no herdr, no CrabCast, no credential, no network, no terminal. |
 | `verify-agent-tree` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-render-writes-outside-the-tree` | yes | it spawns `verify-agent-tree.mjs`, which needs only the extension's own node_modules and its own vite build; no live daemon, no herdr, no credential, no peer, no terminal. It runs the real script with the real argv the runner gives it, so what is under test is the shipped default and not a path this file constructs. |
 
