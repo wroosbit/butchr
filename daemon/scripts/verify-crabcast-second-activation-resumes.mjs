@@ -620,7 +620,7 @@ const paneReady = await until(async () => {
   return text.includes('❯') && !/esc to interrupt/i.test(text);
 }, 180_000, 3_000);
 check(
-  'the resumed session reached an idle composer, so a message can be typed at it',
+  'the second session reached an idle composer, so a message can be typed at it',
   paneReady === true,
   'the pane never settled to an idle prompt; a send into a booting session is refused ' +
     '(`delivered: false`) and would make §6 vacuous rather than negative'
