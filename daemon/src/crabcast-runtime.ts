@@ -26,6 +26,7 @@ import {
 } from './herdr.js';
 import type { McpServerDefinitions } from './integrations/integration.js';
 import type { ResumeCause } from './resume.js';
+import { deleteWorkspaceDir } from './workspace-dir.js';
 
 /**
  * A second implementation of {@link AgentRuntime}, backed by CrabCast (KAN-278).
@@ -808,37 +809,34 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   /**
-   * **Absent on CrabCast, by their design, and this refuses rather than
-   * improvises.**
+   * **Absent on CrabCast, by their design — and served by Butchr since KAN-380,
+   * which is a different thing from absent.**
    *
    * Verified from the wire: `reset_workspace` and `reset_agent` both answer
    * with a refusal that states the reason outright — *"`reset` was removed:
    * CrabCast no longer creates the directory an agent runs in, so it may not
    * delete one either."* That is KAN-59's north star 3 (*an agent IS a
    * canonical filesystem path; the caller owns the directory*), not an
-   * oversight, and it will not be coming back.
+   * oversight, and it will not be coming back. **Nothing here asks them to
+   * change it**, and this method makes no wire call at all.
    *
-   * **Butchr owns the deletion in a migrated world**, and the machinery for
-   * doing it safely already exists here rather than there: `workspacesRoot()`
-   * and the strictly-inside check `HerdrBridge.resetWorkspace` uses. Wiring
-   * that up is a cutover decision and cutover is explicitly out of scope for
-   * KAN-278, so this refuses and names the leg.
+   * **It is the exact mirror of {@link spawnSession}, and that symmetry is the
+   * argument.** Butchr already creates the directory under this runtime because
+   * CrabCast will not; owning creation and disowning deletion is the asymmetry
+   * that made a "reset" here leave the previous agent's files in place under
+   * the same key — invariant 7 broken at the moment it matters most, since a
+   * reset is precisely when somebody is relying on nothing being left behind.
+   *
+   * **The deletion is not reimplemented here.** It goes through
+   * `deleteWorkspaceDir`, the same function `HerdrBridge.resetWorkspace` calls,
+   * whose containment discipline and structural guard are documented in
+   * `workspace-dir.ts`. This runtime holds no second opinion about which
+   * directories Butchr may destroy, and the address it passes is the same
+   * `(type, key)` its own `pathForAddress` translates — there is no path
+   * parameter to get wrong.
    */
   resetWorkspace(type: string, key: string): { success: boolean; error?: string } {
-    return {
-      success: false,
-      error: renderRefusal(
-        this.link.refusal(
-          'butchr-adapter',
-          `resetWorkspace(${type}/${key}) has no CrabCast counterpart: their \`reset\` was ` +
-            'removed deliberately, because CrabCast never creates the directory an agent runs ' +
-            'in and so may not delete one',
-          'Deleting the workspace becomes Butchr\'s own job under this runtime. That wiring is ' +
-            'cutover work and KAN-278 is explicitly not a cutover; run under the default herdr ' +
-            'runtime if you need reset today.'
-        )
-      )
-    };
+    return deleteWorkspaceDir(type, key);
   }
 
   closeAgentByKey(
