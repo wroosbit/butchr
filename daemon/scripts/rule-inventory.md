@@ -119,6 +119,11 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-20` — KAN-314 — prefer the type to the assertion where the choice exists — scoped, not absolute
 - `H-21` — KAN-314 — check the instrument answered the question you asked — filter the CI run by workflow and head
 - `H-22` — KAN-314 — a proof run after a failed build, or over a stale `dist`, is a verdict about the old build
+- `H-23` — KAN-399 — the status field cannot separate idle from mid-turn; the pane can, so tail every agent
+- `H-24` — KAN-399 — tail-first is a safety rule: a composer send can answer a dialog and kill an agent, and idle composer text is the client, not the human
+- `H-25` — KAN-399 — the triage is not idle-versus-working: does this agent have an unowned next action it does not know about
+- `H-26` — KAN-399 — when you do poke, name the actual work; a generic "continue" produces a generic answer
+- `H-27` — KAN-399 — the check-in is always right, the work order usually is not; a sweep that finds nothing to poke is the sweep working
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
 - `R-3` — KAN-334 — retired: the workaround telling agents to avoid nesting a blockquote in a list item

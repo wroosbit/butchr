@@ -165,7 +165,7 @@ that is a real capability gap rather than a detail.
 | 3 | `spawnSession` | **different-shaped** | Two calls, `configure_agent` then `activate_agent`, both async, behind a synchronous signature. Returns in `'initializing'` and is promoted on the activation's answer; failure lands in `spawnError`. **Butchr must create the workspace directory** — CrabCast never creates one (their north star 3). |
 | 4 | `abandonSession` | **served (locally)** | Purely a local bookkeeping call in `HerdrBridge` too; no wire verb needed or wanted. |
 | 5 | `terminateSession` | **different-shaped** | `deactivate_agent`. Synchronous signature, async verb: returns "asked", not "stopped". The local record is marked immediately so the caller's next read cannot see a live session; `agent.detached` is what says it actually stopped. |
-| 6 | `resetWorkspace` | **absent, by their design** | Verified from the wire: `reset_workspace` and `reset_agent` both answer *"`reset` was removed: CrabCast no longer creates the directory an agent runs in, so it may not delete one either."* That is north star 3, not an oversight. **Butchr owns the directory at both ends under this runtime** — creation (method 3) and deletion. Wiring deletion up is cutover work; this refuses and names the leg. |
+| 6 | `resetWorkspace` | **served (locally), since KAN-380** | Verified from the wire: `reset_workspace` and `reset_agent` both answer *"`reset` was removed: CrabCast no longer creates the directory an agent runs in, so it may not delete one either."* That is north star 3, not an oversight, and nothing here asks them to change it — **this method makes no wire call at all.** **Butchr owns the directory at both ends under this runtime** — creation (method 3) and deletion — and until cutover gate 4 it owned only one, so a "reset" left the previous agent's files in place under the same key and the next agent inherited them (invariant 7). Both runtimes now call the same `deleteWorkspaceDir` in `workspace-dir.ts`; the containment guard there is structural rather than a check — the exported delete takes an address and never a path, and the `rmSync` takes a branded type only the containment function can mint. `verify-workspace-reset-boundary.mjs`. |
 | 7 | `closeAgentByKey` | **served** | `deactivate_agent`, addressed by the translated path. |
 | 8 | `getSession` | **served (locally)** | Local session table. Exact for sessions we started. |
 | 9 | `getSessionByAddress` | **served (locally)** | Local session table. `(type, key)` → path is a total, lossless mapping through `workspaceDirFor`. |
@@ -184,10 +184,15 @@ that is a real capability gap rather than a detail.
 | 22 | `resizePty` | **served** | `pty_resize`. |
 | 23 | `registerDataListener` | **different-shaped** | KAN-224's design, implemented. One long-lived `pty_init` per **session**; this call never touches the socket, pushing onto a local array and returning a closure that filters it out. |
 
-**Totals: 12 served, 8 different-shaped, 3 absent** (methods 2, 6, 19). One of
-the three remaining absences is ours rather than CrabCast's: `resetWorkspace` is
-a responsibility that moves to us. **`tailAgent` was the fourth until KAN-283**,
-and it was the one absence that was purely a signature.
+**Totals: 13 served, 8 different-shaped, 2 absent** (methods 2 and 19). **Both
+remaining absences are CrabCast's** — a spawn command line they do not publish,
+and a `press_pane_key` verb they do not have — which is the first time that has
+been true. The two that left were ours rather than theirs, and they left by
+different routes worth telling apart: **`tailAgent` (KAN-283) was a signature**,
+refusing only for as long as this interface forbade awaiting, and **`resetWorkspace`
+(KAN-380) was a capability**, refusing only for as long as the deleting code sat
+inside `HerdrBridge` as private detail. Neither was ever a thing CrabCast would
+not do.
 
 ---
 
@@ -214,7 +219,7 @@ pane shows *now*, and `tail_agent` answers it in our own vocabulary.
 | --- | --- | --- | --- |
 | 3 | `spawnSession` | **stays sync** | Returns a handle the caller *polls*, and `HerdrBridge` returns an equally not-yet-ready one: `status: 'initializing'`, promoted to `active` or to `terminated` + `spawnError` by `provision()` writing to the object the caller already holds. Async would make every caller wait on a `configure_agent` + `activate_agent` round trip **that no caller waits for today**, and would tell them nothing the handle does not. |
 | 5 | `terminateSession` | **stays sync** | Answers *"asked"*, never *"stopped"* — and that is already true of `HerdrBridge`, where the session-ended event is what says it stopped. The local record is marked immediately, so the caller's next read cannot see a live session. Async would let it report the `deactivate_agent` ack, which is **still not "stopped"**: a different wrong answer at the cost of every call site. |
-| 6 | `resetWorkspace` | **stays sync** | Nothing to await. CrabCast removed `reset` because they never create the directory (north star 3), so the missing work is **Butchr deleting a directory** — synchronous filesystem work we do not do yet. That is gate 4, and it is a capability gap rather than a signature one. |
+| 6 | `resetWorkspace` | **stays sync** | Nothing to await, and the ruling survived the gap closing. CrabCast removed `reset` because they never create the directory (north star 3), so the missing work was **Butchr deleting a directory** — synchronous filesystem work, which is exactly what KAN-380 wired in. The ruling was right for the reason it gave: this was a capability gap rather than a signature one, and closing it needed no round trip and therefore no `Promise`. |
 | 7 | `closeAgentByKey` | **stays sync** | Delegates to `terminateSession`; same ruling for the same reason. |
 | 8 | `getSession` | **stays sync** | Local session table. Exact for sessions we started, no round trip, no staleness. |
 | 9 | `getSessionByAddress` | **stays sync** | Local session table, and **the dominant lookup — 8 of the 43 call sites.** The method where an async signature would cost the most and buy the least. |

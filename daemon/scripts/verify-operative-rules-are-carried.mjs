@@ -1134,6 +1134,234 @@ const RULES = [
       ],
     },
   },
+
+  // ------------------------------------------------------------------ KAN-399
+  //
+  // THE FIVE ENTRIES BELOW ARE ONE TICKET'S WORK AND ARE DELIBERATELY NOT ONE
+  // ENTRY. H-19 above says what the guardian poke **is** — scheduled,
+  // daemon-sent, additional, proving only its own delivery. Every word of it is
+  // about trusting the message, and a guardian that has read all of it knows
+  // nothing about **what to look at**. These five are that half, and they are
+  // separable in the way that matters to this file: each one can be dropped by
+  // a later editor without disturbing the other four, and each drop produces a
+  // different wrong sweep. Folding them into a single entry would mean one
+  // `carriedBy` list where losing any phrase reads as losing "the triage",
+  // which tells whoever meets the red nothing about which judgement went
+  // missing.
+  //
+  // ALL THREE PROMPTS, FOR H-19'S OWN REASON AND NOT A NEW ONE: the guardian is
+  // a *pointer* at an existing agent of any type, so an epic, a story or a task
+  // can hold the role, and a rule it must have read **before it acts** has to
+  // be in the file it actually reads. A cross-reference to a sibling prompt is
+  // a second read that will not happen under a poke. `prompts/confluence.md` is
+  // excluded for the same reason H-18 and H-22 exclude it — a page workspace
+  // holds no `butchr_*` tooling and can sweep nobody, so inventorying it there
+  // would require a rule its reader can never act on.
+  {
+    // KAN-399 §1. THE RULE IS NOT "THE STATUS FIELD IS WRONG" — IT IS THAT THE
+    // FIELD CANNOT SEPARATE THE TWO CASES, WHICH IS WHY THE MEASUREMENT IS
+    // PINNED ALONGSIDE IT. `epic/KAN-203` swept nine agents on 2026-08-14: two
+    // idle at a prompt while the board reported them staffed, seven genuinely
+    // mid-turn, and `herdrStatus` reading `done` for both idle ones — where
+    // `done` is also what an agent reads while legitimately awaiting review.
+    //
+    // FOUR PHRASES, AND THE SECOND IS THE ONE A TIDIER DROPS FIRST. It reads as
+    // an aside about a field name; without it the rule reads as *the status
+    // field is unreliable*, which a reasonable editor "fixes" by reaching for a
+    // better field. There is no better field: the pane is the instrument, and
+    // the reason is that `done` is ambiguous rather than wrong.
+    //   - `the pane does` — the rule.
+    //   - `herdrStatus` + the ambiguity of `done` — why no field substitutes.
+    //   - `esc to interrupt` — the actual tell, without which the rule names an
+    //     instrument and not a reading of it.
+    //   - `tail every agent` — the act. A rule stated and never asked for is a
+    //     paragraph.
+    id: 'H-23',
+    title: 'the status field cannot separate idle from mid-turn; the pane can — so tail every agent',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /The status field does not tell you; the pane does/i,
+          /herdrStatus/,
+          /also what an agent reads while legitimately awaiting review/i,
+          /esc to interrupt/,
+          /tail every agent/i,
+          /never substitute the status field for it/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-399 §2, AND THE ONE THE TICKET NAMES AS SAFETY RATHER THAN DILIGENCE.
+    // A sweep is a read followed by a send, and the send is the dangerous half:
+    // a composer send to an agent sitting at a selection dialog **answers the
+    // dialog** with whatever option is highlighted. CrabCast's `task/KAN-375`
+    // reproduced it with a discriminating second arm — highlight moved, *"No,
+    // exit"* selected, agent terminated. Tailing is not care taken before a
+    // message; it is the only thing standing between a nudge and a kill.
+    //
+    // NINE PHRASES, BECAUSE THIS ENTRY GUARDS THREE THINGS THAT DIE SEPARATELY:
+    //
+    //   * THE FRAMING (`SAFETY rule, not diligence`, `terminated the agent`,
+    //     `only thing between a nudge and a kill`). The ticket's AC3 is that a
+    //     reader must come away knowing a send can kill an agent, and framing
+    //     is exactly what a length-tidy removes: the mechanism survives as
+    //     "tail before you send", which reads as politeness and is obeyed like
+    //     politeness.
+    //   * HAZARD (b), THE COMPOSER SUGGESTION (`client-suggested composer
+    //     text`, `rotate the LaunchDarkly token now`, `crossed by a **reader**
+    //     rather than by a caller`). An idle pane holds the client's guess at
+    //     what the agent needs next, and it is not the human. The specimen is
+    //     load-bearing rather than colour: `epic/KAN-59`'s idle composer
+    //     proposed rotating a live production credential — the one action the
+    //     human has reserved to themselves — so the failure here is not a
+    //     wasted turn, it is a guardian performing a reserved action and
+    //     reporting it as done work. The `reader rather than caller` clause is
+    //     what ties it to *credentials stop at the daemon*: that invariant is
+    //     enforced in code against callers, and this is the leg nothing
+    //     enforces. Drop the clause and the hazard reads as ordinary
+    //     misdirection.
+    //   * THE POSITIVE SPECIMEN (`human mid-sentence in their composer`,
+    //     `taught only by its violations reads as paranoia`). This was a real
+    //     defect in the ticket as filed and `epic/KAN-39` corrected it in
+    //     comment `12120`: every other specimen in the brief is somebody
+    //     getting it wrong, and a rule taught only by its violations reads as
+    //     blame-avoidance rather than as a judgement with a correct form.
+    //     `story/KAN-117` re-checked a pane before sending, saw the human
+    //     mid-sentence — half a word, cut off — and held, twice, unprompted.
+    //     It is pinned because it is the half that looks like an anecdote and
+    //     is the only demonstration of the rule succeeding.
+    //
+    // WHAT THIS ENTRY CANNOT CHECK, and it is the gap H-12 and H-16 have in the
+    // same shape: it proves the three files carry the hazards. Whether a
+    // guardian that has read them *tails before sending* is a question about a
+    // model, and no regex asks it. WHO COVERS IT: nobody mechanical, and there
+    // is no live probe for this one — the observation that would settle it is a
+    // reader comparing a guardian's sweep comment against the panes it swept.
+    // The sweep summary H-19 already requires is what makes that possible, and
+    // it is the whole of the coverage. Do not infer more.
+    id: 'H-24',
+    title: 'tail-first is a safety rule: a composer send can answer a dialog and kill an agent, and idle composer text is the client, not the human',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /SAFETY rule, not diligence/,
+          /answers the dialog/i,
+          /terminated the agent/i,
+          /only thing between a nudge and a kill/i,
+          /client-suggested composer text, and it is not the human/i,
+          /rotate the LaunchDarkly token now/i,
+          /crossed by a \*\*reader\*\* rather than by a caller/i,
+          /human mid-sentence in their composer/i,
+          /taught only by its violations reads as paranoia/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-399 §3. THE TRIAGE, AND THE REASON IT IS NOT "IDLE VERSUS WORKING".
+    // The human's instruction had two halves given three days apart — *"if they
+    // are waiting, tell them to continue"* and then, after watching the first
+    // over-applied, *"if it makes sense for them to be idle, then you should
+    // still check in, but you don't have to poke them into working"*. The
+    // second is the whole content of this entry: the question is not whether an
+    // agent is moving, it is whether it has an **unowned next action it does
+    // not know about**.
+    //
+    // FIVE PHRASES. The table is what a tidier keeps — it looks like the
+    // content — so the two sentences hung off it are pinned separately:
+    //   - `unowned next action it does not know about` — the question itself,
+    //     and the only part that is portable to a case the table does not list.
+    //   - `CORRECTLY IDLE` + `poke, and say what changed` — the two columns,
+    //     matched individually so that losing one column is not read as a
+    //     wording change to the other.
+    //   - `correctly-idle agent is not a failure` — the half that makes the
+    //     rule *stop* somebody. Without it the table is a diagnostic and the
+    //     default is still to send.
+    //   - `manufactures churn` — the cost, which is what the human's third
+    //     sentence was actually about.
+    id: 'H-25',
+    title: 'the triage is not idle-versus-working: does this agent have an unowned next action it does not know about',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /unowned next action it does not know about/i,
+          /CORRECTLY IDLE/,
+          /poke, and say what changed/i,
+          /correctly-idle agent is not a failure/i,
+          /manufactures churn/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-399 §4. The smallest of the five and the one with the least prose to
+    // hide behind, which is why it is inventoried rather than trusted: it is a
+    // single sentence, and a single sentence is what a length pass deletes.
+    //
+    // An agent idles because it believes it is finished. A generic *"continue"*
+    // is answered generically — it asks the agent to re-derive its own state,
+    // which is the state that produced the idle. Four phrases: the instruction,
+    // the reason it is needed, the failure mode of the generic version, and the
+    // thing a poke has to actually say.
+    id: 'H-26',
+    title: 'when you do poke, name the actual work — a generic "continue" produces a generic answer',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /name the actual work/i,
+          /believes it is finished/i,
+          /produces a generic answer/i,
+          /why it is now theirs/i,
+        ],
+      ])
+    ),
+  },
+  {
+    // KAN-399 §5. THE SENTENCE THE TICKET ASKS TO BE CARRIED ABOVE THE OTHERS,
+    // and it is `epic/KAN-203`'s, volunteered from a failure it measured on
+    // itself rather than observed on somebody else. It applied the human's
+    // first instruction before the human had given it the third and got
+    // `epic/KAN-39` wrong: that agent had just finished a turn having filed
+    // three tickets and would have picked the PRs up when they appeared. The
+    // check-in was warranted — a ruling was genuinely owed — and the
+    // prioritised worklist sent with it was noise. The same sweep got
+    // `story/KAN-117` right by *asking* whether it was finished or blocked and
+    // offering to carry a blocker.
+    //
+    // FOUR PHRASES, AND THE LAST IS THE ONE THAT KEEPS THIS FROM BEING
+    // UNFALSIFIABLE. *"A sweep that finds nothing to poke is the sweep
+    // working"* is what stops a guardian reading an empty sweep as a sweep that
+    // failed and going looking for something to send — which is precisely the
+    // pressure that produced the work order. It pairs with H-19's requirement
+    // to post a summary *including when the sweep finds nothing*: that entry
+    // makes the empty sweep visible, this one makes it correct.
+    //   - `check-in is always right; the work order usually is not` — the rule.
+    //   - `prioritised worklist` — the specimen's actual defect, named. Without
+    //     it the rule has no worked case and reads as a preference.
+    //   - `That is a check-in. The other was a work order` — the distinction
+    //     made operable. A reader who has the rule and not this cannot tell
+    //     which of their own two messages was which.
+    //   - `sweep that finds nothing to poke is the sweep working` — the
+    //     outcome the triage is for.
+    id: 'H-27',
+    title: 'the check-in is always right; the work order usually is not — and a sweep that finds nothing to poke is the sweep working',
+    carriedBy: Object.fromEntries(
+      ['prompts/epic.md', 'prompts/story.md', 'prompts/task.md'].map((f) => [
+        f,
+        [
+          /check-in is always right; the work order usually is not/i,
+          /prioritised worklist/i,
+          /That is a check-in\. The other was a work order/i,
+          /sweep that finds nothing to poke is the sweep working/i,
+        ],
+      ])
+    ),
+  },
 ];
 
 /**
