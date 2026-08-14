@@ -1,3 +1,9 @@
+<!-- constant-pin-exempt: CRABCAST_PIN — step 9 names this constant as the thing a
+     driver should READ AND COMPARE against `daemon_status.build.commit` when the
+     terminal check fails, and never quotes its value. A pin here would assert a
+     commit this page makes no claim about, and would go red on every CrabCast
+     re-pin for a sentence that does not move. Added by KAN-393. -->
+
 # The CrabCast cutover sequence
 
 **Status: this is an order, not an authorisation.** KAN-378. Nothing here asks
@@ -466,7 +472,16 @@ restores a conversation.
   - it reached its tools: it can read its own ticket;
   - `butchr_tail_agent` (socket `tail_agent`) returns text from it;
   - a `butchr_send_to_agent` (socket `send_to_agent`) reports `delivered`, and the tail shows it landed;
-  - the extension renders its terminal.
+  - the extension renders its terminal. **This one check runs through an
+    uncontracted surface, and KAN-393 added this sentence because the list did
+    not say so.** Rendering is `pty_init` plus the `pty_output` frames behind it,
+    and the `pty_*` group is outside `contractVersion: 8` exactly as
+    `activate_response` is — CrabCast may reshape it without moving the version.
+    So a failure here is ambiguous in a way the other checks are not: it is
+    either the cutover going wrong or the peer having moved a surface that
+    carries no notice promise, and **`daemon_status.build.commit` against
+    `CRABCAST_PIN` is what tells the two apart.** Read it before aborting. See
+    *The PTY group is uncontracted too* in `crabcast-runtime.md`.
 - **Abort:** any of the above. Also abort if the census's
   `unreadableRecordsTotal` increases, or if two panes appear for one workspace
   directory.

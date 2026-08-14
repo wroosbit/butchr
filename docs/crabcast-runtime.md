@@ -161,7 +161,7 @@ that is a real capability gap rather than a detail.
 | # | Method | Verdict | Evidence and what changes |
 | --- | --- | --- | --- |
 | 1 | `setSessionEndedListener` | **different-shaped** | Served by the `agent.detached` broadcast. Verified: an idle connection that asked nothing received `agent.deactivated` and `agent.detached` when a second connection deactivated an agent. In-process callback becomes a cross-process event. **`reason` is degraded**: `SessionEndReason` is `'taken-over' \| 'exited'`, CrabCast carries neither, and this runtime always reports `'exited'` rather than guessing. |
-| 2 | `setAgentSpawnedListener` | **absent** | **CrabCast publishes no spawn command line.** `activate_response` carries `launcher` and 20 other fields but no argv; `agent_status` and `agent.activated` carry none either. The interface's docblock says the command is "part of the contract, not a convenience". So this is registered and **never fired** — the interface explicitly permits that — because firing with a fabricated command would break channel-startup supervision (KAN-246) more quietly than not firing. **Cost: channel-startup supervision does not run under this runtime.** |
+| 2 | `setAgentSpawnedListener` | **absent** | **CrabCast publishes no spawn command line.** `activate_response` carries `launcher` and 20 other fields but no argv; `agent_status` and `agent.activated` carry none either. The interface's docblock says the command is "part of the contract, not a convenience". So this is registered and **never fired** — the interface explicitly permits that — because firing with a fabricated command would break channel-startup supervision (KAN-246) more quietly than not firing. **Cost: channel-startup supervision does not run under this runtime — and since KAN-393 that is a ruling rather than a cost.** The dialog it exists to answer cannot be raised on this path at all; see [gate 3's ruling](#gate-3-the-ruling-channel-startup-supervision-is-disabled-under-crabcast-deliberately). |
 | 3 | `spawnSession` | **different-shaped** | Two calls, `configure_agent` then `activate_agent`, both async, behind a synchronous signature. Returns in `'initializing'` and is promoted on the activation's answer; failure lands in `spawnError`. **Butchr must create the workspace directory** — CrabCast never creates one (their north star 3). |
 | 4 | `abandonSession` | **served (locally)** | Purely a local bookkeeping call in `HerdrBridge` too; no wire verb needed or wanted. |
 | 5 | `terminateSession` | **different-shaped** | `deactivate_agent`. Synchronous signature, async verb: returns "asked", not "stopped". The local record is marked immediately so the caller's next read cannot see a live session; `agent.detached` is what says it actually stopped. |
@@ -423,6 +423,64 @@ model, ran three tool calls and printed their results unattended. **That is an
 observation about two spawns on one machine, not a guarantee** — it says the
 supervision being inert did not block these starts, not that it can never
 matter.
+
+**KAN-379 added five more cold starts on the same finding** (PR #164, against
+the live peer at `contractVersion 8`, build `9d4d999c`), which makes seven
+spawns on one machine and does not make the observation a guarantee. **See
+[gate 3's ruling](#gate-3-the-ruling-channel-startup-supervision-is-disabled-under-crabcast-deliberately)
+below for the argument that does not depend on the count.**
+
+### Gate 3, the ruling: channel-startup supervision is disabled under CrabCast, deliberately
+
+**KAN-393, `epic/KAN-39`, 2026-08-14. Gate 3 is NOT a cutover blocker**, and
+`setAgentSpawnedListener` not firing **is** the disablement rather than an
+accident of one. Recorded here and at the method itself so that nobody
+re-derives the gate from the supervisor's silence — *"silently inert" was
+explicitly ruled out as an end state.*
+
+The supervision exists to answer **one** dialog: the full-screen confirmation
+Claude Code raises for `--dangerously-load-development-channels`. Three
+independent reasons make that job empty here, and **the first is structural
+rather than observed**:
+
+1. **The dialog cannot be raised on this path.** The flag is composed in exactly
+   one place — `launchers.ts` `developmentChannelFlags()` — and reaches an agent
+   only as **argv on a `claude` command line**. `configure_agent` has no argv
+   field: `provision` sends `path`, `priority`, `launcher`, `prompt` and
+   `mcpServers`, and no member of that frame can carry a flag.
+   `crabcast-runtime.ts` imports nothing from `launchers.js`, so it cannot get
+   in by accident either. **A dialog whose trigger cannot be spelled cannot be
+   met** — and that is a claim about the wire's shape, not about how many spawns
+   happened to be clean.
+2. **Even if the listener fired, it returns at its first line.** `daemon.ts`
+   gates on `spawn.channelEnabled !== true`, and `provision` deliberately does
+   not send the `{"crabcast": "builtin"}` sentinel (KAN-294 item 5), so every
+   agent spawned here answers `channelEnabled: false`.
+3. **CrabCast publishes no spawn command line** (method 2), which is what made
+   this unfireable before either of the above was established.
+
+**The bound on reason 1, because it is narrower than "no dialog ever".** It is a
+claim about the *dev-channels* dialog — the only one this supervision answers.
+Other Claude Code startup dialogs exist; what covers them here is the seven
+observations plus the folder-trust finding directly above. Those belong to
+`startup-dialog.ts`'s `FOREIGN_DIALOGS` population, which this daemon refuses to
+answer on **every** runtime, so a foreign dialog under CrabCast is an agent that
+starts late and says so — not a channel defect, and not what gate 3 asked.
+
+**What would re-open it:** `configure_agent` growing a way to pass argv, this
+adapter acquiring an import from `launchers.js`, or `provision` starting to send
+the `"builtin"` sentinel. The first two are what
+`verify-crabcast-channel-startup-disablement.mjs` watches — **the premises, not
+the conclusion**, since the conclusion is prose and prose cannot go red.
+
+**`press_pane_key` is still absent and that is no longer a gate.** Re-measured
+on 2026-08-14 against the live peer: `Unknown action: press_pane_key`. It stays
+an interface observation for KAN-59 — who ruled the `pty_input` route out as a
+foundation for supervision — and it is not on the cutover's path.
+
+**And closing this gate is not clearing the way** (KAN-348's standing rule).
+Gate 2 remains open on KAN-397 and KAN-398; this ruling removes gate 3 from the
+list and moves nothing else.
 
 ### What this did not reach
 
@@ -734,6 +792,46 @@ that script's own header rather than left to inference.
 
 The same holds, unmentioned by anybody until KAN-294, for the census: nothing
 promises `list_agents` will *not* grow the field, and nothing promises it will.
+
+### The PTY group is uncontracted too, and a shipped feature rides on it (KAN-393)
+
+**This section listed `activate_response` and stopped, and that was the whole of
+what a reader looking for "what is uncovered" would find.** The module docblock
+of `crabcast-link.ts` has always been wider — *"what is still unpublished is
+everything else we touch — `activate_response`, `configure_response`, the
+`pty_*` group and the `agent.*` broadcasts … the parts we lean on hardest are
+the undocumented parts"* — so the **surface's** status was recorded. What was
+not recorded anywhere is **what depends on it and what breaks if it moves**, and
+that is what this section adds.
+
+**`pty_init`, `pty_input` and `pty_resize` are outside `contractVersion: 8`.**
+All three were re-measured as served on 2026-08-14 against build `9d4d999c`;
+being served is not being contracted, and neither a reshape nor a removal would
+move the version or go red in CrabCast's CI.
+
+**What rides on them: the sidepanel terminal — a shipped, user-facing feature.**
+Methods 21, 22 and 23. Under CrabCast, *rendering* an agent's terminal is
+`crabcast-link.ts`'s long-lived `pty_init` per session plus the `pty_output`
+frames it demuxes, and *typing into* one is `crabcast-runtime.ts`'s `pty_input`;
+`pty_resize` carries the geometry. There is **no contracted alternative** — the
+CLI cannot serve this group at all (see *The transport*, above) — so this is not
+a dependency to remove, and KAN-393 does not propose removing it. It is a
+dependency that was invisible.
+
+**What breaks if the group reshapes**, in the order a reader would meet it:
+
+- **A renamed or removed action** — the panel gets a refusal, drops its session
+  id, re-attaches once, and then renders *"Terminal session not recognised"* with
+  a Reconnect button. Loud, and the one benign outcome.
+- **A changed `pty_init_response` shape** — `buffer` renamed or dropped is a
+  terminal that attaches and paints nothing. There is no assertion on that field
+  outside the live proof.
+- **A changed `pty_output` frame** — the demux registered before the request
+  stops matching, so frames arrive and are discarded. **Silent**, and the worst
+  of the three: an empty terminal is indistinguishable from an idle agent.
+
+**And the cutover sequence's step 9 canary asserts on this surface**, which its
+own text did not say until KAN-393 — see the note there.
 
 **This paragraph opened `contractVersion: 3` until KAN-347**, which is the
 *second* place KAN-324's bump was never carried into the prose. KAN-283
