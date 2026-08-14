@@ -47,8 +47,16 @@ export interface PtyDiscontinuity {
    * 1 for this session's first gap, incrementing per session.
    *
    * A consumer that is told about a gap twice — once as it opens and once as it
-   * closes — needs to know it is the same gap. It is also how a reader notices
-   * it missed one: sequences do not skip.
+   * closes — needs to know it is the same gap.
+   *
+   * **Assignment never skips; the stored LIST can still start above 1**, and
+   * conflating those is the misreading to avoid. Numbers are handed out
+   * consecutively, so two live events one apart are two distinct gaps. But
+   * `HerdrSession.ptyDiscontinuities` is trimmed to
+   * {@link PTY_DISCONTINUITY_LIMIT} from the front, so a first entry numbered
+   * higher than 1 means older gaps were dropped — which is information rather
+   * than corruption, and the only reason the number is on the record at all
+   * rather than being the array index.
    */
   sequence: number;
   /**
