@@ -53,9 +53,15 @@
 //     human to re-read the claim. That is deliberate — a guard that could only
 //     see fields it was told to look for would miss the rename — but it means a
 //     green there is "nothing moved", never "somebody checked".
+//   - **Whether §4b's tool-to-action mapping is RIGHT.** §6 requires the socket
+//     action to be named beside the tool and re-reads the pair from `mcp.ts`,
+//     so a rename on either side surfaces. It cannot tell that a step sends the
+//     driver to the action that answers the question that step is asking.
 //   - **Anything about a running fleet.** This is a static read. The sequence's
 //     own steps are the instrument for the live system, and they are run by a
-//     person on the day.
+//     person on the day. `probe-cutover-readiness.mjs` is the driver's tool for
+//     that, and nothing here runs it — §6 asserts it exists, imports only node
+//     builtins and carries no write verb, never that its output is correct.
 //
 // ## Made to go red — the recipe, because the sections read the real tree
 //
@@ -89,6 +95,15 @@
 //   node daemon/scripts/verify-cutover-sequence.mjs            # exit 1
 //   git checkout -- daemon/scripts/install-service.sh
 //
+//   # §6, ONE step goes back to agent-only vocabulary — the walkthrough's
+//   #     finding 2, returning. A driver Q6 says cannot be an agent is handed a
+//   #     check only an agent can run. Note the mutation is one step and not the
+//   #     page: a document-wide version of it does NOT go red, which is what
+//   #     found this leg satisfying itself twice over.
+//   perl -pi -e 's/`butchr_list_agents` \(socket `list_agents`, or the probe\) lists no `task\/\*` agent/`butchr_list_agents` lists no `task\/*` agent/' docs/crabcast-cutover-sequence.md
+//   node daemon/scripts/verify-cutover-sequence.mjs            # exit 1
+//   git checkout -- docs/crabcast-cutover-sequence.md
+//
 // Sections:
 //
 //   1. every step carries a precondition, an action, a check, an abort and an owner
@@ -97,6 +112,8 @@
 //      still named in the document
 //   4. the two sentences KAN-378's acceptance criterion 3 requires are present
 //   5. the flip step's systemd advice still matches what the installer does
+//   6. every `butchr_*` instrument names the socket action beside it, and the
+//      read-only probe §4b hands the driver exists and stays read-only
 //
 // Usage: node daemon/scripts/verify-cutover-sequence.mjs [--verbose]
 
@@ -468,6 +485,126 @@ check(
     'survive an install, which is the whole reason the document prefers it to editing the unit.',
   'no mention of the drop-in directory in install-service.sh'
 );
+
+// ------------------- 6. the driver Q6 requires can run the checks --
+
+rule('6. Every `butchr_*` instrument names its socket action, and the probe exists');
+
+/**
+ * KAN-378's AC4 walkthrough, by `epic/KAN-39`, found the document contradicting
+ * itself: Q6 concludes the driver **must not** be an agent this daemon manages,
+ * and every check was then written as a `butchr_*` MCP call — which a human at a
+ * terminal does not have. Step 1 was the only step that named a non-agent route.
+ *
+ * THE FIX IS §4b, AND THIS SECTION IS WHY IT CANNOT QUIETLY COME UNDONE. A
+ * `butchr_*` tool named anywhere in the document must have its socket action
+ * named too, so a step added later in agent vocabulary alone goes red rather
+ * than reaching a driver who cannot run it.
+ *
+ * WHAT IT DOES NOT DO: check that the mapping is *correct*. The pairs are read
+ * from `mcp.ts` below, so a wrong pair in the document survives if the right
+ * action name happens to appear somewhere in the page. That is a reviewer's
+ * job, and it is on the face of §4b's table rather than hidden in here.
+ */
+const MCP_TO_SOCKET = [
+  ['butchr_list_agents', 'list_agents'],
+  ['butchr_deactivate_agent', 'deactivate_by_key'],
+  ['butchr_activate_agent', 'activate_by_key'],
+  ['butchr_tail_agent', 'tail_agent'],
+  ['butchr_send_to_agent', 'send_to_agent'],
+  ['butchr_guardian', 'guardian']
+];
+
+const mcpSource = read('daemon/src/mcp.ts');
+
+/**
+ * PER STEP, NOT PER DOCUMENT, and the first version of this got it wrong in a
+ * way worth leaving on the record. It asked whether the socket action appeared
+ * anywhere in the page, which is satisfied by §4b's own table — so a step added
+ * later in pure agent vocabulary passed, which is precisely the defect. The
+ * mutation written into the red-drive recipe above did not go red, and that is
+ * how it was found: **a check whose red drive will not fire is not a check.**
+ *
+ * The route may be named on the step itself or by pointing at the probe, since
+ * either leaves the driver able to act.
+ *
+ * AND THE TOOL NAME IS STRIPPED FIRST, WHICH IS THE SECOND TIME THIS LEG WAS
+ * SATISFYING ITSELF. `butchr_list_agents` CONTAINS `list_agents`, so a step
+ * naming only the MCP tool passed a search for the socket action — the same
+ * self-satisfaction `verify-doc-constant-pins.mjs` §3 avoids by stripping the
+ * marker before searching for what the marker says. Both were caught the same
+ * way, by a red drive that would not go red, and the lesson is cheaper stated
+ * than rediscovered: **run the mutation before believing the check.**
+ */
+const routeNamed = (block, action) =>
+  block.replace(/butchr_[a-z_]+/g, '').includes(action) || block.includes('probe-cutover-readiness');
+
+for (const [tool, action] of MCP_TO_SOCKET) {
+  if (!doc.includes(tool)) continue; // a tool the document does not use needs no route
+
+  for (const step of steps) {
+    if (!step.body.includes(tool)) continue;
+    check(
+      `Step ${step.id} names \`${tool}\` and a route for it (\`${action}\`, or the probe)`,
+      routeNamed(step.body, action),
+      `this step tells the driver to use \`${tool}\` and names no non-agent route.\n` +
+        `Q6 says the driver is a human at a terminal or an agent outside this fleet, and neither has ` +
+        `MCP tools. A step whose only instrument is an agent tool is not a step that driver can run — ` +
+        `see §4b, and name the socket action beside the tool the way step 1 does.`,
+      `${tool} → ${action}`
+    );
+  }
+
+  check(
+    `§4b's table pairs \`${tool}\` with \`${action}\``,
+    doc.includes(action),
+    `the document tells the driver to use \`${tool}\` and never names \`${action}\` anywhere, so §4b's ` +
+      `table has lost the row that makes the tool reachable without an agent.`,
+    `${tool} → ${action}`
+  );
+  // The pair itself is read from the MCP server, so a rename there surfaces here
+  // rather than in a driver's hands during the cutover.
+  check(
+    `\`${tool}\` → \`${action}\` is still the pair daemon/src/mcp.ts wires`,
+    mcpSource.includes(`name: "${tool}"`) && mcpSource.includes(`callDaemonAPI('${action}'`),
+    `mcp.ts no longer wires \`${tool}\` to \`${action}\`. §4b's table is now telling a driver to send ` +
+      `an action the daemon may not answer.`,
+    'wired'
+  );
+}
+
+const PROBE = 'daemon/scripts/probe-cutover-readiness.mjs';
+check(
+  `${PROBE} exists — the read-only route §4b hands the driver`,
+  fs.existsSync(path.join(repoRoot, PROBE)),
+  `${DOC_REL} §4b tells the driver to run it. A document naming a tool that is not in the tree is ` +
+    `the same defect as a document naming an instrument that no longer answers.`
+);
+check(
+  `${DOC_REL} names the probe`,
+  doc.includes('probe-cutover-readiness'),
+  'the probe is in the tree and the document no longer sends anybody to it, which leaves Q6 ' +
+    'contradicting the steps again.'
+);
+
+if (fs.existsSync(path.join(repoRoot, PROBE))) {
+  const probe = read(PROBE);
+  // The probe is for the worst day: a checkout nobody has installed, and a
+  // build that may not exist. Both would be caught here before they cost
+  // somebody the one moment the tool is for.
+  check(
+    'the probe imports node builtins only — no node_modules, no dist',
+    !/from\s+'(?!net|os|path|fs|url|crypto)[^']+'/.test(probe.replace(/\/\*[\s\S]*?\*\//g, '')),
+    'the probe now imports something outside node builtins. It is the tool for a machine mid-cutover; ' +
+      'a dependency on an install or a build is a dependency on the thing that may be broken.'
+  );
+  check(
+    'the probe writes nothing — no activation, no deactivation',
+    !/(deactivate_by_key|activate_by_key|send_to_agent|reset_by_key)/.test(probe),
+    'the probe now carries a write verb. §4b says it reads and never writes, because standing an agent ' +
+      'down is a decision with a ticket comment attached and must not be one keystroke from a status read.'
+  );
+}
 
 // -------------------------------------------------------------- verdict --
 

@@ -25,8 +25,10 @@ marker naming the declaration and a digest of it, and
 pull request. Move one of those constants without moving the sentence and CI goes
 red. **The structure of the steps below is checked too**, by
 `daemon/scripts/verify-cutover-sequence.mjs`: every step must carry a
-precondition, a check, an abort condition and an owner, and the code facts this
-document's central claim rests on are re-read there rather than trusted.
+precondition, a check, an abort condition and an owner; every instrument named
+as a `butchr_*` tool must name the socket action beside it, so §4b's fix cannot
+quietly come undone; and the code facts this document's central claim rests on
+are re-read there rather than trusted.
 
 ---
 
@@ -94,11 +96,13 @@ Losing this list is how a cutover acquires steps it does not need.
 
 1. **The registry expects nobody.** `reconcileAgents` restores every agent
    `registry.expected()` names that is not already alive, and it runs at every
-   daemon start. An agent stood down with `butchr_deactivate_agent` is recorded
+   daemon start. An agent stood down with `butchr_deactivate_agent` (socket
+   `deactivate_by_key`) is recorded
    `deactivated`, which is *intent*, and intent is what survives the restart.
    Read it as an empty `missingAgents` plus no agents listed.
-2. **No Butchr-named pane is alive.** Read off `butchr_list_agents` — the agent
-   rows, and `unbackedPanes` for panes with no agent behind them.
+2. **No Butchr-named pane is alive.** Read off `butchr_list_agents` (socket
+   `list_agents`, or the probe in §4b) — the agent rows, and `unbackedPanes` for
+   panes with no agent behind them.
 
 Condition 1 is the one that matters and it is not the one people look at. What
 re-spawns fresh at a restart is *registry intent minus what is alive*; a fleet
@@ -222,6 +226,43 @@ of them is checked by anything automatic.
 
 ---
 
+## 4b. The driver's instruments — because Q6 rules out the obvious ones
+
+**This section exists because the first draft contradicted itself**, and
+`epic/KAN-39` found it walking the sequence. Q6 concludes the driver must not be
+an agent this daemon manages. Every check below was then written as a `butchr_*`
+call — **and those are MCP tools a human at a terminal does not have.** A driver
+who took Q6 seriously reached step 2 and had to invent a route, during a one-way
+operation, which is the improvisation this document exists to remove.
+
+**Every `butchr_*` tool is a thin wrapper over a socket action**, and the socket
+is reachable by anyone who can read `~/.local/share/butchr/butchr.sock`. So each
+check below names both, and one script runs the read-only ones for you:
+
+```bash
+node daemon/scripts/probe-cutover-readiness.mjs          # the reads, in this document's vocabulary
+node daemon/scripts/probe-cutover-readiness.mjs --json    # the raw frames
+```
+
+It reads and never writes — node builtins only, no `node_modules`, no import
+from `dist`, because it is a tool for the worst day. **It renders no verdict**:
+three of step 8's preconditions are not observable from a socket, and it names
+them rather than implying a green light.
+
+| what a step says | MCP tool | socket action |
+| --- | --- | --- |
+| which runtime is serving | *(none — socket only)* | `agent_runtime_report` |
+| the census, `missingAgents`, `standbyTotal`, `boardControl.mode`, the guardian | `butchr_list_agents` | `list_agents` |
+| stand an agent down | `butchr_deactivate_agent` | `deactivate_by_key` |
+| bring one back | `butchr_activate_agent` | `activate_by_key` |
+| read a pane | `butchr_tail_agent` | `tail_agent` |
+| send to an agent | `butchr_send_to_agent` | `send_to_agent` |
+| who the guardian is | `butchr_guardian` | `guardian` *(also carried on `list_agents`)* |
+
+**The writes are deliberately not in the probe.** Standing an agent down is a
+decision with a ticket comment attached to it, and putting it one keystroke from
+a status read would invite the accident the order exists to avoid.
+
 ## 5. The sequence
 
 Each step is: **Precondition** (what must already be true), **Action**,
@@ -247,15 +288,50 @@ are after it.
 ### Step 2 — Freeze the board before touching a single agent
 
 - **Precondition:** step 1 checked.
-- **Action:** put the board reconciler beyond `converge` — `BUTCHR_BOARD_RECONCILE=off`,
-  or confirm it is already `report`. This is first, before any drain, and the
-  order is load-bearing.
-- **Check:** `boardControl.mode` on `butchr_list_agents` reads `off` or `report`.
-  **Do not assume the default.** `BUTCHR_BOARD_RECONCILE` defaults to `report`,
-  and this machine was observed in `converge` at 2026-08-14T00:00Z with 32
-  agents under board control. A dated observation, not a constant — which is the
-  reason the check is a read rather than a recollection.
-- **Abort:** the mode cannot be read, or reads `converge` after the change.
+- **Action:** the board reconciler must be beyond `converge` before any drain,
+  and **the order is load-bearing**. Read the mode first, then take whichever of
+  these two paths it puts you on:
+
+  1. **It already reads `report` or `off`.** Change nothing. This is the cheap
+     path and it is worth waiting for.
+  2. **It reads `converge`.** The mode comes from the **daemon's own process
+     environment**, so `export BUTCHR_BOARD_RECONCILE=off` in your shell changes
+     nothing at all. It takes the same drop-in shape as step 8:
+     ```bash
+     mkdir -p ~/.config/systemd/user/butchr-daemon.service.d
+     printf '[Service]\nEnvironment=BUTCHR_BOARD_RECONCILE=off\n' \
+       > ~/.config/systemd/user/butchr-daemon.service.d/20-board.conf
+     systemctl --user daemon-reload
+     systemctl --user restart butchr-daemon.service
+     ```
+
+  **The mechanism, stated because the obvious reading of it is wrong in a way
+  that does not change the remedy.** `boardReconcileMode()` in `daemon.ts` is
+  read **on every cycle**, not captured at boot — its own docblock says so, *"so
+  the mode is a property of the environment the daemon is running in rather than
+  of the moment it started."* What that buys is nothing here: it re-reads the
+  environment **of its own process**, and nothing outside that process can
+  change it. There is no socket action and no UI control that sets the mode.
+  So the restart is required, and it is required for a different reason than
+  "the value was captured at boot".
+
+  **What that restart costs while the fleet is still live**, because this step
+  runs *before* the drain: no agent is killed — `epic/KAN-203` measured a real
+  daemon restart under herdr with all four agents present before and after —
+  and session records drop and re-form. **Every channel registration drops**
+  (KAN-274) and re-forms by itself within seconds; during that window a steer to
+  an agent is *refused* rather than delivered, which is honest but is a real
+  cost, and it is the reason path 1 is worth waiting for.
+- **Check:** `boardControl.mode` reads `off` or `report` — `butchr_list_agents`,
+  socket `list_agents`, or `probe-cutover-readiness.mjs`. On a restart the
+  reconciler also logs its mode as it starts: `[board] reconciler starting in
+  <mode> mode`. **Do not assume the default.** `BUTCHR_BOARD_RECONCILE` defaults
+  to `report`, and this machine was observed in `converge` at 2026-08-14T00:00Z
+  with 32 agents under board control. A dated observation, not a constant —
+  which is the reason the check is a read rather than a recollection.
+- **Abort:** the mode cannot be read, or still reads `converge` after a restart —
+  something else is setting it, and finding out what comes before draining
+  anything.
 
 <!-- constant-pin: BOARD_JQL
      src: daemon/src/board-reconcile.ts
@@ -281,7 +357,7 @@ are after it.
   agent's own ticket reaches it within a poll and costs no interrupt, and a
   composer send to an agent sitting at a dialog can answer or terminate it
   (KAN-377).
-- **Check:** every live agent named by `butchr_list_agents` has a comment on its
+- **Check:** every live agent named by `butchr_list_agents` (socket `list_agents`) has a comment on its
   ticket, and every supervisor has replied with its state written down.
 - **Abort:** an agent is mid-merge or holds work that exists nowhere but its
   conversation. Wait for it rather than draining it.
@@ -291,9 +367,9 @@ are after it.
 
 - **Precondition:** step 3 checked; the board is not converging.
 - **Action:** for each task agent, either let it finish, or stand it down with
-  `butchr_deactivate_agent` and move its ticket out of `In Progress` /
+  `butchr_deactivate_agent` (socket `deactivate_by_key`) and move its ticket out of `In Progress` /
   `In Review` with a comment saying why.
-- **Check:** `butchr_list_agents` lists no `task/*` agent, and `missingAgents` is
+- **Check:** `butchr_list_agents` (socket `list_agents`, or the probe) lists no `task/*` agent, and `missingAgents` is
   empty — an agent in `missingAgents` is one the registry still expects.
 - **Abort:** a ticket cannot be moved off the board statuses. It is a landmine
   for the next time anybody sets `converge`, and it is cheaper to fix now.
@@ -303,9 +379,9 @@ are after it.
 
 - **Precondition:** step 4 checked. Supervisors go last because they are what
   stands other agents down and what would notice something wrong.
-- **Action:** stand each supervisor down with `butchr_deactivate_agent`, after
+- **Action:** stand each supervisor down with `butchr_deactivate_agent` (socket `deactivate_by_key`), after
   its state is on its ticket (step 3).
-- **Check:** `butchr_list_agents` lists no agents at all; `missingAgents`,
+- **Check:** `butchr_list_agents` (socket `list_agents`, or the probe) lists no agents at all; `missingAgents`,
   `preemptedAgents` and `standbyAgents` are read and understood rather than
   glanced at. **`preemptedAgents` carries a promise that stops being true after
   step 8** — its documented meaning is that re-activating one resumes the
@@ -318,7 +394,7 @@ are after it.
 ### Step 6 — Account for the guardian
 
 - **Precondition:** step 5 checked.
-- **Action:** read who the guardian is with `butchr_guardian`. The guardian is a
+- **Action:** read who the guardian is with `butchr_guardian` (socket `guardian`; the same block rides on `list_agents`, so the probe prints it). The guardian is a
   role laid on an agent that already has a ticket, so draining that agent leaves
   the fleet unswept. Decide and record whether that is accepted for the duration
   or reassigned after step 10.
@@ -388,8 +464,8 @@ restores a conversation.
   - its MCP servers are present — `agent_status` echoes `config.mcpServers` with
     what was sent, rather than `undefined`;
   - it reached its tools: it can read its own ticket;
-  - `butchr_tail_agent` returns text from it;
-  - a `butchr_send_to_agent` reports `delivered`, and the tail shows it landed;
+  - `butchr_tail_agent` (socket `tail_agent`) returns text from it;
+  - a `butchr_send_to_agent` (socket `send_to_agent`) reports `delivered`, and the tail shows it landed;
   - the extension renders its terminal.
 - **Abort:** any of the above. Also abort if the census's
   `unreadableRecordsTotal` increases, or if two panes appear for one workspace
@@ -412,7 +488,7 @@ restores a conversation.
 
 - **Precondition:** steps 9 and 10 checked for every agent brought back.
 - **Action:** put the board reconciler back to the mode it was in at step 1.
-- **Check:** `boardControl.mode` reads what step 1 recorded, and no unexpected
+- **Check:** `boardControl.mode` reads what step 1 recorded — `butchr_list_agents`, socket `list_agents`, or the probe — and no unexpected
   agent appears within one cycle.
 - **Abort:** agents appear that nobody activated. Put the reconciler back to
   `off` and find out why before letting it converge on a runtime nobody has run
@@ -430,7 +506,7 @@ this order for the same reason the flip has an order.
 
 - **Precondition:** a decision to roll back.
 - **Action:** `BUTCHR_BOARD_RECONCILE=off` (or confirm `report`).
-- **Check:** `boardControl.mode`.
+- **Check:** `boardControl.mode` — `butchr_list_agents`, socket `list_agents`, or the probe.
 - **Abort:** none — this step is always safe.
 - **Who:** the driver.
 
@@ -438,8 +514,8 @@ this order for the same reason the flip has an order.
 
 - **Precondition:** R1 checked.
 - **Action:** stand down every agent started under CrabCast, with
-  `butchr_deactivate_agent`, so the registry stops expecting them.
-- **Check:** `butchr_list_agents` shows no agents and an empty `missingAgents`.
+  `butchr_deactivate_agent` (socket `deactivate_by_key`), so the registry stops expecting them.
+- **Check:** `butchr_list_agents` (socket `list_agents`, or the probe) shows no agents and an empty `missingAgents`.
 - **Abort:** an agent cannot be stood down. Leaving it running is what produces
   the duplicate at R3.
 - **Who:** the driver.
@@ -546,11 +622,18 @@ it without knowing. **Owner:** whoever proposes skipping the drain.
 - **It does not close any gate.** It assumes they will close and asks what order
   to move in when they have.
 - **Nothing here checks that the order is *right*.** The pins and
-  `verify-cutover-sequence.mjs` check that the document's code claims still hold
-  and that no step is missing a precondition, a check, an abort or an owner. That
-  a step is in the correct *place* is a judgement, and the only cover for it is a
-  reader who is not the author walking it and saying where it is ambiguous —
-  which is recorded on KAN-378 rather than in a script.
+  `verify-cutover-sequence.mjs` check that the document's code claims still hold,
+  that no step is missing a precondition, a check, an abort or an owner, and that
+  no check is written in tools the driver Q6 requires does not have. That a step
+  is in the correct *place* is a judgement, and the only cover for it is a reader
+  who is not the author walking it and saying where it is ambiguous — which is
+  recorded on KAN-378 rather than in a script.
+- **That walkthrough has happened once, and it found two things.** `epic/KAN-39`
+  walked this on 2026-08-14 and reported that step 2 offered a change it could
+  not effect, and that Q6 ruled out the driver every other step's instrument
+  assumed. Both are fixed above — §4b exists because of the second. **Neither
+  was in the order**, which is the part a script cannot check and the part that
+  survived review.
 
 ## 9. Provenance
 
