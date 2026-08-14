@@ -273,7 +273,16 @@ function main() {
         fail('4 root lifecycle', `the store manifest still carries scripts: ${Object.keys(storedManifest.scripts).join(', ')}`)
       }
     } else {
-      fail('4 root lifecycle', `no store entry was published; store held: ${JSON.stringify(entries)}`)
+      // Reached when buildStoreEntry threw above. This branch must REPORT
+      // rather than crash: it is the path a real regression takes, and an
+      // exception here would replace the verdict with a stack trace. Caught by
+      // the red drive on 2026-08-14, which is the whole argument for running
+      // one — the mutation went red for the right reason and this branch threw
+      // `ReferenceError: entries is not defined` on its way out.
+      const held = fs.existsSync(storeRoot)
+        ? fs.readdirSync(storeRoot).filter((n) => !n.startsWith('.'))
+        : []
+      fail('4 root lifecycle', `no store entry was published; store held: ${JSON.stringify(held)}`)
     }
 
     // ---- 5. FINDING NOTHING IS A FAILURE. The heart of the ticket: the old
