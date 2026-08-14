@@ -156,6 +156,55 @@ const MARK_MISS = `NEWARMLOST${RUN}`;   // it did not
 const OUTSIDE = `BRIEFOUTSIDE${RUN}`;   // and the brief is not in the workspace
 const INSIDE = `BRIEFINSIDE${RUN}`;
 
+/**
+ * Give back everything this run took, from wherever it stops.
+ *
+ * A FUNCTION RATHER THAN A TRAILING BLOCK, AND THAT IS A DEFECT BEING FIXED
+ * RATHER THAN A TIDY-UP. The first version of this script cleaned up only at
+ * the end, so the two early exits — no peer, and no agent — left the workspace
+ * directory `spawnSession` had just created and the record `configure_agent`
+ * had just written. **The early exit is not the rare path**: CrabCast's capacity
+ * gate refuses when the machine is busy, which is exactly when somebody is
+ * running proofs, and it refuses AFTER `configure_agent` has succeeded. Measured
+ * on 2026-08-14: one refused run left `kan-400-brief-cewrxy` configured with an
+ * empty directory, found only by looking. That is the litter
+ * `verify-crabcast-claude-launcher-live.mjs` already records growing
+ * `configuredAgents` 4 → 8 over four runs, arriving by a second road.
+ *
+ * Safe to call twice and safe to call before the session exists, so no exit path
+ * has to reason about which half of the run it is in.
+ */
+async function cleanup() {
+  rule('cleanup');
+  try {
+    if (session?.sessionId) runtime.terminateSession(session.sessionId);
+    await sleep(3_000);
+  } catch { /* a session that never started needs no terminating */ }
+  try { runtime.dispose(); } catch { /* already disposed */ }
+
+  const insideWorkspaces = workDir.includes(`${path.sep}butchr${path.sep}workspaces${path.sep}`);
+  if (insideWorkspaces && !dirExistedBefore && fs.existsSync(workDir)) {
+    fs.rmSync(workDir, { recursive: true, force: true });
+    console.log(`   removed probe workspace ${workDir}`);
+  } else {
+    console.log(`   left ${workDir} alone (pre-existing, or outside the workspaces tree)`);
+  }
+
+  // CrabCast's own record, which `configure_agent` writes BEFORE the activation
+  // that may then be refused — so this runs even when no agent ever started.
+  try {
+    const { execFileSync } = await import('child_process');
+    execFileSync('crabcast', ['forget', workDir], { stdio: 'pipe', timeout: 20_000 });
+    console.log(`   forgot CrabCast's record for ${workDir}`);
+  } catch (err) {
+    console.log(
+      `   could NOT forget CrabCast's record for ${workDir} — remove it by hand:\n` +
+        `         crabcast deactivate ${workDir} && crabcast forget ${workDir}\n` +
+        `         (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`
+    );
+  }
+}
+
 const TYPE = 'task';
 // THROWAWAY, AND UNIQUE PER RUN. An activation under CrabCast starts an agent
 // FRESH — there is no `--continue` on that path — so a key whose conversation
@@ -165,6 +214,14 @@ const TYPE = 'task';
 // configured with the PREVIOUS run's brief and its PREVIOUS run's markers.
 const KEY = process.env.KAN400_PROBE_KEY ?? `kan-400-brief-${RUN.toLowerCase()}`;
 const workDir = workspaceDirFor(TYPE, KEY);
+
+// DECLARED HERE, NOT WHERE THEY ARE FIRST USED, so that {@link cleanup} is safe
+// from every exit path. Both are read by it, and a `const` further down would
+// sit in its temporal dead zone at the earlier exits — the cleanup would then
+// throw a ReferenceError exactly on the paths it was added for, which is worse
+// than the litter it was fixing.
+const dirExistedBefore = fs.existsSync(workDir);
+let session = null;
 
 console.log(`CrabCast socket : ${socketPath}`);
 console.log(`probe agent     : ${TYPE}/${KEY}   (throwaway — see the header)`);
@@ -186,7 +243,7 @@ note('peer commit', JSON.stringify(runtime.describe().link.peerCommit));
 
 if (!connected) {
   console.log('\nFAILED early — no peer, so nothing below would mean anything.');
-  runtime.dispose();
+  await cleanup();
   process.exit(1);
 }
 
@@ -265,12 +322,10 @@ check('the brief carries the deep marker at its end', brief.trimEnd().endsWith(D
 // ── 4. the spawn ───────────────────────────────────────────────────────────
 rule('4. spawnSession — a real, cold-started `claude` agent through CrabCast');
 
-const dirExistedBefore = fs.existsSync(workDir);
-
 // No MCP servers on purpose. This probe needs no tools beyond reading a file,
 // and sending none keeps the workspace holding only what CrabCast itself puts
 // there — which is what §5's observation is about.
-const session = runtime.spawnSession(TYPE, KEY, undefined, brief, 'claude');
+session = runtime.spawnSession(TYPE, KEY, undefined, brief, 'claude');
 
 check('spawnSession returned a session synchronously', !!session?.sessionId);
 await until(() => session.status === 'active' || !!session.spawnError, 90_000);
@@ -279,7 +334,7 @@ check('the session went active', session.status === 'active',
 
 if (session.status !== 'active') {
   console.log('\nFAILED early — no agent started.');
-  runtime.dispose();
+  await cleanup();
   process.exit(1);
 }
 
@@ -372,29 +427,7 @@ console.log(
 );
 
 // ── cleanup ────────────────────────────────────────────────────────────────
-rule('cleanup');
-runtime.terminateSession(session.sessionId);
-await sleep(3_000);
-runtime.dispose();
-
-const insideWorkspaces = workDir.includes(`${path.sep}butchr${path.sep}workspaces${path.sep}`);
-if (insideWorkspaces && !dirExistedBefore && fs.existsSync(workDir)) {
-  fs.rmSync(workDir, { recursive: true, force: true });
-  console.log(`   removed probe workspace ${workDir}`);
-} else {
-  console.log(`   left ${workDir} alone (pre-existing, or outside the workspaces tree)`);
-}
-try {
-  const { execFileSync } = await import('child_process');
-  execFileSync('crabcast', ['forget', workDir], { stdio: 'pipe', timeout: 20_000 });
-  console.log(`   forgot CrabCast's record for ${workDir}`);
-} catch (err) {
-  console.log(
-    `   could NOT forget CrabCast's record for ${workDir} — remove it by hand:\n` +
-      `         crabcast deactivate ${workDir} && crabcast forget ${workDir}\n` +
-      `         (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`
-  );
-}
+await cleanup();
 
 // ── verdict ────────────────────────────────────────────────────────────────
 rule('verdict');
