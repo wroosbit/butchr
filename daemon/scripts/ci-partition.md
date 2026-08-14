@@ -41,10 +41,10 @@ classification is the deliverable and the CI job is downstream of it.
 | `yes` | 89 |
 | `partial` | 8 |
 | `quarantined` | 3 |
-| `no` | 18 |
-| **total** | **118** |
+| `no` | 19 |
+| **total** | **119** |
 
-**97 of 118** run on every pull request.
+**97 of 119** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -173,6 +173,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-confirm-present-name-join` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET` (or the default socket path) and it spawns a real `claude` agent. It attempts nothing without one. Its output goes on the pull request. |
 | `verify-crabcast-reconnect-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`, a real herdr and a real pty; it attempts nothing without one. |
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
+| `verify-crabcast-second-activation-resumes` | no | needs a real CrabCast daemon, real capacity for one agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
 | `verify-message-provenance-live` | no | needs a real daemon, herdr, a pane and a live Claude Code agent — the provenance it checks is what a model actually received. |
 | `verify-no-attach-steal` | no | takes the key of a live agent as its argument and attaches to it; there is nothing to pass in CI. |
