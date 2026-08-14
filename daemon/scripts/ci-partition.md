@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 85 |
+| `yes` | 86 |
 | `partial` | 8 |
 | `quarantined` | 3 |
 | `no` | 18 |
-| **total** | **114** |
+| **total** | **115** |
 
-**93 of 114** run on every pull request.
+**94 of 115** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -87,6 +87,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cutover-sequence` | yes | reads `docs/*.md`, `daemon/src/*.ts` and `daemon/scripts/install-service.sh` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
+| `verify-dep-linking-covers-every-repo-shape` | yes | builds every fixture in a temporary directory, runs `npm ci` only against a hand-written zero-dependency lockfile (no network), and reads `prompts/task.md` off the checkout. Node builtins plus `npm` and `cp`. |
 | `verify-diagnostic-evidence-visible` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no network, no terminal. Section 5 additionally shells out to the repo's own `tsc`, as verify-absence-is-not-intent.mjs §5 does. |
 | `verify-doc-constant-pins` | yes | reads `docs/*.md` and `daemon/src/*.ts` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
