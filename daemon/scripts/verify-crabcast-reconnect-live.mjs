@@ -37,8 +37,10 @@
 //     peer dying rudely is delivered as EOF exactly like a polite close and no
 //     socket in either proof produces ECONNRESET. `verify-crabcast-reconnect-
 //     resync.mjs` §4b asserts the SHAPE of that fix statically and says so.
-//   - **The `claude` launcher.** This spawns `shell`, for the reason
+//   - **The `claude` launcher.** This uses `shell`, for the reason
 //     `verify-crabcast-runtime-live.mjs` gives: it depends on nothing but herdr.
+//   - **`spawnSession`.** The session here is ADOPTED, not spawned — see the
+//     setup block. `verify-crabcast-runtime-live.mjs` owns the spawn path.
 //
 // The relay runs in this process. So the FIN is not initiated by calling
 // anything on the link — it arrives over a socket, on the real event path — but
@@ -58,12 +60,16 @@
 //   BUTCHR_CRABCAST_SOCKET=~/.local/share/crabcast/crabcast.sock \
 //     node daemon/scripts/verify-crabcast-reconnect-live.mjs [--verbose]
 //
-// It needs room for one more agent. CrabCast refuses the probe spawn when the
-// machine is short of CPU — its gate, with its own figures, and the ordinary
-// answer on a busy fleet rather than a fault. The spawn is therefore retried as
-// a SETUP GUARD, for `KAN381_SPAWN_BUDGET_MS` (default 8 minutes); raise it if
-// the fleet is busy. A refusal for any other reason is not retried, and a
-// give-up prints "setup:" and asserts nothing — it must never be read as a red.
+// It needs room for one more `shell` pane. CrabCast refuses at capacity, with
+// its own figures, and on a busy fleet that is the ordinary answer rather than
+// a fault. **The probe is therefore started by this script with `override:
+// true`** — the escape CrabCast's own refusal names, recorded on their side
+// with the figures it bypassed — and the runtime adopts it off the census. See
+// the block above the setup for why the override lives here rather than in
+// `CrabCastRuntime`, and note that `preempt` is deliberately never used.
+//
+// Every setup failure prints "setup:" and asserts nothing. None of them may be
+// read as a red against this ticket.
 
 import fs from 'fs';
 import net from 'net';
@@ -205,45 +211,116 @@ check(
 );
 console.log(`   peer build ${String(peer.peerCommit).slice(0, 12)}, contract v${peer.peerContractVersion}`);
 
-// SPAWNING IS A SETUP GUARD HERE, NOT A VERDICT — and the retry is why it is
-// worth saying so. CrabCast refuses `activate_agent` when the machine is short
-// of CPU, with its own figures, and on a busy fleet that is the ordinary answer
-// rather than a fault: the first run of this proof was refused with *"cpu too
-// busy — 3.93 cores are in use, against the 3.0 cores this machine leaves to
-// agents"*. That is CrabCast's capacity gate working, and nothing about this
-// ticket. So it waits rather than reporting a red that would send a reader to
-// the wrong file. A refusal for any other reason is not retried.
+// ── the probe pane: started BY THIS SCRIPT, adopted by the runtime ────────
 //
-// The budget is an env knob because how long "wait for room" takes is a fact
-// about the fleet on the day rather than about this proof: on a machine running
-// six agents it did not clear in eight minutes, and on an idle one the first
-// attempt succeeds.
-let session = null;
-const spawnBudgetMs = Number(process.env.KAN381_SPAWN_BUDGET_MS ?? 8 * 60_000);
-const spawnDeadline = Date.now() + spawnBudgetMs;
-let lastRefusal = null;
-for (let attempt = 1; Date.now() < spawnDeadline; attempt++) {
-  session = runtime.spawnSession(TYPE, KEY, undefined, 'KAN-381 reconnect probe.', 'shell');
-  await until(() => session.status === 'active' || !!session.spawnError, 60_000);
-  if (session.status === 'active') break;
-  lastRefusal = session.spawnError ?? `still ${session.status}`;
-  if (!/too busy|capacity|headroom|not enough/i.test(lastRefusal)) break;
-  console.log(
-    `   setup: attempt ${attempt} refused for machine capacity, which is CrabCast's gate and ` +
-      `not this ticket's subject. Waiting 45s.`
-  );
-  await sleep(45_000);
+// SETUP, NOT A VERDICT. The pane is configured and activated over a DIRECT
+// connection to the real CrabCast — not through the runtime — and the runtime
+// then picks it up from the census through `adoptFromCensus`. Two reasons, and
+// the second is the one that matters:
+//
+//  1. **Capacity.** CrabCast refuses `activate_agent` when the machine is short
+//     of CPU, with its own figures. On this fleet that refusal did not clear in
+//     15 minutes of retrying — *"4.00 cores are in use, against the 3.0 cores
+//     this machine leaves to agents"*, six Claude agents on four cores. The
+//     refusal names its own escape: `override: true`, *"start it even at
+//     capacity — recorded with the figures it bypassed"*. That is CrabCast's
+//     documented interface rather than a way round it, and using it is
+//     disclosed in this script's output every run. **`preempt` is NOT used** —
+//     it stands another agent down, and no proof is worth that.
+//  2. **It keeps the override out of production code.** Nothing in
+//     `CrabCastRuntime` learns to bypass a capacity gate for a test's
+//     convenience. `spawnSession` is untouched and still cannot send
+//     `override`.
+//
+// WHAT THAT CHANGES ABOUT WHAT IS PROVED, stated because it is a real
+// difference: the session under test is **adopted**, not spawned. So this does
+// not exercise `spawnSession` — `verify-crabcast-runtime-live.mjs` owns that —
+// and it does exercise adoption against a real peer, which is a bonus rather
+// than the point. Everything this ticket is about happens after the mirror
+// exists, and a mirror over an adopted session is the same mirror.
+if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
+
+/** One request on a direct connection to the REAL socket, bypassing the relay. */
+function askRealPeer(body) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(realSocket);
+    let buf = '';
+    const id = `kan381-setup-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`no answer to ${body.action} in 20s`));
+    }, 20_000);
+    socket.on('connect', () => socket.write(JSON.stringify({ ...body, id }) + '\n'));
+    socket.on('data', (chunk) => {
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        let frame;
+        try {
+          frame = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (frame.id === id) {
+          clearTimeout(timer);
+          socket.destroy();
+          resolve(frame);
+          return;
+        }
+      }
+    });
+    socket.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
 }
-if (!session || session.status !== 'active') {
+
+const configured = await askRealPeer({
+  action: 'configure_agent',
+  path: workDir,
+  priority: 1,
+  launcher: 'shell',
+  prompt: 'KAN-381 reconnect probe.'
+});
+if (configured.success !== true) {
+  console.error(`\nsetup: configure_agent refused. Nothing was asserted.\n${configured.error}\n`);
+  runtime.dispose();
+  await cutRelay();
+  process.exit(1);
+}
+
+console.log(
+  '   setup: activating the probe with `override: true` — CrabCast is at capacity and says so;\n' +
+    '          this is the escape its own refusal names, and it is recorded on their side with\n' +
+    '          the figures it bypassed. `preempt` is NOT used: nothing is stood down.'
+);
+const activated = await askRealPeer({ action: 'activate_agent', path: workDir, override: true });
+if (activated.success !== true) {
+  console.error(`\nsetup: activate_agent refused even with override. Nothing was asserted.\n${activated.error}\n`);
+  runtime.dispose();
+  await cutRelay();
+  process.exit(1);
+}
+console.log(`   setup: CrabCast started it as session ${activated.sessionId}`);
+
+// The runtime learns about it the way it would learn about any agent a CrabCast
+// daemon started that this daemon process did not: off the census.
+const session = await until(() => runtime.listActiveSessions().find((s) => s.key === KEY), 30_000);
+if (!session) {
   console.error(
-    `\nsetup: no pane, so nothing below would mean anything. Nothing was asserted.\n` +
-      `${lastRefusal ?? 'unknown'}\n`
+    '\nsetup: the runtime never adopted the pane from the census, so there is no mirror to\n' +
+      'test. Nothing was asserted.\n'
   );
   runtime.dispose();
   await cutRelay();
   process.exit(1);
 }
-check('the agent started', session.status === 'active', session.spawnError);
+check("the runtime adopted the running pane from CrabCast's own census", !!session);
+check('and it is marked adopted rather than spawned', session.adopted === true, JSON.stringify({ adopted: session.adopted }));
 console.log(`   butchr session  : ${session.sessionId}`);
 
 /** Every event the listener saw, both arms, in order. */
@@ -418,14 +495,28 @@ check(
   `buffer tail: ${paneLetters(runtime.getSession(session.sessionId)?.ptyBuffer ?? '').slice(-120)}`
 );
 
-// …and it arrived through the SNAPSHOT, not the stream. That asymmetry is
-// KAN-224's design and it is exactly why the gap has to be announced: a
-// consumer that was appending deltas has a hole its own copy cannot close.
-check(
-  'and it arrived by the snapshot rather than the stream — the delta consumer still has a hole',
-  events.filter((e) => e.kind === 'data' && paneLetters(e.data).includes(GAP_MARKER)).length === 0,
-  'the marker came through the listener, which would mean the snapshot leaked into the stream path'
-);
+// THE ASSERTION THAT WAS HERE WAS NON-DETERMINISTIC AND THE RED DRIVE IS WHAT
+// CAUGHT IT — recorded rather than quietly deleted, because it is the kind of
+// check that would have flaked in front of somebody else.
+//
+// It re-checked, at this point, that no data event had ever carried the marker
+// — meaning "the snapshot did not leak into the stream path". It passed on the
+// green run and FAILED on the mutated one, and **the mutation cannot affect
+// which bytes CrabCast streams**: it only removed two calls that open and close
+// a record. So the difference was timing, not behaviour. A live pane is redrawn
+// by herdr, and a redraw legitimately re-streams text that is still on screen —
+// including the marker printed during the outage. That is not a leak, and an
+// assertion that cannot tell the two apart is one that reports the wrong thing
+// on a schedule nobody controls.
+//
+// What is actually claimable is scoped to the outage window, and it is already
+// asserted above, twice: the marker did not arrive on the data arm while the
+// mirror was stale, and NO data at all did. That is the property — a consumer
+// appending deltas has a hole its own copy cannot close, which is why the gap
+// has to be announced rather than inferred from the buffer.
+//
+// The snapshot-does-not-fan-out invariant itself is owned at subscribe time by
+// `verify-crabcast-runtime-live.mjs` §3, where there is no redraw to confuse it.
 
 const after = 'KANAFTERRESYNC';
 runtime.writePty(session.sessionId, `echo ${after}${cr}`);
