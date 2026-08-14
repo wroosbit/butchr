@@ -5,6 +5,7 @@ import {
   CRABCAST_CONTRACT_VERSION,
   CrabCastLink,
   type CrabCastRefusal,
+  type LinkStateEvent,
   renderRefusal
 } from './crabcast-link.js';
 import {
@@ -18,6 +19,9 @@ import {
   type HerdrAgentRecord,
   type HerdrAgentStatus,
   type HerdrSession,
+  PTY_DISCONTINUITY_LIMIT,
+  type PtyDiscontinuity,
+  type PtyStreamListener,
   type RowStanding,
   type SessionEndedEvent,
   type StandingReading,
@@ -256,9 +260,34 @@ function narrowTailSources(values: unknown[]): TailSource[] {
 interface PtyMirror {
   remoteSessionId: string;
   buffer: string;
-  listeners: Array<(data: string) => void>;
-  state: 'subscribing' | 'live' | 'ended';
+  listeners: Array<PtyStreamListener>;
+  /**
+   * **`'stale'` is the state KAN-381 added, and its absence was the defect.**
+   * Before it there were three states and a reconnected-but-unsubscribed mirror
+   * had to be one of them — it was `'live'`, which is the claim that this
+   * mirror is tracking the pane. It was not; CrabCast was streaming to a socket
+   * that no longer existed. A state that cannot be named is one nothing can
+   * branch on, which is why the resync had nowhere to hang.
+   */
+  state: 'subscribing' | 'live' | 'stale' | 'ended';
+  /**
+   * Incremented on every subscribe attempt, so a `pty_init` that resolves after
+   * a *later* drop cannot promote a mirror the link has since lost again.
+   * Without it a slow reconnect racing a second drop leaves `'live'` on a
+   * mirror with no subscription — the original defect, arrived at by a race
+   * instead of by omission.
+   */
   generation: number;
+  /** Gaps opened on this mirror so far; the source of `PtyDiscontinuity.sequence`. */
+  gaps: number;
+  /**
+   * The gap currently open, or `null` when the mirror is subscribed.
+   *
+   * The same object that was appended to `HerdrSession.ptyDiscontinuities`, held
+   * by reference so closing it updates the durable record and the live one
+   * together. Two copies would be two answers.
+   */
+  openGap: PtyDiscontinuity | null;
 }
 
 const PTY_BUFFER_LIMIT = 100_000;
@@ -561,6 +590,10 @@ export class CrabCastRuntime implements AgentRuntime {
     this.log = options.log ?? ((m) => console.log(`[CrabCastRuntime] ${m}`));
 
     this.link.onEvent((frame) => this.onCrabCastEvent(frame));
+    // Registered BEFORE `connect()`, for the same reason the frame demux is:
+    // the first transition this runtime must not miss is its own first one, and
+    // a handler installed after the call is a handler that was not there for it.
+    this.link.onLinkState((event) => this.onLinkState(event));
     this.link.connect();
     this.startCensus();
   }
@@ -674,6 +707,7 @@ export class CrabCastRuntime implements AgentRuntime {
       workDir,
       ptyBuffer: '',
       onDataListeners: [],
+      ptyDiscontinuities: [],
       expectsRuntime: defaultAgent !== 'shell',
       ...(resume ? { resume } : {})
     };
@@ -1320,7 +1354,7 @@ export class CrabCastRuntime implements AgentRuntime {
    */
   registerDataListener(
     sessionId: string | undefined,
-    listener: (data: string) => void
+    listener: PtyStreamListener
   ): (() => void) | undefined {
     if (!sessionId) return undefined;
     const session = this.sessions.get(sessionId);
@@ -1344,7 +1378,9 @@ export class CrabCastRuntime implements AgentRuntime {
       buffer: '',
       listeners: [],
       state: 'subscribing',
-      generation: 0
+      generation: 0,
+      gaps: 0,
+      openGap: null
     };
     this.ptyMirrors.set(sessionId, mirror);
     void this.subscribeMirror(sessionId, mirror);
@@ -1352,6 +1388,7 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   private async subscribeMirror(sessionId: string, mirror: PtyMirror): Promise<void> {
+    const generation = ++mirror.generation;
     try {
       const { buffer } = await this.link.ptyInit(mirror.remoteSessionId, (data) => {
         // Appended AND fanned out — the snapshot is neither. Two destinations
@@ -1359,18 +1396,181 @@ export class CrabCastRuntime implements AgentRuntime {
         mirror.buffer = (mirror.buffer + data).slice(-PTY_BUFFER_LIMIT);
         const session = this.sessions.get(sessionId);
         if (session) session.ptyBuffer = mirror.buffer;
-        for (const fn of mirror.listeners) fn(data);
+        for (const fn of mirror.listeners) fn({ kind: 'data', data });
       });
+      // A `pty_init` that resolves after a later drop is answering about a
+      // connection that is gone. Promoting on it would put `'live'` on a mirror
+      // with no subscription — this ticket's defect, reached by a race rather
+      // than by omission.
+      if (generation !== mirror.generation) return;
       // Replaces, never appends. Appending the snapshot is the duplication bug
       // in its most tempting form (KAN-224 §3.5).
       mirror.buffer = buffer.slice(-PTY_BUFFER_LIMIT);
       mirror.state = 'live';
       const session = this.sessions.get(sessionId);
       if (session) session.ptyBuffer = mirror.buffer;
+      // **Closed AFTER the buffer is replaced, never before.** The marker says
+      // the repair finished, and a consumer told so while the snapshot has not
+      // landed would read a stale buffer under a fresh verdict.
+      this.closeGap(sessionId, mirror, 'succeeded');
     } catch (err) {
+      if (generation !== mirror.generation) return;
+      const detail = err instanceof Error ? err.message : String(err);
+      // **A failed subscribe with the link down is NOT an ended mirror**, and
+      // conflating them is how a session becomes permanently unwatched: `ended`
+      // is terminal, so the reconnect sweep below skips it and nothing ever
+      // subscribes again. `stale` says the pane is still there and we are not
+      // listening — which is the truth, and is what the sweep picks up.
+      if (!this.link.connected) {
+        mirror.state = 'stale';
+        this.openGap(sessionId, mirror);
+        if (mirror.openGap) mirror.openGap.error = detail;
+        this.log(`pty mirror for ${sessionId} could not subscribe (link down): ${detail}`);
+        return;
+      }
       mirror.state = 'ended';
-      this.log(`pty mirror for ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.closeGap(sessionId, mirror, 'failed', detail);
+      this.log(`pty mirror for ${sessionId} failed: ${detail}`);
     }
+  }
+
+  // ── reconnect resync and the discontinuity it discloses (KAN-381) ─────────
+
+  /**
+   * The link came back, or went away. Mirrors are the state that does not
+   * survive that, so this is where they are repaired and where the gap is
+   * disclosed.
+   *
+   * **Both halves matter and the second matters more.** Re-subscribing makes
+   * the mirror current again; it does nothing about the window in which events
+   * were produced and not seen, and a resync that silently succeeded is
+   * indistinguishable from one that silently half-succeeded without a marker.
+   * So the discontinuity is opened on the drop, unconditionally, and closed on
+   * the outcome — never conditioned on whether the repair worked.
+   */
+  private onLinkState(event: LinkStateEvent): void {
+    if (event.state === 'disconnected') {
+      let opened = 0;
+      for (const [sessionId, mirror] of this.ptyMirrors) {
+        // `ended` mirrors have no subscription to lose. `stale` ones already
+        // hold an open gap; re-opening would report one drop as two.
+        if (mirror.state !== 'live' && mirror.state !== 'subscribing') continue;
+        mirror.state = 'stale';
+        // Bump the generation so an in-flight `pty_init` from before the drop
+        // cannot resolve into `live` behind our backs.
+        mirror.generation++;
+        this.openGap(sessionId, mirror, event.at);
+        opened++;
+      }
+      this.log(
+        `link dropped (connection #${event.connectionSeq}${event.errno ? `, ${event.errno}` : ''}): ` +
+          `${opened} pty mirror(s) marked stale and disclosed as discontinuous. CrabCast's own ` +
+          `subscriptions died with the socket, so nothing is streaming to us until we re-subscribe.`
+      );
+      return;
+    }
+
+    const stale = [...this.ptyMirrors.entries()].filter(([, m]) => m.state === 'stale');
+    if (stale.length === 0) return;
+    this.log(
+      `link connected (connection #${event.connectionSeq}): re-subscribing ${stale.length} ` +
+        `pty mirror(s). Their gaps stay on the record whether or not this succeeds.`
+    );
+    for (const [sessionId, mirror] of stale) {
+      mirror.state = 'subscribing';
+      void this.subscribeMirror(sessionId, mirror);
+    }
+  }
+
+  /**
+   * Open a discontinuity on a mirror, and tell everyone listening **now**.
+   *
+   * The record is appended to the session as well as fanned out, because a
+   * consumer that attaches after the gap was never present for the event —
+   * `router.ts` serves it the list at `pty_init`. A live event alone would make
+   * disclosure depend on who happened to be watching.
+   */
+  private openGap(sessionId: string, mirror: PtyMirror, at = Date.now()): void {
+    if (mirror.openGap) return;
+    const gap: PtyDiscontinuity = {
+      sequence: ++mirror.gaps,
+      lostAt: new Date(at).toISOString(),
+      restoredAt: null,
+      windowMs: null,
+      resync: 'pending',
+      cause: 'link-dropped'
+    };
+    mirror.openGap = gap;
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.ptyDiscontinuities.push(gap);
+      if (session.ptyDiscontinuities.length > PTY_DISCONTINUITY_LIMIT) {
+        session.ptyDiscontinuities.splice(
+          0,
+          session.ptyDiscontinuities.length - PTY_DISCONTINUITY_LIMIT
+        );
+      }
+    }
+    this.emitDiscontinuity(mirror, gap);
+  }
+
+  /**
+   * Settle the open gap. Mutates the record the session already holds, so the
+   * durable copy and the emitted one cannot disagree, and re-emits it under the
+   * same `sequence` — a consumer keyed on that updates in place rather than
+   * counting one drop twice.
+   */
+  private closeGap(
+    sessionId: string,
+    mirror: PtyMirror,
+    resync: 'succeeded' | 'failed',
+    error?: string
+  ): void {
+    const gap = mirror.openGap;
+    if (!gap) return;
+    const restoredAt = Date.now();
+    gap.restoredAt = new Date(restoredAt).toISOString();
+    gap.windowMs = restoredAt - Date.parse(gap.lostAt);
+    gap.resync = resync;
+    if (error !== undefined) gap.error = error;
+    else delete gap.error;
+    mirror.openGap = null;
+    this.log(
+      `pty mirror for ${sessionId} resync ${resync} after ${gap.windowMs}ms unsubscribed ` +
+        `(gap #${gap.sequence}). The window is disclosed regardless of the outcome: a resync ` +
+        `that silently succeeded and one that silently half-succeeded look identical without it.`
+    );
+    this.emitDiscontinuity(mirror, gap);
+  }
+
+  private emitDiscontinuity(mirror: PtyMirror, discontinuity: PtyDiscontinuity): void {
+    // A listener that throws must not stop the others being told. A gap nobody
+    // hears about is the state this whole mechanism exists to prevent, so it is
+    // not allowed to be produced by one bad consumer.
+    for (const fn of mirror.listeners) {
+      try {
+        fn({ kind: 'discontinuity', discontinuity });
+      } catch (err) {
+        this.log(
+          `a pty listener threw on a discontinuity: ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  }
+
+  /**
+   * The gaps recorded for a session, oldest first — an empty array when there
+   * have been none, and an empty array for a session this runtime does not
+   * hold.
+   *
+   * **Those two are deliberately the same answer here and are not the same
+   * claim**, which is why the caller is `router.ts`'s `pty_init`, where the
+   * session has already been looked up and a missing one is refused before this
+   * is reached. Nothing else may use it as an existence check.
+   */
+  ptyDiscontinuitiesFor(sessionId: string): PtyDiscontinuity[] {
+    return this.sessions.get(sessionId)?.ptyDiscontinuities ?? [];
   }
 
   /**
@@ -1602,6 +1802,13 @@ export class CrabCastRuntime implements AgentRuntime {
         workDir: dir,
         ptyBuffer: '',
         onDataListeners: [],
+        // Empty, and honestly so: this daemon was not watching this agent
+        // before it adopted it, so it has no gaps of its own to report. What
+        // it could not see before the adoption is disclosed by `adopted: true`
+        // rather than as a discontinuity — a gap is a window this daemon knows
+        // it lost, and inventing one for a session it never held would be a
+        // claim about a period nobody observed.
+        ptyDiscontinuities: [],
         expectsRuntime: row.launcher !== 'shell',
         adopted: true
       };
@@ -1667,6 +1874,19 @@ export class CrabCastRuntime implements AgentRuntime {
     link: ReturnType<CrabCastLink['describe']>;
     sessions: number;
     ptyMirrors: number;
+    /**
+     * Mirrors by state (KAN-381). **`stale` is the field that makes a
+     * reconnected-but-unsubscribed mirror visible to an operator** — the state
+     * that used to be reported as `live` because it had no name of its own.
+     */
+    ptyMirrorStates: { subscribing: number; live: number; stale: number; ended: number };
+    /**
+     * Gaps recorded across every session this runtime holds, and how many are
+     * still open. **A non-zero `open` with `link.connected: true` is the
+     * one combination worth an alarm**: the link is back and a mirror has not
+     * been re-subscribed.
+     */
+    ptyDiscontinuities: { total: number; open: number };
     censusAgeMs: number | null;
     censusReachable: boolean;
     /**
@@ -1693,10 +1913,28 @@ export class CrabCastRuntime implements AgentRuntime {
       else if (verdict === false) tally.false++;
       else tally.null++;
     }
+    const mirrorStates = { subscribing: 0, live: 0, stale: 0, ended: 0 };
+    for (const mirror of this.ptyMirrors.values()) mirrorStates[mirror.state]++;
+    // **Both figures are read off the session records, not off the mirrors**, and
+    // the difference shows up in exactly one case: a session that ENDED while its
+    // gap was still open. `endMirror` drops the mirror, so counting `openGap`
+    // across mirrors would report `open: 0` beside a stored record that still
+    // reads `pending` — two answers to one question, and the reassuring one
+    // would be the wrong one. The record stays `pending` deliberately: that gap
+    // was never repaired and now never will be, which is a thing an operator
+    // should be able to see rather than a loose end to tidy into `failed`.
+    let totalGaps = 0;
+    let openGaps = 0;
+    for (const session of this.sessions.values()) {
+      totalGaps += session.ptyDiscontinuities.length;
+      for (const gap of session.ptyDiscontinuities) if (gap.resync === 'pending') openGaps++;
+    }
     return {
       link: this.link.describe(),
       sessions: this.sessions.size,
       ptyMirrors: this.ptyMirrors.size,
+      ptyMirrorStates: mirrorStates,
+      ptyDiscontinuities: { total: totalGaps, open: openGaps },
       censusAgeMs: this.census.at ? Date.now() - this.census.at : null,
       censusReachable: this.census.reachable,
       censusUnreadableRecordsTotal: this.census.unreadableRecordsTotal,

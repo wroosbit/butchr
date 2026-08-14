@@ -24,6 +24,7 @@ import type {
   HerdrAgentRecord,
   HerdrAgentStatus,
   HerdrSession,
+  PtyStreamListener,
   SessionEndedEvent
 } from '../src/herdr.js';
 import type { McpServerDefinitions } from '../src/integrations/integration.js';
@@ -168,7 +169,7 @@ class StubRuntime implements AgentRuntime {
 
   registerDataListener(
     _sessionId: string | undefined,
-    _listener: (data: string) => void
+    _listener: PtyStreamListener
   ): (() => void) | undefined {
     return undefined;
   }

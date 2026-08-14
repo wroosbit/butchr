@@ -629,7 +629,12 @@ await section('5. LIVE — a real CrabCast, a real restart, a real pty', async (
     // AC2's mechanism, against a real pty: type into the ADOPTED session and
     // read it back. This is what the extension terminal does.
     const got = [];
-    const dispose = second.registerDataListener(back.sessionId, (d) => got.push(d));
+    // KAN-381: the data arm only. A discontinuity here would be a gap in the
+    // adopted session's stream, which this section does not exercise; it is
+    // `verify-crabcast-reconnect-resync.mjs` that owns the other arm.
+    const dispose = second.registerDataListener(back.sessionId, (e) => {
+      if (e.kind === 'data') got.push(e.data);
+    });
     check(typeof dispose === 'function', 'the adopted session serves a pty listener');
     const filled = await until(
       () => (second.getSession(back.sessionId)?.ptyBuffer ?? '').length > 0,

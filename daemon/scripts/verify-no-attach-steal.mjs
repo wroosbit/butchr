@@ -45,7 +45,11 @@ const first = bridge.spawnSession(type, key, undefined, '');
 await sleep(2000);
 
 let firstBytes = 0;
-bridge.registerDataListener(first.sessionId, (d) => { firstBytes += d.length; });
+// KAN-381: the listener takes a PtyStreamEvent now. `HerdrBridge` only ever
+// delivers the data arm — an in-process pty has no subscription to lose — so
+// this counts that arm and would throw rather than miscount if the other ever
+// arrived here.
+bridge.registerDataListener(first.sessionId, (e) => { firstBytes += e.data.length; });
 
 console.log('\n== second activate at the same agent (this is what used to steal it) ==');
 const second = bridge.spawnSession(type, key, undefined, '');
