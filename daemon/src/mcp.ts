@@ -688,7 +688,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             defaultAgent: {
               type: "string",
-              description: "Optional. The default agent to launch (e.g. 'claude', 'anti-gravity')",
+              description:
+                "Optional, and OMITTING IT IS THE ORDINARY CASE — an omitted value launches 'claude', " +
+                "which since KAN-395 is the only agent Butchr launches. Pass it only to bring a " +
+                "standby agent back as whatever the registry recorded for it. 'anti-gravity' was " +
+                "retired on 2026-08-14 and asking for it REFUSES the activation rather than " +
+                "substituting claude; so does any other unknown name.",
             },
           },
           required: ["type", "key"],

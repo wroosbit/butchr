@@ -802,8 +802,10 @@ line**, written into each workspace's `.mcp.json` at activation
 the server the agent's CLI spawns from that file. `args` rather than `env`
 because a definition carrying `env` is reported to the settings page by name
 alone (KAN-106) and a workspace key is not a secret; see
-[docs/agent-tree.md](agent-tree.md) for the full argument, including why the
-global agy config deliberately does not get it.
+[docs/agent-tree.md](agent-tree.md) for the full argument. The exception that
+argument used to carry — the global anti-gravity config, which deliberately did
+not get the stamp — went with the launcher in KAN-395: the workspace `.mcp.json`
+is now the only file this writes.
 
 Two consequences worth stating plainly. **There is no backfill**: parentage is
 recorded at activation and an agent already running was spawned from the old

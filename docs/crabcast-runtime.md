@@ -356,6 +356,16 @@ demonstrating; the contrast that made this a gate did not survive.** Removing
 `shell` and `anti-gravity` from the launcher table is **not** this ticket's — it
 is a fleet-wide change that `expectsRuntime` is defined by negation against.
 
+**KAN-395 did that work and it came out asymmetric, which matters to the row
+below.** `anti-gravity` is gone. **`shell` stayed**, because every channel probe
+in this repository brings its agent up as one — it is the only way to hold a pane
+and start `claude` with an extra flag without editing the product
+(`daemon/scripts/lib/channel-probe.mjs`, note 3). So `expectsRuntime` did **not**
+lose its false case and is not a constant; what it lost is any way for ordinary
+fleet traffic to reach that case, since the extension's *Default Agent* select —
+whose own initial state was `'shell'` — went at the same time. The ruling is
+written out on `HerdrSession.expectsRuntime`.
+
 | mechanism | verdict | what was measured |
 | --- | --- | --- |
 | **prompt delivery** | **works** | A 69,875-byte prompt — larger than `prompts/task.md` — reached the model whole. Markers at byte 0 and at the final byte both came back out of the pane, so nothing truncated it. |
@@ -425,11 +435,13 @@ Three consequences worth knowing:
   read an empty list on every activation for ever. **CrabCast never had that
   refusal at all**; it now does, because the check runs before the seam rather
   than inside one implementation of it.
-- **`configureAgyMcp` now strips the identity itself.** agy's config is global —
-  one file for every workspace — and a per-workspace stamp written there names
-  whichever agent was activated last. That invariant used to hold because
-  `initPty` happened to pass an unstamped assembly to `launcher.setup`; it is now
-  enforced by the writer that owns the file.
+- **`configureAgyMcp` stripped the identity itself, and KAN-395 deleted it.** agy's
+  config was global — one file for every workspace — and a per-workspace stamp
+  written there names whichever agent was activated last. That invariant used to
+  hold because `initPty` happened to pass an unstamped assembly to
+  `launcher.setup`, and KAN-398 moved it to the writer that owned the file. With
+  the anti-gravity launcher gone there is no such writer and no such file: the
+  workspace `.mcp.json` is the only thing `launchers.ts` writes.
 
 `daemon/scripts/verify-workspace-mcp-preparation.mjs` covers all of it except the
 live leg — that a real peer writes what we sent — which stays with

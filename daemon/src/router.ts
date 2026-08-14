@@ -4751,6 +4751,17 @@ export class MessageRouter {
    * was never a runtime to lose, and a bare prompt is the delivered product.
    * Unknown agents are assumed to have a runtime, so a name we cannot place
    * still gets watched rather than quietly excused.
+   *
+   * **This one reads the REGISTRY rather than a launcher, which is why it
+   * survived KAN-395 unchanged where the question was whether it should.** The
+   * ruling is on `HerdrSession.expectsRuntime`; read it there. The half that is
+   * specific to this site: `record.defaultAgent` is a value written to disk by
+   * an older daemon, so it is not bounded by today's `LauncherName` and cannot
+   * be typed into agreement with it. A row saying `'anti-gravity'` — a launcher
+   * KAN-395 retired — reads `true` here, which is the safe direction: such an
+   * agent cannot be running, because `resolveLauncher` refuses to start one, so
+   * the branch this feeds only ever asks whether something already dead is
+   * dead.
    */
   private expectsRuntime(agentName: string): boolean {
     return this.agentRegistry?.intents().get(agentName)?.record.defaultAgent !== 'shell';

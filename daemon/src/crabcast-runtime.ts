@@ -156,6 +156,19 @@ interface CensusRow {
    * `expectsRuntime`, which is false for `shell` alone: a bare pane with no
    * runtime behind it is the delivered product there, and calling it dead is
    * the KAN-58 false alarm.
+   *
+   * **THIS IS THEIR STRING, NOT OURS, AND THE COMPARISON IT FEEDS IS A JOIN
+   * ACROSS TWO VOCABULARIES (KAN-395).** It is exact for an agent *Butchr*
+   * configured — `provision` sends `launcher: defaultAgent ?? 'claude'`, so our
+   * own name comes back — and it is a guess for an agent CrabCast configured
+   * itself, which `adoptFromCensus` will adopt if it sits in Butchr's tree.
+   * Their launcher vocabulary is not ours and invariant 10 forbids reading
+   * their source to find out, so a runtime-less launcher of theirs spelled
+   * anything but `shell` would be adopted as expecting a runtime and reported
+   * dead. Nobody covers that today; it is unreachable while
+   * `BUTCHR_AGENT_RUNTIME` is unset, and it is filed rather than left implied.
+   * This is the same class KAN-346 and KAN-397 fixed twice — joining on a name
+   * whose producer is the other project.
    */
   launcher: string | null;
 }

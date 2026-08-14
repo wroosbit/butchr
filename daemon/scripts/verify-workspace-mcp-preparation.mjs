@@ -15,8 +15,8 @@
 //
 // CI-RUNNABLE: yes — reads `daemon/src/*.ts` as TEXT and imports
 // `daemon/dist/launchers.js` in process. No live daemon, no herdr, no CrabCast
-// peer, no credential, no terminal. §6 writes two files, both under
-// `os.tmpdir()` and never into the repository tree.
+// peer, no credential, no terminal. §6 writes one file, under `os.tmpdir()`
+// and never into the repository tree.
 //
 // ---------------------------------------------------------------------------
 // WHAT THIS ASSERTS, AND WHAT IT DELIBERATELY DOES NOT
@@ -361,44 +361,51 @@ for (const [label, site] of [
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-rule('§6  agy\'s GLOBAL config never carries a workspace identity  [imports dist]');
+rule('§6  the workspace file is the ONLY writer, and it keeps the stamp  [imports dist]');
 // ───────────────────────────────────────────────────────────────────────────
-// The hazard the move above the seam introduced. `launcher.setup` for agy now
-// receives a STAMPED assembly, and one file serves every workspace — so a stamp
-// written there names whichever agent was activated last. Enforced by the writer
-// that owns the file rather than by what a caller passes.
+// THIS SECTION USED TO ASSERT THE OPPOSITE HALF OF A PAIR, AND KAN-395 DELETED
+// THE OTHER HALF. Until then `launcher.setup` for `anti-gravity` received a
+// STAMPED assembly and wrote it into `~/.gemini/antigravity-cli/mcp.json` — one
+// file serving every workspace, so a stamp written there named whichever agent
+// was activated last. `configureAgyMcp` stripped the stamp for that reason, and
+// §6 proved the strip: agy's file without the flags, the workspace's file with
+// them, one input and two opposite correct answers.
+//
+// The anti-gravity launcher is gone and `configureAgyMcp` went with it, so the
+// hazard has no writer left to come from. What replaces the paired assertion is
+// the property that makes that true and would break first if it stopped being:
+// **`launchers.ts` exports no writer of a config outside the workspace.** A new
+// global-config writer added later reintroduces the whole hazard, and this is
+// the line that goes red when one appears.
+//
+// The positive control is kept verbatim: the workspace writer DOES carry the
+// stamp, so a green here cannot be a reader that never finds the flags.
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kan398-'));
-const agyPath = path.join(tmpDir, 'mcp.json');
 const workspacePath = path.join(tmpDir, 'workspace');
 fs.mkdirSync(workspacePath);
 
-launchers.configureAgyMcp(prepared, agyPath);
-const agyWritten = JSON.parse(fs.readFileSync(agyPath, 'utf8'));
-const agyCoreArgs = agyWritten.mcpServers?.[CORE]?.args ?? [];
-
-// THE SAME PREPARED ASSEMBLY through the workspace writer, which SHOULD keep the
-// stamp. Two writers, one input, opposite correct answers — so a green above
-// cannot be a reader that simply never finds the flags.
 launchers.writeWorkspaceMcpConfig(workspacePath, prepared);
 const wsWritten = JSON.parse(fs.readFileSync(path.join(workspacePath, '.mcp.json'), 'utf8'));
 const wsCoreArgs = wsWritten.mcpServers?.[CORE]?.args ?? [];
 
+// Named rather than pattern-matched: the point is that THIS function is gone,
+// and a rename would be a new writer that this list must be told about.
+const globalWriters = ['configureAgyMcp'].filter((name) => typeof launchers[name] === 'function');
 check(
-  !agyCoreArgs.includes(launchers.WORKSPACE_TYPE_FLAG) &&
-    !agyCoreArgs.includes(launchers.WORKSPACE_KEY_FLAG),
-  'the global agy config carries no --workspace-type/--workspace-key',
-  `agy core args=${JSON.stringify(agyCoreArgs)}`
-);
-check(
-  agyCoreArgs.includes('/butchr/daemon/dist/mcp.js'),
-  'and it still carries the real argv — the strip removed the flags, not the command',
-  `agy core args=${JSON.stringify(agyCoreArgs)}`
+  globalWriters.length === 0,
+  'launchers.ts exports no writer of an MCP config outside the workspace (KAN-395)',
+  `global-config writers still exported: ${JSON.stringify(globalWriters)}`
 );
 check(
   wsCoreArgs.includes(launchers.WORKSPACE_TYPE_FLAG) &&
     wsCoreArgs.includes(launchers.WORKSPACE_KEY_FLAG),
-  'THE POSITIVE CONTROL: the same assembly through the workspace writer DOES carry them',
+  'THE POSITIVE CONTROL: a prepared assembly through the workspace writer DOES carry them',
+  `workspace core args=${JSON.stringify(wsCoreArgs)}`
+);
+check(
+  wsCoreArgs.includes('/butchr/daemon/dist/mcp.js'),
+  'and it carries the real argv, so the flags above sit on a command that would run',
   `workspace core args=${JSON.stringify(wsCoreArgs)}`
 );
 fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -464,7 +471,8 @@ if (failures > 0) {
   say('OK — the transforms run once, above the seam, on every path that reaches it:');
   say('the seam accepts only prepared definitions, one function produces them, both call');
   say('sites call it, the refusal is asked while it can still see its field, and neither');
-  say("runtime applies anything of its own. agy's global config stays unstamped.");
+  say('runtime applies anything of its own. The workspace file is the only writer left');
+  say('(KAN-395 deleted the global agy config writer with the launcher that needed it).');
   for (const [flag, label] of [
     [rawAtCallsite, '--raw-at-callsite'],
     [refuseAfterStrip, '--refuse-after-strip'],
