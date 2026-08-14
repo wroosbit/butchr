@@ -73,14 +73,14 @@ export const CRABCAST_PIN = '8d7348fa98201b61642d2454b3a797373361128a';
 
 /**
  * `daemon_status.contractVersion` this adapter was proved against (KAN-294,
- * moved 3 → 4 by KAN-324, 4 → 7 by KAN-357).
+ * moved 3 → 4 by KAN-324, 4 → 7 then 7 → 8 by KAN-357).
  *
  * CrabCast's read-path contract (their KAN-277, `fe9ec80`) puts a version on the
  * wire and documents `list_agents` and `agent_status` field by field. It was
  * `3` at {@link CRABCAST_PIN} — read off a real daemon at that build, not off
  * their notice.
  *
- * ## Why this is 7, and what "proved against" had to mean to move it
+ * ## Why this is 8, and what "proved against" had to mean to move it
  *
  * v7 is **mechanically additive**, exactly as v4 was: three fields on the
  * existing `UnreadableRecord` row — `claimsAt`, `claimsEvent` and `standing` —
@@ -105,23 +105,52 @@ export const CRABCAST_PIN = '8d7348fa98201b61642d2454b3a797373361128a';
  * own. **A version constant bumped without reading the new fields would
  * reproduce KAN-324 one release later**, with a green check on top.
  *
- * ## What "proved against" does NOT mean here, and this is the honest half
+ * ## Why 8 and not 7, and what v8 actually changed
  *
- * **No live peer at v7 has ever been read, by this adapter or by anybody.** As
- * of 2026-08-13 the CrabCast serving this machine answers `contractVersion: 6`
- * from a process that started ~10 hours before v7 merged, and it execs a
- * checkout's `dist/`, so serving v7 needs a pull, a build and a restart — a
- * deploy, and a human's call. The v7 half of this bump is therefore proved
- * against **their published contract and constructed frames**, and *not*
- * against the wire. `daemon/scripts/verify-crabcast-standing.mjs` says which of
- * its sections is which, in its own header, rather than leaving a reader to
- * infer a coverage that does not exist.
+ * **This read `7` from 2026-08-13 to 2026-08-14, and the paragraph here said no
+ * live peer had ever served those fields. That is no longer true**, and the
+ * sentence is replaced rather than softened: `epic/KAN-203` deployed CrabCast
+ * on the human's authorisation, the peer went **6 → 8 in one step**, and the v7
+ * fields arrived on the wire for the first time. Pinning `7` afterwards would
+ * pin to a version nobody serves.
  *
- * **What IS proved against the wire is the refusal** — that a v6 peer produces
- * *"this peer cannot tell me"* rather than a row-level verdict — and that half
- * is proved against the real v6 daemon while it still exists. See
- * `CRABCAST_STANDING_MIN_VERSION` in `crabcast-runtime.ts` for why the gate is
- * a separate constant from this one.
+ * **v8's whole delta is to `capacity`** — `measuredTreesSeen` added, and
+ * `measuredAgentTrees` narrowed in *population* rather than in type. **The
+ * `UnreadableRecord` row shape and the `rowStanding` vocabulary are
+ * byte-identical between v7 and v8**, established by diffing their published
+ * contract at `a520c763` against their `main`, not by reading their source and
+ * not by taking a summary. So the surface this adapter consumes did not move.
+ *
+ * **We read no `capacity` field off their wire, and that is asserted rather
+ * than claimed** — `verify-crabcast-standing.mjs` §5 checks that nothing
+ * v8-shaped reaches the census reading, because it is the fact that licensed
+ * moving this number. **Beware the name collision:** Butchr has its *own*
+ * `measuredAgentTrees` on `list_agents_response`, computed by `capacity.ts`
+ * from this machine and unrelated to theirs. A reader who greps the name after
+ * reading their v8 notice will find ours and may "correct" it to match. Do not:
+ * ours narrowed independently at KAN-276, for the same reason theirs did, which
+ * is what makes the collision so easy to mistake for a shared field.
+ *
+ * ## What IS and is NOT proved against a real wire
+ *
+ * **Proved:** the refusal below the door (against the committed v6 capture, and
+ * against the live v6 peer while it existed), and the reading above it — a real
+ * peer's `standing`, `claimsAt` and `claimsEvent`, off bytes CrabCast sent.
+ * **The live tombstone reads `retired`**, so the permanently-`1` count that
+ * commissioned KAN-324 and KAN-357 is answered: it is a retired row, not a lost
+ * agent, and the verdict is checkable against its own `claimsEvent`.
+ *
+ * **Not proved:** the `claims-an-agent` and `matched` arms. No real wire has
+ * ever carried them — there is one unreadable row on this machine and it is a
+ * tombstone — so the branch this work exists to *enable* is exercised against
+ * constructed frames only. That needs a registry fault nobody can schedule, and
+ * it is named in the proof's header rather than left to be discovered from a
+ * green run.
+ *
+ * See `CRABCAST_STANDING_MIN_VERSION` in `crabcast-runtime.ts` for why the gate
+ * is a separate constant from this one: it is a **floor**, so v8 opens the door
+ * that v7 unlocked. Deriving the gate from this number would have slammed it
+ * shut at the deploy.
  *
  * **Recorded and reported, never enforced**, for the same reason the pin is:
  * refusing on a version bump would be Butchr pressuring their release cadence.
@@ -139,7 +168,7 @@ export const CRABCAST_PIN = '8d7348fa98201b61642d2454b3a797373361128a';
  * number and without going red in their CI. {@link CrabCastRuntime} reads
  * `channelEnabled` from exactly there, and says so at its own call site.
  */
-export const CRABCAST_CONTRACT_VERSION = 7;
+export const CRABCAST_CONTRACT_VERSION = 8;
 
 /** Where a stock CrabCast puts its socket, per its own README. */
 export function defaultCrabCastSocket(): string {

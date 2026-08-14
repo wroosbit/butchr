@@ -34,8 +34,8 @@ states the scope and `docs/doc-constant-drift.md` states why it is this narrow.
      says: **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` -->
 <!-- constant-pin: CRABCAST_CONTRACT_VERSION
      src: daemon/src/crabcast-link.ts
-     sha256: 26fc90873199
-     says: **CrabCast read-path contract version:** **`7`** -->
+     sha256: 89dabf375257
+     says: **CrabCast read-path contract version:** **`8`** -->
 
 - **The runtime switch:** `BUTCHR_AGENT_RUNTIME`, read once at daemon construction.
   Which runtime a *cutover* would move the fleet onto, and in what order, is
@@ -43,19 +43,21 @@ states the scope and `docs/doc-constant-drift.md` states why it is this narrow.
 - **CrabCast pin:** `8d7348fa98201b61642d2454b3a797373361128a` (KAN-294; was
   `7c6d97f` under KAN-278). Read off `daemon_status.build.commit` of a real
   daemon built at that commit, not off a notice.
-- **CrabCast read-path contract version:** **`7`**, which is what
+- **CrabCast read-path contract version:** **`8`**, which is what
   `CRABCAST_CONTRACT_VERSION` in `crabcast-link.ts` actually pins. **This line
-  read `3` until KAN-283 and `4` until KAN-357** — KAN-324 bumped the constant to
+  read `3` until KAN-283, `4` until KAN-357, and `7` for one day inside it** — KAN-324 bumped the constant to
   consume `unreadableRecordsTotal` and did not bump the prose, so the document
   was one version behind the code it describes. Corrected by reading the constant
   rather than the sentence, and this line now moves with it mechanically: the
   pin above is what `verify-doc-constant-pins.mjs` recomputes. **It covers
   `list_agents` and `agent_status` and nothing else** — see *What the contract
   does not hold* below.
-- **The v7 half of that number is proved against their published contract and
-  constructed frames, NOT against a live peer** — nothing has ever served v7 to
-  this daemon. See *What v7 buys, and what is still unanswered* below, which is
-  the honest scope of the bump rather than a caveat on it.
+- **That number is now proved against a live peer, which it was not on
+  2026-08-13.** This line said *"nothing has ever served v7 to this daemon"* and
+  that stopped being true on 2026-08-14, when the machine's CrabCast was
+  deployed and went **6 → 8 in one step**. See *What v7 buys, and what is still
+  unanswered* below for the honest scope — including the two arms that no real
+  wire has carried even now.
 - **Butchr commit these line numbers were read at:** the branch of KAN-294.
 
 **KAN-283's additions were read at a DIFFERENT build, and this note is here
@@ -427,13 +429,15 @@ at the spawn (`activate_response`) or by a per-agent `agent_status` round trip,
 and never from the census. So it is recorded at activation and kept, rather than
 refreshed.
 
-### What v7 buys, and what is still unanswered
+### What v7 buys, what v8 changed, and what is STILL unanswered
 
 **The problem it solves.** `unreadableRecordsTotal` has read **`1`** on this
 machine since 2026-08-03. It is a deliberately preserved tombstone — a
 `pre-migration` row for a shell demo, kept on purpose by CrabCast's KAN-302 —
-and until v7 nothing on the wire could say whether that `1` was transient or
-permanent. Their own count never falls by itself, so **any increase is a real
+and until the 2026-08-14 deploy nothing on the wire could say whether that `1`
+was transient or permanent. **It now can, and the answer is `retired`** — a
+tombstone, not a lost agent, with `claimsEvent: "deactivated"` as the evidence
+the verdict was read from. Their own count never falls by itself, so **any increase is a real
 event**; but a `2` arriving where a `1` has become background noise is
 indistinguishable from the noise. `standing` is what turns the number into a
 branch: `retired` is boring, and `claims-an-agent` with nothing readable
@@ -444,7 +448,7 @@ the join.** Both halves have a live counter-example on this machine:
 
 | field | why it is read the way it is |
 | --- | --- |
-| `standing` | Refused below `contractVersion: 7`, as `{available: false, because: 'peer-below-v7'}` — and `claimsAt`/`claimsEvent` sit behind the SAME gate, because all three arrived in v7 and a peer below it sends none of them. The peer here answers **6**, so the field is `undefined` on every row — and reading `undefined` as *"no standing recorded"* would collapse **this peer cannot tell me** into **this row has no standing**, which are different sentences. `StandingReading` is an object union precisely so that collapse does not compile |
+| `standing` | Refused below `contractVersion: 7`, as `{available: false, because: 'peer-below-v7'}` — and `claimsAt`/`claimsEvent` sit behind the SAME gate, because all three arrived in v7 and a peer below it sends none of them. This machine's peer answered **6** until 2026-08-14 and answers **8** now, so both sides of that door have been exercised against real bytes. Reading a below-door `undefined` as *"no standing recorded"* would collapse **this peer cannot tell me** into **this row has no standing**, which are different sentences; `StandingReading` is an object union precisely so that collapse does not compile |
 | `claimsPath` | The join key. An agent in CrabCast **is** a canonical path, so `claimsPath` matches a readable row's `path` directly. `identity` is the row's own vocabulary — often `<type>/<key>` — so a failed match on it is indistinguishable from a genuine absence, and branching on it would fire the alarm on the ordinary case |
 | `claimsAt` | A **quotation, never a date type.** Their promise is that it is what the row said, not that it parses |
 
@@ -456,32 +460,51 @@ three questions we care about survive it:
    CrabCast — the line they would have to read is the line they could not read.
    `claims-an-agent` means *this line asserts an agent*, nothing more.
 2. **Is our one live specimen superseded?** **Unanswerable, and it will stay
-   that way.** Its `claimsPath` is `null`, so the join *cannot run* — that is
-   the `could-not-run` outcome, and it is **not evidence either way**. Recording
-   it as *"nothing covers this, go and look"* would manufacture a permanent
-   alarm; recording it as *"superseded, boring"* would hide a real one. The only
-   remedies are a human reading `raw` or repairing the line.
+   that way** — the deploy did not change this. Its `claimsPath` is `null`, so
+   the join *cannot run*, which is the `could-not-run` outcome and is **not
+   evidence either way**. In practice the question is never reached: the row
+   reads `retired`, and `retired` needs no join because nothing was going to be
+   restored from it. The only remedies remain a human reading `raw` or
+   repairing the line.
 3. **Has the row been retired for good?** No: a sanctioned way to retire a row —
    so the count could legitimately reach zero — was deferred to CrabCast's
    KAN-356 and is not ours to decide.
 
-**And the bump's own limit.** The v7 fields have been proved against their
-published contract and against constructed frames, **never against a live v7
-peer**, because none exists: the CrabCast serving this machine started ~10 hours
-before v7 merged and execs a checkout's `dist/`, so serving v7 needs a pull, a
-build and a restart — a deploy, and the human's call rather than ours. The
-refusal itself *is* proved against the real v6 daemon.
-`verify-crabcast-standing.mjs` marks which of its sections is which in its own
-header.
+**What v8 changed, ruled on rather than consumed wholesale.** v8's entire delta
+is to `capacity`: `measuredTreesSeen` added, and `measuredAgentTrees` narrowed
+in **population** rather than in type. The `UnreadableRecord` row shape and the
+`rowStanding` vocabulary are **byte-identical between v7 and v8** — established
+by diffing their published contract, not by reading their source. **We read no
+`capacity` field off their wire**, and `verify-crabcast-standing.mjs` §5 asserts
+that rather than leaving it as a sentence, because it is the fact that licensed
+moving the pin to `8`.
+
+> ⚠ **Name collision.** Butchr has its *own* `measuredAgentTrees` on
+> `list_agents_response`, computed by `capacity.ts` from this machine and
+> unrelated to CrabCast's. A reader who greps the name after reading their v8
+> notice will find ours and may "correct" it to match theirs. **Do not.** Ours
+> narrowed independently at KAN-276 for the same reason theirs did, which is
+> exactly what makes the collision easy to mistake for a shared field.
+
+**And the bump's own limit, restated because the previous version of this
+paragraph is now false.** It said the v7 fields had *"never been read against a
+live v7 peer, because none exists"*. One does now. What is proved against real
+bytes is the refusal below the door and the **reading** above it. What is
+**not** proved, on any wire ever: the `claims-an-agent` and `matched` arms.
+There is one unreadable row on this machine and it is a tombstone, so the branch
+this work exists to *enable* is exercised against constructed frames only. That
+needs a registry to acquire a second unreadable row claiming an agent — a fault
+nobody wants and nobody can schedule. `verify-crabcast-standing.mjs` marks which
+of its sections is which in its own header.
 
 ### What the contract does not hold
 
 <!-- constant-pin: CRABCAST_CONTRACT_VERSION
      src: daemon/src/crabcast-link.ts
-     sha256: 26fc90873199
-     says: `contractVersion: 7` covers **`list_agents` and `agent_status`** -->
+     sha256: 89dabf375257
+     says: `contractVersion: 8` covers **`list_agents` and `agent_status`** -->
 
-`contractVersion: 7` covers **`list_agents` and `agent_status`**. It does not
+`contractVersion: 8` covers **`list_agents` and `agent_status`**. It does not
 cover `activate_response`, and CrabCast disclosed that themselves — their
 KAN-287 is the ticket to bring it in. **`channelEnabled` is read from
 `activate_response`**, so it can change without moving the version and without

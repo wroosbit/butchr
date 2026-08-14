@@ -3,58 +3,64 @@
 //
 // WHAT FAILURE THIS WOULD CATCH: a consumer reading `standing` off a peer too
 // old to publish it, and reporting the resulting `undefined` as a verdict about
-// the ROW. The CrabCast serving this machine answers `contractVersion: 6`, so
-// `standing` is absent on every row it sends; an implementation that read that
-// absence as "no standing recorded" would pass every test written against this
-// peer, ship, and be wrong the moment somebody deploys them — because it cannot
-// distinguish THIS PEER CANNOT TELL ME from THIS ROW HAS NO STANDING. It would
-// also catch the join being keyed on `identity`, which is in the row's own
-// vocabulary and matches nothing in a path-keyed list, so a failed match reads
-// as a genuinely absent agent and the alarm fires on the ordinary case.
+// the ROW. A peer below v7 sends no `standing` at all; an implementation that
+// read that absence as "no standing recorded" would pass every test written
+// against such a peer, ship, and be wrong the moment it was upgraded — because
+// it cannot distinguish THIS PEER CANNOT TELL ME from THIS ROW HAS NO STANDING.
+// It would also catch the join being keyed on `identity`, which is in the row's
+// own vocabulary and matches nothing in a path-keyed list, so a failed match
+// reads as a genuinely absent agent and the alarm fires on the ordinary case.
 //
-// CI-RUNNABLE: partial — sections 1-4 assert in CI. They import the built
-// daemon modules and run over frames this script constructs and a committed
-// capture, and need no peer, no herdr, no PTY, no credential and no network.
-// Section 5 reads a live CrabCast socket and SKIPS without one; a skip is
+// CI-RUNNABLE: partial — sections 1-5 assert in CI. They import the built
+// daemon modules and run over frames this script constructs and two committed
+// captures, and need no peer, no herdr, no PTY, no credential and no network.
+// Section 6 reads a live CrabCast socket and SKIPS without one; a skip is
 // printed as a skip and never counted as a pass.
 //
-// ── THE TWO HALVES OF THIS SCRIPT ARE NOT PROVED THE SAME WAY ──────────────
+// ── THE SECTIONS ARE NOT ALL PROVED THE SAME WAY ───────────────────────────
 //
 // This is the honest scope, stated here rather than left to a reader to infer,
-// because the halves have different evidence behind them and the difference is
-// the whole story of this ticket:
+// because the sections have different evidence behind them:
 //
-//   §1-§3  THE REFUSAL AND THE JOIN, over frames this script CONSTRUCTS or
-//          takes from a committed capture. A proof that supplies its own input
-//          has not tested that the input arrives (KAN-145), so on its own this
-//          proves the branching is right and NOT that a real peer sends what it
-//          is branched on.
+//   §1-§3  THE REFUSAL AND THE JOIN, over frames this script CONSTRUCTS. A
+//          proof that supplies its own input has not tested that the input
+//          arrives (KAN-145), so on its own this proves the branching is right
+//          and NOT that a real peer sends what it is branched on.
 //
 //   §4     THE COMMITTED v6 CAPTURE — `fixtures/crabcast-v6-tombstone-census.json`,
 //          raw off the live socket via `probe-crabcast-raw-frames.mjs`, not
-//          hand-written. This is what closes the §1-§3 gap for the BELOW-v7
-//          case: the absent `standing` and the null `claimsPath` in it are what
-//          a real CrabCast actually sent, not what we imagined it would.
+//          hand-written. Closes the §1-§3 gap for the BELOW-v7 case: the absent
+//          `standing` and the null `claimsPath` in it are what a real CrabCast
+//          actually sent. **That peer no longer exists** — the machine deployed
+//          on 2026-08-14 — which is exactly why the capture was taken. DO NOT
+//          DELETE IT: it is now the only evidence of the below-door case there
+//          is, and the refusal remains reachable by any peer that lags.
 //
-//   §5     THE LIVE WIRE, when a peer is reachable. Re-reads the same facts off
-//          the socket at run time so that a fixture that has drifted from the
-//          world is visible rather than quietly authoritative.
+//   §5     THE COMMITTED v8 CAPTURE — the same, for the ABOVE-door case, and
+//          the section that closes KAN-357's AC1. Until 2026-08-14 nothing had
+//          ever served these fields and this header said so.
 //
-// ── WHAT NONE OF THEM COVERS, NAMED BECAUSE THE LIST LOOKS COMPLETE ────────
+//   §6     THE LIVE WIRE, when a peer is reachable. Re-reads off the socket at
+//          run time so that a capture which has drifted from the world is
+//          visible rather than quietly authoritative.
 //
-// **No live peer at v7 has ever been read, by this script or by anything.** The
-// `available: true` arm of every section below is exercised against constructed
-// frames ONLY. That is not a choice: as of 2026-08-13 the CrabCast on this
-// machine started ~10 hours before v7 merged and execs a checkout's `dist/`, so
-// serving v7 needs a pull, a build and a restart — a deploy, and the human's
-// call rather than ours.
+// ── WHAT THIS STILL DOES NOT COVER, NAMED BECAUSE THE LIST LOOKS COMPLETE ──
 //
-// So this script CANNOT tell you that a real v7 peer's `standing` arrives in
-// the shape branched on here. What covers that: nothing yet. It is KAN-357's
-// AC1, it is explicitly still open, and the ticket says so rather than letting
-// a green run here look like it closed it. `verify-crabcast-runtime-live.mjs`
-// §4b independently reports the peer/pin version gap and is red against this
-// daemon by design.
+// **The `claims-an-agent` arm has never been seen on a real wire.** Both
+// captures hold exactly one unreadable row and it reads `retired` in the only
+// version that could render a verdict on it. So the branch this ticket exists
+// to enable — go and look at a row claiming an agent nothing readable covers —
+// is exercised against constructed frames ONLY, in §3.
+//
+// That is not fixable by waiting: it needs a registry to acquire a second
+// unreadable row that claims an agent, which is a fault nobody wants and
+// nobody can schedule. **The honest position is that the machinery is proved
+// and the alarming path is not**, and this paragraph is where that is said
+// rather than left for somebody to discover from a green run.
+//
+// **And `matched` has never been seen either**, for the same reason plus a
+// second: our one specimen's `claimsPath` is `null`, so it could not join even
+// if it claimed an agent.
 //
 // ── MADE TO GO RED ─────────────────────────────────────────────────────────
 //
@@ -110,8 +116,9 @@
 //   1. the vocabulary narrows, and an unrecognised value never becomes `retired`
 //   2. the door — below v7 is "this peer cannot tell me", not a row verdict
 //   3. the join — three outcomes, and `could-not-run` is not `ran-found-nothing`
-//   4. the committed v6 capture — the real below-v7 peer, off the wire
-//   5. the live wire, when a peer is reachable
+//   4. the committed v6 capture — the real below-door peer, off the wire
+//   5. the committed v8 capture — the v7 FIELDS off a real peer. AC1.
+//   6. the live wire, when a peer is reachable
 //
 // Usage: node daemon/scripts/verify-crabcast-standing.mjs [--verbose]
 
@@ -138,6 +145,7 @@ if (!fs.existsSync(path.join(distDir, 'crabcast-runtime.js'))) {
 const { readUnreadableDisclosure } = await import(path.join(distDir, 'crabcast-runtime.js'));
 
 const FIXTURE_PATH = path.join(scriptDir, 'fixtures', 'crabcast-v6-tombstone-census.json');
+const FIXTURE_V8_PATH = path.join(scriptDir, 'fixtures', 'crabcast-v8-tombstone-census.json');
 
 let failures = 0;
 let skipped = 0;
@@ -553,10 +561,140 @@ section('4. THE COMMITTED v6 CAPTURE — the real below-v7 peer, raw off the wir
 }
 
 // =============================================================================
-section('5. THE LIVE WIRE — re-read now, so a drifted fixture is visible');
+section('5. THE COMMITTED v8 CAPTURE — the v7 FIELDS off a real peer. THIS IS AC1.');
+// =============================================================================
+//
+// **The section that did not exist until 2026-08-14, because until then nothing
+// on earth had served these fields.** Every `available: true` assertion above is
+// against a frame this script builds; this one is against bytes CrabCast sent.
+//
+// The gap it closes is the one KAN-145 names and the one this script's own
+// header carried as an admission for two days: a proof that supplies its own
+// input has not tested that the input ARRIVES. It has now.
+{
+  if (!fs.existsSync(FIXTURE_V8_PATH)) {
+    check('the v8 capture is committed', false, `missing: ${FIXTURE_V8_PATH}`);
+  } else {
+    const fx = JSON.parse(fs.readFileSync(FIXTURE_V8_PATH, 'utf8'));
+    const status = fx.daemon_status;
+    const rawRow = (status.unreadableRecords ?? [])[0];
+
+    check(
+      'the captured peer is at or above the door',
+      status.contractVersion >= 7,
+      `contractVersion=${JSON.stringify(status.contractVersion)}`,
+      `contractVersion=${status.contractVersion}`
+    );
+    check(
+      'the captured row REALLY carries the v7 fields — this is not a hand-made presence',
+      rawRow && 'standing' in rawRow && 'claimsAt' in rawRow && 'claimsEvent' in rawRow,
+      `row keys: ${JSON.stringify(Object.keys(rawRow ?? {}).sort())}`,
+      `row keys: ${JSON.stringify(Object.keys(rawRow ?? {}).sort())}`
+    );
+
+    // The real reading, over real bytes.
+    const reading = readUnreadableDisclosure(status, status.contractVersion, pathsOf());
+    const row = only(reading);
+
+    check(
+      'the door OPENS on a real peer — available: true, from the wire',
+      row.standing.available === true,
+      `got ${JSON.stringify(row.standing)}`,
+      JSON.stringify(row.standing)
+    );
+
+    // ── AC1's actual question, answered ────────────────────────────────────
+    //
+    // `unreadableRecordsTotal` has read 1 on this machine since 2026-08-03 and
+    // nothing could say whether it was a tombstone or a lost agent. It is a
+    // tombstone. That is what this ticket was filed to find out.
+    check(
+      'THE ANSWER: the permanently-1 row is `retired` — a tombstone, not a lost agent',
+      row.standing.available === true && row.standing.verdict === 'retired',
+      `got ${JSON.stringify(row.standing)} — if this is not 'retired', the count that ` +
+        `commissioned this ticket means something different and the branch below is wrong`,
+      `verdict=retired`
+    );
+    check(
+      'and the verdict is CHECKABLE against its own evidence — claimsEvent says `deactivated`',
+      row.standing.available === true && row.standing.claimsEvent === 'deactivated',
+      `got claimsEvent=${JSON.stringify(row.standing.available ? row.standing.claimsEvent : null)}. ` +
+        `Their contract ships the verdict WITH the quote it was read from precisely so a ` +
+        `consumer can catch it being wrong; a disagreement here is a real finding, not noise`,
+      `claimsEvent=deactivated, consistent with retired`
+    );
+    check(
+      'claimsAt arrived as the row\'s own quoted timestamp, carried as a STRING',
+      row.standing.available === true &&
+        typeof row.standing.claimsAt === 'string' &&
+        row.standing.claimsAt === '2026-08-03T20:37:38.900Z',
+      `got ${JSON.stringify(row.standing.available ? row.standing.claimsAt : null)}`,
+      row.standing.available ? row.standing.claimsAt : ''
+    );
+
+    // ── The branch taken, which is AC1's other half ────────────────────────
+    //
+    // `retired` needs no join: nothing was going to be restored from it either
+    // way. So `supersession` is null — the question was NOT ASKED — and that is
+    // a different null from `could-not-run`, which is asked-and-unanswerable.
+    check(
+      'THE BRANCH TAKEN: `retired` ⇒ no join attempted at all (supersession null)',
+      row.supersession === null,
+      `got ${JSON.stringify(row.supersession)} — a join was run against a row that needed none`,
+      'supersession=null, the question was not asked'
+    );
+    check(
+      'and the row still carries claimsPath: null, so even had it claimed an agent the join could not have run',
+      row.claimsPath === null,
+      `got ${JSON.stringify(row.claimsPath)}`,
+      'claimsPath=null — the could-not-run case, had it been reached'
+    );
+
+    // The disclosure itself is unaffected by the door being open.
+    check(
+      'the v4 disclosure still reports through an OPEN door — total is 1',
+      reading.unreadableRecordsTotal === 1,
+      `got ${JSON.stringify(reading.unreadableRecordsTotal)}`,
+      'total=1'
+    );
+
+    // ── v8's own delta, ruled on rather than consumed wholesale ────────────
+    //
+    // v8 changed `capacity` only: `measuredTreesSeen` added beside
+    // `measuredAgentTrees`, whose POPULATION narrowed. The UnreadableRecord row
+    // shape and the rowStanding vocabulary are byte-identical between v7 and
+    // v8 in their published contract. This adapter reads no capacity field, so
+    // v8 costs us nothing — but that is a claim worth an assertion rather than
+    // a sentence, because it is the claim that licensed moving the pin.
+    const capacity = fx.list_agents?.capacity ?? null;
+    check(
+      "v8's changed field is present on the wire we read from",
+      capacity !== null && typeof capacity === 'object',
+      `list_agents.capacity=${JSON.stringify(capacity)} — if absent, the ruling below is about nothing`,
+      `capacity block present, keys: ${JSON.stringify(Object.keys(capacity ?? {}).slice(0, 6))}`
+    );
+    check(
+      'and NOTHING this adapter reads is drawn from it — v8 is additive to us in fact, not by assertion',
+      (() => {
+        const carried = JSON.stringify(reading);
+        return !carried.includes('measuredAgentTrees') && !carried.includes('measuredTreesSeen');
+      })(),
+      'a v8 capacity field has reached the census reading — rule on it explicitly rather than carrying it'
+    );
+  }
+}
+
+// =============================================================================
+section('6. THE LIVE WIRE — re-read now, so a drifted fixture is visible');
 // Skips rather than fails when no peer is reachable: the absence of a CrabCast
 // is not a defect in this code, and failing CI for it would make the script a
 // liability rather than a check.
+//
+// **Version-aware since the 2026-08-14 deploy.** It used to assert `v === 6`,
+// which was a deliberate tripwire for exactly the event that has now happened.
+// Keeping that assertion would leave a permanent red on every machine holding a
+// deployed peer, reporting news for ever — so it now asserts what is true of
+// whichever side of the door the peer is on, and says which it took.
 {
   const socketPath =
     process.env.BUTCHR_CRABCAST_SOCKET ||
@@ -597,7 +735,7 @@ section('5. THE LIVE WIRE — re-read now, so a drifted fixture is visible');
   if (!live) {
     skip(
       'a live CrabCast is reachable',
-      `no peer answered on ${socketPath} — §1-§4 stand on constructed frames and the committed capture, and AC1 is untouched either way.`
+      `no peer answered on ${socketPath} — §1-§5 stand on constructed frames and the two committed captures, which is what makes them reproducible without one.`
     );
   } else {
     const v = live.contractVersion;
@@ -607,28 +745,58 @@ section('5. THE LIVE WIRE — re-read now, so a drifted fixture is visible');
     const rows = reading.unreadableRecords;
 
     check(
-      'the live reading agrees with the committed capture on the peer version',
-      v === 6,
-      `live peer answers contractVersion=${JSON.stringify(v)} but the capture records 6.\n` +
-        `If this says 7, THE PEER HAS BEEN DEPLOYED: KAN-357's AC1 is now satisfiable and this\n` +
-        `assertion is what noticed. Re-capture the fixture and read the real \`standing\` values.`,
-      `contractVersion=${v}, as captured`
+      'the peer publishes a contract version at all',
+      typeof v === 'number',
+      `got ${JSON.stringify(v)} — a peer that publishes none is refused at the door, which is ` +
+        `correct, but it is also a peer nothing here can say anything else about`,
+      `contractVersion=${v}`
     );
 
-    if (v === 6) {
+    if (typeof v === 'number' && v < 7) {
+      // The below-door case. Still the right assertion where it applies — but
+      // no longer the expected one, since this machine's peer deployed.
+      console.log('   ....  this peer is BELOW the door; asserting the refusal');
       check(
         'every live row reads as "this peer cannot tell me"',
         rows.length > 0 && rows.every((r) => r.standing.available === false),
         `got ${JSON.stringify(rows.map((r) => r.standing))} over ${rows.length} row(s)`,
         `${rows.length} row(s), all refused at the door`
       );
+    } else if (typeof v === 'number') {
+      // The above-door case — AC1's territory, re-read live rather than off the
+      // committed capture, so a fixture that has drifted from the world is
+      // visible rather than quietly authoritative.
+      console.log('   ....  this peer is AT OR ABOVE the door; asserting the reading');
       check(
-        'the live disclosure still reports its total through the door',
-        reading.unreadableRecordsTotal === live.unreadableRecordsTotal,
-        `ours=${reading.unreadableRecordsTotal} theirs=${live.unreadableRecordsTotal}`,
-        `total=${reading.unreadableRecordsTotal}`
+        'every live row yields a real verdict',
+        rows.length > 0 && rows.every((r) => r.standing.available === true),
+        `got ${JSON.stringify(rows.map((r) => r.standing))} over ${rows.length} row(s)`,
+        `${rows.length} row(s), all read`
+      );
+      check(
+        'every verdict is a member of the vocabulary, and an unknown one is `unknown` not `retired`',
+        rows.every(
+          (r) => r.standing.available === true && ['retired', 'claims-an-agent', 'unknown'].includes(r.standing.verdict)
+        ),
+        `got ${JSON.stringify(rows.map((r) => (r.standing.available ? r.standing.verdict : null)))}`,
+        JSON.stringify(rows.map((r) => (r.standing.available ? r.standing.verdict : null)))
+      );
+      check(
+        'the live reading agrees with the committed v8 capture on the tombstone verdict',
+        rows.some((r) => r.standing.available === true && r.standing.verdict === 'retired'),
+        `got ${JSON.stringify(rows.map((r) => (r.standing.available ? r.standing.verdict : null)))} — ` +
+          `if the tombstone has stopped reading 'retired', the capture has drifted from the world ` +
+          `and KAN-357's answer needs re-taking rather than re-quoting`,
+        'the tombstone still reads retired on the wire'
       );
     }
+
+    check(
+      'the live disclosure reports its total through the door, whichever side it is on',
+      reading.unreadableRecordsTotal === live.unreadableRecordsTotal,
+      `ours=${reading.unreadableRecordsTotal} theirs=${live.unreadableRecordsTotal}`,
+      `total=${reading.unreadableRecordsTotal}`
+    );
   }
 }
 
@@ -639,7 +807,9 @@ console.log(
   failures
     ? `   ${failures} failure(s).`
     : '   standing is read behind the version door, joined on claimsPath, and a tombstone is\n' +
-      '   distinguishable from a lost agent. NOT PROVED HERE: that a real v7 peer sends what\n' +
-      '   this branches on — no v7 peer exists. That is AC1 and it remains open.'
+      '   distinguishable from a lost agent — now against REAL BYTES on both sides of the door.\n' +
+      '   The live tombstone reads `retired`, so KAN-357\'s permanently-1 count is answered.\n' +
+      '   NOT PROVED HERE: the `claims-an-agent` and `matched` arms, which no real wire has ever\n' +
+      '   carried. See the header — that gap needs a registry fault nobody can schedule.'
 );
 process.exit(failures ? 1 : 0);
