@@ -1853,13 +1853,21 @@ export class CrabCastRuntime implements AgentRuntime {
       else tally.null++;
     }
     const mirrorStates = { subscribing: 0, live: 0, stale: 0, ended: 0 };
-    let openGaps = 0;
-    for (const mirror of this.ptyMirrors.values()) {
-      mirrorStates[mirror.state]++;
-      if (mirror.openGap) openGaps++;
-    }
+    for (const mirror of this.ptyMirrors.values()) mirrorStates[mirror.state]++;
+    // **Both figures are read off the session records, not off the mirrors**, and
+    // the difference shows up in exactly one case: a session that ENDED while its
+    // gap was still open. `endMirror` drops the mirror, so counting `openGap`
+    // across mirrors would report `open: 0` beside a stored record that still
+    // reads `pending` — two answers to one question, and the reassuring one
+    // would be the wrong one. The record stays `pending` deliberately: that gap
+    // was never repaired and now never will be, which is a thing an operator
+    // should be able to see rather than a loose end to tidy into `failed`.
     let totalGaps = 0;
-    for (const session of this.sessions.values()) totalGaps += session.ptyDiscontinuities.length;
+    let openGaps = 0;
+    for (const session of this.sessions.values()) {
+      totalGaps += session.ptyDiscontinuities.length;
+      for (const gap of session.ptyDiscontinuities) if (gap.resync === 'pending') openGaps++;
+    }
     return {
       link: this.link.describe(),
       sessions: this.sessions.size,
