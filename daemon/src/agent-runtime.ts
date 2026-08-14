@@ -2,6 +2,7 @@ import type { McpServerDefinitions } from './integrations/integration.js';
 import type { BriefLocation, ResumeCause } from './resume.js';
 import type {
   AgentPresence,
+  ButchrAgentName,
   CensusReading,
   HerdrAgentDescription,
   HerdrAgentRecord,
@@ -294,9 +295,19 @@ export interface AgentRuntime {
   /**
    * Wait, up to `timeoutMs`, for an agent to show up in the census.
    * `requireRuntime` decides whether a pane with no runtime behind it counts.
+   *
+   * **`agentName` is a {@link ButchrAgentName} rather than a `string`, and that
+   * is what makes KAN-406's brand bite here rather than merely exist.** This is
+   * the method KAN-397 found joining on the raw `paneName`, and a brand only
+   * refuses a comparison when BOTH sides carry one — against a plain `string`
+   * parameter the defect type-checks exactly as it always did. Measured, on
+   * this change before this line was written: reintroducing
+   * `r.paneName === agentName` in the CrabCast implementation compiled clean at
+   * `tsc --noEmit`. Widening this parameter back to `string` restores that
+   * hole silently.
    */
   confirmAgentPresent(
-    agentName: string,
+    agentName: ButchrAgentName,
     requireRuntime: boolean,
     timeoutMs?: number
   ): Promise<AgentPresence>;

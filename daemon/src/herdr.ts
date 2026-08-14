@@ -406,9 +406,65 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/** The herdr agent a Butchr session drives. Sessions are keyed by workspace. */
-export function agentNameFor(type: string, key: string): string {
-  return `butchr-${type}-${key.toLowerCase()}`;
+declare const BUTCHR_AGENT_NAME_BRAND: unique symbol;
+
+/**
+ * **The name Butchr addresses an agent by — `butchr-<type>-<key>` — as a type
+ * the compiler can tell apart from the other string that means "the name of an
+ * agent" (KAN-406).**
+ *
+ * There are two such strings, and until this brand existed they were the same
+ * type. This one is Butchr's; the other is a **pane** name, chosen by whatever
+ * process started the pane, which for a CrabCast-started agent is
+ * `crabcast-<key>-<hash>`. **They are equal for a herdr-started pane and
+ * different for a CrabCast-started one**, so a join on the wrong one is correct
+ * in every test that only starts panes through herdr and wrong for exactly the
+ * population the CrabCast runtime creates.
+ *
+ * **That cost two defects in one file.** KAN-346 established the rule — derive
+ * the name from the row's *path*, never from `paneName` — and wrote it longhand
+ * inside `censusRecords()`. KAN-397 then found `confirmAgentPresent`, one
+ * function away, still joining on the raw `paneName`: under a flipped daemon
+ * every CrabCast-started `claude` agent was reported a failed activation and
+ * torn down while it kept running. Both fixes were right and neither could stop
+ * the third instance, because `r.paneName === agentName` type-checks perfectly
+ * and the distinction lived only in prose and in the reader's head.
+ *
+ * With the brand it does not type-check: comparing a {@link PaneName} to one of
+ * these is `error TS2367`, at the keystroke rather than at review. The brand is
+ * phantom — it exists only in the type system, so one of these is an ordinary
+ * `string` at runtime and every `startsWith`, template literal and `Map` key
+ * over it is unchanged.
+ *
+ * **{@link agentNameFor} is the only producer, and the cast inside it is the
+ * only place a bare string becomes one of these in `daemon/src`.** A cast
+ * written anywhere else claims the `butchr-<type>-<key>` spelling without
+ * producing it, which is the review catch this type replaces, with an extra
+ * step.
+ *
+ * **Two limits, because a brand that is trusted past them is worse than none:**
+ *
+ *  - **It binds only where BOTH sides are branded.** Comparing one of these to
+ *    a plain `string` still compiles, by design — that is what keeps this a
+ *    typing change rather than a rewrite of every signature in the daemon.
+ *  - **It does not exist at runtime**, so `daemon/scripts/*.mjs`, which imports
+ *    the compiled `dist/`, gets nothing from it.
+ */
+export type ButchrAgentName = string & {
+  readonly [BUTCHR_AGENT_NAME_BRAND]: 'butchr-agent-name';
+};
+
+/**
+ * The herdr agent a Butchr session drives. Sessions are keyed by workspace.
+ *
+ * **The signature is unchanged at runtime and must stay that way**: seventeen
+ * `daemon/scripts/*.mjs` files import this from `dist/` and call it, and
+ * `tsc` never sees them (KAN-406). Branding the return type is invisible to
+ * them — brands erase — but a rename or a re-signature would break all
+ * seventeen with nothing to report it.
+ */
+export function agentNameFor(type: string, key: string): ButchrAgentName {
+  return `butchr-${type}-${key.toLowerCase()}` as ButchrAgentName;
 }
 
 /**
@@ -1641,7 +1697,7 @@ export class HerdrBridge implements AgentRuntime {
    * together. It never throws — a caller owes its client an answer.
    */
   public async confirmAgentPresent(
-    agentName: string,
+    agentName: ButchrAgentName,
     requireRuntime: boolean,
     timeoutMs: number = requireRuntime ? RUNTIME_CONFIRM_TIMEOUT_MS : AGENT_CONFIRM_TIMEOUT_MS
   ): Promise<AgentPresence> {
