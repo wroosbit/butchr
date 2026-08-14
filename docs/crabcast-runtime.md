@@ -331,6 +331,108 @@ close.
 
 ---
 
+## The `claude` launcher path — gate 2, measured (KAN-379)
+
+**KAN-278's live proof spawned `shell`, and said so in its own header:** what
+that left untested was *"the launcher path only — prompt delivery, MCP wiring,
+and `expectsRuntime`"*, with **"nobody covers the `claude` path yet"**. This
+section is that coverage. Everything below was read off a **real `claude` agent
+started through this runtime against the live peer at
+`9d4d999cbac6bb94eb5ed25f58c24a7bf7ebf747`**, contract v8, and
+`daemon/scripts/verify-crabcast-claude-launcher-live.mjs` re-runs it.
+
+**The gate's premise thinned while it was being tested, and that is recorded
+rather than quietly absorbed.** The human's decision of 2026-08-14, relayed:
+*"we should shrink the scope to only use claude, with no shell or antigravity.
+no select option at all, only claude."* With `claude` the only launcher that
+matters, *"the proof used `shell`, so `claude` is unexercised"* stops being a
+comparison and becomes a tautology. **The three mechanisms still needed
+demonstrating; the contrast that made this a gate did not survive.** Removing
+`shell` and `anti-gravity` from the launcher table is **not** this ticket's — it
+is a fleet-wide change that `expectsRuntime` is defined by negation against.
+
+| mechanism | verdict | what was measured |
+| --- | --- | --- |
+| **prompt delivery** | **works** | A 69,875-byte prompt — larger than `prompts/task.md` — reached the model whole. Markers at byte 0 and at the final byte both came back out of the pane, so nothing truncated it. |
+| **MCP wiring** | **works, with two defects behind it** | The agent called `butchr_list_agents` and `atlassianUserInfo` and both returned. CrabCast wrote `.mcp.json` itself. See the two rows below. |
+| **`expectsRuntime`** | **unreachable** | Set correctly (`true` for `claude`) and never consulted: the presence lookup it rides on cannot find a CrabCast-started agent at all. |
+
+### Three findings, in the order they would bite
+
+**1. `confirmAgentPresent` cannot find an agent CrabCast started.** It matches
+on the raw `paneName` — `all.find((r) => r.paneName === agentName)` — and an
+agent CrabCast starts carries **their** name, `crabcast-<key>-<hash>`, not
+`butchr-<type>-<key>`. Measured on two independent agents: both
+`requireRuntime: true` and `requireRuntime: false` answer
+`present: false, reason: 'absent'` for an agent that is running and that the
+same census reports one line earlier under its Butchr name. **Both arms failing
+identically is what identifies this as the lookup rather than the flag** —
+`expectsRuntime` is never reached.
+
+**KAN-346 fixed this exact join one function away.** `censusRecords()` derives
+the name from the row's path, and its docblock explains why at length. The fix
+was not carried to this reader. **Consequence under a flipped daemon:**
+`confirmActivation` reads `absent`, calls `abandonSession`, and answers the
+activation `success: false` — so every CrabCast-started `claude` agent is
+reported as a failed activation and has its session torn down **while it keeps
+running**, leaving a live pane no Butchr session addresses.
+
+**2. `pathPrefix` crosses the wire and is written verbatim.** `provision()`
+sends raw `McpServerDefinitions`; every Butchr writer runs `materializeMcpServers`
+first, which turns `pathPrefix` into `env.PATH` and drops `unusable`. CrabCast
+writes what it is sent — as their own `configure_agent` refusal text says — so
+the workspace `.mcp.json` carries a `pathPrefix` key no MCP client reads, and
+**no `env.PATH`**. KAN-157 added that field to decide *which Node runs an
+npx-based server*, `npx` and `mcp-remote` both being `#!/usr/bin/env node`.
+**It did not bite on this machine** — the inherited PATH happened to resolve the
+same Node — and that is precisely what makes it worth writing down: it is a
+latent defect that works by luck, not a visible one.
+
+**3. The core server is sent unstamped.** `withWorkspaceIdentity` is applied in
+`herdr.ts`, and `crabcast-runtime.ts` imports nothing from `launchers.js`, so the
+`butchr` entry reaches disk without `--workspace-type` / `--workspace-key`.
+**That is the KAN-145 defect returning by a new road**: a value written where
+nothing reads it, leaving `activatedBy` null and the org chart with nothing to
+draw. The tools still work — `mcp.ts` reads the flags for *parentage*, not for
+reachability — which is why this is invisible from the agent's side.
+
+### What CrabCast does that Butchr's own `claude` launcher also does
+
+Both measured, both **not** defects, and both worth recording because the
+obvious prediction was that neither would happen:
+
+- **Folder trust is handled.** `~/.claude.json` had no entry for the probe
+  directory before the spawn and `hasTrustDialogAccepted: true` after it.
+  Nothing on Butchr's side wrote it: `trustClaudeWorkspace` is called only from
+  the `claude` launcher's `setup`, which is `AGENT_LAUNCHERS`' and never runs on
+  this path.
+- **Permissions are bypassed.** The pane reported `bypass permissions on`
+  although no `.claude/settings.local.json` exists in the workspace —
+  `configureClaudeSettings` did not run either.
+
+**No startup dialog was met, and that is gate 3's question answered in passing
+(KAN-393).** `setAgentSpawnedListener` never fires under this runtime, so
+channel-startup supervision does not run and nothing was available to answer a
+dialog or press a key. Two cold `claude` starts needed none: both reached the
+model, ran three tool calls and printed their results unattended. **That is an
+observation about two spawns on one machine, not a guarantee** — it says the
+supervision being inert did not block these starts, not that it can never
+matter.
+
+### What this did not reach
+
+- **The daemon's own activation path.** The runtime is read once, process-wide,
+  at construction, so a single activation can only be pointed at CrabCast by
+  building the runtime in a process of one's own. `spawnSession` was therefore
+  called directly and `router.ts` never ran — no `confirmActivation`, no
+  registry write, no capacity gate. The proof asserts the router still assembles
+  the same arguments **by reading `router.ts` as text**, which establishes what
+  the call site says and not that it runs. `verify-crabcast-runtime-live.mjs`
+  has the same limit.
+- **Anything at fleet scale.** Two agents, one machine, one CrabCast build.
+
+---
+
 ## Does KAN-224's PTY design survive contact? Yes, and its key claims verified
 
 KAN-224 read CrabCast's source. This ticket may not, so its claims were

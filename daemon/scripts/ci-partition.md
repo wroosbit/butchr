@@ -41,10 +41,10 @@ classification is the deliverable and the CI job is downstream of it.
 | `yes` | 79 |
 | `partial` | 8 |
 | `quarantined` | 3 |
-| `no` | 15 |
-| **total** | **105** |
+| `no` | 16 |
+| **total** | **106** |
 
-**87 of 105** run on every pull request.
+**87 of 106** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -158,6 +158,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-activate-verified-existence` | no | shells out to `which herdr` and activates a real agent through it; it throws outright when herdr is not on PATH. |
 | `verify-capacity-survives-daemon-restart` | no | starts a real daemon and then warms up for 780 s across 13 cost windows so the estimate can walk down off its seed. Both the daemon and the wall clock put it out of reach of a per-PR check. |
 | `verify-comment-authorship-live` | no | checks comment ids against the live Jira API and needs a real Atlassian credential; without one it correctly reports that it is not evidence of anything. |
+| `verify-crabcast-claude-launcher-live` | no | needs a real CrabCast daemon, real capacity for one more agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-crabcast-confirm-present-name-join` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET` (or the default socket path) and it spawns a real `claude` agent. It attempts nothing without one. Its output goes on the pull request. |
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
