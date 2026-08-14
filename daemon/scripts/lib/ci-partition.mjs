@@ -120,6 +120,93 @@ export function readPartition(repoRoot = REPO_ROOT) {
 }
 
 /**
+ * The summary block of `ci-partition.md` — the per-class counts, the total, and
+ * the `N of M` sentence — derived from the rows, in one place.
+ *
+ * KAN-409. The generator emitted these lines inline and nothing ever read them
+ * back, so `ci-partition.md` could carry a summary that disagreed with its own
+ * table and still pass the guard. That is measured, not hypothetical: rebasing
+ * #171 onto #169, git auto-merged the file **cleanly**, took both sides' new
+ * rows into the table, and left all three summary numbers a release behind.
+ * Both files passed.
+ *
+ * Returned as three named parts rather than one blob so the guard can say WHICH
+ * of them disagrees, and shared with the generator's `emitMarkdown()` so the
+ * thing that writes the summary and the thing that checks it cannot drift.
+ *
+ * WHAT SHARING ONE DEFINITION COSTS, stated because it is a real trade: a guard
+ * that re-derives from this function cannot audit this function. If the formula
+ * here were wrong, the generator would emit a wrong summary and the guard would
+ * agree with it. §7 of `verify-ci-partition-is-enforced.mjs` covers part of that
+ * with a second arm computed from the document's own numbers alone — the counts
+ * must sum to the total, the sentence must agree with both — which holds
+ * whatever this function does. What is left is a generator wrong *consistently*,
+ * and nothing checks that.
+ */
+export function summaryParts(rows) {
+  const counts = {};
+  for (const r of rows) counts[r.class] = (counts[r.class] ?? 0) + 1;
+  const inCi = rows.filter((r) => r.runsInCi).length;
+  return {
+    classRows: Object.keys(CLASSES).map((k) => `| \`${k}\` | ${counts[k] ?? 0} |`),
+    totalRow: `| **total** | **${rows.length}** |`,
+    sentence: `**${inCi} of ${rows.length}** run on every pull request.`
+  };
+}
+
+/**
+ * Read the summary block back out of a checked-in `ci-partition.md`. The
+ * inverse of `summaryParts`, kept beside it so one file knows the format.
+ *
+ * A field this cannot find is `null`, and **null is a failure for the caller,
+ * never agreement**: "no summary found" is a claim about this parser, not about
+ * the document, and a check that reads a failed parse as a pass is a check that
+ * does not exist while appearing to.
+ */
+export function parseSummary(md) {
+  const section = md.split(/^## /m).find((s) => /^Totals\b/.test(s));
+  if (!section) {
+    return {
+      found: false,
+      classRows: [],
+      counts: {},
+      totalRow: null,
+      total: null,
+      sentence: null,
+      sentenceIn: null,
+      sentenceOf: null
+    };
+  }
+
+  const lines = section.split('\n').map((l) => l.trim());
+  const CLASS_ROW = /^\|\s*`([a-z]+)`\s*\|\s*(\d+)\s*\|$/;
+
+  const classRows = lines.filter((l) => CLASS_ROW.test(l));
+  const counts = {};
+  for (const l of classRows) {
+    const [, cls, n] = l.match(CLASS_ROW);
+    counts[cls] = Number(n);
+  }
+
+  const totalRow = lines.find((l) => /^\|\s*\*\*total\*\*/.test(l)) ?? null;
+  const total = totalRow?.match(/\*\*total\*\*\s*\|\s*\*\*(\d+)\*\*/)?.[1] ?? null;
+
+  const sentence = lines.find((l) => /run on every pull request/.test(l)) ?? null;
+  const nOfM = sentence?.match(/^\*\*(\d+) of (\d+)\*\*/) ?? null;
+
+  return {
+    found: true,
+    classRows,
+    counts,
+    totalRow,
+    total: total === null ? null : Number(total),
+    sentence,
+    sentenceIn: nOfM ? Number(nOfM[1]) : null,
+    sentenceOf: nOfM ? Number(nOfM[2]) : null
+  };
+}
+
+/**
  * The problems that make a partition dishonest rather than merely incomplete.
  * Shared so the sweep, the guard and the runner all call the same thing false.
  */
