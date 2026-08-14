@@ -55,6 +55,18 @@
 //   node daemon/scripts/link-workspace-deps.mjs [--repo <dir>] [--verbose]
 // Run from inside a worktree, or point --repo at one. Idempotent: a workspace
 // that already has a tree for the current lockfile is left alone.
+//
+// THIS SCRIPT LIVES IN BUTCHR AND IS NOT BUTCHR-ONLY (KAN-266). It works on any
+// repo this fleet checks out, and the two are reached differently:
+//
+//   - from a butchr worktree:   node daemon/scripts/link-workspace-deps.mjs
+//   - from any other worktree:  node ~/code/wroosbit/butchr/daemon/scripts/link-workspace-deps.mjs
+//
+// The second line is not a nicety. `daemon/scripts/` is a butchr path, and a
+// CrabCast worktree has `scripts/` and no `daemon/`, so an agent running the
+// first form there gets ENOENT — which is exactly what `prompts/task.md`
+// instructed until this change. `--repo` defaults to the current directory, so
+// the absolute form needs no argument when run from inside the target worktree.
 
 import { execFileSync } from 'node:child_process'
 import {
@@ -70,9 +82,74 @@ export const STORE_ROOT =
   process.env.BUTCHR_DEP_STORE ||
   path.join(os.homedir(), '.local', 'share', 'butchr', 'dep-store')
 
-// The package directories that carry their own lockfile. Adding one here is all
-// that is needed if the repo grows a third.
-const PACKAGES = ['daemon', 'extension']
+// KAN-266: packages are DISCOVERED, not listed. This was
+// `const PACKAGES = ['daemon', 'extension']`, and the comment above it read
+// "adding one here is all that is needed if the repo grows a third" — it
+// anticipated a repo with *more* packages and not one with *fewer*. CrabCast is
+// a single root package: its lockfile is at the repo root, both hard-coded
+// entries missed, and the script logged two verbose-only skips and exited 0
+// having linked nothing. Two agents hit that three days apart, each hand-rolled
+// the link, and the workspace's next `npm install` silently took a private copy
+// the step exists to prevent.
+//
+// SCOPE — the repo root and its immediate subdirectories, and no deeper. That
+// is not a guess: at full depth, excluding `node_modules`, butchr carries
+// exactly two lockfiles (`daemon/`, `extension/`) and CrabCast exactly one (the
+// root), so root + depth 1 covers both repos this fleet works in completely.
+// Going deeper would start matching lockfiles inside test fixtures, which are
+// not packages a workspace wants linked.
+const MAX_DEPTH = 1
+
+/**
+ * Every directory under `repoDir` that carries its own `package-lock.json`.
+ *
+ * THE NAME IS THE STORE KEY'S PREFIX, so it has to be stable across workspaces
+ * — and the two cases earn different answers rather than one uniform rule:
+ *
+ *   - A SUBDIRECTORY uses its directory name. That is stable within the repo,
+ *     and it is what keeps every store entry built before this change valid:
+ *     `daemon`'s manifest is named `@butchr/daemon`, so switching to the
+ *     manifest name here would have changed its key and orphaned the entries
+ *     already on every machine.
+ *   - THE ROOT uses its manifest's `name`, because the root's directory name is
+ *     the *worktree's* name, which an agent chooses. Keying on it would give
+ *     two CrabCast worktrees two different keys for one lockfile and defeat the
+ *     sharing this script exists for. CrabCast's manifest says `crabcast`,
+ *     which is the key `task/KAN-216` measured its scratch workaround produce.
+ */
+export function discoverPackages(repoDir) {
+  const found = []
+  const hasLock = (dir) => fs.existsSync(path.join(dir, 'package-lock.json'))
+  const manifestName = (dir) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).name || null
+    } catch {
+      return null
+    }
+  }
+
+  if (hasLock(repoDir)) {
+    // A scoped name (`@scope/thing`) would put a `/` in a store *path*, so it
+    // is flattened rather than trusted into `path.join`.
+    const name = (manifestName(repoDir) || path.basename(repoDir)).replace(/[^A-Za-z0-9._-]/g, '-')
+    found.push({ name, dir: repoDir })
+  }
+
+  if (MAX_DEPTH >= 1) {
+    // Sorted, so the order a workspace links in — and therefore the output a
+    // reader compares between runs — is the same on every machine.
+    const entries = fs
+      .readdirSync(repoDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.'))
+      .sort((a, b) => (a.name < b.name ? -1 : 1))
+    for (const e of entries) {
+      const dir = path.join(repoDir, e.name)
+      if (hasLock(dir)) found.push({ name: e.name, dir })
+    }
+  }
+
+  return found
+}
 
 const argv = process.argv.slice(2)
 const verbose = argv.includes('--verbose')
@@ -115,8 +192,39 @@ export function buildStoreEntry(pkg, key, pkgDir) {
   try {
     // Only the two manifests are copied in: `npm ci` needs nothing else, and
     // copying the source would put a stale copy of the repo in the store.
-    for (const f of ['package.json', 'package-lock.json']) {
-      fs.copyFileSync(path.join(pkgDir, f), path.join(tmpDir, f))
+    fs.copyFileSync(path.join(pkgDir, 'package-lock.json'), path.join(tmpDir, 'package-lock.json'))
+
+    // KAN-266: THE STORE HOLDS DEPENDENCIES, NEVER THIS REPO'S BUILD OUTPUT, so
+    // the package's own lifecycle scripts are stripped from the copied manifest.
+    // This is a deliberate decision rather than an inherited workaround, and the
+    // reasoning is the line above: the temp dir holds two manifests and nothing
+    // else — no `src`, no `tsconfig.json`, no `scripts/` — so a root lifecycle
+    // script cannot do anything but fail there. CrabCast's root manifest carries
+    // `"prepare": "npm run build"`, which runs `tsc` against that empty
+    // directory, and the observed result was the whole store entry failing:
+    //
+    //   npm error command sh -c npm run build
+    //   Error: Command failed: npm ci   at buildStoreEntry (…:123:5)
+    //
+    // WHAT THIS DOES NOT DO, because the distinction is the whole point:
+    // dependencies' own install scripts still run. `npm ci --ignore-scripts`
+    // would have been the wrong instrument — it would silently skip `node-pty`'s
+    // native addon build and produce a store entry that links cleanly and
+    // crashes at require time. What is suppressed is only *this* package's
+    // lifecycle, which builds the repo rather than its dependency tree.
+    //
+    // The resolved tree and the store key are both untouched: `scripts` plays no
+    // part in dependency resolution, and `storeKey` hashes the lockfile alone.
+    // So an entry built this way is byte-identical to one built without the
+    // strip, and remains shareable with every workspace on the same lockfile.
+    // Neither butchr package has a `prepare`, so nothing about the existing two
+    // entries changes.
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
+    const stripped = Object.keys(manifest.scripts || {})
+    delete manifest.scripts
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+    if (stripped.length) {
+      vlog(`  ${pkg}: stripped ${stripped.length} lifecycle script(s) from the store manifest: ${stripped.join(', ')}`)
     }
 
     log(`  building store entry ${key} (npm ci) …`)
@@ -219,13 +327,28 @@ function main() {
 
   let failures = 0
 
-  for (const pkg of PACKAGES) {
-    const pkgDir = path.join(repoDir, pkg)
+  const packages = discoverPackages(repoDir)
+
+  // KAN-266: FINDING NOTHING IS A FAILURE, AND IT IS THE FAILURE THIS TICKET WAS
+  // FILED FOR. The old loop skipped each missing hard-coded package under
+  // `vlog` and fell through to `process.exit(failures ? 1 : 0)` with `failures`
+  // still 0 — so "linked everything" and "found nothing to link" were the same
+  // exit code and, at default verbosity, the same silence. That is this fleet's
+  // most-repeated defect shape: a check reporting its own no-op as success. A
+  // repo checked out at a path with no lockfile anywhere in scope is not a
+  // no-op to shrug at; it means the workspace has no shared tree and the next
+  // `npm install` will quietly take a private copy.
+  if (packages.length === 0) {
+    console.error(`FAIL — no package-lock.json found in ${repoDir} or its immediate subdirectories.`)
+    console.error('       Nothing was linked, so this workspace has NO shared dependency tree.')
+    console.error('       An `npm install` here would take a private copy. Do not treat this as done.')
+    process.exit(1)
+  }
+
+  log(`packages: ${packages.map((p) => p.name).join(', ')}`)
+
+  for (const { name: pkg, dir: pkgDir } of packages) {
     const lockPath = path.join(pkgDir, 'package-lock.json')
-    if (!fs.existsSync(lockPath)) {
-      vlog(`${pkg}: no package-lock.json, skipping`)
-      continue
-    }
 
     const key = storeKey(pkg, lockPath)
     const storeDir = path.join(STORE_ROOT, key)
