@@ -133,6 +133,38 @@ interface CensusRow {
   launcher: string | null;
 }
 
+/**
+ * **The Butchr name of a census row, and the ONE place that derivation lives
+ * (KAN-397).**
+ *
+ * KAN-346 established the rule — a row's Butchr name comes from its PATH, never
+ * from `paneName`, because an agent CrabCast started carries *their* pane name
+ * (`crabcast-<key>-<hash>`) and not `butchr-<type>-<key>`. It then wrote that
+ * rule out longhand inside {@link CrabCastRuntime.censusRecords} alone, and
+ * `confirmAgentPresent` one function away kept joining on the raw `paneName`.
+ * **So the defect KAN-346 fixed survived, for exactly the population this
+ * runtime creates**: measured against a live peer, a running `claude` agent that
+ * the census reported one line earlier under its Butchr name came back
+ * `{present: false, reason: 'absent'}` from `confirmAgentPresent`, on both
+ * `requireRuntime` arms — the flag was never reached because the lookup failed
+ * first. `router.ts`'s `confirmActivation` answers `absent` by calling
+ * `abandonSession`, so under a flipped daemon every such agent would be reported
+ * a failed activation and torn down while it kept running.
+ *
+ * The repair is this function existing rather than the rule being restated: two
+ * copies of a derivation are two things to carry a fix to, and the evidence that
+ * one of them gets missed is the ticket this docblock is named after. A third
+ * reader added later joins on the same source of truth by calling this, or it is
+ * a new instance of the same defect.
+ *
+ * A row outside Butchr's workspace tree has no Butchr name to give it and keeps
+ * `paneName`, which is what it always was.
+ */
+function butchrNameForCensusRow(row: Pick<CensusRow, 'paneName' | 'path' | 'workDir'>): string {
+  const address = addressForPath(row.workDir ?? row.path);
+  return address ? agentNameFor(address.type, address.key) : row.paneName;
+}
+
 /** A census reading, with the timestamp that makes its staleness legible. */
 interface Census {
   reachable: boolean;
@@ -908,6 +940,27 @@ export class CrabCastRuntime implements AgentRuntime {
     const resolvedType = type ?? this.sessionForKey(key)?.type ?? null;
     const agentName = resolvedType ? agentNameFor(resolvedType, key) : `butchr-?-${key.toLowerCase()}`;
     const dir = resolvedType ? pathForAddress(resolvedType, key) : null;
+    // **The `paneName` join below is RIGHT, and stays (KAN-397 AC3).** It reads
+    // like the defect that ticket fixed and is not one, for two reasons worth
+    // writing down rather than re-deriving:
+    //
+    //   - **It is a fallback the affected population never reaches.** An agent
+    //     CrabCast started sits in `census.rows` at its workspace path, so the
+    //     `path === dir` join above matches it and this line is not evaluated.
+    //     That is why `describeAgent` was already correct while
+    //     `confirmAgentPresent` was not: this method joins on the path first and
+    //     `confirmAgentPresent` had no path join at all.
+    //   - **For what it does search, `paneName` IS the Butchr name.**
+    //     `census.foreign` is panes CrabCast can see and does not own; herdr
+    //     names its own panes `butchr-<type>-<key>`, which is exactly what
+    //     `agentName` holds.
+    //
+    // Substituting `butchrNameForCensusRow` here would be identical for every
+    // pane outside the workspace tree (the derivation falls back to `paneName`
+    // for those) and would CHANGE behaviour for one case nobody has evidence
+    // about: a foreign pane whose `workDir` is inside a Butchr workspace — a
+    // human's own terminal opened there — which would start being reported as
+    // that workspace's agent. Uniform, and wrong. So it is left alone.
     const row =
       (dir ? this.census.rows.find((r) => r.path === dir) : undefined) ??
       this.census.foreign.find((r) => r.paneName === agentName);
@@ -996,7 +1049,12 @@ export class CrabCastRuntime implements AgentRuntime {
         if (res.success === true) {
           const rows = this.readCensus(res);
           const all = [...rows.rows, ...rows.foreign];
-          const match = all.find((r) => r.paneName === agentName);
+          // KAN-397: derived from the row's path, never the raw `paneName` —
+          // the agents this runtime spawns are precisely the ones whose
+          // `paneName` is CrabCast's, so a `paneName` join here could not
+          // succeed for them. Same derivation as `censusRecords()`, because it
+          // is the same function.
+          const match = all.find((r) => butchrNameForCensusRow(r) === agentName);
           if (match && (!requireRuntime || match.agentRuntime !== null)) {
             return { present: true, waitedMs: Date.now() - startedAt, checks };
           }
@@ -1600,13 +1658,18 @@ export class CrabCastRuntime implements AgentRuntime {
    * `butchr-<type>-<key>` already, so the derived name equals the one this
    * function used to copy. The two disagree only for an agent CrabCast
    * started — exactly the population this runtime creates.
+   *
+   * **The derivation itself now lives in {@link butchrNameForCensusRow}, and
+   * this function is one of its two callers (KAN-397).** It used to be spelled
+   * out here, which is how `confirmAgentPresent` came to keep the raw
+   * `paneName` join this ticket was filed about: a rule written once and
+   * applied once is not a rule the next reader inherits.
    */
   private censusRecords(): HerdrAgentRecord[] {
     const rows = [...this.census.rows, ...this.census.foreign];
     return rows.map((row) => {
-      const address = addressForPath(row.workDir ?? row.path);
       return {
-        name: address ? agentNameFor(address.type, address.key) : row.paneName,
+        name: butchrNameForCensusRow(row),
         agentRuntime: row.agentRuntime,
         workDir: row.workDir ?? row.path,
         herdrStatus: asHerdrStatus(row.herdrStatus)
