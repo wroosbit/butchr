@@ -4,11 +4,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { resolveLauncher, sleepSync, unusableMcpServers, withWorkspaceIdentity, writeWorkspaceMcpConfig } from './launchers.js';
+import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers.js';
 import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
-import type { AgentRuntime, AgentSpawn } from './agent-runtime.js';
+import type { AgentRuntime, AgentSpawn, WorkspaceMcpServers } from './agent-runtime.js';
 import {
   RESUME_ENV,
   ResumeCause,
@@ -887,7 +887,7 @@ export class HerdrBridge implements AgentRuntime {
   // `url` is `string | undefined` rather than optional: it sits in front of
   // required parameters, and callers who have no URL must pass nothing rather
   // than a placeholder.
-  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: McpServerDefinitions, resume?: ResumeCause): HerdrSession {
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: WorkspaceMcpServers, resume?: ResumeCause): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
     // routers dedupe by (key, type), but the MCP server and the sidepanel's
     // re-attach path can both ask to activate the same agent at once. A second
@@ -1083,7 +1083,7 @@ export class HerdrBridge implements AgentRuntime {
     }
   }
 
-  private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: McpServerDefinitions): void {
+  private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: WorkspaceMcpServers): void {
     const agentName = agentNameFor(session.type, session.key);
 
     // Resolved before anything else happens. An unknown defaultAgent refuses
@@ -1110,52 +1110,32 @@ export class HerdrBridge implements AgentRuntime {
 
     // Workspace-scoped MCP config, written for every agent type: Claude picks
     // up .mcp.json from its cwd, and the file documents the workspace either way.
+    // This is the only place the daemon can put it where the agent's *own* MCP
+    // server process will see it: everything else about a spawn goes through
+    // herdr, and herdr's agent is a child of the herdr daemon rather than of
+    // anything this method spawns.
     //
-    // Stamped with this workspace's identity on the way past (KAN-145). This is
-    // the only place the daemon can put it where the agent's *own* MCP server
-    // process will see it: everything else about a spawn goes through herdr,
-    // and herdr's agent is a child of the herdr daemon rather than of anything
-    // this method spawns. `launcher.setup` below gets the unstamped
-    // definitions on purpose — agy's config is global, see withWorkspaceIdentity.
-    // A server that cannot start on this machine refuses the activation, before
-    // anything is written or spawned (KAN-157, in KAN-84's voice).
+    // ALREADY STAMPED, ALREADY MATERIALISED, AND NEITHER IS THIS METHOD'S JOB
+    // ANY MORE (KAN-398). `mcpServers` arrives as `WorkspaceMcpServers`, which
+    // is the type's whole point: `withWorkspaceIdentity` (KAN-145) and
+    // `materializeMcpServers` (KAN-157) ran above the runtime seam, in
+    // `MessageRouter`, so the second runtime cannot omit what this one used to
+    // remember. What was here was not wrong — it was unshareable, and
+    // `CrabCastRuntime` duly shipped without it.
     //
-    // REFUSE RATHER THAN WARN, DELIBERATELY. The failure this replaces is not
-    // "the agent has fewer tools" — it is that *nobody finds out*. Claude Code
-    // reports a server that dies at parse time nowhere the agent can see, so an
-    // epic agent with no Jira coordinated a board it could not read for two
-    // hours and blamed everything else first. A warning goes to the daemon log,
-    // which is the one place the affected agent cannot look; the agent would
-    // still boot believing it had the tools its brief tells it to use, and would
-    // still spend its budget discovering otherwise. The activation is where a
-    // human is present and where a message is unmissable, so that is where this
-    // is said.
+    // The unusable-server refusal moved with them, to the same place and for a
+    // harder reason: `materializeMcpServers` STRIPS `unusable`, so a refusal
+    // check standing here would now read an empty list on every activation —
+    // green forever, and green because it can no longer see the field it tests.
+    // See `MessageRouter.refuseUnusableMcpServers` for the check and for
+    // KAN-157's argument, which is unchanged. Its one behavioural difference is
+    // recorded there.
     //
-    // WHAT MAKES REFUSING SAFE, which is the other half of the decision: an
-    // operator is never stuck. A disabled integration contributes no servers at
-    // all (registry.ts), so switching Atlassian off returns the fleet to service
-    // immediately, and the refusal says so. And the resolver prefers the
-    // daemon's own Node — the interpreter already running this code — so on any
-    // machine where the daemon itself runs, this branch is unreachable by
-    // construction. It is a backstop that fires when the machine genuinely
-    // cannot host the server, not a hurdle on the normal path.
-    const unusable = unusableMcpServers(mcpServers ?? {});
-    if (unusable.length > 0) {
-      session.spawnError =
-        `MCP server${unusable.length > 1 ? 's' : ''} that cannot start on this machine: ` +
-        unusable.map(([name, why]) => `${name} — ${why}`).join(' ') +
-        ` Nothing was started — an agent spawned without the tools its brief tells it to use ` +
-        `has no way to find out they are missing.`;
-      session.status = 'terminated';
-      console.error(`[HerdrBridge] Refusing to start ${agentName}: ${session.spawnError}`);
-      return;
-    }
-
+    // `writeWorkspaceMcpConfig` still runs `materializeMcpServers` itself and
+    // that is deliberate rather than redundant: it is idempotent, and it is
+    // also the entry point the proof scripts write a plain assembly through.
     if (mcpServers && Object.keys(mcpServers).length > 0) {
-      writeWorkspaceMcpConfig(
-        session.workDir,
-        withWorkspaceIdentity(mcpServers, { type: session.type, key: session.key })
-      );
+      writeWorkspaceMcpConfig(session.workDir, mcpServers);
     }
 
     // Agent-specific provisioning, also on every activation: it is idempotent,

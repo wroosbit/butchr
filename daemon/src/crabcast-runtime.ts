@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import type { AgentRuntime, AgentSpawn } from './agent-runtime.js';
+import type { AgentRuntime, AgentSpawn, WorkspaceMcpServers } from './agent-runtime.js';
 import {
   CRABCAST_CONTRACT_VERSION,
   CrabCastLink,
@@ -763,6 +763,19 @@ export class CrabCastRuntime implements AgentRuntime {
    * and we keep it in {@link remoteIds} rather than swapping it into the object
    * the caller is already holding — a caller that read `session.sessionId` and
    * then found it renamed would be holding a key that addresses nothing.
+   *
+   * **`mcpServers` arrives prepared, and KAN-398 is why the type says so.** This
+   * runtime sends the definitions over the wire and CrabCast writes them into
+   * `.mcp.json` verbatim — their own word on that verb — so anything not done to
+   * them before they get here is not done at all. It used to be nothing:
+   * `pathPrefix` crossed the wire as a key no MCP client reads, and the core
+   * server went unstamped, undoing KAN-157 and KAN-145 together on this path
+   * while `HerdrBridge` did both correctly. Neither implementation was wrong on
+   * its own; the transforms simply had no home that both could share. They have
+   * one now, above this seam, and {@link WorkspaceMcpServers} is what makes
+   * arriving without them a compile error rather than a defect somebody has to
+   * notice. **Nothing is applied here, and nothing should be**: this file
+   * imports no transform, which is also what keeps §1 of gate 3's guard intact.
    */
   spawnSession(
     type: string,
@@ -770,7 +783,7 @@ export class CrabCastRuntime implements AgentRuntime {
     url: string | undefined,
     promptContent: string,
     defaultAgent?: string,
-    mcpServers?: McpServerDefinitions,
+    mcpServers?: WorkspaceMcpServers,
     resume?: ResumeCause
   ): HerdrSession {
     const existing = this.sessionForAddress(type, key);
@@ -819,7 +832,7 @@ export class CrabCastRuntime implements AgentRuntime {
     session: HerdrSession,
     promptContent: string,
     defaultAgent?: string,
-    mcpServers?: McpServerDefinitions
+    mcpServers?: WorkspaceMcpServers
   ): Promise<void> {
     const configure: Record<string, unknown> = {
       action: 'configure_agent',
