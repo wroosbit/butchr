@@ -110,6 +110,16 @@ in the registry, and they are the most expensive conversations on the machine.
 **And the driver drains itself, which is why the driver cannot be one of them.**
 See Q6.
 
+**A third population is neither running nor expected, and it is the largest.**
+Standby agents — switched off deliberately, workspace still on disk — are not
+restored by anything and so are not part of the drain. What they are is a queue
+of latent fresh-starts: every one of them is a workspace with a conversation in
+it that comes back under herdr and does not under CrabCast. **Read as an
+observation with its timestamp rather than as a constant: `standbyTotal` was
+**123** at 2026-08-14T00:00Z.** Nothing in this sequence acts on them; the
+number is here so that "the fleet is drained" is not mistaken for "there is
+nothing left to lose". See U-3.
+
 ### Q2 — What happens to the supervisors?
 
 **They are drained, deliberately, with their state written to their tickets
@@ -241,6 +251,10 @@ are after it.
   or confirm it is already `report`. This is first, before any drain, and the
   order is load-bearing.
 - **Check:** `boardControl.mode` on `butchr_list_agents` reads `off` or `report`.
+  **Do not assume the default.** `BUTCHR_BOARD_RECONCILE` defaults to `report`,
+  and this machine was observed in `converge` at 2026-08-14T00:00Z with 32
+  agents under board control. A dated observation, not a constant — which is the
+  reason the check is a read rather than a recollection.
 - **Abort:** the mode cannot be read, or reads `converge` after the change.
 
 <!-- constant-pin: BOARD_JQL
@@ -503,11 +517,15 @@ agent, and whether Butchr can be made to re-adopt one, is unmeasured. **Owner:**
 unassigned. Nothing in this sequence depends on the answer, and the answer would
 change how much §1's warning costs.
 
-**U-3 — `preemptedAgents` promises a resume that CrabCast cannot give.**
-`butchr_list_agents` tells its readers that re-activating a preempted agent
-"resumes the conversation it was stopped in". That is true under herdr and false
-under CrabCast, and the surface says it unconditionally. **Owner:** filed as a
-follow-up and linked `Relates` to KAN-378.
+**U-3 — the standby and preempted rows promise a resume that CrabCast cannot
+give.** `butchr_list_agents` tells its readers that re-activating a preempted
+agent "resumes the conversation it was stopped in", and each standby row carries
+the same sentence: *"switching it back on resumes the conversation it was stopped
+in rather than starting a new one."* That is true under herdr and false under
+CrabCast, and the surface states it unconditionally — to a population of 123 at
+the reading above. **Owner:** filed as
+[KAN-387](https://wroosbit.atlassian.net/browse/KAN-387) and linked `Relates` to
+KAN-378.
 
 **U-4 — Does the flip's safety at restart depend on CrabCast's foreign-pane
 fields?** `reconcileAgents` skips an agent it sees as alive, and under CrabCast
