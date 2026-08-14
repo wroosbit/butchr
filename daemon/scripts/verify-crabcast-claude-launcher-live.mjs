@@ -14,7 +14,7 @@
 // activation-confirmation join that cannot find an agent CrabCast started, which
 // tears down the session of a perfectly healthy agent.
 //
-// CI-RUNNABLE: no. It needs a real CrabCast daemon, real capacity for one more
+// CI-RUNNABLE: no — needs a real CrabCast daemon, real capacity for one more
 // agent, and it starts a real `claude` process that spends real tokens.
 //
 // ── THIS SCRIPT IS RED WHILE THE GATE IS OPEN, AND THAT IS THE VERDICT ──────
