@@ -1060,6 +1060,53 @@ same reason you re-read a write.
 It is the same shape this file teaches for `butchr_send_to_agent`: **a success
 that reports the call was made, not that the thing happened.**
 
+### An empty result is a claim about your search; a green is a claim about your check
+
+**Before you report a null result as a finding — nothing found, no matches, zero
+rows, nobody live — say what the instrument would have printed had the thing
+been there, and confirm that exact output could have reached you.** If you
+cannot name it you have not measured the world, you have measured your search. A
+green takes the same treatment from the other side: name the input that would
+have turned it red, and check that the world can supply one.
+
+**The sharpest form of this has no failing branch the world can reach.** A check
+that could only ever return the answer you were hoping for is not a weak check —
+it is a check that does not exist while appearing to, and it will go green
+forever. That is what the red drive buys, and it is the only method on this
+board with a record of catching this class.
+
+**And a check bundled behind something else may not have run at all.** `cmd-a &&
+your-check || echo "not there"` prints the reassuring branch off *`cmd-a`'s*
+exit status, so an unrelated upstream failure arrives as a substantive finding
+about the world — and it fails toward *absent*, which is the comfortable answer.
+**A check whose result you will act on runs as its own command**, re-run alone
+before you believe it, especially when it reports there is nothing to worry
+about. (`epic/KAN-203`, 2026-08-14: a `git rev-parse` racing a fetch in the same
+invocation rendered as `(no such workspace)` for a directory that exists.)
+
+**Two instruments, measured on this repository on 2026-08-14 as a positive
+control for this paragraph rather than quoted from a ticket.** `find
+<workspaces> -maxdepth 3 -name .git` returns **one** hit where `-maxdepth 4`
+returns **270**: agent checkouts sit a level deeper than the search reached, so
+the shallow run reported the single irrelevant survivor and hid the rest. In the
+same tree `grep -riE 'ctrl.?c'` matches five prose comments and never
+`daemon/src/herdr.ts:2029`, where the interrupt is actually sent — as the
+literal `'C-c'`. Both ran cleanly and printed a well-formed answer to a question
+nobody had asked.
+
+**This does not replace the sharp rule for an instrument that has one.** Name
+the workflow and the head before reading a CI row; confirm the build exited 0
+and that `dist` is not stale before reading a proof's verdict; read
+`hasNextPage` before calling a page of results the whole. A sharp rule about
+builds beats a vague rule about epistemics, so this paragraph is the floor for
+the instruments that have no sharp rule yet, and never a reason to fold an
+existing one away. **It lowers the rate and closes nothing** — the class
+outlives every individual fix, which is why it is written as a class.
+
+**This is the sweep's rule as much as the review's**, and the next section is
+where you will meet it: a sweep that finds nothing is indistinguishable from a
+sweep whose reads could not have found anything.
+
 ## The supervision sweep
 
 You supervise the tasks you filed, so the backstop the epic agent runs is
