@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 80 |
+| `yes` | 81 |
 | `partial` | 8 |
 | `quarantined` | 3 |
-| `no` | 14 |
-| **total** | **105** |
+| `no` | 16 |
+| **total** | **108** |
 
-**88 of 105** run on every pull request.
+**89 of 108** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -77,6 +77,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-channel-startup-supervision` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ci-partition-is-enforced` | yes | builds its fixtures in a temporary directory and reads `ci.yml` and the script headers off the checkout; node builtins only, no build, no daemon, no herdr, no credential, no network. |
 | `verify-ci-set-guards-tree-writes` | yes | it builds a throwaway git repository under `os.tmpdir()` and spawns the copied runner in it. No live daemon, no herdr, no credential, no peer, no terminal, no network; the only external binary is `git`, which the checkout already requires. It does not run this repository's own verify set, so it does not run the set from inside the set. |
+| `verify-confirm-present-joins-on-path` | yes | it stands up its own Unix socket and answers its own frames from a committed capture. No live peer, no herdr, no PTY, no credential, no network. |
 | `verify-confluence-workspaces` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cost-estimate-plausibility` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -160,6 +161,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-capacity-survives-daemon-restart` | no | starts a real daemon and then warms up for 780 s across 13 cost windows so the estimate can walk down off its seed. Both the daemon and the wall clock put it out of reach of a per-PR check. |
 | `verify-comment-authorship-live` | no | checks comment ids against the live Jira API and needs a real Atlassian credential; without one it correctly reports that it is not evidence of anything. |
 | `verify-crabcast-claude-launcher-live` | no | needs a real CrabCast daemon, real capacity for one more agent, and it starts a real `claude` process that spends real tokens. |
+| `verify-crabcast-confirm-present-name-join` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET` (or the default socket path) and it spawns a real `claude` agent. It attempts nothing without one. Its output goes on the pull request. |
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
 | `verify-message-provenance-live` | no | needs a real daemon, herdr, a pane and a live Claude Code agent — the provenance it checks is what a model actually received. |

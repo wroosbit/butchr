@@ -176,7 +176,7 @@ that is a real capability gap rather than a detail.
 | 14 | `listHerdrAgents` | **different-shaped** | `list_agents`. Rows carry `paneName`, `agentRuntime`, `workDir`, `herdrStatus` — a direct match for `HerdrAgentRecord`. Lagging by the census interval. |
 | 15 | `listHerdrAgentsChecked` | **served** | The distinction survives intact: `reachable` is a claim about whether the census could be **taken**, never about whether it found anything. |
 | 16 | `listHerdrStatuses` | **different-shaped** | Derived from the same census. `herdrStatus` values match Butchr's `HerdrAgentStatus` set exactly. |
-| 17 | `confirmAgentPresent` | **served** | Already `Promise`-returning, so it polls `list_agents` for real. `requireRuntime` reads their `agentRuntime` field, which is the same evidence Butchr uses. A census that could not be taken returns `unverifiable`, never `absent`. |
+| 17 | `confirmAgentPresent` | **served** | Already `Promise`-returning, so it polls `list_agents` for real. `requireRuntime` reads their `agentRuntime` field, which is the same evidence Butchr uses. A census that could not be taken returns `unverifiable`, never `absent`. **The name join is the row's PATH, not its `paneName` (KAN-397)** — the same derivation `listHerdrAgents` uses, and the same function. It joined on the raw `paneName` until 2026-08-14, which could not match for a single agent this adapter starts; see below. |
 | 18 | `tailAgent` | **served (KAN-283)** | **Was `absent (ours, not theirs)` under KAN-278; served over the wire now.** `tail_agent` returns `success`, `text`, `truncated`, `source`, `sourcesTried`, with `source` drawn from the same `'recent-unwrapped' \| 'visible'` pair Butchr uses — a better match than most of this interface. The blocker was **our** synchronous signature, a tail being the one read where a cached answer is the wrong answer; KAN-283 made `AgentRuntime.tailAgent` `Promise`-returning and the refusal is gone. **One limit, from the wire: CrabCast can only tail an agent it configured itself** — their agent name is derived from the path (`crabcast-<leaf>-<hash>`), so a pane herdr owns under a Butchr name answers `not found` even while `list_agents` reports it under `foreignPanes`. That is `success: false`, a claim about the READ, and it is correct. |
 | 19 | `pressPaneKey` | **absent** | No `press_pane_key` action — verified, it answers `Unknown action`. `send_to_agent` is not a substitute: it opens with a Ctrl+C (its response reports `interrupts: 1`), which is precisely what this method exists not to do. Throws. |
 | 20 | `sendToAgent` | **served (superset)** | `send_to_agent` answers `delivered`, `verdict`, `interrupts`, `submits` and an `evidence` block. We map **`delivered`**, not `success` — `success` says the call worked, `delivered` says the keystrokes landed, and this method's contract is about the typing. |
@@ -298,6 +298,28 @@ stranded. `censusRecords` now derives the name from the row's path, which is the
 address (their north star 3) and the exact inverse of what this adapter spawns
 with. Nothing changes for a foreign pane, because herdr already names those
 `butchr-<type>-<key>` — which is why the flip lost sessions and not names.
+
+**And the fix did not reach the reader one function away, which is KAN-397.**
+`confirmAgentPresent` kept joining on the raw `paneName`, so the defect above
+survived in the one place where it destroys work rather than hiding it:
+`router.ts`'s `confirmActivation` answers `absent` by calling `abandonSession`
+and reporting the activation `success: false`, so under a flipped daemon every
+CrabCast-started agent would have been torn down **while it kept running**,
+leaving a live pane no Butchr session addresses. `task/KAN-379` measured it as
+cutover gate 2 — both `requireRuntime` arms failing identically, which is what
+identifies the failure as the lookup rather than as `expectsRuntime` rejecting
+the agent, since the flag is never reached. The derivation now lives in
+`butchrNameForCensusRow` and both readers call it, because the lesson of these
+two tickets is not the rule but its duplication: a rule written once and applied
+once is not a rule the next reader inherits. **`describeAgent`'s `paneName` join
+is deliberately untouched** — it looks the row up by `path` first, so the
+affected population never reaches the fallback, and what the fallback searches is
+`census.foreign`, where `paneName` *is* the Butchr name because herdr put it
+there. Making it uniform would change behaviour only for a human's own terminal
+opened inside a workspace, which would start being reported as that workspace's
+agent.
+
+Live proof: `daemon/scripts/verify-crabcast-confirm-present-name-join.mjs`.
 
 **What adoption deliberately does not rescue: `census.foreign`.** A foreign pane
 carries no `sessionId`, so nothing addresses its pty; adopting one would hand
