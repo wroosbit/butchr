@@ -57,6 +57,13 @@
 //
 //   BUTCHR_CRABCAST_SOCKET=~/.local/share/crabcast/crabcast.sock \
 //     node daemon/scripts/verify-crabcast-reconnect-live.mjs [--verbose]
+//
+// It needs room for one more agent. CrabCast refuses the probe spawn when the
+// machine is short of CPU — its gate, with its own figures, and the ordinary
+// answer on a busy fleet rather than a fault. The spawn is therefore retried as
+// a SETUP GUARD, for `KAN381_SPAWN_BUDGET_MS` (default 8 minutes); raise it if
+// the fleet is busy. A refusal for any other reason is not retried, and a
+// give-up prints "setup:" and asserts nothing — it must never be read as a red.
 
 import fs from 'fs';
 import net from 'net';
@@ -206,8 +213,14 @@ console.log(`   peer build ${String(peer.peerCommit).slice(0, 12)}, contract v${
 // agents"*. That is CrabCast's capacity gate working, and nothing about this
 // ticket. So it waits rather than reporting a red that would send a reader to
 // the wrong file. A refusal for any other reason is not retried.
+//
+// The budget is an env knob because how long "wait for room" takes is a fact
+// about the fleet on the day rather than about this proof: on a machine running
+// six agents it did not clear in eight minutes, and on an idle one the first
+// attempt succeeds.
 let session = null;
-const spawnDeadline = Date.now() + 8 * 60_000;
+const spawnBudgetMs = Number(process.env.KAN381_SPAWN_BUDGET_MS ?? 8 * 60_000);
+const spawnDeadline = Date.now() + spawnBudgetMs;
 let lastRefusal = null;
 for (let attempt = 1; Date.now() < spawnDeadline; attempt++) {
   session = runtime.spawnSession(TYPE, KEY, undefined, 'KAN-381 reconnect probe.', 'shell');
