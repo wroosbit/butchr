@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 79 |
+| `yes` | 80 |
 | `partial` | 8 |
 | `quarantined` | 3 |
 | `no` | 16 |
-| **total** | **106** |
+| **total** | **107** |
 
-**87 of 106** run on every pull request.
+**88 of 107** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -77,6 +77,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-channel-startup-supervision` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ci-partition-is-enforced` | yes | builds its fixtures in a temporary directory and reads `ci.yml` and the script headers off the checkout; node builtins only, no build, no daemon, no herdr, no credential, no network. |
 | `verify-ci-set-guards-tree-writes` | yes | it builds a throwaway git repository under `os.tmpdir()` and spawns the copied runner in it. No live daemon, no herdr, no credential, no peer, no terminal, no network; the only external binary is `git`, which the checkout already requires. It does not run this repository's own verify set, so it does not run the set from inside the set. |
+| `verify-confirm-present-joins-on-path` | yes | it stands up its own Unix socket and answers its own frames from a committed capture. No live peer, no herdr, no PTY, no credential, no network. |
 | `verify-confluence-workspaces` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cost-estimate-plausibility` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
