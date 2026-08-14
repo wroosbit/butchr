@@ -167,6 +167,15 @@ const digestsOnly = process.argv.includes('--digests');
 const GUARDED = [
   { name: 'CRABCAST_CONTRACT_VERSION', src: 'daemon/src/crabcast-link.ts' },
   { name: 'CRABCAST_PIN', src: 'daemon/src/crabcast-link.ts' },
+  // KAN-378 added the three below. `docs/crabcast-cutover-sequence.md` is an
+  // operational sequence whose steps turn on these values — which variable is
+  // set at the flip, what refills a drained fleet, and how long "it came back
+  // on its own" is — so a move in any of them makes a step wrong rather than
+  // merely out of date. That is the same argument the two rows above were
+  // added on, applied to a document somebody reads during an incident.
+  { name: 'RUNTIME_ENV_VAR', src: 'daemon/src/runtime-switch.ts' },
+  { name: 'BOARD_JQL', src: 'daemon/src/board-reconcile.ts' },
+  { name: 'BOARD_CYCLE_MS', src: 'daemon/src/board-reconcile.ts' },
 ];
 
 const DOCS_DIR = path.join(repoRoot, 'docs');
