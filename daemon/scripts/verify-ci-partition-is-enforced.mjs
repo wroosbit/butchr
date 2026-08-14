@@ -11,6 +11,12 @@
 // script quietly downgraded to `no` or `quarantined` with no reason and no
 // ticket, which is a deletion wearing an annotation.
 //
+// Since KAN-409 it also catches a third: `ci-partition.md` carrying a summary
+// that disagrees with its own table — the class counts, the total, or the `N of
+// M` sentence left behind by a clean git auto-merge that took both sides' new
+// rows. That is the state PR #171 was in, and §6 passed it, because §6
+// reconciles the rows and never read the numbers above them.
+//
 // CI-RUNNABLE: yes — builds its fixtures in a temporary directory and reads
 // `ci.yml` and the script headers off the checkout; node builtins only, no
 // build, no daemon, no herdr, no credential, no network.
@@ -44,6 +50,12 @@
 //   * What they do NOT establish is that GitHub Actions really executes any of
 //     this. No script can: that is a fact about a runner, not about a
 //     repository.
+//   * Sections 4-7 do NOT supply their own input: they read `ci.yml`, the
+//     script headers and `ci-partition.md` off the checkout, so what they assert
+//     on is what a reviewer would find there. §7's own uncovered leg is a
+//     different one and is stated at §7: it guards the document against the
+//     tree and against itself, and nothing guards either against a generator
+//     that is wrong consistently.
 //   * WHO COVERS IT: section 4 covers the wiring statically, by reading
 //     `ci.yml` and asserting both invocations are there. The remaining leg —
 //     that the job ran and went green — is an observation, and the KAN-295 pull
@@ -55,7 +67,15 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { readPartition, partitionProblems, REPO_ROOT, RUNS_IN_CI, SCRIPT_DIRS } from './lib/ci-partition.mjs';
+import {
+  readPartition,
+  partitionProblems,
+  REPO_ROOT,
+  RUNS_IN_CI,
+  SCRIPT_DIRS,
+  summaryParts,
+  parseSummary
+} from './lib/ci-partition.mjs';
 
 const verbose = process.argv.includes('--verbose');
 let failures = 0;
@@ -301,6 +321,91 @@ check(
   disagree.length === 0,
   'and the class it records for each is the class in that script\'s own header',
   disagree.map((d) => `${d.name}: document says ${d.cls}, header says ${d.actual}`).join('\n')
+);
+
+// =============================================================================
+rule('7. THE SUMMARY BLOCK AGREES WITH THE TABLE BENEATH IT');
+// =============================================================================
+//
+// KAN-409. §6 reconciles the per-script rows and stops there, so the summary
+// above them — the class counts, the total, and the `N of M` sentence — was
+// unguarded. A clean git auto-merge takes both sides' new rows into the table
+// and leaves the summary at the older total: measured rebasing #171 onto #169,
+// where the table was correct at 112 rows and the summary still read 111. Both
+// the stale file and the regenerated one passed §6.
+//
+// It matters because the totals are what a reader actually reads. `**91 of
+// 111** run on every pull request` is the sentence somebody quotes in a PR or a
+// ruling; the 112-row table underneath is what nobody counts. A stale summary
+// understates coverage and degrades toward LOOKING FINISHED — plausible,
+// well-formed, and wrong in the direction that invites no questions.
+//
+// TWO ARMS, and they fail independently on purpose:
+//
+//   (a) Against the tree. Expected is re-derived by `summaryParts`, the same
+//       function the generator emits from, so the writer and the checker cannot
+//       drift. §6 having already tied the table to the tree, agreement with the
+//       tree IS agreement with the table — and the row count is asserted below
+//       so that is stated rather than left to be inferred.
+//   (b) Against itself, from the document's own numbers alone. The class counts
+//       must sum to the total; the sentence's M must be that total and its N the
+//       sum of the classes CI runs. This arm holds whatever `summaryParts` does,
+//       which is what stops arm (a) from being a function agreeing with itself.
+//
+// WHAT THIS LEAVES UNCOVERED: nothing here guards the *generator*. Arm (b)
+// catches a generator whose summary is internally inconsistent; a generator that
+// is wrong CONSISTENTLY — miscounting a class in both the table and the totals —
+// produces a document both arms agree with. Regeneration is still trusted, and
+// no check in this file changes that. WHO COVERS IT: nobody. Said plainly rather
+// than left for a reader to infer a coverage that does not exist.
+
+const expectedSummary = summaryParts(rows);
+const foundSummary = parseSummary(md);
+
+check(
+  foundSummary.found,
+  'ci-partition.md has a `## Totals` block to check at all',
+  'no `## Totals` section — a summary that cannot be found is a failure here, not an absence'
+);
+check(
+  foundSummary.classRows.join('\n') === expectedSummary.classRows.join('\n'),
+  'the per-class counts in the summary are the classes in the tree',
+  `document:\n${foundSummary.classRows.join('\n') || '(none parsed)'}\n` +
+    `recomputed:\n${expectedSummary.classRows.join('\n')}`
+);
+check(
+  foundSummary.totalRow === expectedSummary.totalRow,
+  'the total row is the number of scripts the tree holds',
+  `document: ${foundSummary.totalRow ?? '(none parsed)'}\nrecomputed: ${expectedSummary.totalRow}`
+);
+check(
+  foundSummary.sentence === expectedSummary.sentence,
+  'and the `N of M` sentence — the number a reader quotes — is that same pair',
+  `document: ${foundSummary.sentence ?? '(none parsed)'}\nrecomputed: ${expectedSummary.sentence}`
+);
+check(
+  declared.length === rows.length,
+  'the table itself carries exactly one row per script, so agreeing with the tree is agreeing with the table',
+  `${declared.length} row(s) in ci-partition.md, ${rows.length} script(s) in the tree`
+);
+
+// Arm (b): internal consistency, computed from the document and nothing else.
+const summedClasses = Object.values(foundSummary.counts).reduce((a, b) => a + b, 0);
+const summedInCi = RUNS_IN_CI.reduce((a, k) => a + (foundSummary.counts[k] ?? 0), 0);
+check(
+  foundSummary.total !== null && summedClasses === foundSummary.total,
+  'the summary is consistent with itself: its class counts sum to its own total',
+  `classes sum to ${summedClasses}, total row says ${foundSummary.total ?? '(none parsed)'}`
+);
+check(
+  foundSummary.sentenceOf !== null && foundSummary.sentenceOf === foundSummary.total,
+  'and the M of `N of M` is that same total',
+  `sentence says of ${foundSummary.sentenceOf ?? '(none parsed)'}, total row says ${foundSummary.total ?? '(none parsed)'}`
+);
+check(
+  foundSummary.sentenceIn !== null && foundSummary.sentenceIn === summedInCi,
+  `and its N is the sum of the classes CI runs (${RUNS_IN_CI.join(' + ')})`,
+  `sentence says ${foundSummary.sentenceIn ?? '(none parsed)'}, those classes sum to ${summedInCi}`
 );
 
 console.log('');
