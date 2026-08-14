@@ -155,7 +155,16 @@ export async function nudgeResumedAgent(opts: {
       return { nudged: false, error: 'agent did not reach a prompt in time' };
     }
 
-    const sent = await herdrBridge.sendToAgent(key, resumeNudge(type, key, cause), type);
+    // The brief's location is asked of the runtime rather than assumed here
+    // (KAN-400). This message tells the agent its brief moved underneath it, so
+    // it has to name something the agent can actually open — and which file
+    // that is, or whether it is a file at all, is the runtime's fact and not
+    // this module's.
+    const sent = await herdrBridge.sendToAgent(
+      key,
+      resumeNudge(type, key, herdrBridge.briefLocation(type, key), cause),
+      type
+    );
     log(
       `[nudge] ${label} restored its conversation; ` +
       (sent.success

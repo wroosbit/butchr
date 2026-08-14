@@ -498,7 +498,16 @@ const daemonMessages = {
     { key: 'KAN-90', kind: 'status', to: 'In Review' },
     'parent'
   ),
-  'resume nudge (KAN-21/KAN-37)': resumeNudge('task', 'KAN-90', 'preempted')
+  // The brief location is a fixture here on purpose: this script is about the
+  // daemon's SENDER TAG, and the nudge now takes where the brief went (KAN-400).
+  // Either arm of that union produces the same leading tag, which is the whole
+  // of what this section asserts.
+  'resume nudge (KAN-21/KAN-37)': resumeNudge(
+    'task',
+    'KAN-90',
+    { kind: 'workspace-file', path: '/tmp/kan-90/.butchr-prompt.md' },
+    'preempted'
+  )
 };
 
 console.log('');

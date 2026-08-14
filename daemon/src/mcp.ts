@@ -108,6 +108,28 @@ const server = new Server(
     // remains true for a session that has drifted from that file, and the last
     // line is the pointer between them. The two must say the same thing: if you
     // change the channel section of the prompts, read this string as well.
+    //
+    // AND THE LAST LINE NAMES NO FILE (KAN-400). It read *"the full brief is in
+    // .butchr-prompt.md in this workspace"*, which is a fact about `HerdrBridge`
+    // — it is the runtime that writes that file — and false under CrabCast,
+    // whose published contract deliberately keeps the brief out of the caller's
+    // directory. This string is the one site of the three that reaches a
+    // CrabCast agent **today**, on every request it makes, restored or not.
+    //
+    // It names the concept rather than taking a location from the daemon, and
+    // that is a decision rather than a shortcut: this process is a *client* of
+    // the daemon, spawned by the agent's own CLI from `.mcp.json`, and the only
+    // thing it knows about itself is what the daemon stamped onto its argv.
+    // Under CrabCast today that is nothing at all — `withWorkspaceIdentity` is
+    // applied in `herdr.ts` only, so the core server crosses the wire unstamped
+    // (KAN-398). A `--brief` flag added here would therefore be correct on the
+    // herdr path, absent on the CrabCast path, and — the part that decides it —
+    // would start being *wrongly* present the day KAN-398 makes the transform
+    // run on both. Correct by accident now, wrong after somebody else's fix.
+    //
+    // The concept is findable, which was the objection to naming one: every
+    // agent's first turn is a pointer at its brief, under both runtimes. That
+    // is the sentence this now names.
     instructions:
       'Butchr manages this agent. A message another agent addresses to this one ' +
       'arrives as a channel event — a <channel source="butchr"> block the client ' +
@@ -122,8 +144,9 @@ const server = new Server(
       'REPLY PATH: there is no dedicated reply tool here. A reply, if one is wanted, ' +
       'is an ordinary butchr_send_to_agent addressed at the sender\'s type/KEY; it is ' +
       'a new message rather than an acknowledgement, and nothing about receiving a ' +
-      'channel message makes a reply owed. The full brief is in .butchr-prompt.md in ' +
-      'this workspace, under "Whose voice is this?".'
+      'channel message makes a reply owed. The full brief is the activation ' +
+      'instructions you were pointed at when this session began, under ' +
+      '"Whose voice is this?".'
   }
 );
 

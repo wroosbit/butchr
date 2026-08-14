@@ -96,7 +96,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { readPartition, partitionProblems, REPO_ROOT, RUNS_IN_CI, CLASSES } from './lib/ci-partition.mjs';
+import { readPartition, partitionProblems, REPO_ROOT, RUNS_IN_CI, CLASSES, summaryParts } from './lib/ci-partition.mjs';
 
 const verbose = process.argv.includes('--verbose');
 const listOnly = process.argv.includes('--list');
@@ -241,8 +241,6 @@ for (const r of set) {
 
 /** The checked-in view. Regenerated with `--markdown`; never hand-edited. */
 function emitMarkdown() {
-  const counts = {};
-  for (const r of rows) counts[r.class] = (counts[r.class] ?? 0) + 1;
   const out = [];
   out.push('# The CI partition of the `verify-` scripts');
   out.push('');
@@ -279,14 +277,18 @@ function emitMarkdown() {
     out.push(`| \`${k}\` | ${v} | ${RUNS_IN_CI.includes(k) ? '**yes**' : 'no'} |`);
   }
   out.push('');
+  // KAN-409: the three summary lines come from `summaryParts`, which the guard
+  // re-derives from too. Emitted inline here, they were a second place for the
+  // totals to live, and a clean auto-merge left them behind the table below.
+  const summary = summaryParts(rows);
   out.push('## Totals');
   out.push('');
   out.push('| class | count |');
   out.push('| --- | --- |');
-  for (const k of Object.keys(CLASSES)) out.push(`| \`${k}\` | ${counts[k] ?? 0} |`);
-  out.push(`| **total** | **${rows.length}** |`);
+  out.push(...summary.classRows);
+  out.push(summary.totalRow);
   out.push('');
-  out.push(`**${set.length} of ${rows.length}** run on every pull request.`);
+  out.push(summary.sentence);
   out.push('');
   for (const cls of Object.keys(CLASSES)) {
     const group = rows.filter((r) => r.class === cls);

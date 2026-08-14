@@ -82,7 +82,7 @@ const { AgentRegistry } = await import(path.join(distDir, 'agent-registry.js'));
 const { PromptLoader } = await import(path.join(distDir, 'prompt.js'));
 const { computeCapacity, readCapacity, readMachineFacts, summarizeCapacity } =
   await import(path.join(distDir, 'capacity.js'));
-const { claudeTranscriptDir, hasRestorableConversation, resumeNudge } =
+const { claudeTranscriptDir, hasRestorableConversation, resumeNudge, workspaceBrief } =
   await import(path.join(distDir, 'resume.js'));
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
@@ -157,6 +157,12 @@ function stubHerdr(running, { statuses = {}, sessions = [] } = {}) {
       sent.push({ key, type, message });
       return { success: true };
     },
+    // KAN-400: `nudgeResumedAgent` asks the runtime where the brief went before
+    // it can tell an agent to re-read it. This stub writes its briefs into the
+    // workspace exactly as `HerdrBridge` does, so it answers the same way —
+    // through the real `workspaceBrief`, not a hand-built literal, so the shape
+    // this test drives is the shape the daemon produces.
+    briefLocation: (type, key) => workspaceBrief(path.join(WORKSPACES, type, key.toLowerCase())),
     spawnSession: (type, key, url, prompt, defaultAgent, mcpServers, resume) => {
       const workDir = path.join(WORKSPACES, type, key.toLowerCase());
       fs.mkdirSync(workDir, { recursive: true });
@@ -618,7 +624,11 @@ rule('7. SURVIVAL — a preempted agent, re-activated, resumes rather than start
   console.log(`\n  and it was told, in words, what happened to it:\n`);
   const nudge = bridge.sent.find((s) => s.key === 'KAN-10');
   console.log(nudge ? nudge.message.replace(/(.{76}\s)/g, '$1\n    ').replace(/^/gm, '    ') : '  (nothing was sent)');
-  console.log(`\n  the sentence that distinguishes this from a crash:\n    "${resumeNudge('task', 'KAN-10', 'preempted').split('. ')[1]}."`);
+  console.log(
+    `\n  the sentence that distinguishes this from a crash:\n    "${
+      resumeNudge('task', 'KAN-10', bridge.briefLocation('task', 'KAN-10'), 'preempted').split('. ')[1]
+    }."`
+  );
 
   verdict(
     back.resume === 'preempted' && back.resumedConversation === true && Boolean(nudge),
