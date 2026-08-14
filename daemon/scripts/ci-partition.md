@@ -158,6 +158,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-activate-verified-existence` | no | shells out to `which herdr` and activates a real agent through it; it throws outright when herdr is not on PATH. |
 | `verify-capacity-survives-daemon-restart` | no | starts a real daemon and then warms up for 780 s across 13 cost windows so the estimate can walk down off its seed. Both the daemon and the wall clock put it out of reach of a per-PR check. |
 | `verify-comment-authorship-live` | no | checks comment ids against the live Jira API and needs a real Atlassian credential; without one it correctly reports that it is not evidence of anything. |
+| `verify-crabcast-claude-launcher-live` | no | needs a real CrabCast daemon, real capacity for one more agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
 | `verify-message-provenance-live` | no | needs a real daemon, herdr, a pane and a live Claude Code agent — the provenance it checks is what a model actually received. |
