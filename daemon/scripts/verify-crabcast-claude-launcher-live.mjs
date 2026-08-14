@@ -76,10 +76,55 @@
 // The KAN-145 shape is the one being guarded against here: two scripts each
 // honest about what they test, with a hole between them that neither owns.
 //
+// ── KAN-417: THIS SCRIPT WAS STALE AGAINST KAN-398, AND §5 WAS MEASURING ITS
+//    OWN OMISSION ───────────────────────────────────────────────────────────
+//
+// KAN-398 moved `withWorkspaceIdentity` and `materializeMcpServers` ABOVE the
+// runtime seam: `MessageRouter` now calls `prepareWorkspaceMcpServers(mcpServers,
+// {type, key})` and hands `spawnSession` the branded result, and
+// `crabcast-runtime.ts` applies nothing. **This script kept assembling raw
+// definitions and passing them straight to `spawnSession`** — which a `.mjs`
+// cannot be stopped from doing, because the brand is a compile-time guard and
+// there is no compiler here.
+//
+// So from KAN-398 until this repair the script no longer reproduced the router.
+// Its two §5 gates went RED, and the red was **about the script**: it really was
+// sending `pathPrefix` across the wire and really was sending the core server
+// unstamped, because it had skipped the preparation the router does. Reported as
+// a mechanism finding, that is a false red naming a defect that had already been
+// fixed — the mirror of the stale-assertion-green the ticket warned about, and
+// the reason `KAN-417` asked for this section to be re-derived rather than
+// re-run.
+//
+// **The repair is to do what the router does, in the same order, at the same
+// point** — §2 now asserts that call site by reading `router.ts` as text, and §3
+// passes `prepareWorkspaceMcpServers(...)` rather than the raw assembly. §5 then
+// asserts the FILE, which is the leg nobody had ever looked at.
+//
+// **THIS SCRIPT SUPPLIES THE ASSEMBLY IT THEN ASSERTS ON, and that is the edge
+// of what §5 covers.** It calls `prepareWorkspaceMcpServers` itself, so a §5 pass
+// says: *the transforms produce a correct file when they are applied, and
+// CrabCast writes that file through undamaged.* It does **not** say the router
+// applies them on a real activation — §2's static read is all there is of that,
+// and it is a read rather than an execution. Nothing covers the gap, for the
+// reason the section above gives: until the fleet is flipped, nothing can. It is
+// the KAN-145 shape again and it is named here rather than left between two
+// scripts.
+//
+// **What §5b adds is the leg that is NOT self-supplied**, and it is the reason
+// the ticket asked for a consequence and not just a file: the probe agent's own
+// `claude` client reads the `.mcp.json`, starts the `butchr` server from it, and
+// that server announces itself to the REAL daemon. Nothing in this script writes
+// any of that. See §5b.
+//
 // ── RUNNING IT ─────────────────────────────────────────────────────────────
 //
 //   cd daemon && npm run build            # it imports from ../dist
-//   node daemon/scripts/verify-crabcast-claude-launcher-live.mjs [--verbose]
+//   node daemon/scripts/verify-crabcast-claude-launcher-live.mjs [--verbose] [--override]
+//
+// `--override` is the blocking-proof bypass for a capacity refusal, permitted by
+// the standing rule on KAN-348. Off by default; see the block at the refusal for
+// what it costs the proof and what it does not.
 //
 // A CrabCast daemon must be listening at `BUTCHR_CRABCAST_SOCKET`, or at
 // `defaultCrabCastSocket()` when that is unset. CrabCast's capacity gate must
@@ -278,6 +323,27 @@ check(
   'the router no longer renders a prompt into spawnSession'
 );
 
+// KAN-417. The preparation step, asserted at the call site for the same reason
+// the assembly is: this script reproduces what the router does, so a router that
+// stops preparing must break this proof rather than silently outrun it. That is
+// the failure that produced this repair — the call site moved and the script did
+// not.
+check(
+  'router.ts prepares the assembly before it crosses the seam, in the parameter this proof fills',
+  /prepareWorkspaceMcpServers\(\s*mcpServers\s*,\s*\{[^}]*type[^}]*key[^}]*\}\s*\)/.test(routerSrc),
+  'router.ts no longer calls prepareWorkspaceMcpServers(mcpServers, {type, key}) into spawnSession'
+);
+// And that it is still asked BEFORE preparation, because preparation strips the
+// field the refusal reads — a check placed after it can only ever return the
+// reassuring answer (launchers.ts says so at `prepareWorkspaceMcpServers`).
+check(
+  'the unusable-server refusal is consulted on the RAW assembly, before preparation',
+  routerSrc.indexOf('refuseUnusableMcpServers(mcpServers)') !== -1 &&
+    routerSrc.indexOf('refuseUnusableMcpServers(mcpServers)') <
+      routerSrc.indexOf('prepareWorkspaceMcpServers(mcpServers'),
+  'refuseUnusableMcpServers no longer precedes prepareWorkspaceMcpServers'
+);
+
 const registry = new WorkspaceRegistry();
 registry.registerIntegration(createAtlassianIntegration({}));
 registry.registerIntegration(
@@ -291,6 +357,37 @@ check(
   `assembled: ${Object.keys(mcpServers).join(', ')}`
 );
 note('servers sent', Object.keys(mcpServers).join(', '));
+
+// ── the preparation, applied HERE because KAN-398 put it here ──────────────
+//
+// The raw assembly is kept as `mcpServers` so §5 can compare what went in
+// against what landed on disk. Asserting "no pathPrefix in the file" without
+// knowing a pathPrefix was ever there is a check that could only pass — the
+// class KAN-388 names — so §5 reads the expected values out of THIS object
+// rather than hard-coding them, and refuses to credit itself where the raw
+// assembly gave it nothing to strip.
+const preparedMcpServers = launchers.prepareWorkspaceMcpServers(mcpServers, { type: TYPE, key: KEY });
+
+// The positive control for every §5 assertion below. If the raw assembly carried
+// no `pathPrefix` at all, §5's `pathPrefix` gates are vacuous and say so rather
+// than reporting a pass.
+const rawPathPrefixes = Object.entries(mcpServers)
+  .filter(([, d]) => Array.isArray(d.pathPrefix) && d.pathPrefix.length > 0)
+  .map(([name, d]) => [name, d.pathPrefix]);
+check(
+  'the raw assembly carries at least one `pathPrefix`, so §5 has something to have stripped',
+  rawPathPrefixes.length > 0,
+  'no server in the raw assembly has a pathPrefix on this machine, so §5s materialisation gates ' +
+    'would pass without testing anything. They are reported as VACUOUS below rather than as green.'
+);
+note(
+  'raw pathPrefix (what materialisation must consume)',
+  rawPathPrefixes.map(([n, p]) => `${n}=${p.join(':')}`).join('  ') || '(none)'
+);
+note(
+  'prepared butchr argv (what the stamp must put on the wire)',
+  JSON.stringify(preparedMcpServers.butchr?.args)
+);
 
 // The prompt. Padded to at least the size of a real rendered brief, with the
 // TAIL marker last — a short probe cannot notice a truncating transport, and
@@ -346,6 +443,16 @@ function trustedFor(dir) {
 }
 const trustBefore = trustedFor(workDir);
 const dirExistedBefore = fs.existsSync(workDir);
+
+// §5b reads the REAL daemon's log for this probe's identified `hello`. The
+// offset is taken BEFORE the spawn so a match can only be this run's — the key
+// is unique per run as well, so this is belt and braces rather than the only
+// guard.
+const daemonLogPath = path.join(
+  process.env.BUTCHR_DIR ?? path.join(os.homedir(), '.local', 'share', 'butchr'),
+  'daemon.log'
+);
+const daemonLogOffsetBefore = fs.existsSync(daemonLogPath) ? fs.statSync(daemonLogPath).size : null;
 
 /**
  * Undo everything this run made, on EVERY exit path including the early ones.
@@ -414,13 +521,15 @@ async function cleanup() {
   }
 }
 
+// PREPARED, NOT RAW (KAN-417). This is the argument the router computes; passing
+// `mcpServers` here is what made §5 report a fixed defect as open.
 const session = runtime.spawnSession(
   TYPE,
   KEY,
   'https://wroosbit.atlassian.net/browse/KAN-379',
   prompt,
   'claude',
-  mcpServers
+  preparedMcpServers
 );
 
 check('spawnSession returned a session synchronously', !!session?.sessionId, JSON.stringify(session));
@@ -465,9 +574,65 @@ const refusedForCapacity =
   !!session.spawnError &&
   refusedByCrabCast.test(session.spawnError) &&
   capacityReason.test(session.spawnError);
+// ── --override: THE BLOCKING-PROOF BYPASS, AND WHAT IT COSTS THE PROOF ──────
+//
+// Permitted for a blocking proof by the standing rule on KAN-348 and by
+// KAN-417's own ticket, under conditions this implements literally: **in this
+// script only, never in `CrabCastRuntime`** (which imports no override and must
+// not), **nothing stood down, no `preempt`**, and **the figures it bypassed
+// disclosed** — printed here and pasted onto the ticket.
+//
+// It is off by default. Without it the refusal path below is unchanged.
+//
+// **It is issued through `crabcast activate --override`, their published CLI**,
+// because the alternative is teaching the adapter a verb the ticket forbids it.
+// The cost is stated rather than buried: on this path **the activation is the
+// CLI's and not the runtime's**, so `CrabCastRuntime.provision`'s own
+// `activate_agent` call is NOT exercised by an overridden run.
+//
+// **What that does NOT cost is this ticket's subject.** The MCP definitions
+// cross the wire in `configure_agent`, which the runtime had already made and
+// CrabCast had already accepted before the refusal — a refusal is why the
+// cleanup has to forget the record. So §5 measures the runtime's own frame on
+// every path; it is §3's activation leg, and only that, which is inherited from
+// the CLI here.
+const allowOverride = process.argv.includes('--override');
+let overrodeCapacity = false;
+let bypassedFigures = null;
+
+if (session.status !== 'active' && refusedForCapacity && allowOverride) {
+  bypassedFigures = session.spawnError;
+  console.log('\n   CrabCast refused the activation for capacity. --override was passed, so this run');
+  console.log('   bypasses that refusal deliberately. THE FIGURES IT BYPASSED, verbatim:\n');
+  console.log(`   ${String(bypassedFigures).split('\n').join('\n   ')}\n`);
+  try {
+    const { execFileSync } = await import('child_process');
+    const out = execFileSync('crabcast', ['activate', workDir, '--override'], {
+      stdio: 'pipe',
+      timeout: 60_000,
+      encoding: 'utf8'
+    });
+    overrodeCapacity = true;
+    console.log(`   crabcast activate --override answered:\n   ${String(out).trim().split('\n').join('\n   ')}`);
+    // The runtime's session object was left `terminated` by the refusal it threw.
+    // Everything below addresses CrabCast by PATH (`tailAgent`, `listHerdrAgents`,
+    // `confirmAgentPresent`, `terminateSession` all resolve `pathForAddress`), so
+    // the session record is corrected here to match what is now actually running
+    // rather than being worked around at each reader.
+    session.status = 'active';
+    session.spawnError = undefined;
+  } catch (err) {
+    console.log(
+      `   crabcast activate --override FAILED: ` +
+        `${err instanceof Error ? String(err.stderr || err.message).split('\n')[0] : String(err)}`
+    );
+  }
+}
+
 if (session.status !== 'active' && refusedForCapacity) {
   console.log('\n   SKIPPED — CrabCast refused the activation for capacity, so no agent ran.');
-  console.log('   This is NOT a verdict on gate 2. Retry when the machine is quieter.\n');
+  console.log('   This is NOT a verdict on gate 2. Retry when the machine is quieter,');
+  console.log('   or re-run with --override if this proof is blocking (see the header).\n');
   console.log(`   ${session.spawnError.split('\n').slice(0, 3).join('\n   ')}`);
   runtime.dispose();
   await cleanup();
@@ -566,36 +731,267 @@ const writtenPath = path.join(workDir, '.mcp.json');
 const written = fs.existsSync(writtenPath) ? JSON.parse(fs.readFileSync(writtenPath, 'utf8')) : null;
 check('CrabCast wrote a .mcp.json into the workspace', !!written?.mcpServers, `no .mcp.json at ${writtenPath}`);
 
-const atlassianOnDisk = written?.mcpServers?.atlassian ?? {};
-const butchrOnDisk = written?.mcpServers?.butchr ?? {};
+const serversOnDisk = written?.mcpServers ?? {};
+const atlassianOnDisk = serversOnDisk.atlassian ?? {};
+const butchrOnDisk = serversOnDisk.butchr ?? {};
+
+// ── KAN-417 assertion 1: `pathPrefix` is gone from the WHOLE file ──────────
+//
+// Every server, not just `atlassian`: the original defect was found by reading a
+// real agent's file and seeing a key no MCP client reads, and a client reading a
+// key it does not understand is a per-entry hazard rather than a per-integration
+// one. `rawPathPrefixes` (§2) is the positive control — it names the servers that
+// HAD one, so a pass here is a strip that happened rather than a field that was
+// never present.
+const pathPrefixSurvivors = Object.entries(serversOnDisk)
+  .filter(([, d]) => d && d.pathPrefix !== undefined)
+  .map(([name]) => name);
+
+if (rawPathPrefixes.length === 0) {
+  gate(
+    'VACUOUS — no server in the raw assembly had a `pathPrefix`, so nothing could have been stripped',
+    false,
+    'This is not a pass. materializeMcpServers had no work to do on this machine, so the file ' +
+      'below proves nothing about it. Re-run where an integration supplies a pathPrefix (the ' +
+      'Atlassian server does, via node-runtime.ts, whenever npx is resolved off a versioned Node).'
+  );
+} else {
+  gate(
+    '`pathPrefix` reached disk NOWHERE in the file — every one was materialised away',
+    pathPrefixSurvivors.length === 0,
+    `these entries still carry pathPrefix on disk: ${pathPrefixSurvivors.join(', ')}. ` +
+      `\`pathPrefix\` is a BUTCHR field, not an MCP one: materializeMcpServers turns it into ` +
+      `env.PATH. KAN-157 added it to decide WHICH NODE runs an npx-based server; without it that ` +
+      `is whatever the inherited PATH resolves.`
+  );
+
+  // ...and landed where it was supposed to land. Compared against the directory
+  // the RAW definition named, not against a hard-coded path: this asserts the
+  // transform's output, so its expectation has to come from the transform's
+  // input.
+  for (const [name, prefixes] of rawPathPrefixes) {
+    const onDisk = serversOnDisk[name] ?? {};
+    const pathValue = onDisk.env?.PATH;
+    const firstEntry = typeof pathValue === 'string' ? pathValue.split(':')[0] : null;
+    gate(
+      `\`${name}\`: env.PATH exists on disk and its FIRST entry is the directory pathPrefix named`,
+      firstEntry === prefixes[0],
+      `expected first PATH entry ${JSON.stringify(prefixes[0])}, found ${JSON.stringify(firstEntry)} ` +
+        `(env.PATH=${JSON.stringify(pathValue)}). Order is the whole point: the prefix decides which ` +
+        `node runs an npx-based server, and a directory appended AFTER the inherited PATH decides ` +
+        `nothing at all.`
+    );
+  }
+}
+
+// ── KAN-417 assertion 2: the identity stamp carries THIS workspace's values ──
+//
+// Presence of the flags was the old assertion and it is too weak by exactly the
+// distance that matters: `withWorkspaceIdentity` reads its values from the
+// identity it is handed, so a stamp naming the WRONG workspace is the failure
+// that would record an agent under somebody else's parent — worse than none, in
+// launchers.ts's own words. Read the values, not the flags.
+const argvOnDisk = Array.isArray(butchrOnDisk.args) ? butchrOnDisk.args : [];
+const flagValue = (flag) => {
+  const at = argvOnDisk.indexOf(flag);
+  return at === -1 ? null : (argvOnDisk[at + 1] ?? null);
+};
+const stampedType = flagValue(launchers.WORKSPACE_TYPE_FLAG);
+const stampedKey = flagValue(launchers.WORKSPACE_KEY_FLAG);
 
 gate(
-  '`pathPrefix` was materialised into env.PATH before it reached disk',
-  atlassianOnDisk.pathPrefix === undefined && typeof atlassianOnDisk.env?.PATH === 'string',
-  `the atlassian entry on disk carries pathPrefix=${JSON.stringify(atlassianOnDisk.pathPrefix)} ` +
-    `and env.PATH=${JSON.stringify(atlassianOnDisk.env?.PATH)}. \`pathPrefix\` is a BUTCHR field, ` +
-    `not an MCP one: materializeMcpServers turns it into env.PATH and every Butchr writer applies ` +
-    `it. provision() sends raw definitions, so the field crosses the wire and CrabCast writes it ` +
-    `verbatim. KAN-157 added it to decide WHICH NODE runs an npx-based server; without it that is ` +
-    `whatever the inherited PATH resolves.`
+  "the core server's argv carries this workspace's OWN identity, not merely the flags",
+  stampedType === TYPE && stampedKey === KEY,
+  `the butchr entry's argv is ${JSON.stringify(argvOnDisk)} — ` +
+    `${launchers.WORKSPACE_TYPE_FLAG}=${JSON.stringify(stampedType)} ` +
+    `${launchers.WORKSPACE_KEY_FLAG}=${JSON.stringify(stampedKey)}, expected ` +
+    `${JSON.stringify(TYPE)}/${JSON.stringify(KEY)}. That is the KAN-145 defect exactly: a value ` +
+    `written where nothing reads it, or naming the wrong workspace, leaves activatedBy null or ` +
+    `wrong and the org chart unable to render.`
 );
 
-gate(
-  'the core server carries its workspace identity, so the agent can be placed on the org chart',
-  Array.isArray(butchrOnDisk.args) &&
-    butchrOnDisk.args.includes(launchers.WORKSPACE_TYPE_FLAG) &&
-    butchrOnDisk.args.includes(launchers.WORKSPACE_KEY_FLAG),
-  `the butchr entry's argv is ${JSON.stringify(butchrOnDisk.args)} — no ` +
-    `${launchers.WORKSPACE_TYPE_FLAG}/${launchers.WORKSPACE_KEY_FLAG}. \`withWorkspaceIdentity\` is ` +
-    `applied in herdr.ts, and crabcast-runtime.ts imports nothing from launchers.js, so this path ` +
-    `sends the definitions unstamped. That is the KAN-145 defect exactly: a value written where ` +
-    `nothing reads it, leaving activatedBy null and the org chart unable to render.`
+// ── KAN-417 assertion 3: `unusable` is absent ───────────────────────────────
+//
+// Reported honestly rather than credited. `unusable` is Butchr's English
+// sentence about a server that cannot start here, and on a machine where every
+// server IS usable no definition carries one — so this gate has nothing to strip
+// and cannot fail. Saying "PASS" there would be the KAN-388 class in one line:
+// a check whose only reachable branch is the one you hoped for.
+const rawUnusable = Object.entries(mcpServers)
+  .filter(([, d]) => typeof d.unusable === 'string' && d.unusable !== '')
+  .map(([name]) => name);
+const unusableSurvivors = Object.entries(serversOnDisk)
+  .filter(([, d]) => d && d.unusable !== undefined)
+  .map(([name]) => name);
+
+if (rawUnusable.length === 0) {
+  note(
+    '`unusable` on disk',
+    `absent — but NOT evidence: no server in the raw assembly carried one on this machine ` +
+      `(every server is usable here), so there was nothing for materialisation to strip. ` +
+      `Uncovered by this run; covered statically by verify-workspace-mcp-preparation.mjs.`
+  );
+  check(
+    'the file carries no `unusable` key (weak: vacuous on a machine where every server is usable)',
+    unusableSurvivors.length === 0,
+    `these entries carry unusable on disk: ${unusableSurvivors.join(', ')}`
+  );
+} else {
+  gate(
+    '`unusable` was stripped before disk — a Butchr sentence never reached a config file',
+    unusableSurvivors.length === 0,
+    `raw assembly carried unusable on ${rawUnusable.join(', ')}; these survived onto disk: ` +
+      `${unusableSurvivors.join(', ')}. No MCP client has a key by that name, and writing it puts ` +
+      `a sentence of English where a reader could take it for a setting.`
+  );
+}
+
+// The file as CrabCast wrote it, printed so the PR carries the artifact rather
+// than only a verdict about it. This is the thing nobody had ever looked at.
+console.log('\n   .mcp.json as CrabCast wrote it:');
+console.log(
+  JSON.stringify(written, null, 2)
+    .split('\n')
+    .map((l) => `   | ${l}`)
+    .join('\n')
 );
 
 // Not asserted — measured, because it is a difference from the herdr path whose
 // consequence is CrabCast's to state rather than ours to predict.
 note('.claude/settings.local.json written', String(fs.existsSync(path.join(workDir, '.claude', 'settings.local.json'))));
 note('workspace trusted in ~/.claude.json', `before=${JSON.stringify(trustBefore)} after=${JSON.stringify(trustedFor(workDir))}`);
+
+// ── 5b. THE CONSEQUENCE, NOT THE FILE (KAN-417) ────────────────────────────
+//
+// §5 asserts a file this script's own `prepareWorkspaceMcpServers` call produced.
+// That is worth having and it is not enough: **a correct `.mcp.json` that still
+// yields a null parent would mean the stamp is right and something downstream is
+// not**, which is KAN-145's defect exactly — a value written where nothing reads
+// it. So this section asserts on two things NOTHING IN THIS SCRIPT WROTE.
+rule('5b. the consequence — the stamp is READ, by the agent`s client and by the daemon');
+
+// (a) THE CLIENT READ THE FILE AND STARTED THE SERVER FROM IT.
+//
+// `mcp.ts` derives `callerIdentity` from `process.argv` and says in so many
+// words that it "can be read back out of /proc/<pid>/cmdline by anyone who
+// doubts it". This is that read. A `.mcp.json` written correctly but never
+// loaded — the wrong path, a parse failure, a client that ignored it — leaves no
+// such process, and §5 could not tell the difference.
+function butchrMcpProcessesFor(type, key) {
+  const found = [];
+  let scanned = 0;
+  for (const entry of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let cmdline;
+    try {
+      cmdline = fs.readFileSync(`/proc/${entry}/cmdline`, 'utf8');
+    } catch {
+      continue; // the process exited between readdir and read; ordinary
+    }
+    scanned++;
+    const argv = cmdline.split('\0').filter(Boolean);
+    if (!argv.some((a) => a.endsWith(`${path.sep}mcp.js`))) continue;
+    const at = argv.indexOf(launchers.WORKSPACE_TYPE_FLAG);
+    const kt = argv.indexOf(launchers.WORKSPACE_KEY_FLAG);
+    found.push({
+      pid: Number(entry),
+      argv,
+      type: at === -1 ? null : argv[at + 1],
+      key: kt === -1 ? null : argv[kt + 1]
+    });
+  }
+  return { found, scanned };
+}
+
+// THE POSITIVE CONTROL, and it is required rather than decorative: this scan
+// answering "none" is the comfortable answer, and it is exactly what a broken
+// scan returns too (KAN-388). Every Butchr agent on the herdr path carries this
+// stamp, so a scan that cannot see THOSE cannot be trusted to have seen the
+// probe's absence either.
+const scan = await until(
+  () => {
+    const s = butchrMcpProcessesFor(TYPE, KEY);
+    return s.found.some((p) => p.key === KEY) ? s : null;
+  },
+  120_000,
+  5_000
+) ?? butchrMcpProcessesFor(TYPE, KEY);
+
+const otherStamped = scan.found.filter((p) => p.key && p.key !== KEY);
+check(
+  'the /proc scan can see stamped MCP servers at all (positive control for the gate below)',
+  otherStamped.length > 0,
+  `the scan read ${scan.scanned} /proc entries and found ${scan.found.length} mcp.js processes, ` +
+    `none of them stamped with another workspace. Every herdr-path agent carries this stamp, so ` +
+    `finding none means THE SCAN is not working and its answer about the probe is worth nothing.`
+);
+note(
+  'other stamped MCP servers visible',
+  otherStamped.map((p) => `${p.type}/${p.key}`).join(', ') || '(none — see the control above)'
+);
+
+const probeMcp = scan.found.find((p) => p.key === KEY);
+gate(
+  "the agent's own client started a `butchr` MCP server FROM the written file, identity intact",
+  !!probeMcp && probeMcp.type === TYPE && probeMcp.key === KEY,
+  probeMcp
+    ? `a probe MCP server is running as ${probeMcp.type}/${probeMcp.key}, expected ${TYPE}/${KEY}`
+    : `no mcp.js process carries ${launchers.WORKSPACE_KEY_FLAG} ${KEY}. The file may be correct ` +
+      `and unread: a .mcp.json the client never loads leaves the stamp on disk and nowhere else, ` +
+      `which is the KAN-145 shape (a value written where nothing reads it).`
+);
+if (probeMcp) note('probe MCP server', `pid ${probeMcp.pid}, argv ${JSON.stringify(probeMcp.argv.slice(-4))}`);
+
+// (b) THE DAEMON READ IT TOO — the leg `activatedBy` actually rides on.
+//
+// `mcp.ts` announces `hello {workspaceType, workspaceKey}` from the SAME
+// argv-derived `callerIdentity` that it stamps onto every request body, and says
+// so: "the two cannot drift apart". `supervisorOfRecord` (router.ts) reads that
+// request field and writes it down as the activated agent's supervisor. So an
+// identified `hello` from this probe's address is the stamp arriving at the
+// daemon through the exact path `activatedBy` is computed from.
+//
+// READ IN TEXT MODE, AND THAT IS NOT A DETAIL. daemon.log carries raw pane bytes,
+// so tools that sniff for binary content report ZERO MATCHES for lines that are
+// present — measured while writing this section: `grep -F 'Client connected'`
+// answered 0 against 1,960 real occurrences, and the same search with `-a`
+// answered 1,960. A silent zero from this file is the instrument's verdict on
+// itself, not the daemon's on the fleet, and it fails toward "nothing happened".
+// Reading the bytes here rather than shelling out sidesteps it entirely.
+let helloLine = null;
+let helloSearched = 0;
+if (daemonLogOffsetBefore !== null && fs.existsSync(daemonLogPath)) {
+  helloLine = await until(
+    () => {
+      const size = fs.statSync(daemonLogPath).size;
+      if (size <= daemonLogOffsetBefore) return null;
+      const fd = fs.openSync(daemonLogPath, 'r');
+      const buf = Buffer.alloc(size - daemonLogOffsetBefore);
+      fs.readSync(fd, buf, 0, buf.length, daemonLogOffsetBefore);
+      fs.closeSync(fd);
+      const since = buf.toString('utf8');
+      helloSearched = since.length;
+      return (
+        since
+          .split('\n')
+          .find((l) => l.includes('identified of') && l.includes(`${TYPE}/${KEY}`)) ?? null
+      );
+    },
+    120_000,
+    5_000
+  );
+}
+
+gate(
+  "the daemon recorded an identified `hello` from this probe — activatedBy's own source, live",
+  !!helloLine,
+  `no 'Connection … is ${TYPE}/${KEY} … identified of' line appeared in ${daemonLogPath} in the ` +
+    `${helloSearched} bytes written since this run began. The MCP server sends that announcement ` +
+    `from the same argv-derived identity it stamps onto every request, and supervisorOfRecord ` +
+    `reads that stamp to fill activatedBy — so its absence means an agent this path spawned would ` +
+    `be recorded with a null parent and be unaddressable for channel delivery.`
+);
+if (helloLine) note('daemon log', helloLine.trim());
 
 // ── 6. MECHANISM 3 — expectsRuntime ────────────────────────────────────────
 rule('6. MECHANISM 3 — expectsRuntime: the strict reading `shell` could never exercise');
@@ -664,6 +1060,27 @@ await cleanup();
 
 // ── verdict ────────────────────────────────────────────────────────────────
 rule('verdict');
+
+// MEASURED VERSUS INHERITED, stated by the script rather than left to whoever
+// pastes its output (KAN-417 item 4).
+console.log('   measured by this run:');
+console.log('     · the .mcp.json CrabCast wrote, from definitions this run prepared and sent (§5)');
+console.log('     · that the agent`s own client read it and started a stamped MCP server (§5b a)');
+console.log('     · that the daemon received an identified hello from that server (§5b b)');
+console.log('   inherited, NOT measured here:');
+console.log('     · that MessageRouter applies the preparation on a real activation — §2 reads');
+console.log('       router.ts as TEXT, and a static read is not an execution. Nothing covers this');
+console.log('       until the fleet is flipped; see the header.');
+if (overrodeCapacity) {
+  console.log('     · the ACTIVATION leg: --override was used, so `crabcast activate` started this');
+  console.log('       agent and CrabCastRuntime.provision`s own activate_agent call did NOT run.');
+  console.log('       configure_agent — where the MCP definitions cross the wire — was the');
+  console.log('       runtime`s own on every path, so §5/§5b are unaffected.');
+  console.log('   capacity refusal deliberately bypassed; the figures it bypassed:');
+  console.log(`${String(bypassedFigures).split('\n').map((l) => `     | ${l}`).join('\n')}`);
+}
+console.log('');
+
 if (findings) {
   console.log(`   GATE 2 IS OPEN — ${findings} mechanism finding(s):`);
   for (const f of findingLog) console.log(`     · ${f}`);
