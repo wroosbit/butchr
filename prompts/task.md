@@ -63,11 +63,13 @@ Repositories are cached as shared clones under `~/code/<org>/<repo>`; each task 
   git -C ~/code/<org>/<repo> worktree add "$PWD/<repo>" -b butchr/{{KEY}} origin/main
   ```
   If the worktree or branch already exists (you are resuming this task), reuse it instead of recreating it.
-- **Link your dependencies from the shared store — do not `npm install` a private copy.** From inside the worktree:
+- **Link your dependencies from the shared store — do not `npm install` a private copy.** The script lives in **butchr** and works on **any** repo this fleet checks out, so from inside your worktree run it by its absolute path:
   ```bash
-  node daemon/scripts/link-workspace-deps.mjs
+  node ~/code/wroosbit/butchr/daemon/scripts/link-workspace-deps.mjs
   ```
-  It runs `npm ci` **once per lockfile per machine** into a store outside every workspace, then hard-links that tree into yours. It is idempotent, it is safe to run concurrently with other agents, and it leaves a `node_modules` you already have alone.
+  It runs `npm ci` **once per lockfile per machine** into a store outside every workspace, then hard-links that tree into yours. It is idempotent, it is safe to run concurrently with other agents, and it leaves a `node_modules` you already have alone. It discovers the packages in your repo — the root and its immediate subdirectories — so it works the same whether your repo has one root package or several.
+
+  **The path matters, and the relative form is wrong outside butchr (KAN-266).** This bullet said `node daemon/scripts/link-workspace-deps.mjs` until 2026-08-14, and `daemon/scripts/` is a butchr path: a CrabCast worktree has `scripts/` and no `daemon/`, so an agent following it there got ENOENT. Worse, the script's package list was hard-coded to `['daemon', 'extension']`, so even pointed at the right file it found neither, linked nothing and **exited 0** — the step looked like it ran. Both halves are fixed; it now fails loudly rather than silently when it finds no lockfile. **If it tells you it found nothing, that is real** — your workspace has no shared tree and your next `npm install` will take a private copy.
 
   **Run it instead of `npm install`, not after it** — an `npm install` first is what makes the private copy this step exists to avoid. Measured 2026-08-10: a linked worktree costs **7.5 MB** where a private install costs **296 MB**, and takes **0.7 s** where the install takes ~17 s. That is the difference between 119 workspaces costing 15G and costing one copy. If you genuinely need a dependency the lockfile does not carry, install it and say so on your ticket — that workspace stops sharing, which is a cost worth naming rather than hiding.
 
