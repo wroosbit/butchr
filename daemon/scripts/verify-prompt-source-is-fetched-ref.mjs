@@ -454,6 +454,25 @@ console.log('\n== 5. the fallback renders, and says what it fell back to ==\n');
       `the block did not disclose the fallback:\n${rendered}`
     );
   });
+  check('and the REASON itself is rendered, verbatim, not merely required to exist', () => {
+    // ADDED BY `epic/KAN-39` IN REVIEW, and the gap was real: the tagged union
+    // makes `because` impossible to omit when CONSTRUCTING a worktree source,
+    // so the type carries the invariant — but nothing checked the renderer
+    // still printed it. Their mutation replaced `(${p.source.because})` with a
+    // constant, and all 30 cases stayed green, including the case directly
+    // above: "working tree" and "may be behind" are the renderer's own fixed
+    // words and survive any mutation of the reason.
+    //
+    // So an agent could have been handed a stale working-tree brief with the
+    // reason stripped, in a change whose entire subject is provenance
+    // disclosure. This asserts the reason STRING reaches the page, which is the
+    // property the prose promises — the type guarantees it exists, and only
+    // this guarantees it is said. Same shape as KAN-449 collects.
+    assert.ok(
+      rendered.includes(source.because),
+      `the fallback reason never reached the brief.\nexpected to find: ${source.because}\nin:\n${rendered}`
+    );
+  });
   check('and does not claim the ref it did not read', () => {
     assert.ok(
       !rendered.includes('no working tree was involved'),
