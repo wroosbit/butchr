@@ -341,7 +341,7 @@ async function cleanup() {
   }
 }
 
-const session = runtime.spawnSession(TYPE, KEY, undefined, 'KAN-278 live probe agent.', 'shell');
+const session = runtime.spawnSession(TYPE, KEY, undefined, 'KAN-278 live probe agent.', 1, 'shell');
 check('spawnSession returned a session synchronously', !!session?.sessionId, JSON.stringify(session));
 check(
   "it starts in 'initializing' — the honest state while two async calls run",

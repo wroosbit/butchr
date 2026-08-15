@@ -807,6 +807,132 @@ interface PtyWriteFailure {
   at: string;
 }
 
+/**
+ * Everything `configure_agent` needs, sourced from the session it is about.
+ *
+ * **Required, every one of them, deliberately** — see
+ * {@link buildConfigureAgentPayload}.
+ */
+export interface ConfigureAgentInput {
+  /** The session being provisioned. Its `workDir` is CrabCast's address. */
+  session: Pick<HerdrSession, 'workDir'>;
+  /**
+   * What this agent outranks, from `WorkspaceRegistry.priorityFor` (KAN-482).
+   * Never a literal: see the payload builder for the defect that was.
+   */
+  priority: number;
+  /** The rendered brief, handed over verbatim. CrabCast never reads the bytes. */
+  promptContent: string;
+  /** The launcher to resolve at spawn. `undefined` means Butchr's own default. */
+  defaultAgent: string | undefined;
+  /** Prepared definitions; omitted from the payload when there are none. */
+  mcpServers: WorkspaceMcpServers | undefined;
+}
+
+/**
+ * The `configure_agent` request, as a type rather than a bag.
+ *
+ * A `type` alias and not an `interface`, which is load-bearing rather than
+ * style: `CrabCastLink.request` takes `Record<string, unknown>`, and TypeScript
+ * gives a type alias the implicit index signature that makes that assignment
+ * legal where an interface would need a cast. A cast here would defeat the
+ * point — the whole value of naming this shape is that the compiler checks it.
+ */
+export type ConfigureAgentPayload = {
+  action: 'configure_agent';
+  path: string;
+  priority: number;
+  launcher: string;
+  prompt: string;
+  mcpServers?: WorkspaceMcpServers;
+};
+
+/**
+ * Build the `configure_agent` payload from the session it describes.
+ *
+ * ## Why this is a function at all (KAN-482)
+ *
+ * **`provision()` has now dropped four values Butchr already had, and each was
+ * found separately, months apart, by somebody looking for something else:** the
+ * resume signal (gate 7), `resumedExistingConversation` (gate 10),
+ * `mcpConfig` where `mcpServers` was wanted (KAN-294), and the priority scale
+ * (this ticket). Every one of them was a payload assembled inline, in a
+ * `Record<string, unknown>` where **no field is required, no field is spelled
+ * wrong, and nothing is missing** — because that type says nothing at all about
+ * what a `configure_agent` is.
+ *
+ * So the payload has a type now, and its input has a type, and every field of
+ * {@link ConfigureAgentInput} is **required**. `defaultAgent` and `mcpServers`
+ * are `T | undefined` rather than `?:` for exactly that reason: a caller that
+ * has no launcher must write `defaultAgent: undefined` and *say so*, where an
+ * optional property would let the next field be dropped in silence. That is the
+ * difference between the four defects above and a compile error.
+ *
+ * **What this does NOT claim.** It does not stop a field CrabCast wants from
+ * being absent from this type — nothing on this side can see their contract —
+ * and it is not a validator: it makes no assertion, and there is nothing here
+ * to delete later. It moves one class of defect from *discovered in production
+ * months later* to *rejected at the keyboard*, and that is the whole of it.
+ *
+ * ## `priority` — the value this ticket is about
+ *
+ * This read `priority: 1` as a literal until KAN-482, for every agent, on a
+ * runtime whose own capacity gate is driven by it. See
+ * `AgentRuntime.spawnSession` for what that cost and why the parameter is
+ * required rather than defaulted.
+ *
+ * ## `mcpServers`, AN OBJECT, AND NOT `mcpConfig`, A STRING (KAN-294)
+ *
+ * This read `configure.mcpConfig = JSON.stringify(mcpServers)` until the
+ * re-pin, and that field does not exist on `configure_agent`. It was not
+ * rejected — CrabCast accepted the call, answered `success: true`, and simply
+ * did not have the servers: `agent_status` echoed `config.mcpServers: undefined`
+ * for an agent configured that way. So every agent this runtime spawned got NO
+ * MCP servers at all, silently, and `channelEnabled` was structurally `false`
+ * for all of them. Confirmed on a real daemon at the pin, both directions — the
+ * wrong field echoes `undefined`, the right one echoes back what was sent.
+ *
+ * The shape is the one CrabCast's own refusal states: *"an object keyed by
+ * server name … IT IS DEFINITIONS RATHER THAN NAMES: the command, args and env
+ * that spawn each server, written into .mcp.json verbatim."* That is exactly
+ * `McpServerDefinitions`, so this is a pass-through and not a translation.
+ *
+ * **The key is omitted entirely when there is nothing to send**, rather than
+ * sent empty: an empty object is a request to write a `.mcp.json` with no
+ * servers in it, and the absence is a request to write no file at all.
+ *
+ * **WHAT IS DELIBERATELY NOT SENT.** Their `"builtin"` sentinel —
+ * `{"crabcast": "builtin"}` — is how an agent would be given CrabCast's own
+ * channel server, and it is what makes `channelEnabled` answer `true`. This
+ * does not send it. Giving Butchr's agents a CrabCast channel is a cutover
+ * decision about which daemon an agent talks to, and cutover is out of scope
+ * (KAN-294 item 5). The consequence, stated rather than left to be found: an
+ * agent spawned through this runtime answers `channelEnabled: false`, and that
+ * `false` is now honest — it is CrabCast reporting a spawn that decided, where
+ * before it was reporting a spawn whose MCP request it had discarded.
+ *
+ * ## Pure, and exported, so a proof can drive the real thing
+ *
+ * It touches no socket and no disk, so `verify-crabcast-priority-roundtrip.mjs`
+ * can build the **production** payload for a synthetic epic session and put it
+ * on the wire. A proof that assembled its own payload would be asserting on
+ * code nobody runs — the *"a proof that supplies its own input"* defect this
+ * repository keeps re-finding.
+ */
+export function buildConfigureAgentPayload(input: ConfigureAgentInput): ConfigureAgentPayload {
+  const payload: ConfigureAgentPayload = {
+    action: 'configure_agent',
+    path: input.session.workDir,
+    priority: input.priority,
+    launcher: input.defaultAgent ?? 'claude',
+    prompt: input.promptContent
+  };
+  if (input.mcpServers && Object.keys(input.mcpServers).length > 0) {
+    payload.mcpServers = input.mcpServers;
+  }
+  return payload;
+}
+
 export interface CrabCastRuntimeOptions {
   link: CrabCastLink;
   /** How often the census is refreshed while connected. */
@@ -1061,6 +1187,7 @@ export class CrabCastRuntime implements AgentRuntime {
     key: string,
     url: string | undefined,
     promptContent: string,
+    priority: number,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers,
     resume?: ResumeCause
@@ -1098,7 +1225,7 @@ export class CrabCastRuntime implements AgentRuntime {
     };
     this.sessions.set(sessionId, session);
 
-    void this.provision(session, promptContent, defaultAgent, mcpServers).catch((err) => {
+    void this.provision(session, promptContent, priority, defaultAgent, mcpServers).catch((err) => {
       session.status = 'terminated';
       session.spawnError = err instanceof Error ? err.message : String(err);
       this.log(`spawn failed for ${agentNameFor(type, key)}: ${session.spawnError}`);
@@ -1110,46 +1237,30 @@ export class CrabCastRuntime implements AgentRuntime {
   private async provision(
     session: HerdrSession,
     promptContent: string,
+    priority: number,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers
   ): Promise<void> {
-    const configure: Record<string, unknown> = {
-      action: 'configure_agent',
-      path: session.workDir,
-      priority: 1,
-      launcher: defaultAgent ?? 'claude',
-      prompt: promptContent
-    };
-    // `mcpServers`, AN OBJECT, AND NOT `mcpConfig`, A STRING (KAN-294).
+    const configure = buildConfigureAgentPayload({
+      session,
+      priority,
+      promptContent,
+      defaultAgent,
+      mcpServers
+    });
+    // WHAT THE PAYLOAD CARRIES is {@link buildConfigureAgentPayload}'s to say,
+    // including why `mcpServers` is the field name and what is deliberately not
+    // sent. What is left here is the one thing that is not payload construction
+    // at all: a write to the workspace's own `.mcp.json`, which has to happen
+    // before the call rather than inside the thing being called.
     //
-    // This read `configure.mcpConfig = JSON.stringify(mcpServers)` until the
-    // re-pin, and that field does not exist on `configure_agent`. It was not
-    // rejected — CrabCast accepted the call, answered `success: true`, and
-    // simply did not have the servers: `agent_status` echoed
-    // `config.mcpServers: undefined` for an agent configured that way. So every
-    // agent this runtime spawned got NO MCP servers at all, silently, and
-    // `channelEnabled` was structurally `false` for all of them. Confirmed on a
-    // real daemon at the pin, both directions — the wrong field echoes
-    // `undefined`, the right one echoes back what was sent.
-    //
-    // The shape is the one CrabCast's own refusal states: *"an object keyed by
-    // server name … IT IS DEFINITIONS RATHER THAN NAMES: the command, args and
-    // env that spawn each server, written into .mcp.json verbatim."* That is
-    // exactly `McpServerDefinitions`, so this is a pass-through and not a
-    // translation.
-    //
-    // WHAT IS DELIBERATELY NOT DONE HERE. Their `"builtin"` sentinel —
-    // `{"crabcast": "builtin"}` — is how an agent would be given CrabCast's own
-    // channel server, and it is what makes `channelEnabled` answer `true`. This
-    // does not send it. Giving Butchr's agents a CrabCast channel is a cutover
-    // decision about which daemon an agent talks to, and cutover is out of scope
-    // (KAN-294 item 5). The consequence, stated rather than left to be found: an
-    // agent spawned through this runtime answers `channelEnabled: false`, and
-    // that `false` is now honest — it is CrabCast reporting a spawn that decided,
-    // where before it was reporting a spawn whose MCP request it had discarded.
+    // The condition is the SAME one the builder uses to decide whether to send
+    // the field, and it is repeated rather than derived because the two are
+    // answering different questions that happen to agree: *"is there anything to
+    // send"* and *"is there anything whose residue could collide"*. Reading it
+    // back off `configure.mcpServers` would couple the clearance to the payload's
+    // shape, which is the coupling the builder exists to remove.
     if (mcpServers && Object.keys(mcpServers).length > 0) {
-      configure.mcpServers = mcpServers;
-
       // GATE 2 (KAN-474). Clear Butchr's own entries out of the workspace's
       // `.mcp.json` before CrabCast is asked to write into it.
       //

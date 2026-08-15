@@ -270,7 +270,7 @@ const dirExistedBefore = fs.existsSync(workDir);
 // No MCP servers on purpose. This probe needs no tools beyond reading a file,
 // and sending none keeps the workspace holding only what CrabCast itself puts
 // there — which is what §5's observation is about.
-const session = runtime.spawnSession(TYPE, KEY, undefined, brief, 'claude');
+const session = runtime.spawnSession(TYPE, KEY, undefined, brief, 1, 'claude');
 
 check('spawnSession returned a session synchronously', !!session?.sessionId);
 await until(() => session.status === 'active' || !!session.spawnError, 90_000);

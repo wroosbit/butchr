@@ -139,18 +139,23 @@ if (argvField) {
   // THE DEFECT IN MINIATURE. `configure_agent` grows a way to pass argv and we
   // populate it — which is exactly how the dev-channels flag would reach a
   // CrabCast-spawned `claude` and raise the dialog nothing is watching for.
+  // KAN-482 moved the frame into `buildConfigureAgentPayload`, so the anchor
+  // moved with it. The mutation is unchanged in substance: a field carrying
+  // argv, added to the literal that goes on the wire.
   runtimeSrc = runtimeSrc.replace(
-    "      launcher: defaultAgent ?? 'claude',",
-    "      launcher: defaultAgent ?? 'claude',\n      args: extraLauncherArgs,"
+    "    launcher: input.defaultAgent ?? 'claude',",
+    "    launcher: input.defaultAgent ?? 'claude',\n    args: extraLauncherArgs,"
   );
 }
 if (builtinSentinel) {
   // THE DEFECT IN MINIATURE. Sending the sentinel makes `channelEnabled` answer
   // `true`, so `daemon.ts`'s gate stops returning early — reason 2 of the ruling
   // collapses, silently.
+  // KAN-482: same mutation, new home — the conditional now lives in
+  // `buildConfigureAgentPayload` and writes `payload.mcpServers`.
   runtimeSrc = runtimeSrc.replace(
-    '    if (mcpServers && Object.keys(mcpServers).length > 0) {\n      configure.mcpServers = mcpServers;\n    }',
-    '    configure.mcpServers = { ...(mcpServers ?? {}), crabcast: \'builtin\' };'
+    '  if (input.mcpServers && Object.keys(input.mcpServers).length > 0) {\n    payload.mcpServers = input.mcpServers;\n  }',
+    '  payload.mcpServers = { ...(input.mcpServers ?? {}), crabcast: \'builtin\' };'
   );
 }
 
@@ -239,32 +244,55 @@ rule('§2  The configure_agent frame carries no argv');
 // failure is a field being ADDED and a deny-list cannot see a name nobody has
 // thought of yet.
 
+// KAN-482 MOVED THE FRAME OUT OF `provision()` and into the exported
+// `buildConfigureAgentPayload`, and gave it a declared type. This section reads
+// the new home, and it got STRONGER rather than merely relocated: the closed set
+// is now checked TWICE — once against the object literal, as before, and once
+// against `ConfigureAgentPayload` itself, which is the thing a future author
+// would have to widen before a new field could be assigned anywhere. The old
+// wording is kept in the failure text because "the frame moved" is still the
+// most likely reason this goes red.
+
+const typeMatch = runtimeSrc.match(/export type ConfigureAgentPayload = \{([\s\S]*?)\n\};/);
+const ALLOWED = ['action', 'path', 'priority', 'launcher', 'prompt', 'mcpServers'];
+if (check(Boolean(typeMatch), 'the ConfigureAgentPayload type declaration is findable')) {
+  const declared = [...typeMatch[1].matchAll(/^\s{2}([A-Za-z_][A-Za-z0-9_]*)\??\s*:/gm)].map(
+    (m) => m[1]
+  );
+  const undeclaredExtras = declared.filter((k) => !ALLOWED.includes(k));
+  check(
+    undeclaredExtras.length === 0,
+    `the payload TYPE declares exactly ${ALLOWED.join(', ')} — nothing else`,
+    `unexpected: ${undeclaredExtras.join(', ') || '(none)'}\nall fields: ${declared.join(', ')}`
+  );
+}
+
 const frameMatch = runtimeSrc.match(
-  /const configure: Record<string, unknown> = \{([\s\S]*?)\n {4}\};/
+  /const payload: ConfigureAgentPayload = \{([\s\S]*?)\n {2}\};/
 );
-if (!check(Boolean(frameMatch), 'the configure_agent frame literal is findable in provision()')) {
+if (!check(Boolean(frameMatch), 'the configure_agent frame literal is findable in the builder')) {
   say('        The frame moved or was restructured. That is not automatically a defect,');
   say('        but it means this assertion is no longer reading what it thinks it reads.');
 } else {
   const body = frameMatch[1];
-  const keys = [...body.matchAll(/^\s{6}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map((m) => m[1]);
-  const ALLOWED = ['action', 'path', 'priority', 'launcher', 'prompt'];
-  const unexpected = keys.filter((k) => !ALLOWED.includes(k));
+  const keys = [...body.matchAll(/^\s{4}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map((m) => m[1]);
+  const LITERAL_ALLOWED = ['action', 'path', 'priority', 'launcher', 'prompt'];
+  const unexpected = keys.filter((k) => !LITERAL_ALLOWED.includes(k));
   check(
     unexpected.length === 0,
-    `the frame literal sets exactly ${ALLOWED.join(', ')} — nothing else`,
+    `the frame literal sets exactly ${LITERAL_ALLOWED.join(', ')} — nothing else`,
     `unexpected: ${unexpected.join(', ') || '(none)'}\nall keys: ${keys.join(', ')}`
   );
 
   // `mcpServers` is set conditionally after the literal and is the only other
   // member. It is a map of MCP server DEFINITIONS, not a command line.
-  const assignments = [...runtimeSrc.matchAll(/^\s*configure\.([A-Za-z0-9_]+)\s*=/gm)].map(
+  const assignments = [...runtimeSrc.matchAll(/^\s*payload\.([A-Za-z0-9_]+)\s*=/gm)].map(
     (m) => m[1]
   );
   check(
-    assignments.every((k) => k === 'mcpServers'),
+    assignments.length > 0 && assignments.every((k) => k === 'mcpServers'),
     'the only member assigned after the literal is mcpServers',
-    `assignments: ${assignments.join(', ') || '(none)'}`
+    `assignments: ${assignments.join(', ') || '(none — the conditional assignment has gone)'}`
   );
 }
 
@@ -301,11 +329,30 @@ check(
 // KEPT (the sentinel is a string value), and the search confined to the region
 // that builds and sends the frame. A token has no shape to evade, and the region
 // has no prose in it.
-const frameRegion = (() => {
-  const start = runtimeNoComments.indexOf('const configure: Record<string, unknown> = {');
-  const end = runtimeNoComments.indexOf('await this.link.request(configure)');
-  return start >= 0 && end > start ? runtimeNoComments.slice(start, end) : null;
-})();
+// KAN-482 SPLIT THE REGION IN TWO, and the split is not cosmetic. Building the
+// frame and sending it used to be adjacent statements; the builder is now an
+// exported function ABOVE the class and the send is deep inside it, so a single
+// slice spanning both would swallow the whole class head — including, at
+// `spawnSession`, the ruling's own log line, which has to NAME the sentinel in
+// order to say it is not sent. That is the third draft of this check making the
+// second draft's mistake by accident: a region wide enough to be red on a clean
+// tree. So: the builder's body, and provision's body down to the send. Nothing
+// between them writes to the payload — the builder returns it and provision
+// holds it — and §2's `payload.` assignment sweep is what holds that claim,
+// because it is file-wide rather than region-scoped.
+const sliceBetween = (from, to) => {
+  const start = runtimeNoComments.indexOf(from);
+  if (start < 0) return null;
+  const end = runtimeNoComments.indexOf(to, start);
+  return end > start ? runtimeNoComments.slice(start, end) : null;
+};
+const builderRegion = sliceBetween('const payload: ConfigureAgentPayload = {', 'return payload;');
+const sendRegion = sliceBetween(
+  'const configure = buildConfigureAgentPayload({',
+  'await this.link.request(configure)'
+);
+const frameRegion =
+  builderRegion !== null && sendRegion !== null ? `${builderRegion}\n${sendRegion}` : null;
 if (check(Boolean(frameRegion), 'the frame-building region of provision() is findable')) {
   check(
     !frameRegion.includes('builtin') && !frameRegion.includes('crabcast'),

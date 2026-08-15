@@ -39,12 +39,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 101 |
-| `partial` | 11 |
+| `partial` | 12 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **137** |
+| **total** | **138** |
 
-**112 of 137** run on every pull request.
+**113 of 138** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -159,6 +159,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-adopt-launcher-vocabulary` | partial | §1-§5 assert in CI. They read source as text and stand up their own Unix socket under os.tmpdir(); they need no peer, no herdr, no PTY, no credential and no network. §6 needs a live CrabCast daemon and SKIPS without one. A skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-census-disclosure` | partial | sections 1-7 assert in CI. They stand up their own Unix socket and a fake `herdr` on PATH, and need no peer, no real herdr, no PTY, no credential and no network. Section 8 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-mcp-residue-cleared` | partial | §1 and §2 read `daemon/src/*.ts` as text and assert in full. §3–§8 drive CrabCast's REAL `provisionMcpConfig` out of the peer checkout at ~/code/wroosbit/crabcast, which CI has not got, so they announce themselves SKIPPED there. They are not mocked: this proof's whole value is that the refusal is theirs. Note the skip is reachable ONLY when the checkout is absent — one that is present but dirty, behind CRABCAST_PIN, or serving a stale dist FAILS instead. |
+| `verify-crabcast-priority-roundtrip` | partial | §1–§4 read `daemon/src/*.ts` as TEXT and §5 imports `daemon/dist`, and all five assert in full on a runner. §6 and §7 need a LIVE CrabCast daemon on this machine's socket, which CI has not got, so they announce themselves SKIPPED there. They are not mocked and there is no fallback: the whole value of §6 is that the echo is CrabCast's, so a reproduction of it would prove nothing. The skip is reachable ONLY when the socket is absent — a socket that is present and refuses FAILS instead. (KAN-482) |
 | `verify-crabcast-session-restore` | partial | sections 1-4 assert in CI. They stand up their own Unix socket and their own agent registry under os.tmpdir(), and need no peer, no herdr, no PTY, no credential and no network. Section 5 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-standing` | partial | sections 1-5 assert in CI. They import the built daemon modules and run over frames this script constructs and two committed captures, and need no peer, no herdr, no PTY, no credential and no network. Section 6 reads a live CrabCast socket and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-jira-nudge-coalescing` | partial | the coalescing assertions run in CI. The CONTROL leg needs an `--unfixed` build to show the defect it prevents, and AC3d needs `--live`; both are skipped without them and both are named in the run output. |
