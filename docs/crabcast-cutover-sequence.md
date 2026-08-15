@@ -742,6 +742,31 @@ step 10 is still the first step that can.
 Rollback is *new agents go back to herdr*. It restores no conversation. Run it in
 this order for the same reason the flip has an order.
 
+**Most rollbacks are not driven by a person, and that is the case this arm was
+written blind to.** `~/butchr-cutover/watchdog.sh` is a dead man: it runs
+`rollback.sh` on a health trip or an expired deadline, with nobody watching. So
+every step below has two readers — the driver, and a shell script — and until
+KAN-483 the two did different things. **`rollback.sh` did R1, R3 and R4 and
+skipped R2 entirely**, because its two halves were both about *records*: revert
+the drop-in, and move the post-flip transcripts back out of the way. Neither
+half ever stood an agent down.
+
+Measured 2026-08-15, attempt #5: the rollback archived three post-flip
+transcripts at 17:24:16Z, logged `ROLLBACK COMPLETE` at 17:24:17Z, and **all
+three agents were still running 31 minutes later** — one of which committed,
+pushed and opened a pull request nobody asked for, while two agents shared one
+worktree and `butchr_capacity` reported `atCapacity: true` for load no
+instrument could attribute. **The record moved and the reality did not, and the
+script said COMPLETE.**
+
+`rollback.sh` now performs R2 itself, by running
+`daemon/scripts/cutover-reap.mjs` from this repository, and it re-runs it as
+`--census` at the very end to decide whether it is allowed to print COMPLETE at
+all. **A rollback that cannot verify the fleet is down now says INCOMPLETE and
+exits non-zero.** Where a step below is now automated, it says so and names the
+script — a reader who does not know that will either do it twice or, worse,
+assume it was done.
+
 ### Step R1 — Stop deciding, and freeze the board again
 
 - **Precondition:** a decision to roll back.
@@ -755,10 +780,22 @@ this order for the same reason the flip has an order.
 - **Precondition:** R1 checked.
 - **Action:** stand down every agent started under CrabCast, with
   `butchr_deactivate_agent` (socket `deactivate_by_key`), so the registry stops expecting them.
-- **Check:** `butchr_list_agents` (socket `list_agents`, or the probe) shows no agents and an empty `missingAgents`.
+  **Automated:** `rollback.sh` runs `node daemon/scripts/cutover-reap.mjs`, which
+  does exactly this — tasks first, supervisors last, the order step 5 drains in.
+  ⚠ **It asks; it never kills.** The processes are CrabCast's, so the reap is a
+  deactivation per agent and CrabCast stops its own; nothing here signals a
+  process, and `verify-cutover-reap-verdict.mjs` §6 asserts no kill verb can be
+  added later.
+- **Check:** `butchr_list_agents` (socket `list_agents`, or the probe) shows no agents and an empty `missingAgents`
+  — ⚠ **and the machine carries no CrabCast agent process.** Those are three
+  terms and not one. **The first two are records**, and a rollback empties them
+  whether or not anything stopped; the third is the only one that would have
+  caught 2026-08-15. `cutover-reap.mjs` reports all three and exits `0` down,
+  `1` not down, `2` could not read.
 - **Abort:** an agent cannot be stood down. Leaving it running is what produces
-  the duplicate at R3.
-- **Who:** the driver.
+  the duplicate at R3. ⚠ **A `deactivate` that returned cheerfully is not an
+  agent that stopped** — read the census, never the call.
+- **Who:** the driver, or `rollback.sh` unattended.
 
 ### Step R3 — Unset and restart
 
@@ -777,6 +814,33 @@ this order for the same reason the flip has an order.
   variable.
 - **Who:** the driver.
 
+⚠ **R2 before R3 is one-way, and this is where the cost lands.** A herdr daemon
+has no CrabCast runtime to ask, so an agent still running when this step
+completes **can never be stood down through the daemon again** — it stops being
+an agent that has not been drained yet and becomes an orphan, permanently, at
+the moment the restart lands. That is why `rollback.sh` reaps *first* and why
+`cutover-reap.mjs` refuses to be useful afterwards. It is also why the reap does
+not *block* this step: a machine left flipped with a broken fleet is worse than
+a machine reverted with a loud INCOMPLETE, so the script reverts anyway and says
+so at R3b. **That is a judgement, and it is the one to revisit first if this
+goes wrong again.**
+
+### Step R3b — Prove the fleet is down before reporting success
+
+- **Precondition:** R3 checked, and the transcript half has run.
+- **Action:** re-read all three terms — `node daemon/scripts/cutover-reap.mjs --census`,
+  which drains nothing and only reads. `rollback.sh` runs this as its last act.
+- **Check:** `agents` 0, `missingAgents` empty (`butchr_list_agents`, socket
+  `list_agents`, or the probe), **and zero CrabCast agent processes on the
+  machine**. Only then may the run report COMPLETE.
+- **Abort:** any of the three non-zero → the log says `ROLLBACK INCOMPLETE`, the
+  script exits non-zero, and **the orphans are named with their pids**. Do not
+  re-run the rollback expecting a different answer; the agents are outside the
+  daemon's reach now and stopping them is an operational decision for the human.
+  A `2` here is a different claim again — the instrument did not answer, and
+  that is reported in those words rather than as a fleet that would not die.
+- **Who:** `rollback.sh` unattended; the driver reads the verdict afterwards.
+
 ### Step R4 — Bring the fleet back knowing what it is
 
 - **Precondition:** R3 checked.
@@ -794,6 +858,35 @@ this order for the same reason the flip has an order.
   told **where its memory came from**, not to be told it has none.
 - **Abort:** duplicate panes for one workspace directory.
 - **Who:** the driver.
+
+### Step R5 — Account for work an orphan produced
+
+- **Precondition:** R3b reported orphans, or a branch, commit or pull request is
+  found whose author was a process the system believed it had stood down.
+- **Action:** **quarantine on PROVENANCE, not on quality — and do not delete
+  anything.** An orphan's work may be perfectly good: `task/KAN-473`
+  independently verified PR #210 and found nothing contradicting its twin's
+  claims. That is not the problem. The problem is that **nobody was accountable
+  for it**: no approver was tracking it, the ticket's own agent did not know it
+  existed, and its `In Review` transition was made by a process outside the
+  census. So the branch stays, the pull request stays open, and it acquires an
+  owner — **the live agent of the ticket it was filed against adopts it**, by
+  saying on that ticket that it has read the diff, re-run the acceptance proof
+  against the head itself, and is taking authorship. From that comment on it is
+  an ordinary PR under ordinary merge governance.
+- **Check:** every orphan-produced branch is either adopted by a named live
+  agent on its ticket, or closed with the reason on the ticket. **Nothing is
+  left merely open**, because an unadopted PR that looks ordinary is exactly how
+  this work merges on a provenance nobody checked.
+- **Abort:** ⚠ **an orphan's work cannot be adopted by the agent that produced
+  it**, because that agent no longer exists — and the live agent of the same
+  ticket is a *different process* with a different context, so adoption is a
+  fresh review and never a formality. If the adopting agent cannot re-run the
+  proof, or the diff does not match what the ticket asked for, close the PR and
+  say so; do not merge it on the strength of a PR body written by a process
+  nobody can ask.
+- **Who:** the live agent of the ticket the work was filed against; the epic
+  agent where that ticket has none.
 
 ---
 
@@ -827,6 +920,13 @@ Stop and do not proceed if any of these is observed at any point:
    (step 10 names the three things it distinguishes), prompt it, and record
    which. See
    [Gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one).
+8. **A CrabCast agent process is alive that no census names.** ⚠ **Every other
+   condition on this list is read off a RECORD**, so all eight of them can be
+   green while three unmanaged agents are committing to your repository — which
+   is not a hypothetical, it is 2026-08-15. This is the only condition on the
+   list that is a fact about the machine, and it is the reason R2 and R3b count
+   processes instead of trusting a drain that returned cheerfully. **A rollback
+   leaving N>0 is a failed rollback**, whatever its log says.
 8. **Anything this document does not predict.** The sequence is only as good as
    its stated mechanism; an unpredicted observation means the mechanism is wrong,
    and the correct move is to stop and correct the document.
