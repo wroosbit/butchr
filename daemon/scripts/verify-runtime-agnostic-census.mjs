@@ -579,8 +579,9 @@ RESIDUE — deliberately NOT changed by KAN-475, each with the reason:
   * mcp.ts tool descriptions ("herdr's agent list", "herdr's own view of what
     the agent is doing", "from herdr's view of what exists"). Agent-facing and
     genuinely misleading under CrabCast, but they are multi-kilobyte prose
-    blocks and rewriting them is a change no proof here would cover. FILED as a
-    follow-up rather than done silently.
+    blocks and rewriting them is a change no section here would cover — a tool
+    description is not reachable from any of them. COVERED BY KAN-484, filed
+    rather than done silently.
   * capacity.ts HERDR_OVERHEAD_CORES and its two sentences. This is a claim
     about herdr-the-process's core overhead. Under CrabCast the capacity model
     is arguably wrong, which is a modelling question and not a naming one.
