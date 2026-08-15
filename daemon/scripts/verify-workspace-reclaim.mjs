@@ -576,6 +576,16 @@ const standRuntime = {
   listHerdrAgentsChecked: () => ({ reachable: true, agents: running.slice() }),
   listHerdrAgents() { return this.listHerdrAgentsChecked().agents; },
   getSessionByAddress: (key, type) => standSessions[`${type ?? 'task'}/${key}`],
+  // KAN-473 added this to the AgentRuntime seam, and it is DERIVED from the
+  // stub's own `getSessionByAddress` rather than written twice, so a stub
+  // cannot disagree with itself about what an address resolves to. The real
+  // runtimes answer `ambiguous` here; no stub here holds two sessions on one
+  // key, so none of them can reach that outcome — see
+  // `verify-ambiguous-key-refusal.mjs` for the case that does.
+  resolveSessionByAddress(key, type) {
+    const session = this.getSessionByAddress(key, type);
+    return session ? { outcome: 'one', session } : { outcome: 'none' };
+  },
   terminateSession: (sessionId) => {
     const entry = Object.values(standSessions).find((s) => s.sessionId === sessionId);
     if (!entry) return { success: false, error: `No session '${sessionId}'` };
@@ -856,6 +866,16 @@ async function standDownAgainst(distPath, label) {
     listHerdrAgentsChecked: () => ({ reachable: true, agents: panes.slice() }),
     listHerdrAgents() { return this.listHerdrAgentsChecked().agents; },
     getSessionByAddress: () => session,
+    // KAN-473 added this to the AgentRuntime seam, and it is DERIVED from the
+    // stub's own `getSessionByAddress` rather than written twice, so a stub
+    // cannot disagree with itself about what an address resolves to. The real
+    // runtimes answer `ambiguous` here; no stub here holds two sessions on one
+    // key, so none of them can reach that outcome — see
+    // `verify-ambiguous-key-refusal.mjs` for the case that does.
+    resolveSessionByAddress(key, type) {
+      const session = this.getSessionByAddress(key, type);
+      return session ? { outcome: 'one', session } : { outcome: 'none' };
+    },
     terminateSession: () => { panes = []; return { success: true }; },
     closeAgentByKey: () => ({ success: false })
   };

@@ -761,7 +761,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "butchr_deactivate_agent",
-        description: "Deactivates an active agent by its workspace key",
+        description:
+          "Deactivates an active agent by its workspace key. A BARE KEY THAT NAMES MORE THAN ONE AGENT IS REFUSED, NOT GUESSED: several workspace types can hold one key at once (task/KAN-1 and story/KAN-1 are different agents), and when a key matches more than one this REFUSES with `refusedBy: 'ambiguous-key'` and a `candidates` list naming every agent it matched. NOTHING IS STOOD DOWN when that happens — the refusal is the whole response, and the fix is to re-issue the call with `type`. Before KAN-473 the same call stopped whichever agent it happened to reach and reported `success: true` for it, so a supervisor could be destroyed by a correct-looking call.",
         inputSchema: {
           type: "object",
           properties: {
@@ -772,7 +773,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: {
               type: "string",
               description:
-                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly — several types can share one key, and a bare key stops whichever of them it happens to reach.",
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly. Omit it only when you mean 'whichever agent holds this key' AND are content to be refused if that is more than one — a bare key that matches several agents stops none of them and answers with the candidates instead.",
             },
           },
           required: ["key"],
@@ -792,7 +793,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: {
               type: "string",
               description:
-                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against herdr's agent list.",
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against this daemon's sessions and herdr's agent list. A KEY THAT MATCHES MORE THAN ONE AGENT IS REFUSED rather than delivered to one of them — `refusedBy: 'ambiguous-key'` with a `candidates` list — because a steer that reaches the wrong agent is a steer the intended one never got and the wrong one acted on.",
             },
             message: {
               type: "string",
@@ -846,7 +847,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_tail_agent",
         description:
-          "Reads the recent terminal output of an agent without attaching to it. Use this to find out what an agent is actually doing — or why it stopped — when its reported status alone is not enough. READ THE THREE ANSWERS APART, because two of them look alike and only one is a claim about the agent: `success: true` with text is the pane; `success: true` with `text: \"\"` and `source: null` means EVERY read source was asked and every one was silent, so the pane really is blank; `success: false` means the read did not happen and you know NOTHING about the pane — in particular you must not read it as an idle agent. `source` names which source answered and `sourcesTried` lists what was asked. This matters most before a `stop-now` send: an agent you conclude is idle because a read failed is an agent whose in-flight tool call you are about to destroy.",
+          "Reads the recent terminal output of an agent without attaching to it. Use this to find out what an agent is actually doing — or why it stopped — when its reported status alone is not enough. READ THE THREE ANSWERS APART, because two of them look alike and only one is a claim about the agent: `success: true` with text is the pane; `success: true` with `text: \"\"` and `source: null` means EVERY read source was asked and every one was silent, so the pane really is blank; `success: false` means the read did not happen and you know NOTHING about the pane — in particular you must not read it as an idle agent. `source` names which source answered and `sourcesTried` lists what was asked. This matters most before a `stop-now` send: an agent you conclude is idle because a read failed is an agent whose in-flight tool call you are about to destroy. ALSO READ `addressedBy`: `key-and-type` means you named the agent exactly, `key-only` means the type was INFERRED from the one agent holding that key — a correct inference, but not the same claim as an exact address, and worth knowing before you cite this pane as evidence about a named agent.",
         inputSchema: {
           type: "object",
           properties: {
@@ -857,7 +858,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: {
               type: "string",
               description:
-                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against herdr's agent list.",
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against this daemon's sessions and herdr's agent list. A KEY THAT MATCHES MORE THAN ONE AGENT IS REFUSED rather than answered about one of them — `refusedBy: 'ambiguous-key'` with a `candidates` list — because a tail attributed to the wrong agent is evidence that looks first-hand and is about somebody else.",
             },
             lines: {
               type: "number",
@@ -870,7 +871,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_agent_status",
         description:
-          "Reports an agent's full state: session id, workspace type and key, url, creation time, session status, working directory, and herdr's own view of what the agent is doing. If the daemon has restarted and lost its session, the herdr-only fields are still returned with sessionless: true. IT ALSO CARRIES `channel`, THE SAME BLOCK butchr_list_agents PUTS ON A ROW, AND BEFORE KAN-435 IT DID NOT — the key was absent for every agent in every state, including agents with a live channel and a millisecond round trip, which was read as `this agent has no channel` and filed as a defect on two agents that were both fine. READ `channel.transport` BEFORE SENDING: `channel` means a send costs the recipient nothing, `composer` means it begins with a Ctrl+C that destroys the tool call in flight, and `unregistered` means a steer is refused rather than delivered. A FRESH AGENT IS NOT A CHANNEL-LESS ONE: registration takes about twelve seconds from spawn while the client answers its startup dialogs, so a missing or `unregistered` carrier in an agent's first seconds clears by itself and waiting costs less than the interrupt does.",
+          "Reports an agent's full state: session id, workspace type and key, url, creation time, session status, working directory, and herdr's own view of what the agent is doing. If the daemon has restarted and lost its session, the herdr-only fields are still returned with sessionless: true. IT ALSO CARRIES `channel`, THE SAME BLOCK butchr_list_agents PUTS ON A ROW, AND BEFORE KAN-435 IT DID NOT — the key was absent for every agent in every state, including agents with a live channel and a millisecond round trip, which was read as `this agent has no channel` and filed as a defect on two agents that were both fine. READ `channel.transport` BEFORE SENDING: `channel` means a send costs the recipient nothing, `composer` means it begins with a Ctrl+C that destroys the tool call in flight, and `unregistered` means a steer is refused rather than delivered. A FRESH AGENT IS NOT A CHANNEL-LESS ONE: registration takes about twelve seconds from spawn while the client answers its startup dialogs, so a missing or `unregistered` carrier in an agent's first seconds clears by itself and waiting costs less than the interrupt does. ALSO READ `addressedBy`: `key-and-type` means you named the agent exactly, `key-only` means the type was INFERRED from the one agent holding that key. A key holding SEVERAL agents is refused rather than resolved — `refusedBy: 'ambiguous-key'` with a `candidates` list — because a status attributed to the wrong agent is a first-hand-looking reading of somebody else, and nothing downstream could tell.",
         inputSchema: {
           type: "object",
           properties: {
@@ -881,7 +882,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: {
               type: "string",
               description:
-                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against herdr's agent list.",
+                "Optional. The workspace type (e.g., 'task'). Addresses the agent exactly; omit to resolve the key against this daemon's sessions and herdr's agent list. A KEY THAT MATCHES MORE THAN ONE AGENT IS REFUSED rather than answered about one of them — `refusedBy: 'ambiguous-key'` with a `candidates` list.",
             },
           },
           required: ["key"],

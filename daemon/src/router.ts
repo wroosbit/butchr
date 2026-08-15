@@ -20,12 +20,14 @@ import {
 // there.
 import {
   HerdrSession,
+  AmbiguousKeyError,
   CensusReading,
   HerdrAgentDescription,
   HerdrAgentRecord,
   HerdrAgentStatus,
   addressFromAgentName,
   agentNameFor,
+  ambiguousKeyMessage,
   type ButchrAgentName,
   typeFromAgentName,
   workspaceDirFor
@@ -457,6 +459,27 @@ function invalidAddress(key: unknown, type: unknown): string | null {
     return 'Invalid type: expected a non-empty string';
   }
   return null;
+}
+
+/**
+ * The extra fields an ambiguous-address refusal carries, whoever discovered the
+ * ambiguity (KAN-473).
+ *
+ * A bare key can collide in two places — this daemon's session map, which the
+ * handlers resolve directly, and herdr's own agent list, which `HerdrBridge`
+ * consults for agents that outlived their session and which refuses by
+ * throwing. Both refusals must reach the client in ONE shape, or a caller ends
+ * up parsing agent names back out of prose for half of them.
+ *
+ * Returns `null` for anything else, so an ordinary failure is not dressed up as
+ * a collision.
+ */
+function ambiguityFields(
+  err: unknown
+): { refusedBy: 'ambiguous-key'; candidates: string[] } | null {
+  return err instanceof AmbiguousKeyError
+    ? { refusedBy: 'ambiguous-key', candidates: err.candidates }
+    : null;
 }
 
 /**
@@ -2637,14 +2660,42 @@ export class MessageRouter {
     // sidepanel and the preemption path both do. Without it a key shared
     // across types would stand down whichever type's session was created
     // first, not the one the caller meant (KAN-83). A caller that names no
-    // type gets the key-only match it asked for: deliberately type-agnostic,
-    // for clients addressing an agent whose type they never knew.
+    // type is answered only when the key names exactly one agent; see the
+    // refusal below.
     const requestedType =
       typeof data.type === 'string' && data.type.trim() ? data.type.trim() : undefined;
     // Set only by the capacity gate, never by a client: it is the record of why
     // this stand-down was not the agent's own idea. See PreemptionRecord.
     const preemption: PreemptionRecord | undefined = data.preemption;
-    const session = this.herdrBridge.getSessionByAddress(key, requestedType);
+    const resolution = this.herdrBridge.resolveSessionByAddress(key, requestedType);
+
+    // ⚠ THE DESTRUCTIVE VERB REFUSES ON AMBIGUITY RATHER THAN PICKING (KAN-473).
+    //
+    // This handler used to take the first session on the key and tear it down,
+    // and answer `success: true` naming the agent it had chosen. The schema
+    // disclosed it — *"a bare key stops whichever of them it happens to reach"*
+    // — and disclosure is not a control: `epic/KAN-59` stood `task/KAN-117`
+    // down while `story/KAN-117` was live on the same key, and the only thing
+    // that saved the story agent was a person remembering to pass `type`. A
+    // supervisor would have been destroyed by a correct-looking call whose
+    // response reported success.
+    //
+    // Refusing costs the caller one parameter and destroys nothing. It also
+    // TELLS them the collision exists, which the pick never could — this is the
+    // `refuse-on-occupied` shape KAN-124 established, applied to an address.
+    if (resolution.outcome === 'ambiguous') {
+      respond({
+        action: 'deactivate_response',
+        success: false,
+        key,
+        refusedBy: 'ambiguous-key',
+        candidates: resolution.candidates,
+        error: ambiguousKeyMessage(key, resolution.candidates)
+      });
+      return;
+    }
+
+    const session = resolution.outcome === 'one' ? resolution.session : undefined;
 
     if (session) {
       const { success, error } = this.herdrBridge.terminateSession(session.sessionId);
@@ -2845,6 +2896,21 @@ export class MessageRouter {
     try {
       address = this.herdrBridge.resolveAddress(key, type);
     } catch (e: any) {
+      // A steer delivered to the wrong agent is the third failure mode of an
+      // ambiguous bare key (KAN-473). `resolveAddress` already refused it; what
+      // it could not do is tell the caller WHICH agents matched, and a sender
+      // that cannot see the collision cannot fix its own call.
+      const ambiguity = ambiguityFields(e);
+      if (ambiguity) {
+        respond({
+          action: 'send_to_agent_response',
+          success: false,
+          key,
+          ...ambiguity,
+          error: e?.message ?? String(e)
+        });
+        return;
+      }
       fail(e?.message ?? String(e));
       return;
     }
@@ -3106,8 +3172,18 @@ export class MessageRouter {
    */
   private async handleTailAgent(data: any, respond: Respond) {
     const { key, type, lines } = data;
-    const fail = (error: string) =>
-      respond({ action: 'tail_agent_response', success: false, error });
+    const fail = (error: string, err?: unknown) =>
+      respond({
+        action: 'tail_agent_response',
+        success: false,
+        // A tail refused for a colliding key says WHICH agents collided, so the
+        // caller can address one rather than only learn that it could not
+        // (KAN-473). `tailAgent` already refused this case — `resolveAgentName`
+        // throws — and what was missing was the candidate list reaching the
+        // client in a shape it could act on.
+        ...(ambiguityFields(err) ?? {}),
+        error
+      });
 
     const badAddress = invalidAddress(key, type);
     if (badAddress) {
@@ -3128,13 +3204,32 @@ export class MessageRouter {
       // `success: undefined` with no `text`, and leave the rejection unhandled.
       // The client would read that as a failed read of a pane nobody looked at.
       const tail = await this.herdrBridge.tailAgent(key, type, lines);
+
+      // `tailAgent` never throws, so an ambiguous address arrives here as a
+      // return value rather than through the catch below — it carries
+      // `candidates` and nothing else does. Labelling it `refusedBy:
+      // 'ambiguous-key'` is what makes a refused tail the same shape as a
+      // refused stand-down or status, which is what lets a caller handle all of
+      // them in one place (KAN-473).
+      if (tail.candidates) {
+        fail(tail.error ?? ambiguousKeyMessage(key, tail.candidates), new AmbiguousKeyError(key, tail.candidates));
+        return;
+      }
+
       respond({
         action: 'tail_agent_response',
         key,
+        // WHICH ADDRESS THIS PANE BELONGS TO (KAN-473). A tail is evidence a
+        // supervisor acts on — "is it stalled or waiting?" is decided off
+        // exactly this read — so a bare-key answer says that the type was
+        // inferred rather than given. The refusal above is what stops it being
+        // inferred from a collision; this is what stops the reader assuming
+        // they had addressed the agent exactly when they had not.
+        addressedBy: type ? 'key-and-type' : 'key-only',
         ...tail
       });
     } catch (err: any) {
-      fail(err?.message ?? String(err));
+      fail(err?.message ?? String(err), err);
     }
   }
 
@@ -3173,8 +3268,13 @@ export class MessageRouter {
    */
   private handleAgentStatus(data: any, respond: Respond) {
     const { key, type } = data;
-    const fail = (error: string) =>
-      respond({ action: 'agent_status_response', success: false, error });
+    const fail = (error: string, err?: unknown) =>
+      respond({
+        action: 'agent_status_response',
+        success: false,
+        ...(ambiguityFields(err) ?? {}),
+        error
+      });
 
     const badAddress = invalidAddress(key, type);
     if (badAddress) {
@@ -3183,25 +3283,60 @@ export class MessageRouter {
     }
 
     try {
-      const session = this.herdrBridge.getSessionByAddress(key, type);
-      if (session) {
+      const resolution = this.herdrBridge.resolveSessionByAddress(key, type);
+
+      // ⚠ A READ THAT SILENTLY PICKS IS THE WORSE HALF OF KAN-473, because
+      // nothing downstream can detect it. A bare-key status answered about
+      // whichever session the map held first, and the response said only
+      // `success: true` — so a supervisor deciding "is it stalled or waiting?"
+      // could hold a first-hand-looking reading of somebody else's agent. For
+      // the 44 hours `task/KAN-117` and `story/KAN-117` were both live, every
+      // bare-key call on this action was one of those.
+      //
+      // Refused rather than disclosed-and-answered, for the reason the
+      // stand-down above refuses: the caller wanted ONE agent's state, and no
+      // annotation on the wrong agent's row makes it the row they asked for.
+      if (resolution.outcome === 'ambiguous') {
+        respond({
+          action: 'agent_status_response',
+          success: false,
+          key,
+          refusedBy: 'ambiguous-key',
+          candidates: resolution.candidates,
+          error: ambiguousKeyMessage(key, resolution.candidates)
+        });
+        return;
+      }
+
+      if (resolution.outcome === 'one') {
+        const session = resolution.session;
         respond({
           action: 'agent_status_response',
           success: true,
           sessionless: false,
           agentName: agentNameFor(session.type, session.key),
+          // WHICH ADDRESS THIS ANSWERS FOR. `agentName` already named the
+          // agent; this names how it was reached, so a bare-key reader can see
+          // that a type was inferred rather than given and is not left to
+          // assume they addressed it exactly.
+          addressedBy: type ? 'key-and-type' : 'key-only',
           ...this.toAgentDto(session, this.herdrBridge.listHerdrStatuses()),
           ...this.channelStateOf(session.type, session.key)
         });
         return;
       }
 
+      // The herdr-list fallback refuses an ambiguous key of its own accord —
+      // `resolveAgentName` throws `AmbiguousKeyError` — and the catch below
+      // turns that into the same refusal shape the session path answers with,
+      // so the two paths cannot disagree about what a colliding key means.
       const described = this.herdrBridge.describeAgent(key, type);
       respond({
         action: 'agent_status_response',
         success: true,
         sessionless: true,
         agentName: described.agentName,
+        addressedBy: type ? 'key-and-type' : 'key-only',
         sessionId: null,
         type: described.type,
         key,
@@ -3217,7 +3352,7 @@ export class MessageRouter {
         ...this.channelStateOf(described.type, key)
       });
     } catch (err: any) {
-      fail(err?.message ?? String(err));
+      fail(err?.message ?? String(err), err);
     }
   }
 
@@ -4953,10 +5088,27 @@ export class MessageRouter {
     //
     // By (key, type) when the caller gives a type — a same-key session of
     // another type is a different agent in a different directory, and its
-    // work state would answer for the wrong workspace (KAN-83). With no type
-    // there is only the key to go by, and the key-only match is the best
-    // available answer rather than a collision.
-    const session = this.herdrBridge.getSessionByAddress(key, type);
+    // work state would answer for the wrong workspace (KAN-83).
+    //
+    // With no type, a key matching one agent is answered and a key matching
+    // several is REFUSED (KAN-473). The clause this replaces read "the key-only
+    // match is the best available answer rather than a collision", and it was
+    // wrong in exactly the way the ticket is about: a collision is precisely
+    // what it was, and the answer it produced named a *workspace directory* —
+    // so the wrong agent's work state came back looking like the right one's.
+    const resolution = this.herdrBridge.resolveSessionByAddress(key, type);
+    if (resolution.outcome === 'ambiguous') {
+      respond({
+        action: 'agent_work_state_response',
+        success: false,
+        key,
+        refusedBy: 'ambiguous-key',
+        candidates: resolution.candidates,
+        error: ambiguousKeyMessage(key, resolution.candidates)
+      });
+      return;
+    }
+    const session = resolution.outcome === 'one' ? resolution.session : undefined;
     const recorded =
       typeof type === 'string'
         ? this.agentRegistry?.intents().get(agentNameFor(type, key))?.record.workDir

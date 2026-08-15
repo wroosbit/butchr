@@ -585,6 +585,86 @@ export interface AgentAddress {
 }
 
 /**
+ * What a bare key resolved to among a runtime's own live sessions — and why it
+ * is three outcomes rather than `HerdrSession | undefined` (KAN-473).
+ *
+ * **Ambiguity and absence are different facts, and collapsing them is how a
+ * bare key reaches the wrong agent.** Keys are shared across workspace types by
+ * design (KAN-83): `task/KAN-117` and `story/KAN-117` were both live for 44
+ * hours. A lookup that answers a bare key with the *first* session it iterates
+ * over answers a question nobody asked — and it answers it identically whether
+ * one agent matched or three did, so nothing downstream can tell.
+ *
+ * That was the destructive case as well as the read case. `deactivate { key }`
+ * with no type stood down whichever session the map happened to hold first, and
+ * reported `success: true` for it; `agent_status { key }` answered about that
+ * same arbitrary one. The tool schema disclosed this — *"a bare key stops
+ * whichever of them it happens to reach"* — and **disclosure is not a control**:
+ * the only thing standing between a supervisor and a destroyed bystander was
+ * the caller remembering to pass `type`.
+ *
+ * So the ambiguity is in the **return type**, where a caller cannot fail to
+ * meet it, rather than in a sentence a caller may not have read. `candidates`
+ * names every agent the key matched, so a refusal can say what to pass instead
+ * of only that something was wrong.
+ */
+export type SessionAddressResolution =
+  | { outcome: 'one'; session: HerdrSession }
+  | { outcome: 'ambiguous'; candidates: ButchrAgentName[] }
+  | { outcome: 'none' };
+
+/**
+ * The ambiguity rule itself, in one place, so both runtimes cannot disagree
+ * about what a bare key means. Callers hand it every ACTIVE session that
+ * matched the address by their own key-comparison rule — `HerdrBridge` matches
+ * a key exactly, `CrabCastRuntime` case-insensitively, and neither of those is
+ * this function's business.
+ *
+ * Sorted, because a refusal that names two agents in map-iteration order is a
+ * refusal whose text changes with the order they were started in.
+ */
+export function resolveAmongSessions(
+  matches: readonly HerdrSession[]
+): SessionAddressResolution {
+  if (matches.length === 0) return { outcome: 'none' };
+  if (matches.length === 1) return { outcome: 'one', session: matches[0] };
+  return {
+    outcome: 'ambiguous',
+    candidates: matches.map(s => agentNameFor(s.type, s.key)).sort()
+  };
+}
+
+/**
+ * The refusal a caller owes an ambiguous bare key, worded once so that every
+ * surface refuses in the same words. It names both halves of the fix: which
+ * agents matched, and that `type` is what separates them.
+ */
+export function ambiguousKeyMessage(key: string, candidates: readonly string[]): string {
+  return (
+    `Key '${key}' is ambiguous; it matches agents: ${candidates.join(', ')}. ` +
+    'Name the workspace type to address one of them exactly.'
+  );
+}
+
+/**
+ * An ambiguous address, thrown where the surface's contract is to throw.
+ *
+ * The candidates ride on the error rather than only inside its message: a
+ * handler that catches this owes its client a refusal it can act on, and
+ * re-parsing agent names back out of prose is how the list and the sentence
+ * drift apart.
+ */
+export class AmbiguousKeyError extends Error {
+  public readonly candidates: string[];
+
+  constructor(key: string, candidates: readonly string[]) {
+    super(ambiguousKeyMessage(key, candidates));
+    this.name = 'AmbiguousKeyError';
+    this.candidates = [...candidates];
+  }
+}
+
+/**
  * Full inverse of agentNameFor, for the case where not even the key is known:
  * enumerating herdr's agents and working out which workspace each one is.
  *
@@ -1638,13 +1718,18 @@ export class HerdrBridge implements AgentRuntime {
     return this.sessions.get(sessionId);
   }
 
-  public getSessionByKey(key: string): HerdrSession | undefined {
-    for (const session of this.sessions.values()) {
-      if (session.key === key && session.status === 'active') {
-        return session;
-      }
-    }
-    return undefined;
+  /**
+   * Every active session on a key, whatever type holds it. Private, and it is
+   * the whole of what used to be `getSessionByKey` (KAN-473) — that method
+   * returned the *first* of these and was public, so "pick whichever one the
+   * map iterated first" was a thing any caller could reach for by accident.
+   * The list is what a caller actually needs: one element is an answer, two are
+   * a refusal, and only the list can tell them apart.
+   */
+  private activeSessionsForKey(key: string): HerdrSession[] {
+    return Array.from(this.sessions.values()).filter(
+      session => session.key === key && session.status === 'active'
+    );
   }
 
   public listActiveSessions(): HerdrSession[] {
@@ -1957,27 +2042,30 @@ export class HerdrBridge implements AgentRuntime {
    * matters most here (messaging an agent that has been running a while).
    */
   private resolveAgentName(key: string): string {
-    // All sessions on the key, not the first (getSessionByKey): two types can
-    // hold one key at once (KAN-83), and a bare key naming two agents must be
-    // refused here exactly as the herdr-list fallback below refuses it —
-    // silently picking one would deliver someone's message, close, or reset
-    // to whichever agent happened to be created first.
-    const sessionNames = this.listActiveSessions()
-      .filter(session => session.key === key)
-      .map(session => agentNameFor(session.type, session.key));
-    if (sessionNames.length > 1) {
-      throw new Error(`Key '${key}' is ambiguous; it matches agents: ${sessionNames.join(', ')}`);
+    // All sessions on the key, not the first: two types can hold one key at
+    // once (KAN-83), and a bare key naming two agents must be refused here
+    // exactly as the herdr-list fallback below refuses it — silently picking
+    // one would deliver someone's message, close, or reset to whichever agent
+    // happened to be created first.
+    //
+    // `AmbiguousKeyError` rather than a bare `Error` (KAN-473): a handler that
+    // catches this has to hand its client the candidate list, and reading it
+    // back out of the message is how the list and the sentence drift apart.
+    const resolution = resolveAmongSessions(this.activeSessionsForKey(key));
+    if (resolution.outcome === 'ambiguous') {
+      throw new AmbiguousKeyError(key, resolution.candidates);
     }
-    if (sessionNames.length === 1) return sessionNames[0];
+    if (resolution.outcome === 'one') {
+      return agentNameFor(resolution.session.type, resolution.session.key);
+    }
 
     const suffix = `-${key.toLowerCase()}`;
     const matches = Array.from(this.listHerdrStatuses().keys())
-      .filter(name => name.startsWith('butchr-') && name.endsWith(suffix));
+      .filter(name => name.startsWith('butchr-') && name.endsWith(suffix))
+      .sort();
 
     if (matches.length === 1) return matches[0];
-    if (matches.length > 1) {
-      throw new Error(`Key '${key}' is ambiguous; it matches herdr agents: ${matches.join(', ')}`);
-    }
+    if (matches.length > 1) throw new AmbiguousKeyError(key, matches);
     throw new Error(`No agent found for key '${key}'`);
   }
 
@@ -2041,24 +2129,52 @@ export class HerdrBridge implements AgentRuntime {
   }
 
   /**
-   * The session for an address, if this daemon owns one. An explicit type has
-   * to match: a session for a different type is a different agent, and
+   * The session for a FULL address, if this daemon owns one. An explicit type
+   * has to match: a session for a different type is a different agent, and
    * answering with it would silently ignore the address the caller gave.
    *
-   * Searched by (key, type) directly, not by filtering getSessionByKey's
-   * answer. Two types legitimately hold the same key at once (KAN-83), and
-   * key-first would only ever see whichever session was created first — the
-   * other type's session would exist and be unaddressable.
+   * Searched by (key, type) directly. Two types legitimately hold the same key
+   * at once (KAN-83), and key-first would only ever see whichever session was
+   * created first — the other type's session would exist and be unaddressable.
+   *
+   * **`type` is required, and that is the point rather than a tidy-up
+   * (KAN-473).** It used to be optional, and a bare key fell through to a
+   * first-match pick — so the two callers that had no type reached the
+   * arbitrary answer *without naming it*, one of them to stand an agent down.
+   * A caller that may have no type calls {@link resolveSessionByAddress} and
+   * has to handle its `ambiguous` outcome to get at a session at all; there is
+   * no longer a spelling of "resolve a bare key" that quietly picks one.
    */
-  public getSessionByAddress(key: string, type?: string): HerdrSession | undefined {
+  public getSessionByAddress(key: string, type: string): HerdrSession | undefined {
+    // `typeof` rather than a bare `type.trim()`, because the type system is not
+    // the only caller: every router handler destructures its address out of a
+    // `data: any` IPC frame, so a client that omits `type` reaches here with
+    // `undefined` and no compiler saw it. An unusable type matches no session,
+    // which is the honest answer — it is never a licence to fall back to a key.
     const trimmedType = typeof type === 'string' ? type.trim() : '';
-    if (!trimmedType) return this.getSessionByKey(key);
+    if (!trimmedType) return undefined;
     for (const session of this.sessions.values()) {
       if (session.key === key && session.type === trimmedType && session.status === 'active') {
         return session;
       }
     }
     return undefined;
+  }
+
+  /**
+   * The session an address names, with ambiguity as an outcome rather than as
+   * an arbitrary answer. See {@link SessionAddressResolution} for why.
+   *
+   * A named type addresses exactly one agent, so that branch can only be `one`
+   * or `none`. A bare key is where the three-way answer earns its keep.
+   */
+  public resolveSessionByAddress(key: string, type?: string): SessionAddressResolution {
+    const trimmedType = typeof type === 'string' ? type.trim() : '';
+    if (trimmedType) {
+      const session = this.getSessionByAddress(key, trimmedType);
+      return session ? { outcome: 'one', session } : { outcome: 'none' };
+    }
+    return resolveAmongSessions(this.activeSessionsForKey(key));
   }
 
   /**
@@ -2133,6 +2249,15 @@ export class HerdrBridge implements AgentRuntime {
     source?: TailSource | null;
     /** Every source asked, in order, so "we looked twice" is auditable rather than trusted. */
     sourcesTried?: TailSource[];
+    /**
+     * Set only when the address was AMBIGUOUS: every agent the bare key
+     * matched. This method's contract is never to throw, so the one thing a
+     * caller would otherwise lose is the candidate list — and a refusal that
+     * cannot say which agents collided leaves the caller unable to fix its own
+     * call (KAN-473). Absent for every other failure, so its presence is what
+     * distinguishes "ambiguous" from "could not look".
+     */
+    candidates?: string[];
     error?: string;
   }> {
     const wanted = clampTailLines(lines);
@@ -2151,7 +2276,12 @@ export class HerdrBridge implements AgentRuntime {
     } catch (e: any) {
       const error = e?.message ?? String(e);
       console.error(`[HerdrBridge] Failed to tail agent for key '${key}':`, error);
-      return { success: false, error, sourcesTried: [] };
+      return {
+        success: false,
+        error,
+        sourcesTried: [],
+        ...(e instanceof AmbiguousKeyError ? { candidates: e.candidates } : {})
+      };
     }
 
     for (const source of TAIL_SOURCES) {

@@ -339,7 +339,12 @@ console.log('   fails, so the census cannot answer either way about an agent tha
 console.log('   demonstrably fine. The activation must be reported as unverified — and the');
 console.log('   working agent must survive it, because silence is not evidence.\n');
 
-const beforeBlind = bridge.getSessionByKey('HAPPY');
+// Addressed by (key, type) rather than by key alone. `getSessionByKey` was
+// removed by KAN-473 — it answered with the FIRST active session on a key over
+// a map whose keys are shared across workspace types by design, which is the
+// defect that ticket is about. This section only ever meant *this* script's own
+// agent, and TYPE is what says so.
+const beforeBlind = bridge.getSessionByAddress('HAPPY', TYPE);
 process.env.BUTCHR_K23_MODE = 'blind-list';
 const blind = await activate('HAPPY');
 delete process.env.BUTCHR_K23_MODE;
@@ -366,8 +371,8 @@ verdict(
 rule('5. a refused activation is reported, not latched');
 
 console.log('   The same key from section 2, activated again against the real herdr. A session');
-console.log('   left active for an agent known not to exist would be the one getSessionByKey');
-console.log('   hands back, and no later activation could ever spawn past it.\n');
+console.log('   left active for an agent known not to exist would be the one the address');
+console.log('   lookup hands back, and no later activation could ever spawn past it.\n');
 
 const retry = await activate('GHOST');
 show('activate_by_key response:', retry.response);

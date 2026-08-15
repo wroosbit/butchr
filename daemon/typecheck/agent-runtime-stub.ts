@@ -25,6 +25,7 @@ import type {
   HerdrAgentStatus,
   HerdrSession,
   PtyStreamListener,
+  SessionAddressResolution,
   SessionEndedEvent
 } from '../src/herdr.js';
 import type { McpServerDefinitions } from '../src/integrations/integration.js';
@@ -94,8 +95,12 @@ class StubRuntime implements AgentRuntime {
     return undefined;
   }
 
-  getSessionByAddress(_key: string, _type?: string): HerdrSession | undefined {
+  getSessionByAddress(_key: string, _type: string): HerdrSession | undefined {
     return undefined;
+  }
+
+  resolveSessionByAddress(_key: string, _type?: string): SessionAddressResolution {
+    return { outcome: 'none' };
   }
 
   listActiveSessions(): HerdrSession[] {

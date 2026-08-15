@@ -9,7 +9,10 @@ import {
   renderRefusal
 } from './crabcast-link.js';
 import {
+  AmbiguousKeyError,
   agentNameFor,
+  ambiguousKeyMessage,
+  resolveAmongSessions,
   workspaceDirFor,
   workspacesRoot,
   type AgentPresence,
@@ -24,6 +27,7 @@ import {
   type PtyDiscontinuity,
   type PtyStreamListener,
   type RowStanding,
+  type SessionAddressResolution,
   type SessionEndedEvent,
   type StandingReading,
   type SupersessionJoin,
@@ -1393,15 +1397,9 @@ export class CrabCastRuntime implements AgentRuntime {
     key: string,
     type?: string
   ): { success: boolean; agentName?: string; error?: string } {
-    const session = type ? this.sessionForAddress(type, key) : this.sessionForKey(key);
-    if (!session) {
-      return {
-        success: false,
-        error: renderRefusal(
-          this.link.refusal('butchr-adapter', `no session this daemon started matches ${type ?? '*'}/${key}`)
-        )
-      };
-    }
+    const addressed = this.addressedSession(key, type);
+    if (addressed.outcome !== 'one') return { success: false, error: addressed.error };
+    const session = addressed.session;
     const result = this.terminateSession(session.sessionId);
     return { ...result, agentName: agentNameFor(session.type, session.key) };
   }
@@ -1412,8 +1410,22 @@ export class CrabCastRuntime implements AgentRuntime {
     return this.sessions.get(sessionId);
   }
 
-  getSessionByAddress(key: string, type?: string): HerdrSession | undefined {
-    return type ? this.sessionForAddress(type, key) : this.sessionForKey(key);
+  getSessionByAddress(key: string, type: string): HerdrSession | undefined {
+    return this.sessionForAddress(type, key);
+  }
+
+  /**
+   * Ambiguity as an outcome, for a caller holding only a key. See
+   * {@link SessionAddressResolution} — the rule itself is shared with the local
+   * runtime so that one key cannot mean two different things depending on which
+   * runtime is wired in.
+   */
+  resolveSessionByAddress(key: string, type?: string): SessionAddressResolution {
+    if (type) {
+      const session = this.sessionForAddress(type, key);
+      return session ? { outcome: 'one', session } : { outcome: 'none' };
+    }
+    return resolveAmongSessions(this.sessionsForKey(key));
   }
 
   listActiveSessions(): HerdrSession[] {
@@ -1421,7 +1433,7 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   describeAgent(key: string, type?: string): HerdrAgentDescription {
-    const resolvedType = type ?? this.sessionForKey(key)?.type ?? null;
+    const resolvedType = type ?? this.soleSessionForKey(key)?.type ?? null;
     // `agentNameFor('?', key)` rather than a hand-built `butchr-?-<key>`
     // template (KAN-406). The two produce the identical string — `?` is simply
     // the type, spelled as the unknown it is — so this is the same name it
@@ -1645,13 +1657,24 @@ export class CrabCastRuntime implements AgentRuntime {
     truncated?: boolean;
     source?: TailSource | null;
     sourcesTried?: TailSource[];
+    /** Set only for an AMBIGUOUS bare key — see {@link AgentRuntime.tailAgent}. */
+    candidates?: string[];
     error?: string;
   }> {
     // ADDRESSED THE SAME WAY `describeAgent` IS, so one key cannot mean two
     // agents depending on which method asked. A bare key is resolved through
     // our own session table because `type` is Butchr's vocabulary and CrabCast
     // has none — their north star 4.
-    const resolvedType = type ?? this.sessionForKey(key)?.type ?? null;
+    //
+    // A key naming two agents REFUSES rather than reading one of them (KAN-473).
+    // Answered rather than thrown, because this method's contract is to answer:
+    // a read that quietly picks is the worse half of that ticket, since nothing
+    // downstream can tell whose pane it was handed.
+    const addressed = this.addressedSession(key, type);
+    if (addressed.outcome === 'ambiguous') {
+      return { success: false, error: addressed.error, candidates: addressed.candidates };
+    }
+    const resolvedType = type ?? addressed.session?.type ?? null;
     if (!resolvedType) {
       return {
         success: false,
@@ -1796,15 +1819,9 @@ export class CrabCastRuntime implements AgentRuntime {
     message: string,
     type?: string
   ): Promise<{ success: boolean; error?: string }> {
-    const session = type ? this.sessionForAddress(type, key) : this.sessionForKey(key);
-    if (!session) {
-      return {
-        success: false,
-        error: renderRefusal(
-          this.link.refusal('butchr-adapter', `no session this daemon started matches ${type ?? '*'}/${key}`)
-        )
-      };
-    }
+    const addressed = this.addressedSession(key, type);
+    if (addressed.outcome !== 'one') return { success: false, error: addressed.error };
+    const session = addressed.session;
     try {
       const res = await this.link.request({
         action: 'send_to_agent',
@@ -2363,10 +2380,78 @@ export class CrabCastRuntime implements AgentRuntime {
     );
   }
 
-  private sessionForKey(key: string): HerdrSession | undefined {
-    return [...this.sessions.values()].find(
+  /**
+   * Every live session on a key, whatever type holds it — the whole of what
+   * `sessionForKey` used to answer the *first* of (KAN-473). One element is an
+   * answer and two are a refusal, and only the list can tell them apart.
+   */
+  private sessionsForKey(key: string): HerdrSession[] {
+    return [...this.sessions.values()].filter(
       (s) => s.key.toLowerCase() === key.toLowerCase() && s.status !== 'terminated'
     );
+  }
+
+  /**
+   * The one session a bare key names, or `null` when it names none — and it
+   * THROWS when it names several. Used by the surfaces whose contract is to
+   * throw ({@link describeAgent}); the ones that answer with a response object
+   * go through {@link resolveSessionByAddress} instead.
+   */
+  private soleSessionForKey(key: string): HerdrSession | null {
+    const resolution = resolveAmongSessions(this.sessionsForKey(key));
+    if (resolution.outcome === 'ambiguous') {
+      throw new AmbiguousKeyError(key, resolution.candidates);
+    }
+    return resolution.outcome === 'one' ? resolution.session : null;
+  }
+
+  /**
+   * The session an address names, or the refusal owed instead — for the methods
+   * whose contract is to ANSWER rather than to throw (KAN-473).
+   *
+   * The ambiguous case is a refusal in this runtime as much as in the local
+   * one: `closeAgentByKey` and `sendToAgent` are the destructive pair, and
+   * "whichever session this map iterated first" is not an address either of
+   * them may act on.
+   */
+  private addressedSession(
+    key: string,
+    type?: string
+  ):
+    | { outcome: 'one'; session: HerdrSession; error?: undefined; candidates?: undefined }
+    | { outcome: 'none'; session?: undefined; error: string; candidates?: undefined }
+    | { outcome: 'ambiguous'; session?: undefined; error: string; candidates: ButchrAgentName[] } {
+    const missing = () =>
+      ({
+        outcome: 'none',
+        error: renderRefusal(
+          this.link.refusal(
+            'butchr-adapter',
+            `no session this daemon started matches ${type ?? '*'}/${key}`
+          )
+        )
+      }) as const;
+
+    if (type) {
+      const session = this.sessionForAddress(type, key);
+      return session ? { outcome: 'one', session } : missing();
+    }
+
+    const resolution = resolveAmongSessions(this.sessionsForKey(key));
+    if (resolution.outcome === 'one') return { outcome: 'one', session: resolution.session };
+    if (resolution.outcome === 'none') return missing();
+    return {
+      outcome: 'ambiguous',
+      candidates: resolution.candidates,
+      error: renderRefusal(
+        this.link.refusal(
+          'butchr-adapter',
+          ambiguousKeyMessage(key, resolution.candidates),
+          'Pass the workspace type, so this addresses one agent rather than whichever ' +
+            'session this daemon happens to hold first.'
+        )
+      )
+    };
   }
 
   /**

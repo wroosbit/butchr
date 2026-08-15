@@ -423,8 +423,17 @@ await section(
       listHerdrStatuses: () => new Map([[agentName, 'working']]),
       listActiveSessions: () => [],
       getSession: () => undefined,
-      getSessionByKey: () => undefined,
       getSessionByAddress: () => undefined,
+      // KAN-473 added this to the AgentRuntime seam, and it is DERIVED from the
+      // stub's own `getSessionByAddress` rather than written twice, so a stub
+      // cannot disagree with itself about what an address resolves to. The real
+      // runtimes answer `ambiguous` here; no stub here holds two sessions on one
+      // key, so none of them can reach that outcome — see
+      // `verify-ambiguous-key-refusal.mjs` for the case that does.
+      resolveSessionByAddress(key, type) {
+        const session = this.getSessionByAddress(key, type);
+        return session ? { outcome: 'one', session } : { outcome: 'none' };
+      },
       describeAgent: () => ({ agentName, type: TYPE, workDir, herdrStatus: 'working' }),
       abandonSession: () => {},
       terminateSession: () => ({ success: true })
