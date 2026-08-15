@@ -39,12 +39,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 90 |
-| `partial` | 9 |
+| `partial` | 10 |
 | `quarantined` | 3 |
 | `no` | 19 |
-| **total** | **121** |
+| **total** | **122** |
 
-**99 of 121** run on every pull request.
+**100 of 122** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -145,6 +145,7 @@ classification is the deliverable and the CI job is downstream of it.
 
 | script | class | reason |
 | --- | --- | --- |
+| `verify-crabcast-adopt-launcher-vocabulary` | partial | §1-§5 assert in CI. They read source as text and stand up their own Unix socket under os.tmpdir(); they need no peer, no herdr, no PTY, no credential and no network. §6 needs a live CrabCast daemon and SKIPS without one. A skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-census-disclosure` | partial | sections 1-7 assert in CI. They stand up their own Unix socket and a fake `herdr` on PATH, and need no peer, no real herdr, no PTY, no credential and no network. Section 8 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-session-restore` | partial | sections 1-4 assert in CI. They stand up their own Unix socket and their own agent registry under os.tmpdir(), and need no peer, no herdr, no PTY, no credential and no network. Section 5 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-standing` | partial | sections 1-5 assert in CI. They import the built daemon modules and run over frames this script constructs and two committed captures, and need no peer, no herdr, no PTY, no credential and no network. Section 6 reads a live CrabCast socket and SKIPS without one; a skip is printed as a skip and never counted as a pass. |

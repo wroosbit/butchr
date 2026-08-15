@@ -431,7 +431,11 @@ const censusRow = (dir) => ({
   agentRuntime: 'claude',
   state: 'running',
   createdAt: new Date(0).toISOString(),
-  launcher: 'claude'
+  // `config.launcher`, NOT a top-level `launcher` — see the same correction in
+  // `verify-crabcast-reconnect-resync.mjs` (KAN-429). At the top level the
+  // daemon never reads it, so this row claimed `claude` and was seen as a row
+  // with no launcher at all.
+  config: { launcher: 'claude' }
 });
 const socketPath = path.join(scratch, 'crabcast.sock');
 const server = net.createServer((socket) => {

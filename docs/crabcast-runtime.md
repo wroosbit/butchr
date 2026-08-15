@@ -334,6 +334,66 @@ one — so **the first flip is still a one-way door for live conversations**, an
 that is a cutover-sequencing fact rather than something code on this side can
 close.
 
+#### And what adoption refuses to guess about: a launcher name Butchr does not have (KAN-429)
+
+Adoption reads one field that **CrabCast** chose the value of. `expectsRuntime`
+came off `row.launcher !== 'shell'`, and `row.launcher` is `config.launcher` —
+their string, in their vocabulary. That comparison is exact for an agent Butchr
+configured, because `provision` sends `launcher: defaultAgent ?? 'claude'` and
+our own name comes back. It was **a guess** for an agent CrabCast configured
+itself inside Butchr's workspace tree, which adoption reaches because it filters
+on `addressForPath` and not on who configured the row. A runtime-less launcher of
+theirs spelled anything but `shell` was adopted as *expecting* a runtime.
+
+**The consequence is not a mislabelled field.** `router.ts`'s
+`confirmActivation` passes `session.expectsRuntime ?? true` into
+`confirmAgentPresent`, and an `absent` answer calls `abandonSession` — so the
+guess is a **live pane torn out of Butchr's session map and reported a failed
+activation**, which is the KAN-397 harm shape exactly, reached by a different
+route. It is the third instance of the class KAN-346 and KAN-397 each fixed once:
+joining on a name whose producer is the other project. All three were silent —
+the wrong join answers plausibly, and nothing shows unless a live peer is running
+the launcher in question.
+
+**The fix is a refusal rather than a better guess, and the vocabulary is
+Butchr's own.** `isButchrLauncher` admits the names in `AGENT_LAUNCHERS` —
+`claude` and `shell` — and a row carrying anything else, or carrying no launcher
+at all, is **not adopted**. Past that guard the value is a `ButchrLauncher` and
+not a `string`, so `expectsRuntime` is computed inside one vocabulary and
+`error TS2367` is what deleting `shell` from the table produces at the comparison
+site, rather than a branch that is quietly never taken. **Invariant 10 is
+untouched**: nothing enumerates CrabCast's vocabulary, which is exactly the point
+— a name Butchr does not have is a name Butchr declines to interpret.
+
+**It costs the population adoption exists for nothing**, which is what makes it
+narrow: every row `provision` produces carries a launcher Butchr sent, so the
+guard is a no-op on the fleet a CrabCast daemon started for us — the fleet this
+method was written to rescue. A refused row is not hidden either, because
+`censusRecords()` reads the census and not `this.sessions`: it goes on being
+listed as the `sessionless: true` agent it honestly is.
+
+**The vocabulary is spelled in `crabcast-runtime.ts` rather than imported from
+`launchers.ts`, and that copy is deliberate.** Gate 3's ruling below rests on a
+premise about this file's imports — *"this file imports nothing from
+`launchers.js`"* — which
+`verify-crabcast-channel-startup-disablement.mjs` watches literally, `import
+type` included. Its own header calls the tempting edit *the defect in miniature*.
+So the list is copied and then **checked**:
+`verify-crabcast-adopt-launcher-vocabulary.mjs` §1 reads `launchers.ts` as text
+and goes red if the copy and `AGENT_LAUNCHERS` disagree in either direction, and
+§2 records that the copy exists because of the premise.
+
+**What is not covered, stated because the sections above could be read as
+covering it:** no committed fixture contains a foreign-launcher row — every
+captured row carries `claude` or `shell`, because every captured row was
+configured by Butchr — so §3 synthesises one, and nothing here demonstrates that
+a real CrabCast *can* produce one. §6 covers the other half against the live
+peer: that every adoptable row a real peer is serving carries a launcher Butchr
+has, so the guard refuses nothing that exists today. On 2026-08-15 that section
+reached the live peer and found it serving **zero** owned rows under Butchr's
+tree — the fleet is on the herdr runtime, as `BUTCHR_AGENT_RUNTIME` being unset
+says it should be — so it **skipped**, and a skip is not a pass.
+
 ---
 
 ## The `claude` launcher path — gate 2, measured (KAN-379)
@@ -747,7 +807,16 @@ satisfied by construction rather than by a timer.
 
 **`list_agents_response`** — `success`; `agents[]`, `foreignPanes[]`; per row:
 `path`, `paneName`, `sessionId`, `status`, `herdrStatus`, `agentRuntime`,
-`state`, `workDir`.
+`state`, `workDir`, `createdAt`, and **`config.launcher`**.
+
+`config.launcher` is the one field on this list whose **value** we branch on
+rather than merely read, and since KAN-429 the branch is fenced: adoption admits
+only a name Butchr itself has (`claude`, `shell`) and refuses to interpret any
+other, because what a launcher of CrabCast's delivers is CrabCast's fact and not
+ours. **So a new launcher name on your side cannot break us** — it is refused,
+loudly and locally, rather than guessed at. If the contract ever publishes
+whether a row has an agent runtime behind it, that field is what we would read
+instead, and this branch would go away.
 
 **`configure_response` / `activate_response` / `deactivate_response`** —
 `success`, `error`; from activate, **`sessionId`** (the handle every pty call is

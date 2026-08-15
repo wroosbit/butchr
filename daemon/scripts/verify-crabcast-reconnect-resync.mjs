@@ -135,7 +135,15 @@ function censusRow(paneId, dir) {
     state: 'running',
     workDir: dir,
     createdAt: new Date(Date.now() - 60_000).toISOString(),
-    launcher: 'shell'
+    // `config.launcher`, NOT a top-level `launcher` — that is where a real
+    // `list_agents` row carries it (`readCensus` reads `r.config.launcher`, and
+    // `fixtures/crabcast-owned-running-census.json` is captured that way). This
+    // row said `launcher: 'shell'` at the top level until KAN-429, so the
+    // daemon read `null` and the row was adopted with `expectsRuntime: true`
+    // off `null !== 'shell'` — the opposite of what this line appeared to say,
+    // and invisible because the old comparison accepted anything. KAN-429's
+    // guard refuses a row with no launcher, which is what surfaced it.
+    config: { launcher: 'shell' }
   };
 }
 

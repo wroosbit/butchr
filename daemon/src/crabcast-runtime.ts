@@ -107,6 +107,50 @@ function addressForPath(dir: string): { type: string; key: string } | null {
   return { type: parts[0], key: parts[1] };
 }
 
+/**
+ * **The launcher names Butchr is able to interpret — its own vocabulary, spelled
+ * here rather than imported, and the reason for that is not tidiness (KAN-429).**
+ *
+ * `expectsRuntime` asks *"does this launcher deliver a runtime?"*, and Butchr can
+ * answer it for exactly the names Butchr has. `AGENT_LAUNCHERS` in
+ * `launchers.ts` is where those names live; {@link isButchrLauncher} is how a
+ * string arriving from CrabCast is admitted into them or refused.
+ *
+ * **Why this is a copy and not `import type { LauncherName }`.** KAN-393's
+ * ruling that channel-startup supervision has nothing to supervise on this path
+ * rests on a premise about this file's imports — *"this file imports nothing
+ * from `launchers.js`, so the flag has no route in even by accident"* — and
+ * `verify-crabcast-channel-startup-disablement.mjs` watches that premise
+ * literally, `import type` included. Its header calls the tempting version of
+ * this edit *"the defect in miniature": somebody needs one export from
+ * `launchers.js` — a type, a constant, anything harmless.* This is that
+ * somebody, and the answer is a copy.
+ *
+ * **A copy is a second thing to carry a fix to, so it is checked rather than
+ * trusted.** `verify-crabcast-adopt-launcher-vocabulary.mjs` reads
+ * `launchers.ts` **as text** — no import, so the premise stays intact — and goes
+ * red if this list and `AGENT_LAUNCHERS`'s keys stop agreeing in either
+ * direction. Add a launcher there without adding it here and the check is red;
+ * delete `shell` from either and this file stops compiling as well, because
+ * {@link CrabCastRuntime.adoptFromCensus} compares a narrowed value against it
+ * and `error TS2367` is what an impossible comparison becomes.
+ */
+const BUTCHR_LAUNCHERS = ['claude', 'shell'] as const;
+
+/** A launcher name Butchr has, and can therefore answer `expectsRuntime` for. */
+type ButchrLauncher = (typeof BUTCHR_LAUNCHERS)[number];
+
+/**
+ * Whether a launcher string off CrabCast's census is one Butchr can interpret.
+ *
+ * The narrowing is the point: past this guard the value is a
+ * {@link ButchrLauncher} and not `string`, so the comparison it feeds is inside
+ * one vocabulary instead of across two. See {@link CensusRow.launcher}.
+ */
+function isButchrLauncher(name: string | null): name is ButchrLauncher {
+  return name !== null && (BUTCHR_LAUNCHERS as readonly string[]).includes(name);
+}
+
 declare const PANE_NAME_BRAND: unique symbol;
 
 /**
@@ -157,18 +201,36 @@ interface CensusRow {
    * runtime behind it is the delivered product there, and calling it dead is
    * the KAN-58 false alarm.
    *
-   * **THIS IS THEIR STRING, NOT OURS, AND THE COMPARISON IT FEEDS IS A JOIN
-   * ACROSS TWO VOCABULARIES (KAN-395).** It is exact for an agent *Butchr*
-   * configured — `provision` sends `launcher: defaultAgent ?? 'claude'`, so our
-   * own name comes back — and it is a guess for an agent CrabCast configured
-   * itself, which `adoptFromCensus` will adopt if it sits in Butchr's tree.
-   * Their launcher vocabulary is not ours and invariant 10 forbids reading
-   * their source to find out, so a runtime-less launcher of theirs spelled
-   * anything but `shell` would be adopted as expecting a runtime and reported
-   * dead. Nobody covers that today; it is unreachable while
-   * `BUTCHR_AGENT_RUNTIME` is unset, and it is filed rather than left implied.
+   * **THIS IS THEIR STRING, NOT OURS — AND SINCE KAN-429 IT IS VALIDATED INTO
+   * BUTCHR'S VOCABULARY BEFORE IT IS COMPARED, WHICH IS WHY THE COMPARISON IS
+   * NOW SAFE.** The hazard was real and is worth keeping written down, because
+   * the type below is still `string | null` and always will be: the field is
+   * exact for an agent *Butchr* configured — `provision` sends
+   * `launcher: defaultAgent ?? 'claude'`, so our own name comes back — and it
+   * is CrabCast's own word for an agent CrabCast configured itself, which
+   * {@link CrabCastRuntime.adoptFromCensus} sees because it filters on
+   * `addressForPath` rather than on who configured the row. Their launcher
+   * vocabulary is not ours, invariant 10 forbids reading their source to find
+   * out, and a raw `row.launcher !== 'shell'` therefore read a runtime-less
+   * launcher of theirs spelled anything else as *expecting a runtime*.
+   *
+   * **What makes it safe is that nothing guesses any more.** `adoptFromCensus`
+   * puts the value through {@link isButchrLauncher} first. A name Butchr has —
+   * {@link BUTCHR_LAUNCHERS}, whoever set it — is one Butchr can answer
+   * `expectsRuntime` for, so the comparison downstream is `ButchrLauncher`
+   * against `'shell'`: **one vocabulary, and `error TS2367` rather than a
+   * silent branch if `shell` ever leaves it.** A name Butchr does not have is
+   * not interpreted at all — **the row is not adopted**, and the reason is
+   * logged. That is a refusal rather than a repair, and it is deliberately the
+   * narrow one: it costs the population adoption exists for **nothing**, since
+   * every row `provision` produces carries a launcher Butchr itself sent, and
+   * a refused row is still listed by `censusRecords()` as the sessionless agent
+   * it honestly is.
+   *
    * This is the same class KAN-346 and KAN-397 fixed twice — joining on a name
-   * whose producer is the other project.
+   * whose producer is the other project. The repair is the same shape both of
+   * those took: make the wrong join unspellable rather than remembering not to
+   * write it.
    */
   launcher: string | null;
 }
@@ -2070,6 +2132,29 @@ export class CrabCastRuntime implements AgentRuntime {
    * carries none and `router.ts` restores it from the durable agent registry,
    * which recorded it at activation. Two fields, two sources, and neither one
    * falls out of the other.
+   *
+   * ## And one row is refused rather than filled in: an unreadable launcher
+   *
+   * `expectsRuntime` is the one adopted field derived from a string **CrabCast**
+   * chose, and KAN-429 is the ticket about that. A row whose `launcher` is not a
+   * name Butchr has is skipped, because the alternative is a guess in a field
+   * that is read as fact: `router.ts`'s `confirmActivation` passes
+   * `session.expectsRuntime ?? true` into `confirmAgentPresent`, and an `absent`
+   * answer calls `abandonSession` — so a runtime-less foreign launcher adopted
+   * as expecting a runtime is a **live pane torn out of Butchr's session map and
+   * reported a failed activation**, which is the KAN-397 harm shape exactly.
+   *
+   * **The refusal costs this method's own population nothing**, which is what
+   * makes it the narrow fix rather than a behaviour change wearing one's
+   * clothes: every row {@link provision} produces carries
+   * `launcher: defaultAgent ?? 'claude'` — Butchr's own string, sent by Butchr —
+   * so the guard is a no-op on the fleet a CrabCast daemon started for us, which
+   * is the fleet this method exists to rescue. It bites only on an agent
+   * CrabCast configured **itself** inside Butchr's workspace tree, a population
+   * this method was never designed for and reaches only because it filters on
+   * `addressForPath`. Such a row is not hidden by the refusal: `censusRecords()`
+   * reads the census and not `this.sessions`, so it is still listed, and
+   * honestly, as `sessionless: true`.
    */
   private adoptFromCensus(): void {
     for (const row of this.census.rows) {
@@ -2087,6 +2172,23 @@ export class CrabCastRuntime implements AgentRuntime {
       const address = addressForPath(dir);
       if (!address) continue; // a CrabCast agent outside Butchr's tree; not ours
       if (this.sessionForAddress(address.type, address.key)) continue; // already held
+      // A launcher name Butchr does not have is one Butchr cannot answer
+      // `expectsRuntime` for, so it does not answer (KAN-429). See
+      // CensusRow.launcher. Skipping leaves the row listed and sessionless,
+      // which is true; adopting it would have written a guess into a field
+      // `confirmActivation` later reads as fact and answered `absent` for a
+      // pane that is alive — abandonSession, on a running agent.
+      const launcher = row.launcher;
+      if (!isButchrLauncher(launcher)) {
+        this.log(
+          `not adopting ${agentNameFor(address.type, address.key)}: its launcher ` +
+            `${JSON.stringify(launcher)} is not one Butchr has ` +
+            `(${BUTCHR_LAUNCHERS.join(', ')}), so whether it delivers an agent runtime is ` +
+            `CrabCast's fact and not ours to guess. It stays in the census as a sessionless ` +
+            `agent.`
+        );
+        continue;
+      }
 
       const createdAt = new Date(row.createdAt);
       if (Number.isNaN(createdAt.getTime())) continue;
@@ -2109,7 +2211,10 @@ export class CrabCastRuntime implements AgentRuntime {
         // it lost, and inventing one for a session it never held would be a
         // claim about a period nobody observed.
         ptyDiscontinuities: [],
-        expectsRuntime: row.launcher !== 'shell',
+        // `launcher` is a ButchrLauncher by now, never `string` — so this is a
+        // comparison inside one vocabulary, and TS2367 if `shell` ever leaves
+        // it. That narrowing is the whole of KAN-429's fix.
+        expectsRuntime: launcher !== 'shell',
         adopted: true
       };
       this.sessions.set(sessionId, session);
