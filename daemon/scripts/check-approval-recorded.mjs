@@ -38,11 +38,26 @@
 // approved pull request read `UNSTABLE` forever — is on `exitCodeFor` in
 // `lib/approval-marker.mjs`. Read it before changing either exit path.
 //
+// AN ARGUMENT THIS SCRIPT DOES NOT RECOGNISE IS A USAGE ERROR — KAN-453. It
+// exits 2 without judging anything. Until KAN-453 it exited 0 instead, and that
+// is worth stating rather than filing as a fixed bug, because the shape recurs:
+// `arg()` below is `argv.indexOf`, so anything that was not `--pr` was not
+// rejected — it was *not read at all*, and the run fell through to the "no pull
+// request here" branch that a push build legitimately takes. A foreign flag, a
+// typo, and no arguments whatsoever therefore produced byte-identical output and
+// the same exit code, so the script could not distinguish "I am in CI on a push
+// build with no pull request" from "a human handed me arguments I do not
+// understand". Only the first of those is benign, and in a repository whose
+// merge governance is read off exit codes the second is a green light from a
+// gate that judged nothing.
+//
 // Usage:
 //   node daemon/scripts/check-approval-recorded.mjs             # in CI
 //   node daemon/scripts/check-approval-recorded.mjs --pr 132    # by hand
 //   node daemon/scripts/check-approval-recorded.mjs --pr 132 --no-status
 //
+//   --pr <n>               judge pull request <n> rather than resolving one
+//                          from the CI event.
 //   --no-status            do not publish; implies --exit-on-approval, because
 //                          with no status posted the exit code is the only
 //                          carrier left and the verdict has to go somewhere.
@@ -62,6 +77,63 @@ import fs from 'fs';
 import { evaluate, exitCodeFor, EXIT_ON } from './lib/approval-marker.mjs';
 
 const argv = process.argv.slice(2);
+
+// KAN-453: THE FLAG TABLE IS THE SINGLE SOURCE OF BOTH THE PARSER AND THE USAGE
+// TEXT, and that is the point rather than tidiness. The defect being fixed is a
+// correct spelling that was undiscoverable from the failure — the run said
+// "nothing to judge" and exited 0, which names neither the flag you got wrong
+// nor the flag you wanted. A usage message assembled from a table cannot fall
+// behind the parser, so the next flag added here is documented by construction;
+// one written out as prose beside a separate parser is documented until somebody
+// forgets, and this file has no way to notice that it has.
+const FLAGS = Object.freeze({
+  '--pr': { value: '<n>', help: 'judge pull request <n> rather than resolving one from the CI event' },
+  '--no-status': { value: null, help: 'do not publish the commit status; implies --exit-on-approval' },
+  '--exit-on-approval': { value: null, help: 'exit 1 when the pull request is unapproved' },
+  '--exit-on-gate-health': { value: null, help: 'exit 0 whenever the gate published a verdict' }
+});
+
+// EXIT 2, AND DELIBERATELY NOT 1. `0` and `1` are this script's two verdict
+// codes — see `exitCodeFor` in the lib — and a usage error is neither of them:
+// nothing was judged, so reporting it as a verdict is the exact confusion
+// KAN-453 exists to remove. A third code says "I did not run" and cannot be
+// read as an answer to the question the gate asks.
+const EXIT_USAGE = 2;
+
+function usage(problem) {
+  console.error(`check-approval-recorded: ${problem}`);
+  console.error('');
+  console.error('Usage:');
+  console.error('  node daemon/scripts/check-approval-recorded.mjs [--pr <n>] [--no-status]');
+  console.error('      [--exit-on-approval | --exit-on-gate-health]');
+  console.error('');
+  for (const [name, spec] of Object.entries(FLAGS)) {
+    console.error(`  ${`${name}${spec.value ? ` ${spec.value}` : ''}`.padEnd(24)}${spec.help}`);
+  }
+  console.error('');
+  console.error('With no arguments the pull request is resolved from the CI event, which is how');
+  console.error('the workflow invokes it. That is a valid invocation and is unchanged by this');
+  console.error('check: a CI run with no pull request to judge still reports success.');
+  process.exit(EXIT_USAGE);
+}
+
+// WALK argv RATHER THAN SCANNING IT. A scan finds the tokens it already knows to
+// look for and is structurally blind to the rest, which is the defect itself —
+// so validation has to visit every token, not query for a few. Note that an
+// empty argv walks zero times and is accepted: no arguments is how CI calls
+// this, and rejecting it would break every push build.
+for (let i = 0; i < argv.length; i++) {
+  const token = argv[i];
+  const spec = FLAGS[token];
+  if (!spec) usage(`unrecognised argument ${JSON.stringify(token)}.`);
+  if (!spec.value) continue;
+  const given = argv[++i];
+  if (given === undefined) usage(`${token} needs a value (${spec.value}).`);
+  // A non-numeric `--pr` used to reach GitHub as `/pulls/NaN` and fail as a
+  // network error, which reports a broken gate for what is a typo at the shell.
+  if (!/^[0-9]+$/.test(given)) usage(`${token} needs a pull request number, got ${JSON.stringify(given)}.`);
+}
+
 const arg = (name) => {
   const i = argv.indexOf(name);
   return i >= 0 ? argv[i + 1] : null;

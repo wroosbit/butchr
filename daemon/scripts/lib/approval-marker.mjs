@@ -123,6 +123,51 @@ const AGENT = /^(epic|story|task|confluence)\/([A-Z][A-Z0-9]*-\d+)$/;
 // job as meaningful, which is the current confusion inverted. The job stays
 // meaningful; it is answering a narrower question, and saying which.
 
+import { realpathSync } from 'fs';
+
+// KAN-453: THIS FILE IS A LIBRARY, AND RUNNING IT SAYS SO RATHER THAN EXITING 0.
+//
+// The decision, and the argument for it, because the ticket asked for one and
+// "leave it" was an allowed answer. A pure module exiting 0 with no output when
+// executed directly is ordinary Node behaviour and not a bug — but this
+// repository reads merge governance off exit codes, and in that setting silence
+// plus 0 is *indistinguishable from a gate that ran and passed*. That is not a
+// hypothetical confusion: the sibling project's copy of this pair sits in one
+// directory, and `task/KAN-433` ran the library there believing it was the
+// check and nearly recorded a verified approval off the zero. Ours is one level
+// down under `lib/`, which makes the mistake less likely — but that is an
+// accident of layout rather than a design, and layout is not a mechanism.
+//
+// So the cost is four lines and the benefit is that the confusable outcome
+// stops existing. It costs importers nothing: the guard fires only when this
+// file is the process entry point, and `2` matches the usage code its entry
+// point uses, so "you ran the wrong file" and "you passed the wrong flag" read
+// the same to a shell.
+//
+// `realpathSync` on both sides rather than a string compare, so a symlinked
+// checkout does not defeat it; the `try` is because `argv[1]` is absent when
+// this module is loaded by something that is not a file (`node -e`, a REPL),
+// which is an import and not a direct run.
+const runDirectly = (() => {
+  try {
+    return process.argv[1] ? realpathSync(process.argv[1]) === realpathSync(import.meta.filename) : false;
+  } catch {
+    return false;
+  }
+})();
+
+if (runDirectly) {
+  console.error('approval-marker.mjs is a library, not a check — it judges nothing when run.');
+  console.error('');
+  console.error('You almost certainly want the gate itself, which takes `--pr`:');
+  console.error('  node daemon/scripts/check-approval-recorded.mjs --pr <n> --no-status');
+  console.error('');
+  console.error('Exiting 2 rather than 0 on purpose: a silent zero here is indistinguishable');
+  console.error('from a gate that ran and passed, and this repository reads approvals off exit');
+  console.error('codes. Nothing was checked. See KAN-453.');
+  process.exit(2);
+}
+
 /**
  * The exit-code policy, as one pure function, because it is the thing that must
  * not be quietly re-conflated. `check-approval-recorded.mjs` computes nothing

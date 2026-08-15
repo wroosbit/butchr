@@ -18,6 +18,16 @@
 // seconds before the real one arrived. §11 drives both of those comments,
 // byte-exact, and requires the gate to refuse the first and accept the second.
 //
+// AND SINCE KAN-453, ALSO: the gate reporting success from a run that judged
+// nothing because it did not understand its own arguments. `arg()` was
+// `argv.indexOf`, so any token that was not `--pr` was not rejected but unread,
+// and the run fell through to the "no pull request here" branch that a push
+// build legitimately takes. `--check 189` (the sibling project's spelling for the
+// same idea), a typo, and no arguments at all produced byte-identical output and
+// the same exit code — so in a recipe that says "merge if it exits 0", a
+// carried-across command was an approval nobody gave. §15 drives those exact
+// vectors and requires the first two to be refused and the third to be untouched.
+//
 // AND SINCE KAN-317, ALSO: the approval verdict leaking back into the job's own
 // exit code. That is the opposite failure and it is not a fail-open — the gate
 // refuses correctly and then cannot un-refuse, because a workflow run's
@@ -730,6 +740,157 @@ section(14, 'KAN-321: what was rejected, pinned so it is not silently adopted');
     !evaluate({ headSha: HEAD, headRef: REF, prBody: BODY, comments: [approval(OLD, 'epic/KAN-39')] }).ok);
   ok('property 3 survives: a real approval is still accepted',
     evaluate({ headSha: HEAD, headRef: REF, prBody: BODY, comments: [approval(HEAD, 'epic/KAN-39')] }).ok);
+}
+
+// ---------------------------------------------------------------------------
+section(15, 'KAN-453: an argument the gate does not recognise is a usage error, not a pass');
+{
+  // WHAT THIS SECTION PINS, AND WHY IT IS NOT "THE NO-PR BRANCH SHOULD FAIL".
+  // `arg()` in the entry point was `argv.indexOf`, so before KAN-453 a token
+  // that was not `--pr` was not rejected — it was never read. Every such run
+  // fell through to the "no pull request here" branch, which a push build takes
+  // legitimately and which correctly exits 0. The consequence was that
+  //
+  //     --check 189            (the sibling project spells the flag this way)
+  //     --utter-nonsense-flag 189
+  //     <no arguments at all>
+  //
+  // produced BYTE-IDENTICAL stdout and the same exit code. The script could not
+  // distinguish "I am in CI with no pull request to judge" from "somebody handed
+  // me arguments I do not understand", and only the first is benign.
+  //
+  // THE NO-EVENT CI PATH IS NOT THE DEFECT AND IS NOT CHANGED. The legs below
+  // marked CONTROL are the half that matters most: a fix that turned push builds
+  // red would be worse than the defect it removed. Nothing here touches
+  // `gateHealthy` either — "no question to answer" and "I could not answer the
+  // question" are deliberately different, and §9/§10 own that separation.
+  //
+  // WHAT THIS SUPPLIES ITSELF: the argument vectors, and the stub the `--pr`
+  // control is judged against. So it tests the DECISION — that argv is walked
+  // and an unknown token refused — and not that any real caller ever passes a
+  // foreign flag. The observation that one did is on KAN-453 (`task/KAN-433`
+  // carried `--check` across from CrabCast and read the 0 as a pass) and in the
+  // pull request body, which pastes the four arms run by hand before and after.
+  // No script covers the carry-across itself, and none can.
+  const state = { statuses: [] };
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    const send = (code, obj) => {
+      res.writeHead(code, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(obj));
+    };
+    if (req.method === 'GET' && url.pathname === '/repos/wroosbit/butchr/pulls/999')
+      return send(200, { number: 999, title: 'KAN-453 fixture', head: { sha: HEAD, ref: REF }, body: BODY });
+    if (req.method === 'GET' && url.pathname === '/repos/wroosbit/butchr/issues/999/comments')
+      return send(200, Number(url.searchParams.get('page')) === 1 ? [approval(HEAD, 'epic/KAN-39')] : []);
+    if (req.method === 'POST' && url.pathname.startsWith('/repos/wroosbit/butchr/statuses/')) {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      return req.on('end', () => {
+        state.statuses.push({ sha: url.pathname.split('/').pop(), ...JSON.parse(body) });
+        send(201, { id: 1 });
+      });
+    }
+    send(404, { message: `stub has no route for ${req.method} ${url.pathname}` });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  // THE ENVIRONMENT IS SCRUBBED, and that is load-bearing rather than hygiene:
+  // this file runs inside GitHub Actions, where `GITHUB_EVENT_NAME` is set. A
+  // leaked event would send the no-argument control down the `pull_request` leg
+  // and it would assert nothing about the push path it exists to protect.
+  const run = (...args) =>
+    new Promise((resolve) => {
+      const env = { ...process.env };
+      for (const k of Object.keys(env)) if (k.startsWith('GITHUB_')) delete env[k];
+      env.GITHUB_API_URL = base;
+      env.GITHUB_REPOSITORY = 'wroosbit/butchr';
+      const child = spawn(process.execPath, [path.join(here, 'check-approval-recorded.mjs'), ...args], { env });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => (stdout += d));
+      child.stderr.on('data', (d) => (stderr += d));
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
+    });
+
+  // --- the defect, in the exact spelling that produced it -------------------
+  const foreign = await run('--check', '189');
+  ok('a foreign flag is REFUSED rather than silently ignored', foreign.status === 2,
+    `exit ${foreign.status}\n${foreign.stdout}${foreign.stderr}`);
+  ok('...and the refusal names the argument it did not recognise',
+    foreign.stderr.includes('unrecognised argument') && foreign.stderr.includes('--check'), foreign.stderr);
+  ok('...and names `--pr`, so the correct spelling is discoverable from the failure',
+    foreign.stderr.includes('--pr'), foreign.stderr);
+  ok('...and judged nothing: no commit status was published',
+    state.statuses.length === 0, JSON.stringify(state.statuses));
+
+  const garbage = await run('--utter-nonsense-flag', '189');
+  ok('a garbage flag is refused', garbage.status === 2, `exit ${garbage.status}`);
+  const positional = await run('189');
+  ok('a bare positional argument is refused — argv is WALKED, not scanned',
+    positional.status === 2, `exit ${positional.status}\n${positional.stdout}`);
+  const noValue = await run('--pr');
+  ok('`--pr` with no value is refused rather than resolving to undefined',
+    noValue.status === 2, `exit ${noValue.status}`);
+  const notNumber = await run('--pr', 'banana');
+  ok('`--pr` with a non-numeric value is refused rather than fetching /pulls/NaN',
+    notNumber.status === 2, `exit ${notNumber.status}`);
+
+  // --- THE FINDING ITSELF: the three arms are no longer the same run --------
+  const bare = await run();
+  ok('CONTROL: no arguments and no event still exits 0 — the CI push path is UNCHANGED',
+    bare.status === 0, `exit ${bare.status}\n${bare.stdout}${bare.stderr}`);
+  ok('...and still says so in prose rather than exiting silently',
+    bare.stdout.includes('nothing to judge'), bare.stdout);
+  ok('THE FINDING: a foreign flag and no arguments are no longer byte-identical',
+    foreign.stdout + foreign.stderr !== bare.stdout + bare.stderr);
+  ok('...and they no longer share an exit code either',
+    foreign.status !== bare.status, `${foreign.status} vs ${bare.status}`);
+
+  // --- CONTROLS: every recognised argument still does what it did -----------
+  const explicit = await run('--pr', '999');
+  ok('CONTROL: `--pr <n>` still selects that pull request', explicit.stdout.includes('resolved:   --pr 999'),
+    explicit.stdout);
+  ok('CONTROL: `--pr <n>` still runs the gate to a verdict and publishes it',
+    explicit.status === 0 && state.statuses.at(-1)?.state === 'success' && state.statuses.at(-1)?.sha === HEAD,
+    `exit ${explicit.status} ${JSON.stringify(state.statuses.at(-1))}`);
+  const suppressed = await run('--pr', '999', '--no-status');
+  ok('CONTROL: `--no-status` is still accepted and still suppresses the status',
+    suppressed.status === 0 && suppressed.stdout.includes('suppressed: --no-status'), suppressed.stdout);
+  const onApproval = await run('--pr', '999', '--exit-on-approval');
+  ok('CONTROL: `--exit-on-approval` is still accepted', onApproval.status === 0, `exit ${onApproval.status}`);
+  const onHealth = await run('--pr', '999', '--no-status', '--exit-on-gate-health');
+  ok('CONTROL: `--exit-on-gate-health` is still accepted', onHealth.status === 0, `exit ${onHealth.status}`);
+
+  server.close();
+
+  // --- ARM 1: the library, executed rather than imported --------------------
+  // A pure module exiting 0 with no output is ordinary Node behaviour, and in
+  // most repositories it would be left alone. It is refused here because a
+  // silent 0 is indistinguishable from a gate that ran and passed, and this
+  // repository reads merge governance off exit codes — `task/KAN-433` ran the
+  // sibling project's copy of this library believing it was the check.
+  const lib = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(here, 'lib', 'approval-marker.mjs'), '--check', '189']);
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+  ok('the library refuses to be run as a check rather than exiting 0 in silence',
+    lib.status === 2, `exit ${lib.status}\n${lib.stdout}${lib.stderr}`);
+  ok('...and says it is a library, and points at the entry point that takes `--pr`',
+    lib.stderr.includes('is a library') && lib.stderr.includes('check-approval-recorded.mjs'), lib.stderr);
+  ok('...and it stays silent on stdout, so nothing reads as a verdict', lib.stdout === '', lib.stdout);
+
+  // The guard must fire on a direct run and NOT on an import. This file is the
+  // proof of the second half: every assertion above this one used `evaluate`,
+  // `parseMarkers` and `exitCodeFor` imported from that same module, so if the
+  // guard fired on import this script could never have reached this line.
+  ok('...and importing the library does NOT fire the guard — this file is that proof',
+    typeof evaluate === 'function' && typeof exitCodeFor === 'function');
 }
 
 // ---------------------------------------------------------------------------
