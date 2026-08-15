@@ -258,6 +258,32 @@ if (fitted.completeness.kind === 'clipped') {
   }
 }
 
+// A summarised row must stay JOINABLE and stay TRUE ABOUT PARENTAGE.
+// `verify-activation-records-real-parentage.mjs` calls this tool over MCP and
+// matches rows on `agentName` to read `activatedBy` off them. It passes today
+// because its isolated fleet is small enough that no row is summarised — which
+// is the fixture's size saving it, not the design. A digest that dropped either
+// field would turn that lookup into `undefined` the day a real fleet grew, and
+// `activatedBy` going quietly missing is KAN-145 rebuilt inside KAN-423's fix.
+if (reparsed?.agentsView === 'summarised') {
+  const rows = reparsed.agents;
+  check(
+    'a summarised row keeps `agentName`, the key other scripts join on',
+    rows.every((r) => typeof r.agentName === 'string' && r.agentName.length > 0),
+    JSON.stringify(rows[0])
+  );
+  check(
+    'a summarised row keeps `activatedBy`, which is the org chart',
+    rows.every((r) => 'activatedBy' in r),
+    JSON.stringify(rows[0])
+  );
+  check(
+    'and it says it is short, at the row rather than only in the verdict',
+    rows.every((r) => r.rowSummarised === true),
+    JSON.stringify(rows[0])
+  );
+}
+
 check(
   'a reduced field leaves a stub saying so, rather than vanishing',
   fitted.completeness.kind === 'clipped' &&

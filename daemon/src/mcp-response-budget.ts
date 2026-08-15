@@ -215,21 +215,39 @@ export const NEVER_CLIPPED: readonly string[] = [
 
 type AgentRow = Record<string, unknown>;
 
-/** An agent reduced to what identifies it and what it is doing. */
+/**
+ * An agent reduced to what identifies it and what it is doing.
+ *
+ * WHAT IS KEPT IS NOT A JUDGEMENT ABOUT INTERESTINGNESS — it is what other
+ * code joins on and decides with. `agentName` stays because it is the join key
+ * (`verify-activation-records-real-parentage.mjs` matches rows on it, and a
+ * digest without it would turn that script's lookup into `undefined` on a fleet
+ * large enough to summarise). `activatedBy` stays because it is the org chart,
+ * and it is the exact field KAN-145 was about — dropping it here to save 70
+ * characters would rebuild that defect inside the fix for a different one.
+ *
+ * What goes is prose and provenance: `channel.detail` is ~380 characters of
+ * sentence and roughly 40% of a full row on its own, and `sessionId`,
+ * `workDir`, `url` and `createdAt` are all recoverable from
+ * `butchr_agent_status` for the one agent a caller cares about.
+ */
 function digestAgent(row: AgentRow): Record<string, unknown> {
   const channel = row.channel as Record<string, unknown> | undefined | null;
   return {
+    agentName: row.agentName ?? null,
     type: row.type ?? null,
     key: row.key ?? null,
     herdrStatus: row.herdrStatus ?? null,
     status: row.status ?? null,
     sessionless: row.sessionless ?? null,
     supervisor: row.supervisor ?? null,
+    activatedBy: row.activatedBy ?? null,
     transport: channel && typeof channel === 'object' ? (channel.transport ?? null) : null,
     // Says plainly that this row is short, at the row rather than only in the
     // completeness block. A reader that reached for `channel.detail` and found
     // nothing must not have to infer why.
-    rowSummarised: true
+    rowSummarised: true,
+    readTheRow: 'butchr_agent_status'
   };
 }
 
