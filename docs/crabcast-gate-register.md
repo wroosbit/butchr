@@ -1,3 +1,7 @@
+<!-- constant-pin: CRABCAST_PIN
+     src: daemon/src/crabcast-link.ts
+     sha256: 8b5c3f4072d9
+     says: **CrabCast pin at the time of this ruling:** `8d7348fa98201b61642d2454b3a797373361128a` -->
 <!-- constant-pin-exempt: RUNTIME_ENV_VAR — every mention of BUTCHR_AGENT_RUNTIME in
      this file is inside the VERBATIM ARCHIVE below, which is a byte-identical snapshot
      of KAN-348's description and must not be edited. A pin here would assert a present
@@ -320,10 +324,21 @@ by destroying the evidence first.
 peer checkout, having first asserted its tree is clean, its HEAD is at or after
 `CRABCAST_PIN`, its `dist` is not stale, and that `src/provisioning.ts` is
 **unchanged between the pin and that HEAD**. So the red it produces is the
-production refusal firing. ⚠ **Its first draft asserted `HEAD === CRABCAST_PIN`
-and went red on a perfectly valid peer** — the pin is `8d7348f` and the checkout
-is its descendant `9d4d999`, the commit this register already cites for gate 3.
-The question that matters is whether the *file under test* moved, and it has not.
+production refusal firing.
+
+**CrabCast pin at the time of this ruling:** `8d7348fa98201b61642d2454b3a797373361128a`
+
+⚠ **The proof's first draft asserted `HEAD === CRABCAST_PIN` and went red on a
+perfectly valid peer** — the checkout is at `9d4d999`, a *descendant* of the pin
+above and the commit this register already cites for gate 3. The question that
+matters is whether the **file under test** moved between the two, and it has not:
+zero commits touch `src/provisioning.ts` in that range. ⚠ **Note the two are not
+the same commit, and no ticket owns the gap** — `docs/crabcast-runtime.md` and
+the gate-3 live proof both cite `9d4d999` as the peer they were proved against,
+while `CRABCAST_PIN` — the value `runtime-switch.ts` prints to an operator — is
+its ancestor. Nothing is broken by that today. It is recorded here because the
+pin block above will now go red the moment the constant moves, and whoever
+repairs it should know the docs and the constant have already diverged once.
 
 ⚠ **WHAT THIS DOES NOT CLOSE.** The gate's ruling above is untouched: this was
 observed only because the fleet was flipped, and whether the refusals **stop** can
