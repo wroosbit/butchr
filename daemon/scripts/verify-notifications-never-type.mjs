@@ -106,6 +106,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { sweepTree, readSwept } from './lib/sweep-sources.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -171,11 +172,26 @@ const ALLOWED_COMPOSER_SITES = [
   }
 ];
 
-/** Every `.ts` under daemon/src, read once. */
-const sources = fs
-  .readdirSync(srcDir)
-  .filter((f) => f.endsWith('.ts'))
-  .map((f) => ({ file: f, text: fs.readFileSync(path.join(srcDir, f), 'utf8') }));
+/**
+ * Every `.ts` under daemon/src, RECURSIVELY, read once.
+ *
+ * **This was `fs.readdirSync(srcDir)` until KAN-465, and it enumerated 58 files
+ * where `daemon/src` holds 62.** The four in `integrations/` — `integration`,
+ * `enablement`, `launchdarkly`, `atlassian-integration` — were outside every
+ * assertion below for as long as that directory has existed. That is worth
+ * stating plainly because of WHICH assertions they are: this file is the check
+ * that no daemon notification path types into a pane, and a composer send
+ * presses Enter on whatever the recipient's composer already holds, submitting
+ * it as one indistinguishable human turn. **So the guard against the composer
+ * hazard was being applied to 58 of the 62 files that could reintroduce it**,
+ * and the allowlist below described a population it had never fully read.
+ *
+ * Nothing in `integrations/` reaches the composer today — measured on KAN-465,
+ * `sendToAgent` and `deliverToAgent` appear in none of the four — so widening
+ * the sweep changes no verdict on this build. It changes what a verdict MEANS.
+ */
+const sweep = sweepTree(srcDir, { label: 'daemon/src' });
+const sources = sweep.files.map((f) => ({ file: f, text: readSwept(srcDir, f) }));
 
 /**
  * Which function a source offset falls inside.
@@ -374,6 +390,15 @@ const githubSrc = sources.find((s) => s.file === 'github.ts')?.text ?? '';
 
 const checks = [
   {
+    // FIRST, because every assertion under it is a claim about a population,
+    // and this is the only one that says the population was actually read. A
+    // bare count cannot be checked by a reader — 58 looked exactly like an
+    // answer — so the sweep is asked to prove its reach against a second,
+    // independently written recursive walk rather than to be believed.
+    label: `the sweep reached every source file — ${sweep.coverage}`,
+    ok: sweep.reachedEverything
+  },
+  {
     label: 'jira-poll.ts no longer imports deliverToAgent',
     ok: !/import\s*\{[^}]*\bdeliverToAgent\b[^}]*\}\s*from\s*'\.\/nudge\.js'/.test(pollSrc)
   },
@@ -439,7 +464,10 @@ verdict(
     'wires the channel carrier into every one of them, flushes what it holds, and reports both ' +
     'what it could not deliver and whether it can still see GitHub.',
   'a producer still defaults to the composer, or the daemon does not wire the channel carrier ' +
-    'into all three — the seam exists and production does not use it, which is the KAN-145 shape.'
+    'into all three — the seam exists and production does not use it, which is the KAN-145 shape. ' +
+    'If the FIRST row is the one that failed, read it differently: the assertions below it did ' +
+    'run, but over a smaller population than daemon/src holds, so their greens are claims about ' +
+    'a subset and not about the daemon (KAN-465).'
 );
 
 if (STATIC_ONLY) {

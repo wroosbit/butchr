@@ -77,6 +77,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { sweepTree } from './lib/sweep-sources.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -142,12 +143,28 @@ check(
 // Deliberately broader than "the ones reaching routeChannelMessage": a meta
 // literal that is not a channel meta today is one call site away from being one,
 // and this is cheap.
-const metaLiterals = [...fs.readdirSync(srcDir)]
-  .filter((f) => f.endsWith('.ts'))
-  .flatMap((file) => {
-    const text = readSource(file);
-    return [...text.matchAll(/meta:\s*\{([^{}]*)\}/gs)].map((m) => ({ file, body: m[1] }));
-  });
+//
+// SWEPT RECURSIVELY SINCE KAN-465, and it was not before. `fs.readdirSync(srcDir)`
+// stood here and enumerated 58 files where `daemon/src` holds 62 — the four in
+// `integrations/` were outside 1c for as long as that directory has existed, so
+// a `meta: { probe: true }` written there would have shipped past this check
+// while it printed a plausible number and passed.
+const sweep = sweepTree(srcDir, { label: 'daemon/src' });
+console.log(`  ${sweep.coverage}\n`);
+
+check(
+  '1s  the sweep behind 1c REACHES every source file, not just the top level',
+  sweep.reachedEverything,
+  `${sweep.detail}. The count above is not checkable by a reader, so the sweep proves its own ` +
+    'reach against a second, independently written recursive walk instead of asking to be ' +
+    'believed. A flat enumeration is how four files sat outside this check unnoticed.',
+  sweep.detail
+);
+
+const metaLiterals = sweep.files.flatMap((file) => {
+  const text = readSource(file);
+  return [...text.matchAll(/meta:\s*\{([^{}]*)\}/gs)].map((m) => ({ file, body: m[1] }));
+});
 
 // The trailing `(?:\s+as\s+\w+)?` is not defensive padding — this scanner was
 // written without it and the red drive caught it: `guardianPoke: true as any`
