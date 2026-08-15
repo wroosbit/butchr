@@ -40,12 +40,20 @@ are re-read there rather than trusted.
 
 ## 1. Read this first: the one thing that cannot be undone
 
-**Activating an agent under CrabCast starts it FRESH.** There is no `--continue`
-on that path. A live agent whose work moves to the new runtime does not resume
-its conversation; it loses it. For a task agent that is lost context. For a
+**At the flip, activating an agent under CrabCast starts it FRESH.** There is no
+`--continue` on that path; Butchr sends no resume and cannot ask for one; and
+CrabCast has never run a workspace on this machine, so its own durable record
+holds no entry for a single one of them and **every live agent cold-starts.** A
+live agent whose work moves to the new runtime does not resume its conversation;
+it loses it. For a task agent that is lost context. For a
 long-lived supervisor it is the entire accumulated state of an epic — on
 2026-08-13 `epic/KAN-39`'s workspace held exactly one transcript, of 3.7 MB,
 still being appended to after four days.
+
+**That cost is paid once per workspace, not once per activation.** The three
+words *"at the flip"* opening this section are load-bearing and are the only
+thing that changed about the warning: see *The cost is one cold start per
+workspace* below, which refines it without retracting any of it.
 
 **Rollback restores the runtime. It does not restore conversations.**
 `BUTCHR_AGENT_RUNTIME` can be set back to unset and the daemon restarted, and
@@ -54,13 +62,72 @@ sequence brings back a conversation that was started fresh. **Rollback means
 *new agents go back to herdr*, and it does not mean *undo*.** Do not plan around
 a rollback that does not exist.
 
+### The cost is one cold start per workspace — not a permanent loss of resumability
+
+**This refines the warning above. It retracts none of it.** Everything in the two
+paragraphs above still holds and is still why the flip is a one-way door.
+
+**What was wrong, and whose it was.** [KAN-396](https://wroosbit.atlassian.net/browse/KAN-396)'s
+own description — and the table row this section used to carry — said that the
+flip costs *"a permanent loss of resumability across the whole fleet"*: that
+every CrabCast activation, forever, cold-starts. **That sentence was
+`epic/KAN-39`'s and it was false.** It is recorded here rather than quietly
+corrected because a reader who met the old framing elsewhere needs to know which
+of the two to believe.
+
+**What was measured.** `task/KAN-396`, 2026-08-14, live against peer
+`9d4d999cbac6`, **two independent instruments agreeing, with a discriminating red
+arm**: a second activation at a path CrabCast has run before **resumes the first
+activation's conversation.** The wire reports it
+(`activate_response.resumedExistingConversation: true`, read over a second
+connection) and the disk agrees independently — activation 2's turn lands in
+**activation 1's own conversation file**, with no new file opened. File identity
+is the signal precisely because no prompt can forge it. Reproduce with
+`daemon/scripts/verify-crabcast-second-activation-resumes.mjs`.
+
+**This is published contract, not an inference.**
+`resumedExistingConversation` is a documented field of `activate_response`,
+described by CrabCast as *"the resume rule, reported rather than merely
+obeyed"*, and `activate_response` has been a **covered** surface of their
+read-path contract **since version 5** (their KAN-287).
+
+<!-- constant-pin: CRABCAST_CONTRACT_VERSION
+     src: daemon/src/crabcast-link.ts
+     sha256: 89dabf375257
+     says: **We consume version** `8`**, so a covered field cannot change shape without moving the version.** -->
+
+**We consume version** `8`**, so a covered field cannot change shape without moving the version.**
+That is what makes the resume behaviour above a contract rather than an
+observation that happened to hold on the day.
+**No CrabCast source was read for any of this** — invariant 10 is permanent, and
+the contract is their published document.
+
+**So the two facts sit side by side, and neither cancels the other:**
+
+* **At the flip**, a workspace's history is *herdr* history. CrabCast's record
+  has no entry for it, it starts fresh, and **the pre-flip conversation is
+  lost.** That is the warning above, and it stands unweakened.
+* **After that**, the workspace has *CrabCast* history, and its next activation
+  resumes.
+
+**Cutover cost: one cold start per workspace, paid once, at that workspace's
+first CrabCast activation.** Multiply by workspaces activated — never by
+activations.
+
+⚠ **And a resumed agent is not automatically a working agent.** That is
+[gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one), below, and it
+is the reason this correction is a cutover matter rather than a footnote.
+
 ### The mechanism, so the claim can be checked rather than believed
 
 | | herdr | CrabCast |
 | --- | --- | --- |
 | how a launcher starts | `bash -c "claude --continue \|\| claude …"` (`daemon/src/herdr.ts`) | CrabCast's own launch, from `configure_agent`'s `launcher` field |
-| what carries the resume | `spawnSession` reads `hasRestorableConversation(workDir)` and picks the framing (`daemon/src/herdr.ts`) | nothing. `resume` is stored on the local session object in `daemon/src/crabcast-runtime.ts` and **is never sent**: `provision()` sends `path`, `priority`, `launcher`, `prompt` and `mcpServers`, and no other field |
-| result for a workspace with history | the conversation comes back | a new conversation starts in the same directory |
+| what Butchr **sends** to ask for a resume | `spawnSession` reads `hasRestorableConversation(workDir)` and picks the framing (`daemon/src/herdr.ts`) | **nothing, and it cannot ask.** `resume` is stored on the local session object in `daemon/src/crabcast-runtime.ts` and **is never sent**: `provision()` sends `path`, `priority`, `launcher`, `prompt` and `mcpServers`, and no other field |
+| what **decides** whether a conversation comes back | Butchr, from the directory it is about to launch in | **CrabCast, off its own durable record, with nobody asking.** It reports the decision on `activate_response.resumedExistingConversation` — published contract, covered since v5 |
+| result at a workspace's **first** CrabCast activation | the conversation comes back | **a new conversation starts in the same directory.** CrabCast holds no record of a path it has never run, so there is nothing for its resume rule to find |
+| result at **every activation after that** | the conversation comes back | **the conversation comes back** — measured, two instruments, KAN-396 |
+| who learns that a resume happened | `spawnSession` sets `resumedConversation` on the session (`daemon/src/herdr.ts`) | **nobody on this side.** `provision()` reads `sessionId` and `channelEnabled` off `activate_response` and **drops `resumedExistingConversation` on the floor** — [gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one) |
 
 **The transcript file is not deleted, and that is not a reprieve.**
 `claude --continue` is documented by the CLI as *"Continue the most recent
@@ -70,6 +137,46 @@ longer what any automatic path reaches. A human at a terminal can still ask for
 it by id with `claude --resume`; **Butchr has no path that does**, and nothing
 re-attaches such a session to an agent record. See *Open questions*, U-2: whether
 that hand recovery actually produces a working agent has not been measured.
+
+### Gate 10: a resumed agent is recorded as a working one
+
+**This is the reason the section above is a cutover matter and not a footnote.**
+A reader of the old wording concluded *"agents always start fresh under
+CrabCast"*, and from that it follows that a resumed-agent problem cannot arise.
+**That conclusion is a cutover blocker, and it is
+[KAN-432](https://wroosbit.atlassian.net/browse/KAN-432) — gate 10 on
+[KAN-348](https://wroosbit.atlassian.net/browse/KAN-348).**
+
+**The mechanism, in three lines of this repository:**
+
+1. `provision()` in `daemon/src/crabcast-runtime.ts` reads `sessionId` and
+   `channelEnabled` off `activate_response` and **never reads
+   `resumedExistingConversation`.** The field is on the wire; nothing here
+   consumes it.
+2. `resumedConversation` is therefore set on a session by **herdr only**
+   (`daemon/src/herdr.ts`, from `hasRestorableConversation`). Under CrabCast it
+   is `undefined`.
+3. `daemon/src/reconcile.ts` reads `response.resumedConversation === true`, so
+   `undefined === true` is `false`, and the nudge guarded by it never fires.
+
+**What that costs, in `reconcile.ts`'s own words** — the comment on the branch
+that does not run names the incident it exists to prevent:
+
+> An agent whose conversation came back has all of its memory and no turn to
+> take: Claude Code resumes at an empty prompt and waits, which is precisely how
+> two agents sat idle on the day this ticket was filed until a human retyped
+> their instructions.
+
+**So under CrabCast a resumed agent is silently idle and is recorded as
+working.** It has a `sessionId`, it is in the census, it answers a tail — and it
+will sit at an empty prompt indefinitely. **Every check in step 9 below passes
+for it.**
+
+**This document does not fix that** — KAN-432 does, and carrying the field across
+the seam is deliberately not in scope here. What this document owes its reader is
+that the failure is **visible to somebody walking the sequence on the day**, which
+is why it is a precondition in §4 and a check in steps 10 and R4 rather than
+prose alone.
 
 ---
 
@@ -219,10 +326,45 @@ that decides whether anybody is left to read the check.
 These hold before the sequence starts. They are conditions, not actions, and none
 of them is checked by anything automatic.
 
-- **The four open gates are closed.** KAN-379 (gate 2, the `claude` launcher
+- **The open gates are closed.** KAN-379 (gate 2, the `claude` launcher
   path), KAN-380 (gate 4, workspace deletion), KAN-381 (gate 5, reconnect
-  resync), and gate 3, which is CrabCast's leg and has no Butchr ticket. Read
+  resync), **KAN-432 (gate 10, the dropped resume signal — see below)**, and
+  gate 3, which is CrabCast's leg and has no Butchr ticket. Read
   KAN-348 for their current state; do not read this list as their status.
+- ⚠ **Gate 10 specifically, because it is the one whose failure looks like
+  success.** Until `provision()` carries `resumedExistingConversation` through to
+  the `resumedConversation` that `daemon/src/reconcile.ts` branches on, **a
+  resumed agent is nudged by nothing and is recorded as working.** See
+  [Gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one). This
+  precondition is **not** satisfied by reading that the gate exists; it is
+  satisfied by KAN-432 having landed, or by the paragraph below being accepted in
+  writing on the cutover's ticket.
+
+  **What an unresolved gate 10 means for step order, because that is a real
+  question and not a formality.** It does **not** move the flip, and it does not
+  reorder steps 1–9: gate 10 cannot fire before a workspace's *second* CrabCast
+  activation, and at step 9 every workspace on the machine has had at most one.
+  **What it changes is everything from step 10 onward.** Concretely, while gate
+  10 is open:
+
+  1. **Step 10's stagger stops being a courtesy and becomes the check.** Agents
+     must be brought back **one at a time**, each confirmed to be *taking a
+     turn* and not merely present, because the census cannot tell those apart.
+  2. **No daemon restart may be treated as routine.** A restart runs
+     `reconcileAgents` over the whole expected fleet, every one of which now has
+     CrabCast history — so a restart is the event that converts the entire fleet
+     to silently-idle in one step. Under an open gate 10, plan a restart as a
+     drain-and-restore with step 10's per-agent check, not as a restart.
+  3. **Rollback step R4 does NOT carry this burden, and saying so precisely
+     matters.** Gate 10 is a defect on the *CrabCast* path only: herdr's
+     `spawnSession` sets `resumedConversation` from
+     `hasRestorableConversation(workDir)`, so after a rollback `reconcile.ts`
+     branches correctly and **does** nudge. What R4 carries instead is a
+     different correction, and it is in that step.
+
+  **If that is accepted rather than fixed, write the acceptance on the cutover's
+  ticket with a named owner for the manual nudging.** An accepted cost with
+  nobody holding it is an unaccepted cost.
 - **Closing a gate is not clearing the way.** The first flip, at 10:58Z on
   2026-08-12, was made on six preconditions that were *all genuinely met*. They
   asked whether the runtime connects. The gates ask whether it can do the job.
@@ -433,8 +575,11 @@ restores a conversation.
 
 - **Precondition:** every step above checked, and re-read at this moment rather
   than remembered from earlier in the day. Specifically: the registry expects
-  nobody, no Butchr pane is alive, the board is not converging, and the driver is
-  not an agent this daemon manages.
+  nobody, no Butchr pane is alive, the board is not converging, the driver is
+  not an agent this daemon manages, and **gate 10 is closed or its consequence is
+  accepted in writing with a named owner** (§4). Gate 10 does not block *this*
+  step — it blocks treating step 10 and every later restart as routine, and this
+  is the last moment at which that is cheap to decide.
 - **Action:** set the variable and restart the daemon.
   ```bash
   mkdir -p ~/.config/systemd/user/butchr-daemon.service.d
@@ -475,8 +620,12 @@ restores a conversation.
   - the extension renders its terminal. **This one check runs through an
     uncontracted surface, and KAN-393 added this sentence because the list did
     not say so.** Rendering is `pty_init` plus the `pty_output` frames behind it,
-    and the `pty_*` group is outside `contractVersion: 8` exactly as
-    `activate_response` is — CrabCast may reshape it without moving the version.
+    and the `pty_*` group is outside `contractVersion: 8` — CrabCast may reshape
+    it without moving the version. (**`activate_response` used to be named here
+    as the same kind of surface, and that is no longer true: it has been a
+    *covered* surface since contract v5, their KAN-287.**
+    `docs/crabcast-runtime.md` still says otherwise and is stale on the point —
+    see U-6.)
     So a failure here is ambiguous in a way the other checks are not: it is
     either the cutover going wrong or the peer having moved a surface that
     carries no notice promise, and **`daemon_status.build.commit` against
@@ -487,16 +636,33 @@ restores a conversation.
   directory.
 - **Who:** the driver.
 
+⚠ **A green step 9 says nothing about gate 10, and this is the step at which that
+is easiest to miss.** The canary is at its workspace's *first* CrabCast
+activation, so it cold-starts, so its prompt goes in on the command line and it
+is genuinely working. **Every check above passes for it — and would pass equally
+for a resumed agent sitting at an empty prompt.** Gate 10 cannot fire before a
+second activation. Do not read this step's green as covering it.
+
 ### Step 10 — One supervisor, then the rest
 
 - **Precondition:** step 9 fully checked, not partially.
 - **Action:** activate one supervisor and run step 9's checklist against it.
-  Then bring the remaining agents back, staggered rather than all at once.
+  Then bring the remaining agents back, staggered rather than all at once. **While
+  gate 10 is open the stagger is one at a time**, and §4 says why.
 - **Check:** step 9's list, per agent. Plus: capacity is not exhausted, and the
-  machine's load is not what a mass restore made it.
+  machine's load is not what a mass restore made it. **Plus, per agent, the one
+  step 9 could not cover: that it is TAKING A TURN and not merely present.**
+  Read the pane — `butchr_tail_agent`, socket `tail_agent`, or
+  `probe-cutover-readiness.mjs` — and require output the agent produced *after*
+  activation. A bare prompt with no turn in flight is the
+  [gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one) signature: it
+  is **indistinguishable in the census** from an agent working normally, and it
+  is what a resumed, un-nudged agent looks like. If you see it, prompt the agent
+  by hand and record that you had to.
 - **Abort:** the same list. A supervisor that starts and cannot reach its tools
   looks alive and is useless, and it is the population that has no conversation
-  left to fall back on.
+  left to fall back on. **Also abort if an agent cannot be got to take a turn
+  even by hand** — that is not gate 10, and it is worse.
 - **Who:** the driver.
 
 ### Step 11 — Restore normal operation, last
@@ -556,10 +722,17 @@ this order for the same reason the flip has an order.
 
 - **Precondition:** R3 checked.
 - **Action:** re-activate the agents that should be running.
-- **Check:** each comes back, and **each is told it is starting fresh.** An agent
-  whose conversation ended at step 8 has its ticket and nothing else; a resumed
-  agent that believes it remembers something it does not is worse than one that
-  knows it is new.
+- **Check:** each comes back, and **each is told which of the two it is** — and
+  after a rollback that has run agents under CrabCast, they are not all the same.
+  An agent whose conversation ended at step 8 and never ran under CrabCast has
+  its ticket and nothing else: **tell it it is starting fresh**, because a
+  resumed agent that believes it remembers something it does not is worse than
+  one that knows it is new. **An agent that DID run under CrabCast is resuming a
+  CrabCast-era conversation**, not starting fresh — `claude --continue` reaches
+  the most recent conversation in the directory, which is now that one. Telling
+  it it is fresh is then the false half. herdr sets `resumedConversation` for it
+  and `reconcile.ts` nudges it, so it will take a turn; what it needs is to be
+  told **where its memory came from**, not to be told it has none.
 - **Abort:** duplicate panes for one workspace directory.
 - **Who:** the driver.
 
@@ -582,7 +755,15 @@ Stop and do not proceed if any of these is observed at any point:
    failure mode the first flip's preconditions could not see.
 6. **`url` or `sessionId` null on an agent CrabCast started.** That is the
    10:58Z symptom, and gate 6 is supposed to have closed it.
-7. **Anything this document does not predict.** The sequence is only as good as
+7. **An agent that is in the census and has taken no turn.** It has a
+   `sessionId`, it tails, it answers — and it has done nothing since activation.
+   **Every other condition on this list is blind to it**, which is why it is
+   here. While gate 10 is open this is the *expected* shape of a resumed agent,
+   so it is not by itself evidence that the cutover is going wrong; it is
+   evidence that nothing is driving that agent. Stop bringing more agents back,
+   prompt it by hand, and record it. See
+   [Gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one).
+8. **Anything this document does not predict.** The sequence is only as good as
    its stated mechanism; an unpredicted observation means the mechanism is wrong,
    and the correct move is to stop and correct the document.
 
@@ -627,6 +808,36 @@ expected fleet fresh instead of leaving it alone. **This sequence does not rely
 on it** — draining first makes the expected set empty, which is why draining is
 required rather than tidy — but anybody tempted to skip the drain is relying on
 it without knowing. **Owner:** whoever proposes skipping the drain.
+
+**U-5 — the resume was measured on a DIRECT activation, and the cutover's real
+path is the RECONCILER.** `task/KAN-396` disclosed this itself rather than
+leaving it to be found: its probe drove `configure_agent` + `activate_agent`
+against the socket directly, and what actually runs at a cutover — and at every
+daemon restart after it — is `reconcileAgents` restoring the expected fleet.
+Whether the resume behaves the same way down that path is **unmeasured, and
+nothing can measure it before the flip**: the reconciler restores agents this
+daemon manages, and running it under CrabCast at fleet scale *is* the cutover.
+This is the gap that makes step 10's per-agent check a check rather than a
+formality — it is the first observation of the reconciler path anybody will ever
+have. **Owner:** unassigned; the driver observes it at step 10 whether or not
+anybody owns it.
+
+**U-6 — `docs/crabcast-runtime.md` is stale about what the contract covers, and
+this document contradicts it deliberately.** That page's *What the contract does
+not hold* section says `contractVersion: 8` *"does not cover `activate_response`,
+and CrabCast disclosed that themselves — their KAN-287 is the ticket to bring it
+in."* **KAN-287 landed: `activate_response` has been covered since contract
+version 5**, per CrabCast's published read-path contract §8 and §10. Two
+consequences that page states as facts are therefore also stale — that
+`channelEnabled` *"can change without moving the version"*, and that only
+`verify-crabcast-runtime-live.mjs` §4b could notice if it did. **Note the shape
+of how this survived:** the section is constant-pinned to
+`CRABCAST_CONTRACT_VERSION`, the constant is still `8`, so the pin is green and
+the sentence is false. A pin catches a constant moving; it cannot catch the
+world moving underneath a constant that stayed put. **Owner:** filed as
+[KAN-438](https://wroosbit.atlassian.net/browse/KAN-438), linked `Relates` to
+KAN-434. Corrected here only where this document repeated it (step 9); the other
+page is not this ticket's to edit.
 
 ---
 
