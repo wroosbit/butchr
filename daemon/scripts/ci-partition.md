@@ -41,10 +41,10 @@ classification is the deliverable and the CI job is downstream of it.
 | `yes` | 90 |
 | `partial` | 10 |
 | `quarantined` | 3 |
-| `no` | 19 |
-| **total** | **122** |
+| `no` | 20 |
+| **total** | **123** |
 
-**100 of 122** run on every pull request.
+**100 of 123** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -174,6 +174,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-brief-reachable-live` | no | it needs a live CrabCast daemon on a Unix socket, room in that daemon's capacity gate for one more agent, and it starts a real `claude` process that spends real tokens. `verify-brief-location.mjs` is the offline half of the same claim and does run in CI. |
 | `verify-crabcast-claude-launcher-live` | no | needs a real CrabCast daemon, real capacity for one more agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-crabcast-confirm-present-name-join` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET` (or the default socket path) and it spawns a real `claude` agent. It attempts nothing without one. Its output goes on the pull request. |
+| `verify-crabcast-peer-restart-live` | no | needs the `crabcast` binary, a real herdr and a real pty. It asserts nothing without them. |
 | `verify-crabcast-reconnect-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`, a real herdr and a real pty; it attempts nothing without one. |
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-crabcast-second-activation-resumes` | no | needs a real CrabCast daemon, real capacity for one agent, and it starts a real `claude` process that spends real tokens. |

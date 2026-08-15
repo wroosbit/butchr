@@ -254,6 +254,34 @@ export type LinkStateEvent =
       errno: string | null;
     };
 
+/**
+ * What the handshake on a new connection can say about **which peer answered**
+ * (KAN-403).
+ *
+ * A closed vocabulary rather than a boolean, because there are four answers and
+ * two of them are kinds of *not knowing* — and the two differ in a way a reader
+ * acts on. `unknown` is a peer that publishes no `bootId` at all, which is a
+ * real state rather than a hypothetical: `bootId` is outside CrabCast's
+ * read-path contract, so a build may simply not carry it.
+ * `first-connection` is a peer that published one and had nothing to be
+ * compared against. Folding either into `false` would say *"the peer did not
+ * restart"* on the strength of never having looked, which is the collapse
+ * {@link readChannelEnabled} exists to prevent one field over.
+ *
+ * **`restarted` is the only value that licenses acting**, and what it licenses
+ * is disclosure rather than repair — see `CrabCastRuntime`'s reconnect resync
+ * for why the repair deliberately does not key on this.
+ */
+export type PeerIdentity =
+  /** `bootId` moved between this connection and the previous one. */
+  | 'restarted'
+  /** `bootId` is the same one the previous connection read. */
+  | 'same-peer'
+  /** A `bootId` was read, and there was no earlier one to compare it against. */
+  | 'first-connection'
+  /** No `bootId` was read at all — the peer publishes none, or the handshake failed. */
+  | 'unknown';
+
 export interface CrabCastLinkOptions {
   socketPath: string;
   /** Per-request ceiling, so a wedged CrabCast cannot hang this daemon. */
@@ -306,6 +334,37 @@ export class CrabCastLink {
    */
   private peerContractVersion: number | null = null;
 
+  /**
+   * `daemon_status.bootId` for the connection currently held. Null until read.
+   *
+   * **This is the identifier that actually moves when a peer restarts, and it
+   * was the one this link did not read** (KAN-403). Measured against a real
+   * restart of a real CrabCast: `bootId` moved, `build.commit` and
+   * `contractVersion` did not — the peer was the same installed binary, which is
+   * what a redeploy of an unchanged build looks like and what every restart
+   * looks like to the two identifiers the handshake read before this ticket.
+   */
+  private peerBootId: string | null = null;
+
+  /** The `bootId` the PREVIOUS connection read, or null if there was none. */
+  private previousPeerBootId: string | null = null;
+
+  private peerIdentityVerdict: PeerIdentity = 'unknown';
+
+  /**
+   * Settles when the current connection's handshake has finished, whichever way
+   * it went.
+   *
+   * **This exists so that a consumer can wait for the identity without the
+   * `connected` event having to.** That event is emitted before the handshake
+   * deliberately (see {@link connect}), so anything reading
+   * {@link observedPeerIdentity} straight off it would race a round trip and
+   * read the *previous* connection's verdict — which is the reassuring answer,
+   * `same-peer`, exactly when it is wrong.
+   */
+  private handshakeSettled: Promise<PeerIdentity> = Promise.resolve('unknown');
+  private settleHandshake: (verdict: PeerIdentity) => void = () => {};
+
   readonly socketPath: string;
   private readonly requestTimeoutMs: number;
   private readonly reconnectDelayMs: number;
@@ -328,6 +387,34 @@ export class CrabCastLink {
 
   get observedContractVersion(): number | null {
     return this.peerContractVersion;
+  }
+
+  get observedPeerBootId(): string | null {
+    return this.peerBootId;
+  }
+
+  /**
+   * What the last completed handshake concluded about which peer answered.
+   *
+   * **Read this through {@link peerIdentified} on a reconnect path**, not
+   * directly: straight off the `connected` event it still holds the previous
+   * connection's verdict.
+   */
+  get observedPeerIdentity(): PeerIdentity {
+    return this.peerIdentityVerdict;
+  }
+
+  /**
+   * The current connection's identity verdict, once its handshake has settled.
+   *
+   * Bounded by the handshake's own request timeout rather than by a timer here:
+   * a `daemon_status` that never answers rejects inside {@link request}, and the
+   * catch in {@link handshake} settles this with `unknown`. So this never hangs
+   * longer than one request, and its failure mode is the honest verdict rather
+   * than a hang.
+   */
+  peerIdentified(): Promise<PeerIdentity> {
+    return this.handshakeSettled;
   }
 
   /**
@@ -381,6 +468,14 @@ export class CrabCastLink {
       this.lastErrno = null;
       this.connectionSeq++;
       this.log(`connected to ${this.socketPath} (connection #${this.connectionSeq})`);
+      // The identity promise is armed HERE, before the state is announced, so a
+      // link-state handler that calls `peerIdentified()` synchronously gets THIS
+      // connection's verdict rather than the previous one's (KAN-403). Arming it
+      // inside `handshake()` would leave a window in which the old promise —
+      // already resolved, with the old answer — is what a handler receives.
+      this.handshakeSettled = new Promise<PeerIdentity>((resolve) => {
+        this.settleHandshake = resolve;
+      });
       // Announced BEFORE the handshake is awaited, deliberately. The handshake
       // is a round trip; a mirror owner that waited for it would leave its
       // subscription down for the length of one, and the frames CrabCast sends
@@ -469,6 +564,34 @@ export class CrabCastLink {
       const status = await this.request({ action: 'daemon_status' });
       const build = status.build as { commit?: string } | undefined;
       this.peerCommit = build?.commit ?? null;
+      // **`bootId` is read here and nowhere else, which is what makes the
+      // comparison below meaningful** (KAN-403). CrabCast's own guidance is to
+      // read their identity once and re-read it when `bootId` moves; this method
+      // already ran once per connection, so the re-read was in place and the
+      // value that says whether it moved was the one field not being kept.
+      //
+      // Carried BEFORE the new value overwrites it, so `previousPeerBootId` is
+      // the previous CONNECTION's reading rather than this one's.
+      const previous = this.peerBootId;
+      const current = typeof status.bootId === 'string' ? status.bootId : null;
+      this.previousPeerBootId = previous;
+      this.peerBootId = current;
+      this.peerIdentityVerdict =
+        current === null
+          ? 'unknown'
+          : previous === null
+            ? 'first-connection'
+            : current === previous
+              ? 'same-peer'
+              : 'restarted';
+      if (current !== null && previous !== null && this.peerIdentityVerdict === 'restarted') {
+        this.log(
+          `peer bootId moved ${previous.slice(0, 8)} → ${current.slice(0, 8)}: ` +
+            `this reconnect is a peer RESTART, not a socket blip. Every session id the previous ` +
+            `daemon issued is dead — see CrabCastRuntime's resync, which re-resolves rather than ` +
+            `retrying them.`
+        );
+      }
       // Absent on a peer older than their fe9ec80, and absent is null rather
       // than 0 — "this daemon publishes no contract version" is not "version
       // zero", and the difference is the same one channelEnabled makes below.
@@ -494,7 +617,16 @@ export class CrabCastLink {
         );
       }
     } catch (err) {
+      // A handshake that could not complete read no `bootId`, so it knows
+      // nothing about which peer answered. `unknown` rather than leaving the
+      // PREVIOUS connection's verdict standing, which would be a stale answer
+      // wearing a fresh one's clothes.
+      this.peerIdentityVerdict = 'unknown';
       this.log(`handshake failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      // Settled on both arms. A waiter that is never resolved is a resync that
+      // never runs, which is a worse outcome than an honest `unknown`.
+      this.settleHandshake(this.peerIdentityVerdict);
     }
   }
 
@@ -719,6 +851,23 @@ export class CrabCastLink {
     peerMatchesPin: boolean | null;
     pinnedContractVersion: number;
     peerContractVersion: number | null;
+    /**
+     * The peer's `bootId` on the connection currently held (KAN-403).
+     *
+     * **This is the only field on this report that moves when a peer restarts.**
+     * `peerCommit` does not: measured against a real restart, the commit was
+     * byte-identical across it, because a restart of the same build is the
+     * ordinary case and a redeploy that ships no new code is indistinguishable
+     * from one that ships none.
+     */
+    peerBootId: string | null;
+    /**
+     * What the last completed handshake concluded about which peer answered.
+     *
+     * `restarted` beside `connections > 1` is the deploy case: the link is
+     * healthy and every session id issued by the previous daemon is dead.
+     */
+    peerIdentity: PeerIdentity;
     attempts: number;
     /**
      * Connections made. **`> 1` means this link has reconnected**, which is the
@@ -740,6 +889,8 @@ export class CrabCastLink {
       // Null when unobserved AND when the peer publishes none. Not folded into
       // the pinned value: an absent contract version is not a matching one.
       peerContractVersion: this.peerContractVersion,
+      peerBootId: this.peerBootId,
+      peerIdentity: this.peerIdentityVerdict,
       attempts: this.attempts,
       connections: this.connectionSeq,
       lastErrno: this.lastErrno,
