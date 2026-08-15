@@ -1543,6 +1543,28 @@ const RULES = [
     // they piped `gh` into `tail`. None of that weakens `.merged`, which is
     // why `only authority` stays pinned below.
     //
+    // THE CORRECTED MECHANISM IS PINNED, AND IT TOOK A REVIEWER TO NOTICE IT
+    // WAS NOT. KAN-467 first landed the correction with the original seven
+    // patterns untouched — and every one of those seven lives in a paragraph
+    // the correction did not touch. `epic/KAN-39` deleted the entire corrected
+    // paragraph in review and this check still reported H-29 carried, while
+    // the `title` above had begun *asserting* the corrected mechanism. An
+    // inventory claiming a rule that nothing verifies is the exact defect this
+    // ticket was filed about, reproduced one level up. The four patterns added
+    // below guard the two new paragraphs so that deleting either fails at
+    // least two of them:
+    //   - `the whole trigger` + `checked out in another worktree of the same
+    //     clone` — the mechanism paragraph: what causes the local step, and
+    //     what makes it fail.
+    //   - `ordinary outcome of a plain merge` + `never the number of
+    //     worktrees` — the corollary paragraph: the half that kills the
+    //     backwards causality, and the half that stops "201" being read as a
+    //     threshold.
+    // This is KAN-466's own argument for pinning both `not two votes` and
+    // `one cause read twice` applied to KAN-467's text: a paragraph that reads
+    // as background to instructions pinned elsewhere is what a length pass
+    // removes first.
+    //
     // WHY THIS IS `prompts/task.md` ONLY, AND THAT IS NOT AN OVERSIGHT: under
     // the 2026-08-08 governance the **task** agent merges. `prompts/epic.md`
     // §"You review and approve this epic's PRs; you do not merge them" and
@@ -1596,6 +1618,11 @@ const RULES = [
         /never bundled into the invocation that deleted it/i,
         /would 404 on anything/i,
         /share an upstream cause/i,
+        // KAN-467's four. See "THE CORRECTED MECHANISM IS PINNED" above.
+        /the whole trigger/i,
+        /checked out in another worktree of the same clone/i,
+        /ordinary outcome of a plain merge/i,
+        /never the number of worktrees/i,
       ],
     },
   },
