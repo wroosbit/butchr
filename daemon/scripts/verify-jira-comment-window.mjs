@@ -301,10 +301,21 @@ rule('4. the parser drops the completeness fields — characterisation');
   row('commentIds carried', snap.commentIds.length);
   row('total carried anywhere?', keys.some((k) => /total|maxResults|startAt/i.test(k)) ? 'yes' : 'no');
 
+  // Two separate claims, deliberately not one `&&`. The red drive for this
+  // script (M1: `snapshotFrom` slicing the newest comment off) failed this
+  // section on the COUNT while the combined message blamed the completeness
+  // fields — a red crediting the wrong mechanism, which is the failure mode
+  // this repository has spent a whole ticket on. Split so each red names its
+  // own cause.
   verdict(
-    snap.commentIds.length === WINDOW &&
-      !keys.some((k) => /total|maxResults|startAt/i.test(k)),
-    'the snapshot carries the window and not the fact that it is one — deliberate, and now pinned',
+    snap.commentIds.length === WINDOW,
+    `the snapshot carries all ${WINDOW} ids the window held`,
+    `the snapshot carries ${snap.commentIds.length} of the ${WINDOW} ids the window held — ` +
+      'the parser is dropping comments before the poller ever compares them'
+  );
+  verdict(
+    !keys.some((k) => /total|maxResults|startAt/i.test(k)),
+    'and not the fact that it is a window — deliberate, and now pinned',
     'the snapshot now carries a completeness field; update §4 and say what reads it'
   );
 }
