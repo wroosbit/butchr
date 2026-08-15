@@ -489,15 +489,27 @@ export class CrabCastLink {
       this.connecting = false;
       this.lastErrno = err.code ?? err.message;
       // **`this.socket` is deliberately NOT cleared here** (KAN-381). It used
-      // to be, and that quietly stole the disconnect notice from the one path
-      // most likely to produce it: node always follows `error` with `close`, so
-      // clearing the reference here made `close`'s "was this the current
-      // connection?" test answer *no* for every ECONNRESET, and the mirrors
-      // that connection carried were never marked stale. A peer that dies
-      // rather than closing politely is the ordinary case, so the hole was in
-      // the common path rather than an exotic one. `close` owns the teardown;
-      // this handler owns the errno. An errored socket is already destroyed, so
-      // `connected` answers false in the window between the two events.
+      // to be, and that quietly stole the disconnect notice: node always
+      // follows `error` with `close`, so clearing the reference here made
+      // `close`'s "was this the current connection?" test answer *no* for every
+      // ECONNRESET, and the mirrors that connection carried were never marked
+      // stale. `close` owns the teardown; this handler owns the errno. An
+      // errored socket is already destroyed, so `connected` answers false in
+      // the window between the two events.
+      //
+      // **What reaches this handler on an established connection is a WRITE
+      // racing the teardown — not a peer dying badly** (KAN-456, measured; the
+      // comment here used to say the opposite). A peer death alone never
+      // arrives as an error at all: AF_UNIX has no RST, so a SIGKILLed peer and
+      // a clean `close()` both deliver plain EOF, and the drop is announced
+      // with `errno: null` either way. What moves that errno off `null` is
+      // whether *we* had a request in flight — measured on the same death, with
+      // an idle link reading `null` and a busy one `ECONNRESET`, on BOTH
+      // manners of death. So the errno is evidence about our own request
+      // timing and never about how the peer went. The fix above is unaffected
+      // and still load-bearing; only its stated trigger moved. Nothing may
+      // branch on the drop's errno to tell the two apart, because it cannot:
+      // see `verify-crabcast-rude-death-live.mjs`, whose §4 is the gate.
       this.scheduleReconnect();
     });
 

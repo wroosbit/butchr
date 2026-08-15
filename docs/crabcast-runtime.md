@@ -789,7 +789,88 @@ makes the window in which it had not converged legible. Neither is a poll.
 | the gap is opened on the drop, settled on the repair, and its window is arithmetic on its own endpoints | both proofs |
 | a stale mirror and a fresh one are reported **differently** | `verify-crabcast-reconnect-resync.mjs` §5 — the assertion that carries the property |
 | **a peer that RESTARTS** — `bootId` and `build.commit` moving under a reconnect | **nobody.** The live proof cuts a relay; CrabCast stays up throughout. This is the ordinary deploy case and it is the honest gap. |
-| **the errno path** — a disconnect announced when `error` precedes `close` | **statically only.** AF_UNIX has no RST, so no socket in either proof produces `ECONNRESET`; `verify-crabcast-reconnect-resync.mjs` §4b asserts the shape of the fix and says so in as many words. |
+| **the errno path** — a disconnect announced when `error` precedes `close` | **`verify-crabcast-rude-death-live.mjs`** (KAN-456), which kills a real peer rudely and politely in one run. It replaces the *"statically only"* entry that stood here until 2026-08-15, and it corrects that entry's reasoning as well as filling its gap — see [What a rude peer death looks like](#what-a-rude-peer-death-looks-like-kan-456) below. `ECONNRESET` **is** reachable on AF_UNIX; what produces it is *our write* racing the teardown, not the peer's manner of death. |
+
+---
+
+## What a rude peer death looks like (KAN-456)
+
+Gate 5's last leg. `task/KAN-381` disclosed, against its own work, that the errno
+path was *asserted statically only* — nobody had killed a CrabCast peer rudely
+and watched. This is what happens when you do. Reproduce with
+`node daemon/scripts/verify-crabcast-rude-death-live.mjs`, which drives both arms
+in one run against a peer it spawns itself.
+
+| observation | rude (`SIGKILL`) | polite (`SIGTERM`) |
+| --- | --- | --- |
+| passive reader's socket events | `end` → `close(hadError=false)` | `end` → `close(hadError=false)` |
+| **writer's** socket events | `error(ECONNRESET)` → `close(hadError=true)` | `error(ECONNRESET)` → `close(hadError=true)` |
+| `LinkStateEvent.errno`, link **idle** at the death | `null` | `null` |
+| `LinkStateEvent.errno`, link **mid-request** | `ECONNRESET` | `ECONNRESET` |
+| socket file left behind | **yes** | no — unlinked |
+| errno of the **next** connect attempt | **`ECONNREFUSED`** | **`ENOENT`** |
+
+Read the table by column and then by row. **Nothing moves left-to-right except
+the last two rows** — the manner of death changes almost nothing. What moves the
+drop's errno is the pair of rows in the middle, and that axis is *ours*.
+
+**On the socket the two are indistinguishable, and that is a property of the
+transport rather than a defect in us.** A `SIGKILL`ed peer's fds are closed by
+the kernel, and on AF_UNIX that is EOF — the same bytes a clean `close()`
+produces. There is no RST to carry the difference and no errno is recorded, so
+`LinkStateEvent.errno` is `null` on both arms and every owner of
+connection-borne state sees one event, not two kinds.
+
+**`ECONNRESET` is reachable, and reading it as a rude-death signal is the
+mistake to avoid.** The entry this section replaces inferred from *"AF_UNIX has
+no RST"* that no socket could produce `ECONNRESET`. It can: write into the
+teardown window and it arrives. But it arrives on **both** arms, because what it
+reports is *our write* meeting a socket the kernel is tearing down — not how the
+peer died. The earlier proofs never saw it only because they never wrote at that
+moment.
+
+**So the drop's errno is a fact about Butchr, not about CrabCast.** Two links
+watching the *same* death disagree: one idle at the moment it happens is told
+`errno: null`, one mid-request is told `ECONNRESET`. That holds on both manners
+of death, which is what makes the field unusable for the question it looks like
+it answers. **A branch on `event.errno` would key on whether this daemon
+happened to have a request in flight** — a property of our own scheduling — while
+reading, at the call site, as though it discriminated the peer. It would also
+fail in the comfortable direction: an idle link takes the `null` arm, so the
+branch that looks like *"the peer died cleanly"* is the one that fires when we
+simply were not talking at the time.
+
+**The exact errno is a race and must not be asserted on.** `ECONNRESET`
+dominates — 12/12 in a dedicated 6×2 repeat — but `EPIPE` has been observed,
+depending on whether the write landed before or after the kernel finished the
+teardown. The proof asserts membership of `{ECONNRESET, EPIPE}` and prints the
+value; pinning it is how this becomes the next [KAN-416](https://wroosbit.atlassian.net/browse/KAN-416),
+whose whole finding was a live assertion failing for a reason unrelated to its
+subject. Whether `EPIPE` correlates with the rude arm is **not** established
+here — it was seen once, on that arm, and one observation is not a correlation.
+It does not bear on the verdict, because nothing reads the value.
+
+**This does not disturb KAN-381's fix, and it does relocate its reason.** Not
+clearing `this.socket` in the `error` handler is still correct and still
+load-bearing, because §3 shows an established connection really can emit `error`
+before `close`. What is wrong is the comment's claim that this is *"the ordinary
+case"* for a dying peer: a peer death alone never enters that handler. The
+handler is reached when we were mid-write, on either manner of death.
+
+**The one real difference is the peer's own cleanup, one connect later.**
+CrabCast unlinks its socket file on a clean shutdown and cannot on `SIGKILL`, so
+the reconnect attempt that follows answers `ENOENT` after a polite death and
+`ECONNREFUSED` after a rude one, and that reaches `describe().lastErrno`. **It
+is CrabCast's behaviour, not the transport's, and it is uncontracted** — their
+read-path contract covers `list_agents` and `agent_status` only. Do not build on
+it.
+
+**And nothing needs it.** `event.errno` has exactly one consumer in the whole
+daemon and it is a clause in a log line; both deaths converge on the same
+reconnect-and-resync path. So the leg closes on *no difference is needed* rather
+than on the weaker *no difference is visible*. §4 of the proof is the gate that
+goes red if a branch on `event.errno` ever appears — such a branch would take
+the same arm for both deaths while looking like it discriminated.
 
 ---
 
