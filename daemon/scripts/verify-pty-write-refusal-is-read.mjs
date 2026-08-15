@@ -14,6 +14,15 @@
 // a fix that made the sidepanel terminal wait a round trip per keystroke cannot
 // pass here either.
 //
+// AND, since review, it catches a third: the log-suppression key losing its
+// VERB dimension. `epic/KAN-39` mutated the key to `${outcome}:${sessionId}`
+// and every assertion here stayed green, because all of them concerned one verb
+// on one session. The docblock said the key was per session AND verb and
+// nothing could turn that prose red. The realistic failure refuses BOTH verbs
+// on one session with the same `unknown_session` — a stale session id — so
+// under a verb-less key an operator sees one line and never learns the resize
+// refused too. `--verbless-suppression-key` re-drives that mutation.
+//
 // ## Sections, and which kind each is — READ THE SECTION, NOT THE EXIT CODE
 //
 // This script is one of the mixed kind. After a FAILED BUILD its overall exit
@@ -59,8 +68,10 @@
 // daemon, no herdr, no credential, no network, no terminal.
 //
 // Usage: node daemon/scripts/verify-pty-write-refusal-is-read.mjs [--verbose]
-//        --static-only          §1 only; safe after a failed build
-//        --restore-void-catch   §3: put the discarded-ack line back and require red
+//        --static-only               §1 only; safe after a failed build
+//        --restore-void-catch        put the discarded-ack line back; require red
+//        --verbless-suppression-key  drop the verb from the log key; require red
+//        (the two mutation flags are mutually exclusive)
 
 import net from 'net';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, symlinkSync } from 'fs';
@@ -73,6 +84,14 @@ const daemonDir = path.resolve(scriptDir, '..');
 const verbose = process.argv.includes('--verbose');
 const staticOnly = process.argv.includes('--static-only');
 const restoreVoidCatch = process.argv.includes('--restore-void-catch');
+const verblessKey = process.argv.includes('--verbless-suppression-key');
+const mutations = [restoreVoidCatch, verblessKey].filter(Boolean).length;
+if (mutations > 1) {
+  console.error('Pass at most one mutation flag: --restore-void-catch OR --verbless-suppression-key.');
+  process.exit(2);
+}
+/** True when a flag asked for a failure, so a green run is itself the failure. */
+const wantRed = mutations === 1;
 
 let failures = 0;
 const say = (s = '') => process.stdout.write(`${s}\n`);
@@ -91,10 +110,24 @@ const check = (ok, label, detail = '') => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fileUrl = (p) => new URL(`file://${p}`).href;
 
-/** Copied from the live capture — see the header. */
+// Anchored: the verb is the FIRST token of the line. A substring match also
+// hits the refusal prose quoted in the detail, which is how an earlier draft
+// counted a pty_resize line as a pty_input one.
+const refusalLinesFor = (action) => logLines.filter((l) => l.startsWith(`${action} refused`));
+
+/**
+ * Copied from the live capture — see the header.
+ *
+ * **The prose names the verb that was refused**, which the capture shows and an
+ * earlier draft of this script got wrong: it hard-coded `pty_input` for both
+ * verbs, so a `pty_resize` refusal line contained the literal string
+ * `pty_input` and a substring filter counted it twice. The fake being unfaithful
+ * in a detail nobody was asserting on is precisely how a filter goes wrong
+ * silently, so it is faithful now.
+ */
 const LIVE_REFUSAL_CODE = 'unknown_session';
-const LIVE_REFUSAL_ERROR =
-  "pty_input names session 'X', which this daemon does not have. A PTY session id is only " +
+const liveRefusalError = (action) =>
+  `${action} names session 'X', which this daemon does not have. A PTY session id is only ` +
   'valid for the daemon process that issued it, and this one is not among them.';
 
 // ── §1 STATIC — the comment matches the code ───────────────────────────────
@@ -173,35 +206,48 @@ process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 
 let distUnderTest = dist;
 
-if (restoreVoidCatch) {
-  // THE RED DRIVE, built in rather than hand-demonstrated at review time.
-  // Patch a COPY of the build back to the pre-KAN-459 line and require the
-  // sections below to fail on it.
-  // The damage is done to a COPY. A red run cannot leave a broken build behind,
-  // which matters here more than usual: this repo has live agents working in
-  // sibling worktrees off the same shared clone.
-  distUnderTest = path.join(scratch, 'dist');
-  cpSync(dist, distUnderTest, { recursive: true });
+/** Copy the build and patch it, so a red run cannot leave a broken build behind. */
+function patchedCopy(label, find, replace) {
+  const copy = path.join(scratch, 'dist');
+  cpSync(dist, copy, { recursive: true });
   // The copy still has to resolve `node-pty`, which `herdr.js` imports. Node
   // walks up from the importing file, so one symlink beside the copy is enough
   // and is cheaper than copying 100+ MB of node_modules. Without it the run
   // dies with ERR_MODULE_NOT_FOUND and exits non-zero — which looks exactly
-  // like the red this flag is asking for, while proving nothing.
+  // like the red these flags ask for, while proving nothing.
   symlinkSync(path.join(daemonDir, 'node_modules'), path.join(scratch, 'node_modules'), 'dir');
-  const target = path.join(distUnderTest, 'crabcast-runtime.js');
+  const target = path.join(copy, 'crabcast-runtime.js');
   const built = readFileSync(target, 'utf8');
-  const patched = built.replace(
-    /this\.observePtyWrite\(\s*'pty_input',[\s\S]*?\);/,
-    "void this.link.request({ action: 'pty_input', sessionId: remote, data }).catch(() => {});"
-  );
+  const patched = built.replace(find, replace);
   if (patched === built) {
-    console.error('--restore-void-catch: could not find the observePtyWrite call to patch out.');
+    console.error(`${label}: could not find the code to patch out.`);
     console.error('The build has moved; this flag is testing nothing. Fix the patch, do not ignore this.');
     process.exit(2);
   }
   writeFileSync(target, patched);
   say('');
-  say('--restore-void-catch: patched a copy of the build back to the discarded-ack line.');
+  say(`${label}: patched a copy of the build. Assertions below MUST go red.`);
+  return copy;
+}
+
+if (verblessKey) {
+  // `epic/KAN-39`'s review mutation, made re-drivable rather than hand-applied.
+  // Drops the verb from the log-suppression key so one verb silences the other.
+  distUnderTest = patchedCopy(
+    '--verbless-suppression-key',
+    'const key = `${outcome}:${action}:${sessionId}`;',
+    'const key = `${outcome}:${sessionId}`;'
+  );
+}
+
+if (restoreVoidCatch) {
+  // THE ORIGINAL RED DRIVE, built in rather than hand-demonstrated at review
+  // time. Puts the pre-KAN-459 discarded-ack line back.
+  distUnderTest = patchedCopy(
+    '--restore-void-catch',
+    /this\.observePtyWrite\(\s*'pty_input',[\s\S]*?\);/,
+    "void this.link.request({ action: 'pty_input', sessionId: remote, data }).catch(() => {});"
+  );
 }
 
 const { CrabCastRuntime } = await import(fileUrl(path.join(distUnderTest, 'crabcast-runtime.js')));
@@ -262,7 +308,7 @@ const server = net.createServer((socket) => {
                 success: false,
                 sessionId: req.sessionId,
                 refusal: LIVE_REFUSAL_CODE,
-                error: LIVE_REFUSAL_ERROR
+                error: liveRefusalError(req.action)
               }
             : { action: `${req.action}_response`, success: true, sessionId: req.sessionId };
         if (ptyReplyDelayMs > 0) setTimeout(() => reply(answer), ptyReplyDelayMs);
@@ -318,7 +364,7 @@ check(
   JSON.stringify(afterAccept)
 );
 check(
-  logLines.filter((l) => l.includes('pty_input')).length === 0,
+  refusalLinesFor('pty_input').length === 0,
   'CONTROL: and it logs nothing',
   logLines.join('\n')
 );
@@ -351,7 +397,7 @@ check(
   'collapsing those two is what CrabCastLink.request`s docblock exists to prevent'
 );
 
-const firstLogs = logLines.filter((l) => l.includes('pty_input') && l.includes('refused'));
+const firstLogs = refusalLinesFor('pty_input');
 check(firstLogs.length === 1, 'the surface that works today: exactly one daemon.log line', logLines.join('\n'));
 check(
   firstLogs[0]?.includes(LIVE_REFUSAL_CODE) && firstLogs[0]?.includes(sid),
@@ -369,7 +415,7 @@ check(
   JSON.stringify(afterStorm)
 );
 check(
-  logLines.filter((l) => l.includes('pty_input') && l.includes('refused')).length === 1,
+  refusalLinesFor('pty_input').length === 1,
   'and they log nothing further — a held-down key cannot storm the log',
   'a line per refused keystroke would be a log storm keyed to typing speed'
 );
@@ -382,6 +428,33 @@ check(
   afterResize.refused === 7 && afterResize.last?.action === 'pty_resize',
   'a refused resize is read too — both write verbs, not just the one in the ticket title',
   JSON.stringify(afterResize.last)
+);
+
+// THE VERB DIMENSION OF THE SUPPRESSION KEY.
+//
+// Added after review: `epic/KAN-39` dropped `action` from the key
+// (`${outcome}:${sessionId}`) and every assertion above stayed GREEN, because
+// all of them concern ONE verb on ONE session. The property the docblock states
+// — the key is per session AND VERB — had no guard, which is the class this
+// board keeps finding: a property asserted in prose that nothing can turn red.
+//
+// It is not academic. `describe()` has no production caller (KAN-464), so this
+// log line is the whole operator-visible surface, and the realistic failure
+// refuses BOTH verbs on the same session with the same `unknown_session` — a
+// stale session id. Under a verb-less key the operator sees one line and never
+// learns the resize refused too.
+const inputRefusalLines = refusalLinesFor('pty_input');
+const resizeRefusalLines = refusalLinesFor('pty_resize');
+check(
+  resizeRefusalLines.length === 1,
+  'THE VERB DIMENSION: the refused resize gets its OWN log line, though pty_input already logged on this session',
+  `pty_resize refused lines: ${resizeRefusalLines.length} (expected 1). ` +
+    'Zero means the suppression key lost its verb and one verb is now silencing the other.'
+);
+check(
+  inputRefusalLines.length === 1 && resizeRefusalLines.length === 1,
+  'and the two verbs log independently — one line each, neither suppressing the other',
+  `pty_input=${inputRefusalLines.length} pty_resize=${resizeRefusalLines.length}`
 );
 
 // ---- `undelivered` is a different claim and is reachable -------------------
@@ -414,14 +487,15 @@ runtime.dispose();
 server.close();
 
 rule('verdict');
-if (restoreVoidCatch) {
+if (wantRed) {
+  const flag = restoreVoidCatch ? '--restore-void-catch' : '--verbless-suppression-key';
   if (failures > 0) {
-    say(`--restore-void-catch: ${failures} check(s) FAILED, which is the point.`);
-    say('The discarded-ack line was put back and this script caught it. That is the red drive.');
+    say(`${flag}: ${failures} check(s) FAILED, which is the point.`);
+    say('The defect was patched back in and this script caught it. That is the red drive.');
     say('Exiting 0 because the requested failure is what happened.');
     process.exit(0);
   }
-  say('--restore-void-catch was requested and everything PASSED.');
+  say(`${flag} was requested and everything PASSED.`);
   say('That means the patch did not take, or these assertions do not watch what they claim to.');
   process.exit(1);
 }
