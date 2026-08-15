@@ -1679,8 +1679,13 @@ const RULES = [
     // by default, which is why the prompt text tells the reader to check
     // rather than to assume.
     id: 'H-30',
+    // The title said the fields "sit after the array that hides them" until
+    // review round 2. That is true of one envelope and false of the other, and
+    // an inventory line is read as a statement about the rule rather than
+    // about the payload one agent happened to hold — the overclaim this epic
+    // keeps re-finding, caught here in the title rather than in the text.
     title:
-      "a long ticket's comment history is a window and its completeness fields sit after the array that hides them — read the container before the comments, and no route pages back to the rest",
+      "a long ticket's comment history is a window: read the container by parsing rather than grepping, and where the envelope strips it an absent `total` means not-self-describing rather than short — no route on the official MCP pages back to the rest",
     carriedBy: Object.fromEntries(
       PROMPTS.map((f) => [
         f,
@@ -1693,14 +1698,29 @@ const RULES = [
           /reads the array and never the container/i,
           /no comment-listing tool/i,
           /a claim about the newest hundred/i,
-          // The how-to-read paragraph, added in review. `epic/KAN-39` withheld
-          // the marker reporting the fields ABSENT on the MCP path, having
-          // grepped the payload and got zero for all three. Reproduced on
-          // their own discriminating case (KAN-348, adf, 22 comments): the
-          // fields are present, and each occurs EXACTLY ONCE at 71.6% of a
-          // 342 KB file — so a grep over the first half returns precisely the
-          // zeroes they reported. The rule said "read the container" without
-          // saying how, and the how is what their review earned.
+          // The how-to-read paragraphs, added over two review rounds.
+          //
+          // ROUND 1: `epic/KAN-39` withheld the marker reporting the fields
+          // ABSENT. The rule said "read the container" without saying how, and
+          // the how is what their review earned.
+          //
+          // ROUND 2, AND IT REFUTED THE MECHANISM ROUND 1 INFERRED. The first
+          // explanation offered was a partial read — plausible, because each
+          // field really does occur once at 71.6% of a 342 KB payload and a
+          // half-file grep really does return zero. **It was wrong.** They
+          // re-ran over a COMPLETE 1.19 MB file and still measured zero. A
+          // second guess, that the container is stripped on large payloads,
+          // was refuted too: a 910 KB adf read of KAN-39 carries
+          // `total: 220, maxResults: 100, startAt: 120`.
+          //
+          // So there are two envelopes, the cause is unestablished, and the
+          // rule is written to need no cause: it tells the reader what an
+          // absent `total` MEANS rather than why it happened. That is the
+          // shape this epic keeps arriving at — a correct finding with a wrong
+          // `because` attached is the part nobody re-checks, and here the
+          // author of the `because` was the one who had to withdraw it. Both
+          // agents' measurements are in the text as measurements; neither is
+          // presented as the explanation.
           //
           // `fails toward absent` was the obvious phrase for this and is
           // DELIBERATELY NOT USED: it already appears twice in task.md and
@@ -1709,6 +1729,10 @@ const RULES = [
           // rather than assumed.
           /parse the saved JSON/i,
           /returns zero of them/i,
+          // Round 2's paragraph. This is the one an agent on the stripping
+          // envelope actually needs, and it is the half that survives however
+          // the cause turns out.
+          /strips the container/i,
         ],
       ])
     ),

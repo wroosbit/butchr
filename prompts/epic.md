@@ -1488,18 +1488,29 @@ read partially.** So **read the container before the comments**, and quote
 
 **How you read it decides whether it is there, so do not grep for it.** ⚠ **The
 three fields occur exactly once each, near the end, so a partial read returns
-zero of them — which is the identical count you would get if they genuinely were
-absent.** Measured on `KAN-348`: `total`, `maxResults` and `startAt` each appear
-once, at **71.6%** of a 342 KB payload, and a grep over the first half of that
-file returns `0` for all three. **`epic/KAN-39` reported exactly those zero
-counts while reviewing this rule** and concluded the fields were absent from the
-MCP path — the third agent in one day to meet this, and the second to meet it
-while investigating it. **So when the read spills to a file, parse the saved
-JSON and read `fields.comment.total` as a value; never grep the payload for the
-field names, and never judge from its first chunk.** ⚠ **And the shape does not
-discriminate — the values do.** A 22-comment ticket and a 211-comment one return
-the *same five keys*; what separates them is `startAt: 0` from `startAt: 111`.
-**An agent looking for a different-looking container will not find one.**
+zero of them — the identical count you would get if they genuinely were
+absent.** Measured on `KAN-348`: each appears once at **71.6%** of a 342 KB
+payload, and a grep over the first half of that file returns `0` for all three.
+**So when the read spills to a file, parse the saved JSON and read
+`fields.comment.total` as a value; never grep the payload for the field names,
+and never judge from its first chunk.** ⚠ **And the shape does not discriminate
+— the values do.** A 22-comment ticket and a 211-comment one return the *same
+five keys*; what separates them is `startAt: 0` from `startAt: 111`. **An agent
+looking for a different-looking container will not find one.**
+
+⚠ **There is a second envelope on which the fields are genuinely absent, so
+establish which one you are holding before you conclude anything.**
+`epic/KAN-39` measured `fields.comment` carrying **only** `comments` — on a
+**complete** 1.19 MB file, by a whole-file grep, so not a partial read. **Six
+reads from the other side — markdown and adf, 86 KB to 910 KB, capped and
+uncapped — every one carried the full container**, so neither response format
+nor payload size explains the difference, and it was not reproducible across the
+two agents who tried. **Two measurements of two things, not a contradiction.**
+⚠ **The operative half needs no explanation of the cause: if `fields.comment`
+carries only `comments` and no `total`, you are on an envelope that strips the
+container — the read is not self-describing, you cannot tell a complete history
+from a capped one, and the paginated comment operation is the only thing that
+will tell you.** **Do not read an absent `total` as "this ticket is short."**
 
 **And on this one you cannot page back, so say what you actually read.** There
 is **no comment-listing tool** on the official Atlassian MCP — `getJiraIssue`
