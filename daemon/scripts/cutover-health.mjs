@@ -77,6 +77,7 @@ function readFleet(socketPath) {
 }
 
 let frame;
+let readError = null;
 try {
   if (frameArg !== -1) {
     const file = argv[frameArg + 1];
@@ -86,47 +87,65 @@ try {
     frame = await readFleet(SOCKET_PATH);
   }
 } catch (err) {
+  readError = err;
+}
+
+if (readError) {
   // Exit 2, never 1. "I could not look" and "I looked and it is broken" are
   // different claims, and the watchdog rolls back on only one of them.
+  //
+  // Set-and-return rather than `process.exit(2)`, for the reason spelled out
+  // at the bottom of this file: `process.exit` does not drain an async pipe,
+  // so the one line explaining WHY the read failed is the thing most likely
+  // to be lost — on the run where it matters most.
   console.error(
-    JSON.stringify({ error: String(err?.message ?? err), read: false, socket: SOCKET_PATH })
+    JSON.stringify({ error: String(readError?.message ?? readError), read: false, socket: SOCKET_PATH })
   );
-  process.exit(2);
+  process.exitCode = 2;
+} else {
+
+  const health = fleetHealth(frame?.agents);
+  const retired = retiredCounts(frame?.agents);
+
+  const report = {
+    ...health,
+    // Carried alongside so a reader comparing this against an old `cutover.log`
+    // line is comparing like with like, and so the day the two verdicts disagree
+    // is visible in the log rather than needing this script re-run.
+    retiredCounts: retired,
+    missing: (frame?.missingAgents || []).length,
+    mode: (frame?.runtimeSwitch && frame.runtimeSwitch.mode) || null,
+    at: new Date().toISOString()
+  };
+
+  console.log(JSON.stringify(report));
+
+  if (explain) {
+    const lines = [
+      '',
+      `  agents        ${report.agents}`,
+      `  reachable     ${report.reachable}   (${report.bySession} by session, ${report.byChannel} by channel; an agent may be both)`,
+      `  unreachable   ${report.unreachable}${report.unreachable ? `   ${report.unreachableAgents.join(', ')}` : ''}`,
+      '',
+      `  MARGIN        ${report.marginAgents} reachable agent(s) stand between this fleet and a trip.`,
+      '                The trip needs that number to reach ZERO, and to stay there for',
+      '                the watchdog\'s FAIL_LIMIT consecutive polls.',
+      '',
+      `  VERDICT       ${report.unhealthy ? 'UNHEALTHY — agents exist and not one can be reached' : 'healthy'}`,
+      ''
+    ];
+    console.error(lines.join('\n'));
+  }
+
+  // Verdict-derived, per KAN-119: this value is computed from the predicate above
+  // and is not a setup guard.
+  //
+  // `process.exitCode` RATHER THAN `process.exit()`, AND THE DIFFERENCE IS NOT
+  // STYLE. Node's stdout is asynchronous when it is a pipe, and `process.exit()`
+  // tears the process down without draining it — so the JSON above can be
+  // truncated or lost exactly when this is called the way the watchdog calls it,
+  // `h="$(butchr_health)"`. Setting the code and letting node exit on its own
+  // flushes first. The verdict is identical; what changes is whether the caller
+  // receives the line that explains it.
+  process.exitCode = report.unhealthy ? 1 : 0;
 }
-
-const health = fleetHealth(frame?.agents);
-const retired = retiredCounts(frame?.agents);
-
-const report = {
-  ...health,
-  // Carried alongside so a reader comparing this against an old `cutover.log`
-  // line is comparing like with like, and so the day the two verdicts disagree
-  // is visible in the log rather than needing this script re-run.
-  retiredCounts: retired,
-  missing: (frame?.missingAgents || []).length,
-  mode: (frame?.runtimeSwitch && frame.runtimeSwitch.mode) || null,
-  at: new Date().toISOString()
-};
-
-console.log(JSON.stringify(report));
-
-if (explain) {
-  const lines = [
-    '',
-    `  agents        ${report.agents}`,
-    `  reachable     ${report.reachable}   (${report.bySession} by session, ${report.byChannel} by channel; an agent may be both)`,
-    `  unreachable   ${report.unreachable}${report.unreachable ? `   ${report.unreachableAgents.join(', ')}` : ''}`,
-    '',
-    `  MARGIN        ${report.marginAgents} reachable agent(s) stand between this fleet and a trip.`,
-    '                The trip needs that number to reach ZERO, and to stay there for',
-    '                the watchdog\'s FAIL_LIMIT consecutive polls.',
-    '',
-    `  VERDICT       ${report.unhealthy ? 'UNHEALTHY — agents exist and not one can be reached' : 'healthy'}`,
-    ''
-  ];
-  console.error(lines.join('\n'));
-}
-
-// Verdict-derived, per KAN-119: this value is computed from the predicate above
-// and is not a setup guard.
-process.exit(report.unhealthy ? 1 : 0);
