@@ -1662,7 +1662,9 @@ function sweepForMissingAgents() {
     announcedMissing.add(agent.agentName);
     log(
       `AGENT LOST: ${agent.agentName} (${agent.type}/${agent.key}) is recorded as active ` +
-      `since ${agent.since} but herdr has no such agent. Workspace: ${agent.workDir}`
+      // KAN-475: the runtime that was asked names itself.
+      `since ${agent.since} but ${herdrBridge.runtimeName} has no such agent. ` +
+      `Workspace: ${agent.workDir}`
     );
     broadcast({ action: 'agent_lost_event', ...agent });
   }

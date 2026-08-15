@@ -1,5 +1,5 @@
 import { HerdrAgentStatus, agentNameFor } from './herdr.js';
-import type { AgentRuntime } from './agent-runtime.js';
+import type { AgentRuntime, RuntimeMode } from './agent-runtime.js';
 import { renderedKey } from './keys.js';
 import { SupervisorOfRecord } from './agent-registry.js';
 import { ResumeCause, resumeNudge } from './resume.js';
@@ -246,7 +246,10 @@ export function deliveryFingerprint(message: string): string {
  * continuation, so on an 80-column pane the message comes back as
  *
  *     ❯ [butchr daemon] task/KAN-90 (butchr-task-kan-90), an agent you
- *       activated, is no longer running — herdr has no agent by that name.
+ *       activated, is no longer running — crabcast has no agent by that name.
+ *
+ * (The runtime names itself since KAN-475, so that word is whichever runtime
+ * was asked; this example is a CrabCast fleet.)
  *
  * A raw substring check against the original one-line message fails on that,
  * reports a delivered message as undelivered, and re-sends it — which is
@@ -374,7 +377,9 @@ export async function deliverToAgent(opts: {
     }
 
     if (!sent.success) {
-      lastError = sent.error ?? 'herdr refused the send';
+      // KAN-475: `herdrBridge` is whichever runtime is serving, so the fallback
+      // sentence asks it what it is rather than assuming.
+      lastError = sent.error ?? `${herdrBridge.runtimeName} refused the send`;
       log(`[deliver] ${label}: send attempt ${attempt} failed: ${lastError}`);
       continue;
     }
@@ -517,10 +522,23 @@ export interface AgentStateChange {
  * was doing, and a bare sentence in a composer is indistinguishable from a
  * human interrupting.
  */
-export function supervisionNudgeText(change: AgentStateChange): string {
+export function supervisionNudgeText(
+  change: AgentStateChange,
+  /**
+   * The runtime that was asked, where the caller has one (KAN-475).
+   *
+   * Optional rather than required, and the default is deliberately *neutral*
+   * rather than `'herdr'`. This is called from four `.mjs` proofs with one
+   * argument, so a required parameter would break them and a `'herdr'` default
+   * would put the misattribution back for exactly the callers that would not
+   * notice. An unnamed runtime says less; it does not say something false.
+   */
+  runtimeName?: RuntimeMode
+): string {
+  const asked = runtimeName ?? 'the agent runtime';
   const what =
     change.to === 'missing'
-      ? `is no longer running — herdr has no agent by that name. ` +
+      ? `is no longer running — ${asked} has no agent by that name. ` +
         `Its last known status was \`${change.from}\`.`
       : `went \`${change.from}\` → \`${change.to}\`.`;
 
@@ -805,7 +823,7 @@ export class SupervisionNotifier {
       herdrBridge,
       type: supervisor.type,
       key: supervisor.key,
-      message: supervisionNudgeText(change),
+      message: supervisionNudgeText(change, herdrBridge.runtimeName),
       log
     });
 

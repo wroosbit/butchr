@@ -165,7 +165,39 @@ export interface AgentSpawn {
   command: string | null;
 }
 
+/**
+ * Which runtime is serving. Lives here rather than in `runtime-switch.ts`
+ * because {@link AgentRuntime.runtimeName} is what makes it load-bearing
+ * (KAN-475); the switch re-exports it for the callers that had it first.
+ */
+export type RuntimeMode = 'herdr' | 'crabcast';
+
 export interface AgentRuntime {
+  // -- identity -------------------------------------------------------------
+
+  /**
+   * What this runtime is, in one word, for a message that has to name it.
+   *
+   * **This exists because a sentence naming a runtime was a string literal, and
+   * a literal cannot be wrong in a way the compiler notices (KAN-475).** The
+   * refusal at `router.ts`'s reattach gate read *"herdr has no live agent named
+   * X"* on every runtime, so under CrabCast it named a runtime that had not been
+   * asked — and it read as the code disclosing what it consulted rather than as
+   * a stale word. It sent a reader after a runtime that was not in service,
+   * during a cutover, which is the moment that misattribution costs most.
+   *
+   * **Read it off the runtime, never off {@link RuntimeSwitchReport}.** The
+   * report is the right thing for an operator page and the wrong thing here:
+   * it is a *second* value describing the same decision, so a router holding one
+   * runtime and a report about another can be constructed — by a proof, by a
+   * refactor — and the sentence would be confidently wrong again with nothing
+   * to catch it. This member cannot disagree with the object that answers the
+   * census, because it *is* the object that answers the census. That is
+   * `runtime-switch.ts`'s own rule — *"the report and the behaviour are one
+   * function"* — applied one level down.
+   */
+  readonly runtimeName: RuntimeMode;
+
   // -- lifecycle ------------------------------------------------------------
 
   /** Register the callback fired when a session ends. Called once, by `daemon.ts`. */
