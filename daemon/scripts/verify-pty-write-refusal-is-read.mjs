@@ -48,6 +48,12 @@
 // caller at all — and KAN-459's ticket comment records it rather than leaving a
 // reader to infer a coverage that does not exist.
 //
+// ⚠ AND THE LOG SURFACE IS INERT ON A STOCK INSTALL. `BUTCHR_AGENT_RUNTIME` is
+// unset by default, so this runtime does not run and no pty write reaches it.
+// A green here is a statement about the adapter, NOT about any refusal having
+// been observed in production — there cannot have been one. Do not read this
+// script as evidence that the fleet is refusal-free.
+//
 // CI-RUNNABLE: yes — imports the built daemon modules and serves its own
 // CrabCast over a unix socket in a temp dir; node builtins only, no live
 // daemon, no herdr, no credential, no network, no terminal.

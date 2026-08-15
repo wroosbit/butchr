@@ -2613,9 +2613,18 @@ export class CrabCastRuntime implements AgentRuntime {
      * `AgentRuntime`, and that interface declares no `describe`. That was true
      * of every field here before KAN-459 and is not a gap KAN-459 introduced or
      * closed — it is recorded here so the next reader does not mistake a
-     * populated field for a surfaced one. **The surface that does work today is
-     * the daemon log**, written first-of-kind per session and verb by
+     * populated field for a surfaced one.
+     *
+     * **The surface that carries a refusal to a human is the daemon log**,
+     * written first-of-kind per session and verb by
      * {@link recordPtyWriteOutcome}: `grep pty_input ~/.local/share/butchr/daemon.log`.
+     * ⚠ **And that grep is empty on a stock install, for a reason that is not
+     * this class's usual one**: `BUTCHR_AGENT_RUNTIME` is unset by default, so
+     * this whole runtime is inert and no pty write reaches this file at all.
+     * The line is real and reaches a real log — it reaches it only where
+     * CrabCast is actually serving agents. Anyone reading a quiet log as
+     * evidence of no refusals should check which runtime is live first
+     * (`grep '\[runtime\]' ~/.local/share/butchr/daemon.log`).
      */
     ptyWrites: { refused: number; undelivered: number; last: PtyWriteFailure | null };
     censusAgeMs: number | null;
