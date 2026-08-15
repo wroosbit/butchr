@@ -17,9 +17,19 @@
 // rows. That is the state PR #171 was in, and §6 passed it, because §6
 // reconciles the rows and never read the numbers above them.
 //
-// CI-RUNNABLE: yes — builds its fixtures in a temporary directory and reads
-// `ci.yml` and the script headers off the checkout; node builtins only, no
-// build, no daemon, no herdr, no credential, no network.
+// Since KAN-451 it catches a fourth, and it is the one that had been open
+// longest: `ci-partition.md` not being what its generator emits. §6 and §7
+// check the class words, the counts and the summary; everything they do not
+// name was unguarded, including each row's RATIONALE — the third column, the
+// sentence a reader relies on to know whether a script needs a credential, a
+// live daemon, a terminal or the network. A hand-edit that rewrites a rationale
+// into a falsehood, leaving the class word and the counts alone, passed every
+// check in this file. §8 is what closes it.
+//
+// CI-RUNNABLE: yes — builds its fixtures in a temporary directory, reads
+// `ci.yml` and the script headers off the checkout, and spawns the generator's
+// own `--markdown` mode as a node child; node builtins only, no build, no
+// daemon, no herdr, no credential, no network.
 //
 // THIS SCRIPT IS THE POINT OF ITS OWN TICKET, WHICH IS WHY IT IS BUILT THIS WAY
 //
@@ -50,12 +60,14 @@
 //   * What they do NOT establish is that GitHub Actions really executes any of
 //     this. No script can: that is a fact about a runner, not about a
 //     repository.
-//   * Sections 4-7 do NOT supply their own input: they read `ci.yml`, the
+//   * Sections 4-8 do NOT supply their own input: they read `ci.yml`, the
 //     script headers and `ci-partition.md` off the checkout, so what they assert
-//     on is what a reviewer would find there. §7's own uncovered leg is a
-//     different one and is stated at §7: it guards the document against the
-//     tree and against itself, and nothing guards either against a generator
-//     that is wrong consistently.
+//     on is what a reviewer would find there. §8 goes further and runs the
+//     generator itself, so its expected value is produced rather than written
+//     here. §7's own uncovered leg is a different one and is stated at §7: it
+//     guards the document against the tree and against itself, and nothing
+//     guards either against a generator that is wrong consistently — which §8
+//     narrows but does not close, and says so in its own output.
 //   * WHO COVERS IT: section 4 covers the wiring statically, by reading
 //     `ci.yml` and asserting both invocations are there. The remaining leg —
 //     that the job ran and went green — is an observation, and the KAN-295 pull
@@ -67,6 +79,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { spawnSync } from 'child_process';
 import {
   readPartition,
   partitionProblems,
@@ -406,6 +419,130 @@ check(
   foundSummary.sentenceIn !== null && foundSummary.sentenceIn === summedInCi,
   `and its N is the sum of the classes CI runs (${RUNS_IN_CI.join(' + ')})`,
   `sentence says ${foundSummary.sentenceIn ?? '(none parsed)'}, those classes sum to ${summedInCi}`
+);
+
+// =============================================================================
+rule('8. THE DOCUMENT IS WHAT ITS GENERATOR EMITS — not merely consistent with it');
+// =============================================================================
+//
+// KAN-451. §6 and §7 reconcile the document against the tree along the axes
+// they name: every script has a row, every row has a script, each row's CLASS
+// WORD matches that script's own header, and the summary agrees with the table
+// and with itself. Everything they do not name was unguarded — and the file's
+// own header says the classification is the deliverable, so the largest
+// unguarded thing was the part a reader actually relies on: the RATIONALE in
+// each row's third column.
+//
+// Measured at ab422d3: a row sat in the wrong position and every assertion in
+// this file was green in both states. `task/KAN-435` gave up a signed approval
+// head to correct it with nothing forcing them to, which is the defect — being
+// right there was voluntary. A falsified rationale is the worse case of the
+// same gap, because a rationale is READ: KAN-309 exists because one of these
+// sentences was already false once, carried in by shared boilerplate and
+// contradicting this document's own header four lines above it.
+//
+// WHY A CHILD PROCESS RATHER THAN AN IMPORTED RENDER FUNCTION. This runs the
+// command the document's header tells a human to run, and compares its stdout
+// byte for byte. Importing a shared renderer would check the file against
+// something that is not the generator, leaving `--markdown` — the thing anybody
+// actually invokes — free to drift away from both while this section stayed
+// green. The cost is one node child. It needs no build: `--markdown` returns
+// before the runner looks for `dist`, which is why this section can live in the
+// `ci-partition` job, the one that deliberately builds nothing.
+//
+// THE DETERMINISM ARM RUNS FIRST, AND IT IS NOT CEREMONY. A whole-file
+// comparison against a generator that does not agree with itself would be a
+// flaky required check — worse than the gap it closes. Running the generator
+// twice and requiring the two to agree means a red here cannot be
+// misattributed: an unstable generator is reported AS an unstable generator,
+// by name, instead of as a stale file the author is told to regenerate. It was
+// measured stable before this was written (10 consecutive runs byte-identical,
+// and byte-identical again either side of a script being added and removed);
+// this arm is what keeps that a standing claim rather than one afternoon's
+// observation.
+
+const GENERATOR_REL = 'daemon/scripts/run-ci-verify-set.mjs';
+const REGENERATE = `node ${GENERATOR_REL} --markdown > daemon/scripts/ci-partition.md`;
+
+/** Run the generator's document mode. `null` stdout when it did not exit 0. */
+function generate() {
+  const r = spawnSync(process.execPath, [path.join(REPO_ROOT, GENERATOR_REL), '--markdown'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024
+  });
+  return { ok: r.status === 0, status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+const genA = generate();
+check(
+  genA.ok,
+  `the generator runs — \`${GENERATOR_REL} --markdown\``,
+  `exit ${genA.status}\n${(genA.stderr || genA.stdout).trimEnd()}`
+);
+
+// Arm (a): the generator against itself. Only meaningful if it ran at all.
+const genB = genA.ok ? generate() : null;
+check(
+  genA.ok && genB?.ok === true && genA.stdout === genB.stdout,
+  'the generator agrees with itself — two consecutive runs on one tree are byte-identical',
+  !genA.ok
+    ? '(not run — the generator did not exit 0 above)'
+    : `run 1: ${genA.stdout.length} bytes, run 2: ${genB.stdout.length} bytes\n` +
+      'A generator that disagrees with itself cannot be a required check, and the\n' +
+      'fix is in the generator — NOT in ci-partition.md. Do not regenerate to get green.'
+);
+
+// Arm (b): the checked-in document against that output, byte for byte.
+//
+// Whole-file equality is deliberately the strictest available comparison. It
+// fails on a trailing newline, a line ending, or a reordered row — all of which
+// are real differences from what the generator emits, and every one of them has
+// the same one-command remedy. A comparison that tolerated them would be
+// choosing to let a class of hand-edit through in exchange for nothing.
+const onDisk = md; // read at §6, off the checkout
+const identical = genA.ok && onDisk === genA.stdout;
+
+let firstDifference = null;
+if (genA.ok && !identical) {
+  const a = genA.stdout.split('\n');
+  const b = onDisk.split('\n');
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (a[i] !== b[i]) {
+      firstDifference =
+        `first difference at line ${i + 1}:\n` +
+        `  generator: ${a[i] === undefined ? '(end of output)' : JSON.stringify(a[i])}\n` +
+        `  checked in: ${b[i] === undefined ? '(end of file)' : JSON.stringify(b[i])}`;
+      break;
+    }
+  }
+}
+
+check(
+  identical,
+  'and ci-partition.md is byte-identical to what it emits — rationales, row order and all',
+  !genA.ok
+    ? '(not compared — the generator did not exit 0 above)'
+    : `${firstDifference ?? 'the files differ in length only'}\n\n` +
+      `ci-partition.md is generated and has been hand-edited, or a script header\n` +
+      `changed and it was not regenerated. THE FIX IS ONE COMMAND, run from the\n` +
+      `repository root:\n\n    ${REGENERATE}\n\n` +
+      `Commit the result. Do not edit ci-partition.md by hand to make this pass —\n` +
+      `the headers are the source of truth and this file is a view of them.`
+);
+
+// AC3 of KAN-451: the limit goes in the OUTPUT, not only in the header above,
+// because the header is read by whoever edits this script and the output is read
+// by whoever is looking at a red.
+console.log(
+  '\n  §8 compares the whole document, so it covers what §6 and §7 do not:\n' +
+    '  every row\'s rationale prose, row order, headings, and whitespace.\n' +
+    '  WHAT IT STILL LETS THROUGH: a generator that is wrong CONSISTENTLY. If\n' +
+    '  `--markdown` miscounts or mis-renders, both runs agree, the committed file\n' +
+    '  agrees, and all three are wrong together. That is §7\'s uncovered leg\n' +
+    '  narrowed rather than closed — narrowed, because the document can no longer\n' +
+    '  be wrong on its own. WHO COVERS THE REST: nobody. Stated so no reader has\n' +
+    '  to infer a coverage that does not exist.'
 );
 
 console.log('');
