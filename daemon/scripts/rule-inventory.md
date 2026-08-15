@@ -126,6 +126,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-27` — KAN-399 — the check-in is always right, the work order usually is not; a sweep that finds nothing to poke is the sweep working
 - `H-28` — KAN-388 — an empty result is a claim about your search, a green is a claim about your check: say what the instrument would have printed and confirm it could have reached you
 - `H-29` — KAN-466, corrected by KAN-467 — `gh pr merge`'s exit code is not the verdict and `--delete-branch` is what triggers the local failure: `.merged` off REST is the only authority, a surviving branch is the ordinary outcome of a plain merge, on the `-d` path the exit code and the surviving branch are one cause read twice rather than two votes, and the branch delete is performed and proved explicitly
+- `H-30` — KAN-471 — a long ticket's comment history is a window and its completeness fields sit after the array that hides them: `getJiraIssue` returns 100 of KAN-39's 211 comments and the JQL route 20, both reporting `total`/`maxResults`/`startAt` correctly at 99.3% of the payload; read the container before the comments, and no route on the official MCP pages back to the rest
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
 - `R-3` — KAN-334 — retired: the workaround telling agents to avoid nesting a blockquote in a list item

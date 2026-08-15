@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 98 |
+| `yes` | 99 |
 | `partial` | 10 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **133** |
+| **total** | **134** |
 
-**108 of 133** run on every pull request.
+**109 of 134** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -100,6 +100,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-integration-enablement` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-integration-pluggability` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-io-stall-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-jira-comment-window` | yes | imports the built daemon modules and drives the real JiraPoller, JiraPollState and snapshotFrom. No network, no panes, no Jira. |
 | `verify-jira-credential-diagnostics` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-jira-log-hygiene` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-jira-parent-topology` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

@@ -1467,6 +1467,41 @@ away from reporting five tickets as the whole board. Read the completeness
 fields a surface gives you — `pageInfo.hasNextPage`, `remainingCount` — for the
 same reason you re-read a write.
 
+**A long ticket's comment history is exactly that subset, and its completeness
+fields are in the one place nobody looks.** Measured on **KAN-39** on
+2026-08-15: `getJiraIssue(fields: ["comment"])` returned **100 of 211**
+comments, and the JQL route returned **20 of 211** — two different caps on two
+tools you use daily. **Both report themselves correctly and neither hides
+anything**: the container is `{comments, self, maxResults, total, startAt}`, the
+arithmetic `startAt + returned === total` is exact, and **`startAt` is what says
+how much fell off the back** — non-zero means you are holding a window on the
+newest end. ⚠ **The trap is positional rather than missing.** In a 310 KB
+payload the `comments` array begins at 7% and those three fields sit at **99.3%,
+after the entire array** — so an agent whose read spills to a file and who greps
+it for comment bodies **reads the array and never the container**. That is not
+hypothetical: **KAN-471 was filed on exactly that reading**, reporting *"no
+marker of any kind, no `total`, no `maxResults`"* for a marker that was present,
+complete and precise. It ruled out truncation — the file parses clean — which is
+the right check for the wrong confound: **a document can be complete and still be
+read partially.** So **read the container before the comments**, and quote
+`total` when you cite a ticket's history.
+
+**And on this one you cannot page back, so say what you actually read.** There
+is **no comment-listing tool** on the official Atlassian MCP — `getJiraIssue`
+and the JQL search take no comment offset, and `fetch` takes an ARI rather than
+a REST path — so **111 of KAN-39's 211 comments cannot be reached by any agent
+through any surface you have**. `KAN-39` is the most-cited history in this
+project, which makes the practical consequence sharp: **"I checked the epic and
+found nothing" is a claim about the newest hundred comments**, and it reads like
+a claim about the ticket. Two duplicate tickets in one day came from that gap.
+So when a search of a long ticket's history comes back empty, **report the
+window you searched and its `total` alongside the finding** — that is this
+file's *empty result is a claim about your search* rule with the instrument
+named, and here the instrument hands you the numbers to name it with. Butchr's
+own proxy now carries `atlassian_get_issue_comments`, which pages the whole
+history by `startAt`; it is off by default, so **check whether it is enabled
+before you rely on it and do not assume the gap is closed for you**.
+
 Note the shape rather than filing either half as a new kind of hazard: it is
 the one this file already teaches for `butchr_send_to_agent` — **a success that
 reports the call was made, not that the thing happened.** When a response

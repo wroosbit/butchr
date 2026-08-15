@@ -1626,6 +1626,77 @@ const RULES = [
       ],
     },
   },
+  {
+    // KAN-471. A long ticket's comment history is a window, and the fields
+    // that say so sit after the payload that hides them.
+    //
+    // WHAT WAS MEASURED, because the rule is worthless without the numbers:
+    // on KAN-39, 2026-08-15, `getJiraIssue(fields: ["comment"])` returned
+    // **100 of 211** comments and the JQL search route returned **20 of 211**.
+    // Both containers carried `total`, `maxResults` and a non-zero `startAt`,
+    // and `startAt + returned === total` held exactly on both. The cap is real
+    // and the reporting of it is complete.
+    //
+    // WHY IT IS CARRIED BY ALL FOUR PROMPTS RATHER THAN task.md ALONE, which
+    // is the question H-29's docblock had to answer in the opposite direction:
+    // H-29 is task-only because only task agents merge, and an epic prompt
+    // teaching merge mechanics would be green only because somebody pasted an
+    // irrelevant paragraph. Nothing like that applies here. **Every agent type
+    // reads tickets, and supervisors read the longest ones** — KAN-39 is the
+    // epic whose history is already past the cliff, and an epic agent
+    // reconstructing a ruling off it is the exact reader this rule is for. Its
+    // sibling H-28 is carried by all four for the same reason.
+    //
+    // THE FILING IS THE SPECIMEN, AND THAT IS WHY IT IS QUOTED RATHER THAN
+    // TIDIED AWAY. KAN-471 reported "no `total`, no `maxResults`, no marker of
+    // any kind" for fields that were present. It was not careless — it checked
+    // the confound it could think of, that the spilled file was truncated, and
+    // ruled it out correctly because the file parses clean. But truncation was
+    // the wrong confound: the document was complete and the *reading* was
+    // partial, and at 99.3% of a 310 KB payload the difference is invisible.
+    // A rule that only said "the read is capped" would leave the next agent
+    // making the same mistake, so the positional half is pinned too.
+    //
+    // FIVE PHRASES ACROSS TWO PARAGRAPHS, SPLIT SO THAT DELETING EITHER
+    // PARAGRAPH FAILS AT LEAST TWO — KAN-467's lesson, applied at the time of
+    // writing rather than after a reviewer catches it:
+    //   - `startAt is what says how much fell off the back` + `after the
+    //     entire array` + `reads the array and never the container` — the
+    //     mechanism paragraph. The first is the instrument, the second is why
+    //     it is missed, the third is the failure mode in the reader's own
+    //     terms. Pinned separately because a length pass that keeps "the read
+    //     is capped" and drops the positional half leaves the rule true and
+    //     useless.
+    //   - `no comment-listing tool` + `a claim about the newest hundred` — the
+    //     reachability paragraph. The first is the fact that nothing pages
+    //     back; the second is the consequence for the sentence agents actually
+    //     write. Without the second this reads as trivia about an API.
+    //
+    // WHAT THIS ENTRY DOES NOT COVER, said plainly: it asserts the sentences
+    // are present, never that any agent read the container before the
+    // comments. Nothing mechanical can see that. And it says nothing about
+    // whether the proxy operation this ticket added is *enabled* — it is off
+    // by default, which is why the prompt text tells the reader to check
+    // rather than to assume.
+    id: 'H-30',
+    title:
+      "a long ticket's comment history is a window and its completeness fields sit after the array that hides them — read the container before the comments, and no route pages back to the rest",
+    carriedBy: Object.fromEntries(
+      PROMPTS.map((f) => [
+        f,
+        [
+          // Backtick-tolerant: the prompts write `startAt` as inline code, and
+          // a pattern that breaks when a wording pass adds or removes the
+          // backticks would be guarding the markup rather than the rule.
+          /startAt`? is what says how much fell off the back/i,
+          /after the entire array/i,
+          /reads the array and never the container/i,
+          /no comment-listing tool/i,
+          /a claim about the newest hundred/i,
+        ],
+      ])
+    ),
+  },
 ];
 
 /**

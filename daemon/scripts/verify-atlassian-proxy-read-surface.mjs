@@ -84,6 +84,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import {
+  PROXY_COMMENT_MAX_RESULTS,
   PROXY_ENV_VAR,
   PROXY_LIST_MAX_RESULTS,
   PROXY_OPERATIONS,
@@ -180,9 +181,16 @@ check(
   unmapped.length === 0,
   JSON.stringify(unmapped)
 );
+// 21 until KAN-471, which added `atlassian_get_issue_comments` — the one read
+// with no counterpart on the official server, because that server has no
+// comment-listing tool and the issue endpoint both share caps the comment
+// field at 100 with no way to page past it. So this count and
+// `Object.keys(REPLACES).length` above are deliberately no longer equal, and
+// the check directly above is the one that still ties the table to the
+// official surface.
 check(
-  'the read surface is exactly 21 operations — the 3 KAN-272 shipped plus 18',
-  operationsFor('confluence-read').filter((op) => op.method === 'GET').length === 21,
+  'the read surface is exactly 22 operations — the 3 KAN-272 shipped, 18 from KAN-292, and KAN-471\'s comment paging',
+  operationsFor('confluence-read').filter((op) => op.method === 'GET').length === 22,
   JSON.stringify(operationsFor('confluence-read').map((op) => op.tool))
 );
 check(
@@ -458,6 +466,44 @@ for (const op of operationsFor('confluence-read')) {
       JSON.stringify(requests?.map((r) => r.path))
     );
   }
+}
+
+// KAN-471's comment paging takes `maxResults` and `startAt` rather than
+// `limit`, so the loop above — which keys off a `limit` field — skips it
+// entirely. THAT SKIP IS THE POINT OF THIS BLOCK. `BOUNDED_INTERPOLATIONS`
+// exempts both of its interpolations from the encoding check on the stated
+// grounds that they are bounded by construction, and an exemption whose
+// backing assertion never runs is the artifact-claims-more-than-its-mechanism
+// defect in the proof itself. So both bounds are driven here, against the same
+// hostile values, and the exemption is earned rather than asserted.
+const commentsOp = operationByTool('atlassian_get_issue_comments');
+check(
+  'atlassian_get_issue_comments is on the read surface',
+  !!commentsOp && commentsOp.method === 'GET',
+  JSON.stringify(commentsOp?.tool ?? null)
+);
+for (const asked of [10_000, PROXY_COMMENT_MAX_RESULTS + 1, 'lots', -5, NaN]) {
+  const requests = requestsOf(commentsOp, { issueKey: 'KAN-39', maxResults: asked });
+  const got = Number(requests?.[0]?.path.match(/maxResults=(\d+)/)?.[1] ?? -1);
+  check(
+    `atlassian_get_issue_comments bounds maxResults=${JSON.stringify(asked)} at ${PROXY_COMMENT_MAX_RESULTS}`,
+    got >= 1 && got <= PROXY_COMMENT_MAX_RESULTS,
+    JSON.stringify(requests?.map((r) => r.path))
+  );
+}
+// `startAt` has no useful ceiling — paging a long history legitimately asks for
+// 200 — so what must hold is that it reaches the path as a non-negative
+// integer and never as caller text. `'../../admin'` is in the list because
+// that is the value the whole containment argument exists to refuse.
+for (const asked of ['lots', -5, NaN, 1.7, '../../admin', 10_000_000]) {
+  const requests = requestsOf(commentsOp, { issueKey: 'KAN-39', startAt: asked });
+  const path = requests?.[0]?.path ?? '';
+  const got = Number(path.match(/startAt=(\d+)(?:&|$)/)?.[1] ?? -1);
+  check(
+    `atlassian_get_issue_comments bounds startAt=${JSON.stringify(asked)} to a non-negative integer`,
+    got >= 0 && Number.isInteger(got) && !/\.\.|admin/.test(path),
+    JSON.stringify(path)
+  );
 }
 
 // ── 5b. the scopes this surface needs ──────────────────────────────────────
