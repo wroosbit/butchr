@@ -28,11 +28,16 @@
 //
 // WHAT THE RELAY LEAVES UNCOVERED, and nobody else covers it either:
 //
-//   - **A peer that RESTARTS.** CrabCast stays up throughout. A restart moves
-//     `bootId` and `build.commit`, and the handshake re-reads both on the new
-//     connection — that path is exercised by nothing here. It is the ordinary
-//     deploy case, so this is the honest gap and it is named rather than
-//     implied.
+//   - **A peer that RESTARTS.** CrabCast stays up throughout, so nothing here
+//     exercises it. It is the ordinary deploy case, and it was the honest gap
+//     this header named. **COVERED SINCE KAN-403 by
+//     `verify-crabcast-peer-restart-live.mjs`**, which starts a CrabCast of its
+//     own on an isolated data dir and really stops and replaces the process.
+//     What that run found is worth knowing before reading this one: `bootId`
+//     moves and **`build.commit` does not** — the prediction in this bullet was
+//     half wrong, because both daemons are the same installed binary — and the
+//     restarted peer re-issues every pane a NEW `sessionId`, which used to
+//     settle every mirror `ended` and permanently dead.
 //   - **The errno path.** The relay closes politely. AF_UNIX has no RST, so a
 //     peer dying rudely is delivered as EOF exactly like a polite close and no
 //     socket in either proof produces ECONNRESET. `verify-crabcast-reconnect-

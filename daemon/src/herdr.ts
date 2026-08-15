@@ -88,6 +88,34 @@ export interface PtyDiscontinuity {
    * string so a second cause has to be declared here before it can be reported.
    */
   cause: 'link-dropped';
+  /**
+   * Whether the peer we came back to is a **different process** from the one we
+   * lost — `true` for a restart, `false` for the same daemon, `null` when
+   * nothing could tell (KAN-403).
+   *
+   * ## Why a gap needs this and `cause` does not answer it
+   *
+   * `cause` says the link dropped, which is true of both. What separates them is
+   * everything a reader does next: a socket blip loses a window of output and
+   * nothing else, while a restart additionally invalidates **every session id
+   * the previous daemon issued** — so a consumer holding one is holding a dead
+   * address, and an operator seeing a cluster of these is looking at a deploy
+   * rather than at a flapping socket.
+   *
+   * ## The three states, and why `null` is not `false`
+   *
+   * It is read from `bootId`, which sits outside CrabCast's read-path contract,
+   * so a peer may publish none — and the first connection of a link has nothing
+   * to compare against whatever the peer publishes. Both are *"we did not look"*
+   * rather than *"it did not happen"*, and `false` is the value a consumer
+   * branches on to conclude its session ids are still good. Collapsing them is
+   * the same defect `readChannelEnabled` exists to prevent, one field over.
+   *
+   * **`null` while the gap is still open is ordinary**: the drop is recorded
+   * before there is a peer to have an opinion about. It is filled in when the
+   * resync runs.
+   */
+  peerRestarted: boolean | null;
   /** The refusal, verbatim, when `resync` is `failed`. Absent otherwise. */
   error?: string;
 }

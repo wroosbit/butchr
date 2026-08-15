@@ -37,9 +37,19 @@ function discontinuityBanner(d) {
       : d.resync === 'failed'
         ? `resync FAILED${d.error ? `: ${d.error}` : ''}`
         : 'not yet resynced';
+  // **Only `true` is rendered, and the other two states are deliberately silent**
+  // (KAN-403). `peerRestarted` has three values and only one of them changes
+  // what a reader should think: `true` says the agent daemon was replaced under
+  // this pane, which is why a gap appeared during a deploy and is the difference
+  // between "the network hiccuped" and "everything was restarted". `false` and
+  // `null` are "the same daemon" and "nobody could tell", and neither earns a
+  // line in front of somebody reading their terminal. Suppressing them here is
+  // not the collapse the field's own docblock warns about: the record keeps all
+  // three, and this is a rendering choice about one surface.
+  const cause = d.peerRestarted === true ? ' — the agent daemon RESTARTED' : '';
   // Yellow, bold, its own lines, and a carriage return first so it cannot land
   // mid-line in whatever the pane was drawing when the link went.
-  return `\r\n\x1b[1;33m── output gap #${d.sequence}: ${when} — ${verdict} ──\x1b[0m\r\n`;
+  return `\r\n\x1b[1;33m── output gap #${d.sequence}: ${when}${cause} — ${verdict} ──\x1b[0m\r\n`;
 }
 
 /**

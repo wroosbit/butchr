@@ -108,6 +108,19 @@ function addressForPath(dir: string): { type: string; key: string } | null {
 }
 
 /**
+ * A map key for an agent's address, case-folded on the key exactly as
+ * {@link CrabCastRuntime.sessionForAddress} folds it (KAN-403).
+ *
+ * Spelled once because it is used on both sides of a lookup — a census row's
+ * address is built here and a session's address is built here — and two
+ * hand-rolled template strings that disagree about case would produce a resync
+ * that silently found nothing to re-resolve and re-subscribed a dead id.
+ */
+function addressKey(type: string, key: string): string {
+  return `${type}/${key.toLowerCase()}`;
+}
+
+/**
  * **The launcher names Butchr is able to interpret — its own vocabulary, spelled
  * here rather than imported, and the reason for that is not tidiness (KAN-429).**
  *
@@ -1830,16 +1843,142 @@ export class CrabCastRuntime implements AgentRuntime {
       return;
     }
 
+    void this.resyncMirrors(event);
+  }
+
+  /**
+   * Re-subscribe every stale mirror — **re-resolving its remote session id off a
+   * fresh census first** (KAN-403).
+   *
+   * ## Why re-resolving, and why it is not a retry
+   *
+   * A restarted CrabCast re-adopts the agents in its durable registry at boot
+   * and issues each a **new** `sessionId` for the same pane. Measured against a
+   * real restart: the pane survived with its `paneId` and its whole scrollback
+   * intact, and the id changed. So the id this daemon holds was issued by a
+   * process that no longer exists, and `pty_init` on it is refused
+   * `unknown_session` — with the link perfectly healthy, which is what made the
+   * failure terminal: `subscribeMirror`'s connected-and-refused branch settles
+   * the mirror `ended`, `ended` is terminal, and the sweep here skips it forever.
+   * A live pane, a full scrollback, and Butchr rendering nothing at it until the
+   * daemon restarts. **Every deploy did this, to every mirror.**
+   *
+   * **CrabCast's own refusal is what rules out the obvious fix.** In its words:
+   * *"A PTY session id is only valid for the daemon process that issued it …
+   * Ask for the agent again (activate by path) and use the session id that comes
+   * back; retrying this one cannot succeed."* A retry — however many times,
+   * however patiently backed off — is a request the peer has already told us can
+   * never be answered. What repairs it is asking again **by address**, which is
+   * the identity that survives a restart, and taking the id that comes back.
+   *
+   * ## Why this does NOT key on whether the peer restarted
+   *
+   * It could: `link.peerIdentified()` says so, and it is awaited here. But it is
+   * awaited to **attribute** the gap, never to decide whether to re-resolve —
+   * and that distinction is the answer to this ticket's third question rather
+   * than an implementation detail. A restart is one reason an id can go stale
+   * and not the only one, `bootId` is uncontracted so a peer may publish none,
+   * and a re-resolution that finds the id unchanged costs one census read and
+   * changes nothing. Keying the repair on the detector would make the repair
+   * exactly as reliable as the detector, for no gain; keying it on the census
+   * makes it correct even where the detector answers `unknown`.
+   *
+   * The Butchr `sessionId` deliberately does **not** move with the remote one.
+   * It is the address every consumer holds — the extension, `router.ts`, the
+   * registry — so re-pointing the mapping keeps one session continuous across a
+   * peer restart, which is what a gap on that session's record is describing. A
+   * new Butchr session would instead present the restart as *"the old agent
+   * vanished and a new one appeared"*, and quietly orphan the discontinuity that
+   * explains it.
+   */
+  private async resyncMirrors(event: LinkStateEvent): Promise<void> {
     const stale = [...this.ptyMirrors.entries()].filter(([, m]) => m.state === 'stale');
     if (stale.length === 0) return;
     this.log(
       `link connected (connection #${event.connectionSeq}): re-subscribing ${stale.length} ` +
         `pty mirror(s). Their gaps stay on the record whether or not this succeeds.`
     );
+
+    // Awaited rather than read off `link.observedPeerIdentity`, because the
+    // `connected` event fires BEFORE the handshake completes — reading it
+    // directly here returns the PREVIOUS connection's verdict, which is
+    // `same-peer` exactly when it is wrong. Bounded by the handshake's own
+    // request timeout; `unknown` is what a handshake that never answered gives.
+    const identity = await this.link.peerIdentified();
+    const peerRestarted =
+      identity === 'restarted' ? true : identity === 'same-peer' ? false : null;
+
+    const freshRemoteIds = await this.remoteSessionIdsByAddress();
+
     for (const [sessionId, mirror] of stale) {
+      // Stamped on the OPEN gap, before the re-subscription can close it.
+      // `closeGap` settles the same object, so the attribution lands on the
+      // record a consumer already holds rather than on a second copy.
+      if (mirror.openGap) mirror.openGap.peerRestarted = peerRestarted;
+
+      const session = this.sessions.get(sessionId);
+      const fresh = session
+        ? freshRemoteIds.get(addressKey(session.type, session.key))
+        : undefined;
+      if (fresh && fresh !== mirror.remoteSessionId) {
+        // The handler is keyed by remote id, so the stale key is dropped rather
+        // than left behind: an entry under a dead id routes nothing and would
+        // make `subscribedSessions()` report a subscription that cannot exist.
+        this.link.releasePty(mirror.remoteSessionId);
+        this.log(
+          `pty mirror for ${sessionId}: the peer re-issued this pane as ${fresh} ` +
+            `(was ${mirror.remoteSessionId}). Re-resolved by address off a fresh census — ` +
+            `retrying the old id could not have succeeded, and CrabCast says so in its own ` +
+            `refusal.`
+        );
+        mirror.remoteSessionId = fresh;
+        // The write path reads this map rather than the mirror, so a repair that
+        // updated only the mirror would render correctly and swallow every
+        // keystroke. Both, or the terminal is half-repaired in the direction
+        // nobody checks.
+        this.remoteIds.set(sessionId, fresh);
+      }
+
       mirror.state = 'subscribing';
       void this.subscribeMirror(sessionId, mirror);
     }
+  }
+
+  /**
+   * A fresh `list_agents`, reduced to address → the peer's CURRENT session id.
+   *
+   * Fresh rather than `this.census`, and that is the whole point of the method:
+   * the held census was taken from the peer that has just gone, so every id in
+   * it is exactly the set of ids that may have died. Reading it would re-resolve
+   * a stale id onto itself and report success.
+   *
+   * An empty map on any failure, and the caller degrades to re-subscribing with
+   * the ids it has — which is precisely the behaviour that stood before this
+   * ticket. A census that cannot be read must not stop the resync attempt;
+   * losing the repair to a failed *optimisation* of it would be worse than the
+   * defect.
+   */
+  private async remoteSessionIdsByAddress(): Promise<Map<string, string>> {
+    const byAddress = new Map<string, string>();
+    try {
+      const res = await this.link.request({ action: 'list_agents' });
+      if (res.success !== true) return byAddress;
+      this.census = this.readCensus(res);
+      for (const row of this.census.rows) {
+        if (row.state !== 'running' || !row.sessionId) continue;
+        const address = addressForPath(row.workDir ?? row.path);
+        if (!address) continue;
+        byAddress.set(addressKey(address.type, address.key), row.sessionId);
+      }
+    } catch (err) {
+      this.log(
+        `could not read a fresh census to re-resolve pty session ids: ` +
+          `${err instanceof Error ? err.message : String(err)}. Re-subscribing with the ids we ` +
+          `hold, which is what happened before KAN-403 — a stale id will be refused and the gap ` +
+          `will settle failed, disclosed either way.`
+      );
+    }
+    return byAddress;
   }
 
   /**
@@ -1858,7 +1997,11 @@ export class CrabCastRuntime implements AgentRuntime {
       restoredAt: null,
       windowMs: null,
       resync: 'pending',
-      cause: 'link-dropped'
+      cause: 'link-dropped',
+      // Null, not false: at the moment a drop is recorded there is no peer to
+      // have an opinion about, and `false` here would claim we had looked. The
+      // resync fills it in — see `resyncMirrors` (KAN-403).
+      peerRestarted: null
     };
     mirror.openGap = gap;
     const session = this.sessions.get(sessionId);
