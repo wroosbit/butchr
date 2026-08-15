@@ -1187,6 +1187,21 @@ the right check for the wrong confound: **a document can be complete and still b
 read partially.** So **read the container before the comments**, and quote
 `total` when you cite a ticket's history.
 
+**How you read it decides whether it is there, so do not grep for it.** ⚠ **The
+three fields occur exactly once each, near the end, so a partial read returns
+zero of them — which is the identical count you would get if they genuinely were
+absent.** Measured on `KAN-348`: `total`, `maxResults` and `startAt` each appear
+once, at **71.6%** of a 342 KB payload, and a grep over the first half of that
+file returns `0` for all three. **`epic/KAN-39` reported exactly those zero
+counts while reviewing this rule** and concluded the fields were absent from the
+MCP path — the third agent in one day to meet this, and the second to meet it
+while investigating it. **So when the read spills to a file, parse the saved
+JSON and read `fields.comment.total` as a value; never grep the payload for the
+field names, and never judge from its first chunk.** ⚠ **And the shape does not
+discriminate — the values do.** A 22-comment ticket and a 211-comment one return
+the *same five keys*; what separates them is `startAt: 0` from `startAt: 111`.
+**An agent looking for a different-looking container will not find one.**
+
 **And on this one you cannot page back, so say what you actually read.** There
 is **no comment-listing tool** on the official Atlassian MCP — `getJiraIssue`
 and the JQL search take no comment offset, and `fetch` takes an ARI rather than

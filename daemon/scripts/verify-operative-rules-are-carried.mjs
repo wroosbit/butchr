@@ -1693,6 +1693,22 @@ const RULES = [
           /reads the array and never the container/i,
           /no comment-listing tool/i,
           /a claim about the newest hundred/i,
+          // The how-to-read paragraph, added in review. `epic/KAN-39` withheld
+          // the marker reporting the fields ABSENT on the MCP path, having
+          // grepped the payload and got zero for all three. Reproduced on
+          // their own discriminating case (KAN-348, adf, 22 comments): the
+          // fields are present, and each occurs EXACTLY ONCE at 71.6% of a
+          // 342 KB file — so a grep over the first half returns precisely the
+          // zeroes they reported. The rule said "read the container" without
+          // saying how, and the how is what their review earned.
+          //
+          // `fails toward absent` was the obvious phrase for this and is
+          // DELIBERATELY NOT USED: it already appears twice in task.md and
+          // once in confluence.md under H-28, so it would be saturated by
+          // neighbouring prose and match with this paragraph deleted. Checked
+          // rather than assumed.
+          /parse the saved JSON/i,
+          /returns zero of them/i,
         ],
       ])
     ),
