@@ -1013,6 +1013,9 @@ export interface CensusReading {
 }
 
 export class HerdrBridge implements AgentRuntime {
+  /** See {@link AgentRuntime.runtimeName}. */
+  public readonly runtimeName = 'herdr' as const;
+
   private sessions: Map<string, HerdrSession> = new Map();
 
   /** Set by the daemon so a dying PTY can be announced to connected clients. */

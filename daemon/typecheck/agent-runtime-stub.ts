@@ -48,6 +48,13 @@ const unimplemented = (): never => {
  * unable to satisfy the type at all.
  */
 class StubRuntime implements AgentRuntime {
+  // KAN-475. A runtime has to be able to say what it is, because the sentences
+  // that name a runtime now ask one instead of spelling it. The union is
+  // deliberately closed — a third runtime widens `RuntimeMode` rather than
+  // inventing a name here — so this fixture is where that cost is felt, which
+  // is what the fixture is for.
+  readonly runtimeName = 'crabcast' as const;
+
   setSessionEndedListener(_listener: (event: SessionEndedEvent) => void): void {}
 
   // KAN-246. A runtime that spawns no pane of its own simply never fires this,

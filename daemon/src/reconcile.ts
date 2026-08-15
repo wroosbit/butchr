@@ -132,7 +132,10 @@ export async function reconcileAgents(opts: {
 
   if (!(await waitForHerdr(herdrBridge))) {
     log(
-      `[reconcile] herdr did not become reachable within ${HERDR_READY_TIMEOUT_MS / 1000}s; ` +
+      // KAN-475: name the runtime that did not answer, not the one that
+      // usually does.
+      `[reconcile] ${herdrBridge.runtimeName} did not become reachable within ` +
+      `${HERDR_READY_TIMEOUT_MS / 1000}s; ` +
       `skipping restoration rather than starting a second copy of a fleet that may already exist. ` +
       `The ${expected.length} expected agent(s) will be reported as missing.`
     );

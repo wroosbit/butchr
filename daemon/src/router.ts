@@ -2043,14 +2043,25 @@ export class MessageRouter {
   }
 
   /**
-   * Whether herdr has a live runtime behind this exact agent name.
+   * Whether the runtime serving this daemon has a live agent at this exact name.
    *
    * The same predicate reconciliation uses (`filter(a => a.agentRuntime)`) and
-   * for the same reason: herdr keeps a name registration for any pane it ever
-   * started an agent into, so the name answering is not evidence of an agent.
-   * See the `staleRecord` branch of `HerdrBridge.spawnSession`.
+   * for the same reason: a runtime keeps a name registration for any pane it
+   * ever started an agent into, so the name answering is not evidence of an
+   * agent. See the `staleRecord` branch of `HerdrBridge.spawnSession`.
+   *
+   * **It was called `hasLiveHerdrAgent` until KAN-475, and the name is the
+   * whole of what that ticket found here.** `this.herdrBridge` is typed
+   * {@link AgentRuntime} and built once by `createAgentRuntime`, so it holds
+   * *whichever* runtime is serving — under CrabCast this reads CrabCast's own
+   * census, which is what the field name and the method name both denied. The
+   * ticket was filed reporting that these two reads bypass the runtime seam;
+   * they do not, and the misnaming is what made a correct call site read as a
+   * broken one. Measured rather than argued: `verify-runtime-agnostic-census.mjs`
+   * puts a live CrabCast-owned agent in front of this method and the collision
+   * guard below.
    */
-  private hasLiveHerdrAgent(agentName: string): boolean {
+  private hasLiveAgent(agentName: string): boolean {
     return this.herdrBridge
       .listHerdrAgents()
       .some((agent) => agent.name === agentName && agent.agentRuntime !== null);
@@ -2063,6 +2074,15 @@ export class MessageRouter {
    * answer rather than an anomaly detector — `epic/KAN-39` and `task/KAN-39`
    * are both nameable addresses. What makes the pair interesting is that both
    * being live at once is the (key, type) collision KAN-83 exists to prevent.
+   *
+   * **Reads the serving runtime's census, not herdr's** — see
+   * {@link hasLiveAgent} for why that sentence is worth writing down. This is
+   * the read KAN-475 flagged as the dangerous one, because its failure mode
+   * would be silence: a guard that finds no sibling because it looked in the
+   * wrong runtime's list reports "no collision" in the same words as a guard
+   * that looked in the right one and found nothing. KAN-473's bare-key refusal
+   * depends on the collision being found, so that failure would take this
+   * one's protection with it.
    */
   private liveAgentAtKeyOfOtherType(type: string, key: string): string | undefined {
     for (const agent of this.herdrBridge.listHerdrAgents()) {
@@ -2127,11 +2147,12 @@ export class MessageRouter {
     agentName: string,
     reattachOnly: boolean
   ): { refusedBy: string; error: string } | undefined {
-    if (reattachOnly && !this.hasLiveHerdrAgent(agentName)) {
+    if (reattachOnly && !this.hasLiveAgent(agentName)) {
       return {
         refusedBy: 'reattach-only',
         error:
-          `Nothing to re-attach to: herdr has no live agent named ${agentName}. ` +
+          `Nothing to re-attach to: ${this.herdrBridge.runtimeName} has no live agent ` +
+          `named ${agentName}. ` +
           `This request was the panel re-attaching to an agent it believed was already ` +
           `running, and re-attaching is the whole of what it is allowed to do — starting ` +
           `one here would be a start nobody asked for. Use the On switch to start it.`
@@ -3138,12 +3159,15 @@ export class MessageRouter {
             modelRead: 'not-measured'
           },
           {
+            // KAN-475: the runtime names itself. These four sentences are
+            // evidence a reader acts on, and under CrabCast they used to
+            // credit or blame herdr for a send herdr never saw.
             transportAccepted: result.success
-              ? "herdr accepted the keystrokes for the recipient's pane"
-              : `herdr refused the send: ${result.error ?? 'no reason given'}`,
+              ? `${this.herdrBridge.runtimeName} accepted the keystrokes for the recipient's pane`
+              : `${this.herdrBridge.runtimeName} refused the send: ${result.error ?? 'no reason given'}`,
             sessionPresent: result.success
-              ? 'herdr resolved a live pane for this address and typed into it'
-              : `herdr could not reach a pane for ${address.type}/${address.key}`,
+              ? `${this.herdrBridge.runtimeName} resolved a live pane for this address and typed into it`
+              : `${this.herdrBridge.runtimeName} could not reach a pane for ${address.type}/${address.key}`,
             enteredTranscript:
               'nothing here read the pane. `butchr_tail_agent` is what shows whether the Enter took; ' +
               'the Enter can be lost and strand the text at the composer (nudge.ts, KAN-79)',
