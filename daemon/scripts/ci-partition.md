@@ -41,10 +41,10 @@ classification is the deliverable and the CI job is downstream of it.
 | `yes` | 96 |
 | `partial` | 10 |
 | `quarantined` | 3 |
-| `no` | 20 |
-| **total** | **129** |
+| `no` | 21 |
+| **total** | **130** |
 
-**106 of 129** run on every pull request.
+**106 of 130** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -188,6 +188,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-message-provenance-live` | no | needs a real daemon, herdr, a pane and a live Claude Code agent — the provenance it checks is what a model actually received. |
 | `verify-no-attach-steal` | no | takes the key of a live agent as its argument and attaches to it; there is nothing to pass in CI. |
 | `verify-pretrust-survives-concurrency` | no | every stage needs a real spawn, and it refuses to run at all when herdr is absent rather than pretending otherwise. |
+| `verify-restart-channel-recovery` | no | its evidence is this machine's live ~/.local/share/butchr/ daemon.log, which records real restarts of a real fleet. A CI runner has no daemon, no fleet and no such file, so there is nothing for it to read and nothing it could conclude. It exits 2 (setup, not verdict) when the log is absent, so a CI run that reached it anyway would report "could not check" rather than a green. |
 | `verify-send-interrupts-inflight-work` | no | needs a real daemon and a live agent with a tool call actually in flight — the interrupt is the thing under test. |
 | `verify-send-transport-claims` | no | the switch-off and stop-now legs spawn herdr, and it counts their absence as failures rather than skipping them, so it is red in CI by its own honest design. |
 | `verify-spawn-failure-legibility` | no | stands up a private herdr server and makes real spawns fail against it. |

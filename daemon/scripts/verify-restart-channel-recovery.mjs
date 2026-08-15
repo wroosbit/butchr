@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// CI-RUNNABLE: no — its evidence is this machine's live ~/.local/share/butchr/
+// daemon.log, which records real restarts of a real fleet. A CI runner has no
+// daemon, no fleet and no such file, so there is nothing for it to read and
+// nothing it could conclude. It exits 2 (setup, not verdict) when the log is
+// absent, so a CI run that reached it anyway would report "could not check"
+// rather than a green.
+//
 /**
  * WHAT FAILURE THIS WOULD CATCH: KAN-274's eager reconnect regressing, so that
  * an agent surviving a daemon restart is left unaddressable over the channel for
