@@ -83,7 +83,11 @@ export type ClipRecord = {
    * different information: a summarised row still names its agent, an omitted
    * entry does not, and an omitted section took everything with it.
    */
-  readonly reduction: 'rows-summarised' | 'entries-omitted' | 'section-omitted';
+  readonly reduction:
+    | 'rows-summarised'
+    | 'rows-addressed'
+    | 'entries-omitted'
+    | 'section-omitted';
   /** How many entries came back. `null` where the field is not a list. */
   readonly returned: number | null;
   /** How many exist. `null` where the field is not a list. */
@@ -336,7 +340,12 @@ export function fitListAgentsResponse(
     working.agentsOffset = offset;
   }
 
-  if (options.view === 'summary') {
+  // `Array.isArray` rather than assuming the field is there. A daemon that
+  // answered without `agents` at all — an error response reaching this path, a
+  // peer that never sent one — used to reach `.map` on `undefined` and throw,
+  // which would have turned a degraded answer into no answer. This tool exists
+  // to make a partial answer legible; crashing on one is the opposite.
+  if (options.view === 'summary' && Array.isArray(working.agents)) {
     // Asked for outright rather than fallen back to, so it is not a clip: the
     // caller got exactly the answer it requested, and `agentsTotal` still says
     // how many there are. The ladder below still runs, because a fleet large
@@ -422,15 +431,27 @@ export function fitListAgentsResponse(
         agentsView: 'addresses'
       };
     }
-    clips.push({
+
+    // REPLACE THE EARLIER VIEW RECORD RATHER THAN PUSH A SECOND. Both rungs can
+    // fire on the same answer, and pushing twice listed `agents rows-summarised
+    // 400/400` in the verdict twice — identical numbers, no way to tell which
+    // view actually resulted, and a `clipped` array that reads as two separate
+    // losses where there was one. A reader wants the END STATE, and
+    // `rows-addressed` subsumes `rows-summarised`.
+    const record: ClipRecord = {
       field: 'agents',
-      reduction: 'rows-summarised',
+      reduction: step.kind === 'agents-summarise' ? 'rows-summarised' : 'rows-addressed',
       returned: rows.length,
       total: agentsTotal,
-      // Zero, and that is the point of this rung: detail went, no agent did.
+      // Zero, and that is the point of these rungs: detail went, no agent did.
       omitted: 0,
       readTheRest: callRecipe(tool, `{ section: 'agents' }`)
-    });
+    };
+    const priorView = clips.findIndex(
+      (c) => c.field === 'agents' && (c.reduction === 'rows-summarised' || c.reduction === 'rows-addressed')
+    );
+    if (priorView === -1) clips.push(record);
+    else clips[priorView] = record;
     current = fits(working);
   }
 

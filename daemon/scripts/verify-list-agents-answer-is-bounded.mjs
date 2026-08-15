@@ -420,6 +420,39 @@ check(
 // (The first draft of this check asserted "all 400, no drop" and went red on
 // the real arithmetic. The assertion was wrong, not the fitter; it is recorded
 // here rather than quietly weakened.)
+// One record per field, naming the END STATE. Both `agents` view rungs fire on
+// a fleet this size, and pushing one record each listed `agents rows-summarised
+// 400/400` twice — identical numbers, no way to tell which view resulted, and a
+// `clipped` array reading as two losses where there was one.
+const agentsViewRecords = hugeFit.completeness.kind === 'clipped'
+  ? hugeFit.completeness.clipped.filter(
+      (c) => c.field === 'agents' && (c.reduction === 'rows-summarised' || c.reduction === 'rows-addressed')
+    )
+  : [];
+check(
+  'the verdict carries ONE agents-view record, naming the end state',
+  agentsViewRecords.length === 1 && agentsViewRecords[0].reduction === 'rows-addressed',
+  agentsViewRecords.map((c) => `${c.reduction} ${c.returned}/${c.total}`).join(' | ') || '(none)'
+);
+
+// A response with no `agents` field at all — an error answer reaching this
+// path, or a peer that never sent one. It used to reach `.map` on `undefined`
+// and throw, turning a degraded answer into no answer. A tool whose job is to
+// make a partial answer legible must not crash on one.
+const { agents: _noAgents, ...withoutAgents } = census;
+for (const opts of [{}, { view: 'summary' }, { offset: 3 }, { section: 'guardian' }]) {
+  let ok = false;
+  let detail = '';
+  try {
+    const out = fitListAgentsResponse(withoutAgents, opts);
+    ok = typeof out.text === 'string' && JSON.parse(out.text).agentsTotal === 0;
+    detail = `${out.text.length} chars`;
+  } catch (e) {
+    detail = `threw: ${e.message}`;
+  }
+  check(`a response with no \`agents\` field answers rather than throws — ${JSON.stringify(opts)}`, ok, detail);
+}
+
 const summaryFit = fitListAgentsResponse(huge, { view: 'summary' });
 const summary = JSON.parse(summaryFit.text);
 check(
