@@ -1520,6 +1520,66 @@ const RULES = [
       ])
     ),
   },
+  {
+    // KAN-466. `gh pr merge` misreports in both directions, and the fleet's two
+    // habitual ways of checking it are ONE reading taken twice.
+    //
+    // WHY THIS IS `prompts/task.md` ONLY, AND THAT IS NOT AN OVERSIGHT: under
+    // the 2026-08-08 governance the **task** agent merges. `prompts/epic.md`
+    // §"You review and approve this epic's PRs; you do not merge them" and
+    // `prompts/story.md`'s "the task agent merges its own PR" both say so, so
+    // neither an epic nor a story agent ever runs this command. Listing them
+    // here would require carrying merge mechanics in prompts whose own text
+    // forbids the action — an entry green only because somebody pasted an
+    // irrelevant paragraph. The *class* clause is a different question and is
+    // argued on the ticket; H-28, its sibling, IS carried by all four.
+    //
+    // SEVEN PHRASES, AND THE SPLIT IS DELIBERATE — the ticket named three
+    // things the wording must carry and observed that the third is the one
+    // usually dropped, so the third gets two patterns of its own:
+    //   - `only authority` — `.merged` off REST, the positive instruction. A
+    //     rule that only says "the exit code lies" leaves the agent with no
+    //     instrument at all.
+    //   - `not two votes` + `one cause read twice` — the finding itself, which
+    //     is the half `epic/KAN-203`'s eleven staffing briefs did NOT carry.
+    //     Their wording ("a bad exit predicts a surviving branch") stated the
+    //     link and read as a second symptom to expect. Both patterns are
+    //     pinned because a tidier who keeps one reads the other as a restatement
+    //     and cuts it, and it is the restatement that does the work.
+    //   - `coherent wrong story` — `task/KAN-459`'s own sentence, quoted. The
+    //     specimen; without it the rule has no worked case.
+    //   - `never bundled into the invocation that deleted it` + `would 404 on
+    //     anything` — the delete-and-prove half, item 3 on the ticket and the
+    //     one it predicted would be dropped. The first is the measured trap (a
+    //     chained probe returned 200 for a ref already gone); the second is the
+    //     positive control, without which the 404 is a claim about the query.
+    //   - `share an upstream cause` — the general class, whose inclusion was
+    //     item 3 on the ticket and is argued in the PR body rather than
+    //     assumed. Pinned so that a later length pass cannot quietly reduce
+    //     this back to a `gh`-only symptom, which is the state it was filed
+    //     from.
+    //
+    // WHAT THIS ENTRY DOES NOT COVER, said plainly because an inventory line
+    // looks total: it asserts the sentences are PRESENT, never that any agent
+    // followed them. Nothing mechanical can see an agent read `.merged` and
+    // believe it. The only evidence of that is an agent reporting its own merge
+    // honestly — which is what KAN-466's AC6 required of its author, and what
+    // its PR body records.
+    id: 'H-29',
+    title:
+      'gh pr merge misreports both ways: read `.merged` off REST as the only authority, and the exit code and the surviving branch are one cause read twice, not two votes',
+    carriedBy: {
+      'prompts/task.md': [
+        /only authority/i,
+        /not two votes/i,
+        /one cause read twice/i,
+        /coherent wrong story/i,
+        /never bundled into the invocation that deleted it/i,
+        /would 404 on anything/i,
+        /share an upstream cause/i,
+      ],
+    },
+  },
 ];
 
 /**
