@@ -1199,19 +1199,29 @@ and never judge from its first chunk.** ⚠ **And the shape does not discriminat
 five keys*; what separates them is `startAt: 0` from `startAt: 111`. **An agent
 looking for a different-looking container will not find one.**
 
-⚠ **There is a second envelope on which the fields are genuinely absent, so
-establish which one you are holding before you conclude anything.**
-`epic/KAN-39` measured `fields.comment` carrying **only** `comments` — on a
-**complete** 1.19 MB file, by a whole-file grep, so not a partial read. **Six
-reads from the other side — markdown and adf, 86 KB to 910 KB, capped and
-uncapped — every one carried the full container**, so neither response format
-nor payload size explains the difference, and it was not reproducible across the
-two agents who tried. **Two measurements of two things, not a contradiction.**
-⚠ **The operative half needs no explanation of the cause: if `fields.comment`
-carries only `comments` and no `total`, you are on an envelope that strips the
-container — the read is not self-describing, you cannot tell a complete history
-from a capped one, and the paginated comment operation is the only thing that
-will tell you.** **Do not read an absent `total` as "this ticket is short."**
+⚠ **And the shape of the response is not a property of the call — it is a
+property of your client at the moment of the call, and it can change under you
+mid-session with nothing announcing it.** `epic/KAN-39` measured
+`fields.comment` carrying **only** `comments`, on a **complete** 1.19 MB file by
+a whole-file grep — then sixteen minutes later, **same tool, same ticket**,
+measured the full five-key container. One agent, one session, both readings
+correct when taken. **Six reads from the other side — markdown and adf, 86 KB to
+910 KB, capped and uncapped — all carried the container**, so neither response
+format nor payload size explains it, and two agents each proposed a mechanism
+and each was refuted. **The cause is unestablished and you do not need it.**
+⚠ **What you need is this: if `fields.comment` carries only `comments` and no
+`total`, you are on an envelope that strips the container — the read is not
+self-describing, you cannot tell a complete history from a capped one, and the
+paginated comment operation is the only thing that will tell you.** **Do not
+read an absent `total` as "this ticket is short."** ⚠ **And because it moves,
+check it on the read you are about to rely on rather than once per session** —
+an agent that saw the container an hour ago has learned nothing about the
+payload in front of it now.
+
+**A comment count is a reading with a timestamp on it, so cite it with one.**
+KAN-39's `total` was **211**, then **214**, then **216**, then **221** across a
+single afternoon — four readings, hours apart, all correct when taken. **A
+figure quoted without its time is a claim about a ticket that has since moved.**
 
 **And on this one you cannot page back, so say what you actually read.** There
 is **no comment-listing tool** on the official Atlassian MCP — `getJiraIssue`

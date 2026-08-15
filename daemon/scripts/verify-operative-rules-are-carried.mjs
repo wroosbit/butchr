@@ -1713,14 +1713,25 @@ const RULES = [
           // was refuted too: a 910 KB adf read of KAN-39 carries
           // `total: 220, maxResults: 100, startAt: 120`.
           //
-          // So there are two envelopes, the cause is unestablished, and the
-          // rule is written to need no cause: it tells the reader what an
-          // absent `total` MEANS rather than why it happened. That is the
-          // shape this epic keeps arriving at — a correct finding with a wrong
-          // `because` attached is the part nobody re-checks, and here the
-          // author of the `because` was the one who had to withdraw it. Both
-          // agents' measurements are in the text as measurements; neither is
-          // presented as the explanation.
+          // ROUND 3 REFUTED THE REPLACEMENT EXPLANATION TOO, and is why this
+          // entry names no cause at all. The reconciliation offered in round 2
+          // — that the two agents were on different envelopes and had
+          // therefore made different calls — was withdrawn by its own author
+          // sixteen minutes later, after they watched the envelope CHANGE
+          // under them: one key at 14:48, the full container at 15:04, same
+          // tool and same ticket. So the shape is a property of the client at
+          // the moment of the call.
+          //
+          // THREE EXPLANATIONS WERE OFFERED FOR ONE MEASUREMENT AND ALL THREE
+          // WERE WRONG — a partial read, two different calls, a size-dependent
+          // strip. The measurements were never in doubt. That is the shape
+          // this epic keeps arriving at, in its sharpest form yet: a correct
+          // finding with a wrong `because` attached, where the `because` is
+          // the part nobody re-checks, and where each author had to withdraw
+          // their own. So the rule tells the reader what an absent `total`
+          // MEANS and what to do about it, and says the cause is
+          // unestablished. Both agents' measurements are in the text as
+          // measurements; none of the three explanations is.
           //
           // `fails toward absent` was the obvious phrase for this and is
           // DELIBERATELY NOT USED: it already appears twice in task.md and
@@ -1733,6 +1744,28 @@ const RULES = [
           // envelope actually needs, and it is the half that survives however
           // the cause turns out.
           /strips the container/i,
+          // ROUND 3, and it is the reason the rule is written without a cause
+          // at all. `epic/KAN-39` retracted their own explanation after
+          // measuring the envelope CHANGE under them: one key at 14:48, the
+          // full container at 15:04, same tool and same ticket. So the shape
+          // is a property of the client at the moment of the call, and an
+          // agent cannot establish it once and rely on it. That is what makes
+          // this a per-read check rather than a per-session one, and it is the
+          // single most actionable sentence in the entry.
+          /change under you mid-session/i,
+          // And the count itself moves — 211/214/216/221 in one afternoon — so
+          // a figure quoted without its time is a claim about a ticket that
+          // has since moved. Pinned separately because it is the half a length
+          // pass reads as an anecdote about one ticket.
+          /reading with a timestamp on it/i,
+          // Two phrases for the timestamp paragraph, because the red drive
+          // caught it failing only ONE: a single-pin paragraph is what
+          // KAN-467's lesson is about, and a length pass that reworded the
+          // opening sentence would have taken the whole thing with the check
+          // still green. `has since moved` was the obvious second and is NOT
+          // used — it already appears elsewhere in epic.md, so it would be
+          // saturated. Checked, not assumed, for the second time in this entry.
+          /quoted without its time/i,
         ],
       ])
     ),
