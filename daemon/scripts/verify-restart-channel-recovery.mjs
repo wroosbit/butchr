@@ -31,6 +31,18 @@
  *
  * ⚠ WHAT THIS DOES NOT COVER, so nobody reads a green as more than it is:
  *
+ *   - ⚠ IT ONLY SEES AGENTS THE RECONCILE LINE NAMED. That line lists survivors
+ *     holding no registration AT THE MOMENT RECONCILE RAN, and reconcile runs
+ *     several hundred ms after the daemon starts listening. KAN-274 is now fast
+ *     enough to beat it: in the staged restart of 2026-08-15T10:25:54Z, four of
+ *     the seven survivors had already re-registered before reconcile looked, so
+ *     the daemon named only three and this script asserted on three. The four it
+ *     cannot see are the four that recovered FASTEST, so the omission biases
+ *     toward pessimism and cannot manufacture a false green — but it does mean
+ *     `agent-restarts: N checked` is a floor on the population, not a census,
+ *     and the daemon's own log UNDERCOUNTS what a restart dropped. Read the
+ *     `Connection conn-N is ...` lines directly if you need the full set;
+ *     measure-restart-channel-recovery.mjs beside this one does that.
  *   - It is retrospective. It asserts about restarts ALREADY IN THE LOG, so a
  *     regression is invisible to it until a restart happens. A green on a log
  *     with no recent restart means "nothing has gone wrong yet that I can see",
