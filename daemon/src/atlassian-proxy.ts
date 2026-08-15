@@ -2599,6 +2599,67 @@ export interface AtlassianProxyReport {
   summary: string;
 }
 
+/**
+ * A sentence stating what is known about the credential. **Every branch of
+ * {@link proxyReport}'s summary must carry one**, and the type is what makes
+ * that true rather than a comment asking politely.
+ *
+ * ⚠ THIS IS A TYPE RATHER THAN AN ASSERTION ON PURPOSE (KAN-441), and the
+ * defect it closes was a *missing branch*. The credential warning used to live
+ * only in the on-state arm, so while the proxy was `off` — the one state in
+ * which the answer can still prevent something — the summary could not mention
+ * the credential at all, and a report built with `configured: false` read
+ * byte-identically to one built with `configured: true`. An assertion that
+ * "the summary mentions the credential" can be deleted by a later author and
+ * the build still passes; a required field of a branded type cannot. A branch
+ * that omits it does not compile, and a plain string cannot be passed in its
+ * place because nothing outside this module can produce the brand.
+ */
+declare const credentialSentenceBrand: unique symbol;
+export type CredentialSentence = string & { readonly [credentialSentenceBrand]: true };
+
+/**
+ * ⚠ STATE IT WHILE OFF; WARN ONLY WHILE ON. The two states are not equally
+ * urgent and the wording must not pretend they are.
+ *
+ * While the proxy is `off` **nothing is wrong**: no call is being made through
+ * it, so a missing credential has not cost anything yet. Importing the
+ * on-state's alarm into that branch would manufacture a fault where there is
+ * none — which is its own version of an instrument that misdescribes the world.
+ * While it is `on`, a missing credential means every call refuses, and the
+ * alarm is the honest reading.
+ *
+ * ⚠ `configured` IS NOT `working`, in either branch. A token on this machine is
+ * not a token Atlassian still accepts — the 2026-08-10 outage is the whole
+ * reason {@link AtlassianProxyReport.credential} says so — and only a call
+ * settles the second. The wording below claims presence and never acceptance.
+ */
+function credentialSentence(
+  mode: ProxyMode,
+  credential: { configured: boolean; siteUrl?: string; email?: string; storage?: string }
+): CredentialSentence {
+  const who =
+    `${credential.email ?? 'the configured account'} @ ` +
+    `${credential.siteUrl ?? 'the configured site'}`;
+
+  if (mode === 'off') {
+    return (
+      credential.configured
+        ? `A credential IS configured (${who}` +
+          `${credential.storage ? `, stored in the ${credential.storage}` : ''}) — that is ` +
+          'PRESENCE and not proof it works: nothing has called Atlassian with it, and only a ' +
+          'call establishes that it is still accepted. It is what a flip would run on.'
+        : 'NO credential is configured. Nothing is failing while the proxy is off — nothing is ' +
+          'calling Atlassian through it — but a flip onto this state would produce a fleet ' +
+          'whose every call refuses, so it is the thing to fix before turning it on.'
+    ) as CredentialSentence;
+  }
+
+  return (credential.configured
+    ? who
+    : 'NO CONFIGURED CREDENTIAL — every call will refuse') as CredentialSentence;
+}
+
 export function proxyReport(
   decision: ProxyDecision,
   credential: { configured: boolean; siteUrl?: string; email?: string; storage?: string },
@@ -2627,20 +2688,41 @@ export function proxyReport(
   const writes = operations.filter((op) => op.method !== 'GET');
   const unscoped = writes.filter((op) => op.writeScope?.kind === 'unscoped');
 
+  // ⚠ BOTH ARMS MUST NAME THE CREDENTIAL, AND THE TYPE IS WHAT ENFORCES IT
+  // (KAN-441). `credential` is a required field of a branded type here, so an
+  // arm that drops the clause fails to compile rather than silently producing
+  // the reassuring paragraph that this ticket exists to remove. Do not relax
+  // this to `string`: that restores the exact hole, and an assertion in a
+  // sibling script is the weaker guard the branding replaces.
+  const summaryOf = (parts: {
+    lead: string;
+    credential: CredentialSentence;
+    tail: string;
+  }): string => parts.lead + parts.credential + parts.tail;
+
   const summary =
     decision.mode === 'off'
-      ? `The Atlassian proxy is OFF. ` +
-        (decision.source === 'default' && decision.rawValue === null
-          ? `${PROXY_ENV_VAR} is not set, which is the default.`
-          : decision.fallbackReason
-            ? decision.fallbackReason
-            : `Turned off explicitly by ${PROXY_ENV_VAR}=${decision.rawValue}.`) +
-        ' No agent can reach Atlassian through the daemon; every agent still has its own ' +
-        'Atlassian MCP session and nothing about this is a degradation.'
-      : `The Atlassian proxy is serving ${operations.length - writes.length} read operation(s) ` +
-        `and ${writes.length} write operation(s) ` +
-        `(${operations.map((op) => op.tool).join(', ')}) against ` +
-        `${credential.configured ? `${credential.email ?? 'the configured account'} @ ${credential.siteUrl ?? 'the configured site'}` : 'NO CONFIGURED CREDENTIAL — every call will refuse'}, ` +
+      ? summaryOf({
+          lead:
+            `The Atlassian proxy is OFF. ` +
+            (decision.source === 'default' && decision.rawValue === null
+              ? `${PROXY_ENV_VAR} is not set, which is the default.`
+              : decision.fallbackReason
+                ? decision.fallbackReason
+                : `Turned off explicitly by ${PROXY_ENV_VAR}=${decision.rawValue}.`) +
+            ' No agent can reach Atlassian through the daemon; every agent still has its own ' +
+            'Atlassian MCP session and nothing about this is a degradation. ',
+          credential: credentialSentence(decision.mode, credential),
+          tail: ''
+        })
+      : summaryOf({
+          lead:
+            `The Atlassian proxy is serving ${operations.length - writes.length} read operation(s) ` +
+            `and ${writes.length} write operation(s) ` +
+            `(${operations.map((op) => op.tool).join(', ')}) against `,
+          credential: credentialSentence(decision.mode, credential),
+          tail: `, `
+        }) +
         `needing ${scopes.join(', ')} and nothing else. Selected by ${PROXY_ENV_VAR}=${decision.rawValue}. ` +
         (writes.length
           ? `${writes.length - unscoped.length} of ${writes.length} write(s) are BOUND TO THE ` +
