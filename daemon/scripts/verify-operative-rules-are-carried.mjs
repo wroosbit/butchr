@@ -1521,8 +1521,49 @@ const RULES = [
     ),
   },
   {
-    // KAN-466. `gh pr merge` misreports in both directions, and the fleet's two
-    // habitual ways of checking it are ONE reading taken twice.
+    // KAN-466. `gh pr merge`'s exit code is not the merge's verdict, and the
+    // fleet's two habitual ways of checking it are ONE reading taken twice.
+    //
+    // KAN-467 CORRECTED THE MECHANISM SENTENCE, NOT THE INSTRUCTIONS. The
+    // original read as though every `gh pr merge` attempts a local branch
+    // switch. It does not: `--delete-branch` is what adds the local step, and
+    // it is the whole trigger. Measured 2026-08-15 with two throwaway PRs from
+    // worktrees of the shared clone differing only in the flag — with `-d`,
+    // exit 1 and `fatal: '<base>' is already checked out`; without it, exit 0
+    // and no output. Two consequences worth keeping here, because both were
+    // being taught wrongly:
+    //   - A SURVIVING BRANCH IS THE ORDINARY OUTCOME OF A PLAIN MERGE. The old
+    //     "a bad exit predicts a surviving branch" has the causality backwards
+    //     and tells an agent its own correct reading is impossible.
+    //   - THE 128 IS CAUSED BY THE BASE BRANCH BEING CHECKED OUT ELSEWHERE IN
+    //     THE SAME CLONE, never by a worktree count. "201 worktrees" was a
+    //     census of one machine, not a threshold.
+    // Of the five instances originally cited, #180 passed no `-d`, printed
+    // nothing and failed in no way; #183 and #194 reported `0` only because
+    // they piped `gh` into `tail`. None of that weakens `.merged`, which is
+    // why `only authority` stays pinned below.
+    //
+    // THE CORRECTED MECHANISM IS PINNED, AND IT TOOK A REVIEWER TO NOTICE IT
+    // WAS NOT. KAN-467 first landed the correction with the original seven
+    // patterns untouched — and every one of those seven lives in a paragraph
+    // the correction did not touch. `epic/KAN-39` deleted the entire corrected
+    // paragraph in review and this check still reported H-29 carried, while
+    // the `title` above had begun *asserting* the corrected mechanism. An
+    // inventory claiming a rule that nothing verifies is the exact defect this
+    // ticket was filed about, reproduced one level up. The four patterns added
+    // below guard the two new paragraphs so that deleting either fails at
+    // least two of them:
+    //   - `the whole trigger` + `checked out in another worktree of the same
+    //     clone` — the mechanism paragraph: what causes the local step, and
+    //     what makes it fail.
+    //   - `ordinary outcome of a plain merge` + `never the number of
+    //     worktrees` — the corollary paragraph: the half that kills the
+    //     backwards causality, and the half that stops "201" being read as a
+    //     threshold.
+    // This is KAN-466's own argument for pinning both `not two votes` and
+    // `one cause read twice` applied to KAN-467's text: a paragraph that reads
+    // as background to instructions pinned elsewhere is what a length pass
+    // removes first.
     //
     // WHY THIS IS `prompts/task.md` ONLY, AND THAT IS NOT AN OVERSIGHT: under
     // the 2026-08-08 governance the **task** agent merges. `prompts/epic.md`
@@ -1567,7 +1608,7 @@ const RULES = [
     // its PR body records.
     id: 'H-29',
     title:
-      'gh pr merge misreports both ways: read `.merged` off REST as the only authority, and the exit code and the surviving branch are one cause read twice, not two votes',
+      "gh pr merge's exit code is not the verdict — `--delete-branch` is the trigger for the local failure: read `.merged` off REST as the only authority, and on that path the exit code and the surviving branch are one cause read twice, not two votes",
     carriedBy: {
       'prompts/task.md': [
         /only authority/i,
@@ -1577,6 +1618,11 @@ const RULES = [
         /never bundled into the invocation that deleted it/i,
         /would 404 on anything/i,
         /share an upstream cause/i,
+        // KAN-467's four. See "THE CORRECTED MECHANISM IS PINNED" above.
+        /the whole trigger/i,
+        /checked out in another worktree of the same clone/i,
+        /ordinary outcome of a plain merge/i,
+        /never the number of worktrees/i,
       ],
     },
   },
