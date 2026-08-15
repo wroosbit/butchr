@@ -865,7 +865,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_agent_status",
         description:
-          "Reports an agent's full state: session id, workspace type and key, url, creation time, session status, working directory, and herdr's own view of what the agent is doing. If the daemon has restarted and lost its session, the herdr-only fields are still returned with sessionless: true.",
+          "Reports an agent's full state: session id, workspace type and key, url, creation time, session status, working directory, and herdr's own view of what the agent is doing. If the daemon has restarted and lost its session, the herdr-only fields are still returned with sessionless: true. IT ALSO CARRIES `channel`, THE SAME BLOCK butchr_list_agents PUTS ON A ROW, AND BEFORE KAN-435 IT DID NOT — the key was absent for every agent in every state, including agents with a live channel and a millisecond round trip, which was read as `this agent has no channel` and filed as a defect on two agents that were both fine. READ `channel.transport` BEFORE SENDING: `channel` means a send costs the recipient nothing, `composer` means it begins with a Ctrl+C that destroys the tool call in flight, and `unregistered` means a steer is refused rather than delivered. A FRESH AGENT IS NOT A CHANNEL-LESS ONE: registration takes about twelve seconds from spawn while the client answers its startup dialogs, so a missing or `unregistered` carrier in an agent's first seconds clears by itself and waiting costs less than the interrupt does.",
         inputSchema: {
           type: "object",
           properties: {

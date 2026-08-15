@@ -502,8 +502,18 @@ export function routeChannelMessage(opts: {
    * compile error rather than a comment for that reason.
    */
   meta?: ChannelMeta;
-  /** KAN-248's verdicts. Asked one question: has this agent been degraded? */
-  selfCheck?: { degraded: (address: AgentAddress) => boolean };
+  /**
+   * KAN-248's verdicts. Asked one question: has this agent been degraded **on
+   * the connection it is holding now**?
+   *
+   * The second argument is required rather than optional, and that is what
+   * turned KAN-435 from a review comment into a compile error: five call sites
+   * were asking about an address, which cannot be answered, and every one of
+   * them failed to build the moment the store's signature said so.
+   */
+  selfCheck?: {
+    degraded: (address: AgentAddress, liveConnectionId: string | null) => boolean;
+  };
   /**
    * Whether the durable registry expects this agent to be running (KAN-274).
    *
@@ -563,9 +573,22 @@ export function routeChannelMessage(opts: {
   // `resolve` is not called at all until emission is on and the agent is not
   // degraded, so a shut gate cannot leak the identity map's contents even by
   // timing.
+  // THE MAP IS RESOLVED BEFORE `degraded` IS ASKED, AND THE GATE STILL COMES
+  // FIRST (KAN-435). `degraded` is a question about the connection this agent is
+  // holding — see `ChannelSelfCheckStore.degraded` for the two agents that spent
+  // hours on the composer while the question was asked about an address instead —
+  // so the answer needs `target`, which means the resolve moves up.
+  //
+  // What does NOT move is the emission gate. `resolve` is still not called at all
+  // until the switch is on, so a shut gate cannot leak the identity map's
+  // contents, by timing or otherwise, which is the property the ordering exists
+  // to protect. What was lost is an optimisation — one map lookup that used to be
+  // skipped for a degraded agent — and it was buying a wrong answer.
   const emissionEnabled = channelEmissionEnabled();
-  const degraded = selfCheck?.degraded(address) ?? false;
-  const target = emissionEnabled && !degraded ? registry.resolve(address) : undefined;
+  const target = emissionEnabled ? registry.resolve(address) : undefined;
+  const degraded = emissionEnabled
+    ? selfCheck?.degraded(address, target?.id ?? null) ?? false
+    : false;
 
   const verdict = carrierFor({
     emissionEnabled,

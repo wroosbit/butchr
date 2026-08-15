@@ -992,18 +992,20 @@ export interface MessageRouterOptions {
    * agent that had lost its registration. It now asks `carrierFor` — the one
    * function `routeChannelMessage` also consults.
    *
-   * The second argument is whether this agent's own self-check degraded it, which
-   * the caller has already read; passing it keeps this reader from being a second
-   * consumer of the verdict store.
+   * **It takes an address and nothing else, and the missing second argument is
+   * the point (KAN-435).** It used to take a `degraded` boolean that this router
+   * derived from `report.transport === 'composer'` — a second answer to a
+   * question the verdict store owns. That derivation is not merely duplicated,
+   * it is *unanswerable from here*: whether a verdict degrades depends on
+   * whether it describes the connection the agent is holding right now, and this
+   * router has never known what a connection is. Removing the parameter is what
+   * makes a listing structurally unable to hold an opinion about it.
    *
    * **Absence keeps the old answer.** A daemon that passes none reports the
-   * self-check verdict exactly as it did before this ticket, rather than
-   * acquiring a third transport value no reader was written for.
+   * self-check verdict exactly as it did before KAN-274, rather than acquiring a
+   * third transport value no reader was written for.
    */
-  channelCarrier?: (
-    address: { type: string; key: string },
-    degraded: boolean
-  ) => CarrierVerdict;
+  channelCarrier?: (address: { type: string; key: string }) => CarrierVerdict;
 
   /**
    * What the scheduled end-to-end channel probe has found (KAN-252).
@@ -3126,6 +3128,32 @@ export class MessageRouter {
    * session degrades to herdr's own view (`sessionless: true`) rather than
    * failing — an agent that outlived its daemon is exactly the one a
    * supervisor most needs to inspect.
+   *
+   * ---------------------------------------------------------------------------
+   * IT CARRIES THE `channel` BLOCK, AND UNTIL KAN-435 IT DID NOT
+   * ---------------------------------------------------------------------------
+   *
+   * `channelStateOf` was reachable from `surveyAgents` alone, so this action —
+   * the one a supervisor reaches for when it wants to know about *one* agent —
+   * answered with **no `channel` key at all, for every agent, in every state.**
+   *
+   * **That absence was read as a finding, and it is what KAN-435 was filed on.**
+   * A supervisor read `butchr_agent_status` on two freshly-staffed task agents,
+   * saw no channel field, and recorded "freshly-started agents come up with NO
+   * channel" — a fourth transport state that does not exist. Both agents had
+   * working channels; one of them had been proved 1.8 seconds before it was read.
+   * The same call against an agent with a 23ms round trip answers identically,
+   * which is what makes the reading uninformative rather than merely incomplete.
+   *
+   * So the fix is to answer the question rather than to document that this tool
+   * does not: an absent field is indistinguishable from an absent channel, and
+   * nothing on the wire could tell the reader which they had. It is the same
+   * fragment `list_agents` spreads, from the same reader, so the two surfaces
+   * cannot disagree.
+   *
+   * **The sessionless branch gets it too**, and that is where it matters most: an
+   * agent that outlived its daemon is exactly the one whose carrier a supervisor
+   * cannot guess.
    */
   private handleAgentStatus(data: any, respond: Respond) {
     const { key, type } = data;
@@ -3146,7 +3174,8 @@ export class MessageRouter {
           success: true,
           sessionless: false,
           agentName: agentNameFor(session.type, session.key),
-          ...this.toAgentDto(session, this.herdrBridge.listHerdrStatuses())
+          ...this.toAgentDto(session, this.herdrBridge.listHerdrStatuses()),
+          ...this.channelStateOf(session.type, session.key)
         });
         return;
       }
@@ -3168,7 +3197,8 @@ export class MessageRouter {
         createdAt: null,
         status: null,
         workDir: described.workDir,
-        herdrStatus: described.herdrStatus
+        herdrStatus: described.herdrStatus,
+        ...this.channelStateOf(described.type, key)
       });
     } catch (err: any) {
       fail(err?.message ?? String(err));
@@ -5194,7 +5224,14 @@ export class MessageRouter {
     //
     // `channelCarrier` is absent on a daemon wired without one, and the verdict
     // then falls back to the report exactly as before.
-    const verdict = this.channelCarrier?.({ type, key }, report?.transport === 'composer') ?? null;
+    //
+    // NOTHING ABOUT DEGRADATION IS PASSED IN ANY MORE (KAN-435). This read
+    // `report?.transport === 'composer'`, which is the verdict's own opinion of
+    // itself and takes no account of whether the connection it was measured on
+    // still exists — so a row could report `composer` for an agent whose channel
+    // had been fine for hours. The carrier reader asks the verdict store, which
+    // is the only place that can weigh a verdict against a live connection.
+    const verdict = this.channelCarrier?.({ type, key }) ?? null;
 
     if (!report) {
       return {

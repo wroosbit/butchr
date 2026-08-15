@@ -619,6 +619,40 @@ seconds, and the row reads `channel` again when it has. Do **not** reach for
 `intent: 'stop-now'` to get past a refusal unless you actually mean to destroy
 the tool call the recipient is running, because that is exactly what it will do.
 
+#### Read a carrier off `butchr_list_agents`, and never off `butchr_agent_status`
+
+**Both tools now carry a `channel` block, and until KAN-435 only the first one
+did** — `butchr_agent_status` answered with **no `channel` key at all, for every
+agent, in every state**, including agents with a 23-millisecond round trip. An
+absent field is indistinguishable from an absent channel, so that reading was
+taken for a finding: *"freshly-started task agents come up with NO channel"* was
+filed, and measured, on two agents that both had working channels — one of them
+proved 1.8 seconds before it was read. If you are on a daemon that predates the
+fix and the key is missing, **that is the tool declining to answer**; ask
+`butchr_list_agents`, which always could.
+
+**A fresh agent is not a channel-less agent, and the number is about twelve
+seconds.** Measured 2026-08-15 on two fresh task agents: registration at +11.4s
+and +12.3s from spawn, self-check answered in 13ms and 17ms behind it. That time
+is spent answering the two development-channels dialogs, not failing. **So if you
+must reach a brand-new agent, the cost of waiting a few seconds is nothing and
+the cost of not waiting is its first tool call.**
+
+**And `transport: "composer"` on a row is a claim you can now trust, which it was
+not before.** A self-check verdict is about the one connection it measured, and
+bring-up registers more than one — `claude --continue || claude` spawns an MCP
+server per invocation. A connection that closed while its check was still running
+used to leave a `no-answer` verdict pinned to the agent for the life of the
+daemon: `story/KAN-117` spent 7h52m on the composer holding a channel that worked
+throughout, and every steer at it took a Ctrl+C. Since KAN-435 a verdict is
+consulted only about the connection the agent is holding now, and a replacement
+is reported as `connection-replaced` rather than as the recipient's fault.
+
+**None of this replaces the working practice, which is the cheaper instrument in
+every case: put the substance in a comment on their ticket.** The poller delivers
+it inside a minute, it costs no interrupt, it reaches agents that are not running,
+and it is durable. A send is for what cannot wait a minute.
+
 | Guard | Composer path | Channel path |
 | --- | --- | --- |
 | **Meaningful transitions only** — To Do ↔ In Progress, → In Review, → Done; never on edits, comments or assignment | **unchanged** — every send destroys the work the recipient had in flight | **the cost changes rather than vanishes**: destroyed work becomes consumed context, which is not free. The rule stands as written, because you cannot know before sending which column applies. |
