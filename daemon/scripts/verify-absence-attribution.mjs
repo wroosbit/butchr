@@ -423,9 +423,16 @@ const cases = [
   }
 ];
 
+// KAN-470 gave `explainAbsence` the agent and the desired list rather than a
+// bare key. Every case here is a KEY THE BOARD DID NOT RETURN AT ALL, so the
+// desired list is empty and the new first branch cannot fire — which is what
+// keeps these five cases testing exactly what they tested before. The branch
+// itself is covered by `verify-same-key-other-type.mjs`.
+const EPIC_59 = agent('epic', 'KAN-59');
+
 let conditionsOk = true;
 for (const c of cases) {
-  const reason = explainAbsence('KAN-59', c.diagnostic, ME);
+  const reason = explainAbsence(EPIC_59, [], c.diagnostic, ME);
   const ok = reason.condition === c.expect;
   if (!ok) conditionsOk = false;
   console.log(`\n   ${c.name}`);
@@ -437,7 +444,7 @@ for (const c of cases) {
 // true — that is the invariant, not "the wording improved".
 const deniesStatusWhenFalse = cases
   .filter((c) => c.expect !== 'wrong-status')
-  .some((c) => explainAbsence('KAN-59', c.diagnostic, ME).detail.includes('does not have it In Progress'));
+  .some((c) => explainAbsence(EPIC_59, [], c.diagnostic, ME).detail.includes('does not have it In Progress'));
 
 console.log(`\n   any branch wrongly denying the status: ${deniesStatusWhenFalse}`);
 

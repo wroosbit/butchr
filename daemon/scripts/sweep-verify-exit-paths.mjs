@@ -35,6 +35,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { sweepTree } from './lib/sweep-sources.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -136,12 +137,44 @@ function insideShim(source, lineNumber) {
   return opens > 0 && opens > closes;
 }
 
+const IS_VERIFY = (base) => base.startsWith('verify-') && base.endsWith('.mjs');
+
 const rows = [];
+const coverage = [];
+let sweepUnproven = [];
 for (const dir of SCRIPT_DIRS) {
   const abs = path.join(repoRoot, dir);
   if (!fs.existsSync(abs)) continue;
-  for (const name of fs.readdirSync(abs).sort()) {
-    if (!name.startsWith('verify-') || !name.endsWith('.mjs')) continue;
+  // RECURSIVE SINCE KAN-465, and the argument is worth stating because this is a
+  // REQUIRED check and it was not wrong when it was written. `daemon/scripts`
+  // held 129 `verify-*.mjs` at depth 1 and 129 recursively, so the flat
+  // `readdirSync` that stood here read every one of them.
+  //
+  // It was correct and it was fragile, and the discriminator KAN-465 uses is
+  // not "did it miss anything today" but "does the swept tree have depth".
+  // THIS ONE DOES — `lib/`, `fixtures/` and `fixtures/kan-321/` — so the
+  // property holding was a fact about where files happen to sit, not about the
+  // sweep. One `verify-` script added under `lib/` and it leaves the required
+  // check silently, taking its own exit-path audit with it. KAN-406's miss was
+  // in `scripts/lib/` exactly, so the shape has bitten in this directory
+  // before.
+  //
+  // The conversion is behaviour-preserving on this build by measurement, not by
+  // argument: the row set is identical before and after, which is the evidence
+  // that pays for touching a required check at all.
+  const sweep = sweepTree(abs, {
+    match: IS_VERIFY,
+    label: dir,
+    what: 'verify-*.mjs script(s)'
+  });
+  coverage.push(sweep.coverage);
+  if (!sweep.reachedEverything) sweepUnproven.push(`${dir}: ${sweep.detail}`);
+  // `name` is now a path RELATIVE to `abs` — `verify-x.mjs` at the top level,
+  // `lib/verify-x.mjs` below it. The `startsWith('verify-')` filter that used
+  // to live here has moved into the match predicate above, which applies to the
+  // BASENAME: left where it was, it would have silently dropped every nested
+  // script, which is the same blind spot one layer down.
+  for (const name of sweep.files) {
     const file = path.join(abs, name);
     const source = fs.readFileSync(file, 'utf8');
     const paths = exitPaths(source).map((e) => ({
@@ -163,6 +196,7 @@ for (const dir of SCRIPT_DIRS) {
   }
 }
 
+for (const line of coverage) console.log(`  ${line}`);
 console.log(`sweeping ${rows.length} verify-* scripts under ${SCRIPT_DIRS.join(', ')}\n`);
 console.log(`${'script'.padEnd(48)} ${'verdict exits'.padEnd(14)} ${'guards'.padEnd(7)} header`);
 console.log('-'.repeat(48) + ' ' + '-'.repeat(14) + ' ' + '-'.repeat(7) + ' ------');
@@ -193,7 +227,7 @@ if (noHeader.length) {
   for (const r of noHeader) console.log(`  - ${r.rel}`);
 }
 
-if (!cannotFail.length && !noHeader.length) {
+if (!cannotFail.length && !noHeader.length && !sweepUnproven.length) {
   console.log(
     `ALL PASS — every one of the ${rows.length} verify-* scripts has a verdict-driven exit and\n` +
       'states what failure it would catch.\n\n' +
@@ -202,4 +236,12 @@ if (!cannotFail.length && !noHeader.length) {
       'test and watching the script go red — see the KAN-119 PR for that evidence.'
   );
 }
-process.exit(cannotFail.length + noHeader.length > 0 ? 1 : 0);
+if (sweepUnproven.length) {
+  console.log(
+    'the sweep could not prove it reached every script — its own coverage is in doubt, so\n' +
+      'every verdict above is a claim about a SUBSET of the tree:'
+  );
+  for (const line of sweepUnproven) console.log(`  - ${line}`);
+}
+
+process.exit(cannotFail.length + noHeader.length + sweepUnproven.length > 0 ? 1 : 0);

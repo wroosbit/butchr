@@ -62,6 +62,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { sweepTree } from './lib/sweep-sources.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
@@ -242,8 +243,22 @@ rule('2. the call sites — every tailAgent read in daemon/src is awaited');
 // you are looking at, so it must not depend on `dist` being current — see the
 // header. `prompts/task.md` is explicit that a proof importing from `dist` after
 // a failed build tested yesterday's code; this leg cannot.
+// RECURSIVE SINCE KAN-465 — this was `fs.readdirSync(srcDir)` and read 58 of the
+// 62 `.ts` under `daemon/src`. The section below asserts that EVERY `tailAgent`
+// read in `daemon/src` is awaited, and an unawaited one in `integrations/` was
+// outside it. The `callSites.length >= 5` guard directly under this is the
+// check that the grep found anything at all; it could not have noticed a
+// population four files short, because five were always at the top level.
 const srcDir = path.join(daemonDir, 'src');
-const srcFiles = fs.readdirSync(srcDir).filter((f) => f.endsWith('.ts'));
+const srcSweep = sweepTree(srcDir, { label: 'daemon/src' });
+const srcFiles = srcSweep.files;
+console.log(`  ${srcSweep.coverage}`);
+
+check(
+  'the sweep reached every daemon source — the population this rule is about',
+  srcSweep.reachedEverything,
+  srcSweep.detail
+);
 
 /** Call sites, excluding the declaration in the interface and the two implementations. */
 const callSites = [];
