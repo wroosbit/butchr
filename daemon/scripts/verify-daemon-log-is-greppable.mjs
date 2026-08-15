@@ -165,8 +165,14 @@ ok(
 ok('the damage is described in the file', repairedBuf.includes('[log-repair:'));
 ok(
   'and the marker says how much was lost',
-  repairedBuf.includes('354 non-text bytes'),
+  repairedBuf.includes('354 bytes lost'),
   'a marker that does not say the size hides the size of the hole'
+);
+ok(
+  'the file is exactly the same length as before',
+  repairedBuf.length === damaged.length,
+  `${damaged.length} -> ${repairedBuf.length}; equal length is what lets the repair skip the ` +
+    'rename that would orphan another daemon\'s open handle (§7)'
 );
 // Everything outside the damaged run must survive byte-for-byte. Compare the
 // two halves either side of the splice against the undamaged original.
@@ -177,6 +183,11 @@ ok(
   'bytes after the damage are identical',
   repairedBuf.subarray(repairedBuf.length - tailLen).equals(base.subarray(splice)),
   'a repair that rewrites the log is as bad as one that does nothing'
+);
+ok(
+  'and they are at the same offsets they were at before',
+  repairedBuf.subarray(splice + 354).equals(damaged.subarray(splice + 354)),
+  'byte offsets into this file stay meaningful, not just line numbers'
 );
 
 console.log('');
@@ -233,6 +244,47 @@ ok(
   /console\.log = log;/.test(daemonSrc),
   'a pattern known to be in daemon.ts — if this fails, the section read the wrong file'
 );
+
+console.log('');
+console.log('§7 a repair does not orphan another daemon\'s already-open append handle');
+// Raised by epic/KAN-39 reviewing #193. `daemon.ts` opens this log at module
+// load; it discovers that another daemon is already running ~1900 lines later,
+// on EADDRINUSE. `connectToDaemon` documents a spawn race where two daemons
+// briefly coexist. So BOTH repair, and both repair before either knows the
+// other exists — and a repair that renames a new inode into place swaps it
+// under the other daemon's open handle, sending every line it logs afterwards
+// to an orphaned inode. That is this ticket's own failure mode, inverted.
+//
+// This section reproduces exactly that shape: hold an append handle across a
+// repair, then write through it. It FAILS against a rename-based repair and
+// passes against the in-place one.
+const racePath = fixture('race.log', damaged);
+const holder = fs.openSync(racePath, 'a');
+const raceResult = repairLogFile(racePath);
+fs.writeSync(holder, Buffer.from(`[2026-08-14T12:09:00.000Z] ${NEEDLE} (after repair)\n`, 'utf8'));
+fs.closeSync(holder);
+const raceBuf = fs.readFileSync(racePath);
+ok('the repair acted', raceResult.repaired === true, JSON.stringify(raceResult));
+ok(
+  'a line written through the pre-existing handle is IN the file on disk',
+  raceBuf.includes('(after repair)'),
+  'under a rename-based repair this line goes to an orphaned inode and vanishes silently'
+);
+ok('and the repaired region is still repaired', !hasNonTextBytes(raceBuf));
+ok(
+  'positive control: the handle really was opened before the repair ran',
+  raceResult.runs === 1,
+  'if the repair had found nothing, this section would prove nothing'
+);
+// Two daemons repairing the same damage concurrently must be idempotent, not
+// racy — same bytes, same offsets, no new inode.
+const twicePath = fixture('twice.log', damaged);
+const first = repairLogFile(twicePath);
+const afterFirst = fs.readFileSync(twicePath);
+const second = repairLogFile(twicePath);
+const afterSecond = fs.readFileSync(twicePath);
+ok('a second repair finds nothing left to do', second.repaired === false, JSON.stringify(second));
+ok('and the file is unchanged by it', afterFirst.equals(afterSecond), `first=${JSON.stringify(first)}`);
 
 console.log('');
 console.log('§6 red drive: the §3 assertions can be false');

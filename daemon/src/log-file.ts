@@ -1,5 +1,4 @@
 import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * `daemon.log` is the fleet's primary diagnostic artifact, and almost nothing
@@ -117,19 +116,68 @@ export interface LogRepairResult {
 const CLEAN: LogRepairResult = { repaired: false, runs: 0, bytes: 0 };
 
 /**
- * Replace every run of non-text bytes in `file` with a visible marker, in
- * place, and report what was done.
+ * The marker written over a run of `length` non-text bytes.
  *
- * Two properties this deliberately holds, because the file is cited by line
- * number in several scripts' comments:
+ * **It is exactly `length` bytes long, and that is a correctness requirement
+ * rather than a nicety** — see {@link repairLogFile}. Padded with dots when
+ * the sentence is shorter than the damage and shortened when it is longer; the
+ * daemon's own startup line carries the full count either way, so a marker
+ * truncated by a very short run loses nothing that is recorded only here.
+ */
+function repairMarker(length: number): Buffer {
+  const full = `[log-repair: ${length} bytes lost to an unclean shutdown]`;
+  const short = `[lost ${length}B]`;
+  const text =
+    full.length <= length
+      ? full.padEnd(length, '.')
+      : short.length <= length
+        ? short.padEnd(length, '.')
+        : '.'.repeat(length);
+  const buf = Buffer.from(text, 'ascii');
+  // Guaranteed by the ladder above; asserted because the whole design rests on
+  // it and a silent off-by-one here would change the file's length.
+  if (buf.length !== length) throw new Error(`marker is ${buf.length} bytes, needed ${length}`);
+  return buf;
+}
+
+/**
+ * Overwrite every run of non-text bytes in `file` with a visible marker of the
+ * **same length**, in place, and report what was done.
  *
- * - **The line count does not change.** The bytes replaced never include
- *   `\n`, and no marker contains one, so every existing line keeps its number.
- * - **Everything else is byte-for-byte identical.** Only the offending runs
- *   are touched.
+ * ## Why in place, and why the same length
  *
- * The rewrite goes through a temporary file and a rename, so a crash during
- * repair leaves the original intact rather than a half-written log.
+ * The obvious implementation writes a new file and renames it over the old
+ * one. That is wrong here, and the way it is wrong is this ticket's own
+ * failure mode arriving from the other side.
+ *
+ * `daemon.ts` opens this log at module load, long before it discovers whether
+ * another daemon is already running — that check is an `EADDRINUSE` on
+ * `server.listen`, some two thousand lines later. `connectToDaemon` documents
+ * a spawn race in which two daemons briefly coexist and the loser exits on
+ * finding the winner's socket. **So both of them repair, and both of them
+ * repair before either knows the other exists.** With a rename, the second
+ * one to finish swaps a new inode under the first one's already-open append
+ * handle, and every line the first daemon logs from then on goes to an
+ * orphaned inode and is silently lost. If the winner is the one holding the
+ * stale handle, that is the entire log for the life of that daemon —
+ * fabricated absence, produced by the thing meant to prevent it.
+ *
+ * Writing the same number of bytes back over the same offsets removes the
+ * class rather than narrowing it: there is no new inode, so no handle can be
+ * orphaned; appends land at an unchanged EOF; and two daemons repairing the
+ * same damage concurrently write identical bytes to identical offsets, which
+ * is idempotent rather than racy. It needs no lock and no temporary file.
+ *
+ * ## What is preserved
+ *
+ * Stronger than the rename version managed, and worth stating because several
+ * scripts cite this file by position:
+ *
+ * - **Byte offsets are unchanged** — the file's length is identical, so every
+ *   offset into it still means what it meant.
+ * - **Line numbering is unchanged** — the bytes replaced never include `\n`,
+ *   and no marker contains one.
+ * - **Everything outside the damaged runs is byte-for-byte identical.**
  */
 export function repairLogFile(file: string): LogRepairResult {
   let buf: Buffer;
@@ -143,14 +191,13 @@ export function repairLogFile(file: string): LogRepairResult {
 
   if (!hasNonTextBytes(buf)) return CLEAN;
 
-  const out: Buffer[] = [];
-  let runs = 0;
-  let bytes = 0;
-  let cursor = 0;
-  let i = 0;
-
   const offending = (b: number) => b !== 0x0a && b !== 0x09 && (b < 0x20 || b === 0x7f);
 
+  // Locate every run first, and only then write. Nothing touches the file
+  // until each patch has been built and checked.
+  const patches: { offset: number; marker: Buffer }[] = [];
+  let bytes = 0;
+  let i = 0;
   while (i < buf.length) {
     if (!offending(buf[i])) {
       i++;
@@ -158,52 +205,50 @@ export function repairLogFile(file: string): LogRepairResult {
     }
     const start = i;
     while (i < buf.length && offending(buf[i])) i++;
-    const runLength = i - start;
-    out.push(buf.subarray(cursor, start));
-    out.push(
-      Buffer.from(
-        `[log-repair: ${runLength} non-text byte${runLength === 1 ? '' : 's'} at offset ` +
-          `${start} replaced — bytes lost to an unclean shutdown, or a writer that is not ` +
-          `the daemon's logger]`,
-        'utf8'
-      )
-    );
-    runs++;
-    bytes += runLength;
-    cursor = i;
-  }
-  out.push(buf.subarray(cursor));
-
-  const repaired = Buffer.concat(out);
-
-  // Both of these are guaranteed by construction above. They are asserted
-  // anyway because the cost of being wrong is a rewritten diagnostic log.
-  if (hasNonTextBytes(repaired)) {
-    return { repaired: false, runs, bytes, error: 'repair left non-text bytes; file untouched' };
-  }
-  const countNewlines = (b: Buffer) => {
-    let n = 0;
-    for (const byte of b) if (byte === 0x0a) n++;
-    return n;
-  };
-  if (countNewlines(repaired) !== countNewlines(buf)) {
-    return { repaired: false, runs, bytes, error: 'repair changed the line count; file untouched' };
-  }
-
-  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.repair-${process.pid}`);
-  try {
-    fs.writeFileSync(tmp, repaired);
-    fs.renameSync(tmp, file);
-  } catch (e: any) {
+    const length = i - start;
+    let marker: Buffer;
     try {
-      fs.unlinkSync(tmp);
-    } catch {
-      /* the temp file is best-effort cleanup; the log itself is untouched */
+      marker = repairMarker(length);
+    } catch (e: any) {
+      return { repaired: false, runs: 0, bytes: 0, error: `${e?.message ?? String(e)}; file untouched` };
     }
-    return { repaired: false, runs, bytes, error: `could not rewrite ${file}: ${e?.message ?? String(e)}` };
+    patches.push({ offset: start, marker });
+    bytes += length;
   }
 
-  return { repaired: true, runs, bytes };
+  // Guaranteed by construction. Asserted anyway, because the cost of being
+  // wrong is a corrupted diagnostic log, and because a repair that declines to
+  // act is strictly better than one that acts badly.
+  for (const p of patches) {
+    if (hasNonTextBytes(p.marker)) {
+      return { repaired: false, runs: 0, bytes: 0, error: 'marker holds non-text bytes; file untouched' };
+    }
+    if (p.marker.includes(0x0a)) {
+      return { repaired: false, runs: 0, bytes: 0, error: 'marker holds a newline; file untouched' };
+    }
+  }
+
+  let fd: number;
+  try {
+    fd = fs.openSync(file, 'r+');
+  } catch (e: any) {
+    return { repaired: false, runs: 0, bytes: 0, error: `could not open ${file}: ${e?.message ?? String(e)}` };
+  }
+  try {
+    for (const p of patches) {
+      fs.writeSync(fd, p.marker, 0, p.marker.length, p.offset);
+    }
+  } catch (e: any) {
+    return { repaired: false, runs: 0, bytes: 0, error: `could not repair ${file}: ${e?.message ?? String(e)}` };
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* closing a descriptor we are done with is best-effort */
+    }
+  }
+
+  return { repaired: true, runs: patches.length, bytes };
 }
 
 /**
