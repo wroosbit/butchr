@@ -69,11 +69,19 @@ class StubRuntime implements AgentRuntime {
     _listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {}
 
+  // KAN-482 added `_priority`, and this fixture is where a third runtime is
+  // TOLD it exists. That is the point of the parameter being required rather
+  // than optional: `provision()` sent a hard-coded `1` for every agent for as
+  // long as the CrabCast adapter had existed, and an optional parameter would
+  // have let the next implementation reintroduce it in silence. Here the
+  // omission does not compile — this fixture went red on exactly that, before
+  // the parameter was added below.
   spawnSession(
     _type: string,
     _key: string,
     _url: string | undefined,
     _promptContent: string,
+    _priority: number,
     _defaultAgent?: string,
     _mcpServers?: McpServerDefinitions,
     _resume?: ResumeCause

@@ -367,7 +367,7 @@ makeUnwritable(NOBRIEF);
 // The resume / brief-less-launcher shape: spawnSession with nothing to write.
 // `shell` keeps the fixture honest — its launcher writes nothing else either,
 // so the only write this section could refuse over is the one it must not.
-const session = fixed.bridge.spawnSession(TYPE, NOBRIEF, undefined, '', 'shell');
+const session = fixed.bridge.spawnSession(TYPE, NOBRIEF, undefined, '', 1, 'shell');
 const nobriefName = fixed.agentNameFor(TYPE, NOBRIEF);
 show('session:', {
   status: session.status, spawnError: session.spawnError ?? null

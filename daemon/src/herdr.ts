@@ -1104,7 +1104,20 @@ export class HerdrBridge implements AgentRuntime {
   // `url` is `string | undefined` rather than optional: it sits in front of
   // required parameters, and callers who have no URL must pass nothing rather
   // than a placeholder.
-  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, defaultAgent?: string, mcpServers?: WorkspaceMcpServers, resume?: ResumeCause): HerdrSession {
+  //
+  // `priority` is accepted and DELIBERATELY UNUSED here (KAN-482). Under herdr
+  // the capacity gate and the preemption comparison both run in `router.ts`,
+  // above this seam, off the same `registry.priorityFor` this parameter carries
+  // — so there is nothing for this runtime to do with it, and doing anything
+  // would be a second opinion on a decision already taken. It is on the
+  // interface because the *other* implementation is a separate daemon that
+  // makes those decisions itself and must be told the number; see
+  // `AgentRuntime.spawnSession`. Naming it `_priority` was considered and
+  // rejected: the name is what makes the parameter list read the same on both
+  // implementations, and an underscore would invite a future reader to think
+  // herdr was handed something meaningless.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, priority: number, defaultAgent?: string, mcpServers?: WorkspaceMcpServers, resume?: ResumeCause): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
     // routers dedupe by (key, type), but the MCP server and the sidepanel's
     // re-attach path can both ask to activate the same agent at once. A second

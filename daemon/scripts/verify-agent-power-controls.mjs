@@ -157,10 +157,13 @@ function stubHerdr(running, { statuses = {}, workDirs = {} } = {}) {
     },
     tailAgent: () => ({ success: true, text: 'bypass permissions on\n❯ ' }),
     sendToAgent: async () => ({ success: true }),
-    spawnSession: (type, key, url, prompt, defaultAgent, mcpServers, resume) => {
+    // `priority` is 5th since KAN-482 — see `AgentRuntime.spawnSession`. It is
+    // recorded on the spawn below rather than ignored, so a future assertion
+    // about what this daemon told the runtime has it to hand.
+    spawnSession: (type, key, url, prompt, priority, defaultAgent, mcpServers, resume) => {
       const workDir = path.join(WORKSPACES, type, key.toLowerCase());
       fs.mkdirSync(workDir, { recursive: true });
-      bridge.spawns.push({ type, key, url, defaultAgent, resume });
+      bridge.spawns.push({ type, key, url, priority, defaultAgent, resume });
       alive.push(`butchr-${type}-${key.toLowerCase()}`);
       return {
         sessionId: `${type}-${key.toLowerCase()}-stub`,

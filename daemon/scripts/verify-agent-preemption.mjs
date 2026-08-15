@@ -172,7 +172,15 @@ function stubHerdr(running, { statuses = {}, sessions = [] } = {}) {
     // through the real `workspaceBrief`, not a hand-built literal, so the shape
     // this test drives is the shape the daemon produces.
     briefLocation: (type, key) => workspaceBrief(path.join(WORKSPACES, type, key.toLowerCase())),
-    spawnSession: (type, key, url, prompt, defaultAgent, mcpServers, resume) => {
+    // `priority` is 5th since KAN-482 — the seam carries what each type
+    // outranks, so CrabCast's capacity gate is fed the scale this file's whole
+    // subject depends on. Nothing here reads it; it is in the list because a
+    // stub whose parameters have slipped by one reads `resume` off the wrong
+    // argument and section 7 goes red for a reason that has nothing to do with
+    // preemption. That is exactly what happened, and it is the same "nothing
+    // could have told us" the comment below records: this is a `.mjs` stub, so
+    // no compiler sees it.
+    spawnSession: (type, key, url, prompt, priority, defaultAgent, mcpServers, resume) => {
       const workDir = path.join(WORKSPACES, type, key.toLowerCase());
       fs.mkdirSync(workDir, { recursive: true });
       const session = {

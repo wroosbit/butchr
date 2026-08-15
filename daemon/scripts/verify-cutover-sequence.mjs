@@ -277,20 +277,36 @@ const stripComments = (source) =>
 
 /**
  * The `configure_agent` payload, as keys: the object literal's own keys plus
- * every `configure.<key> =` assignment in the file. Both halves are needed —
+ * every `payload.<key> =` assignment in the file. Both halves are needed —
  * `mcpServers` is set by assignment rather than in the literal, and a resume
  * would most naturally arrive the same way.
+ *
+ * **KAN-482 gave the payload a declared type and a builder**, and this reads the
+ * new home. The declared type is folded in as a THIRD source rather than
+ * replacing the other two: a field can now be added to `ConfigureAgentPayload`
+ * and populated by a caller this function never looks at, so reading only the
+ * literal would miss it. Reading all three is what keeps the document's central
+ * claim — that nothing here carries a resume — a claim about the payload rather
+ * than about one statement that builds it.
  */
 function configurePayloadKeys(rawSource) {
   const source = stripComments(rawSource);
-  const open = source.indexOf('const configure: Record<string, unknown> = {');
+  const open = source.indexOf('const payload: ConfigureAgentPayload = {');
   if (open === -1) return null;
-  const close = source.indexOf('\n    };', open);
+  const close = source.indexOf('\n  };', open);
   if (close === -1) return null;
   const literal = source.slice(open, close);
   const keys = new Set();
-  for (const m of literal.matchAll(/^\s{6}([A-Za-z_$][\w$]*):/gm)) keys.add(m[1]);
-  for (const m of source.matchAll(/\bconfigure\.([A-Za-z_$][\w$]*)\s*=/g)) keys.add(m[1]);
+  for (const m of literal.matchAll(/^\s{4}([A-Za-z_$][\w$]*):/gm)) keys.add(m[1]);
+  for (const m of source.matchAll(/\bpayload\.([A-Za-z_$][\w$]*)\s*=/g)) keys.add(m[1]);
+
+  const typeOpen = source.indexOf('export type ConfigureAgentPayload = {');
+  if (typeOpen === -1) return null;
+  const typeClose = source.indexOf('\n};', typeOpen);
+  if (typeClose === -1) return null;
+  for (const m of source.slice(typeOpen, typeClose).matchAll(/^\s{2}([A-Za-z_$][\w$]*)\??:/gm)) {
+    keys.add(m[1]);
+  }
   return [...keys].sort();
 }
 
@@ -299,8 +315,9 @@ const payload = configurePayloadKeys(crabcast);
 check(
   'the `configure_agent` payload can still be read out of crabcast-runtime.ts',
   payload !== null,
-  'the `const configure: Record<string, unknown> = {` literal was not found. It was renamed or ' +
-    'restructured, so the two legs below cannot run and the document\'s central claim is unguarded.'
+  'the `const payload: ConfigureAgentPayload = {` literal, or the `ConfigureAgentPayload` type ' +
+    'declaration, was not found. One of them was renamed or restructured, so the two legs below ' +
+    "cannot run and the document's central claim is unguarded."
 );
 
 if (payload) {

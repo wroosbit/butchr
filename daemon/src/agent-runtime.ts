@@ -234,12 +234,46 @@ export interface AgentRuntime {
    * that type for why the transforms sit above this seam rather than inside
    * each implementation. An implementation writes what it is given and applies
    * nothing further.
+   *
+   * ## `priority` crosses the seam, and it is REQUIRED (KAN-482)
+   *
+   * **What this type outranks when the machine is full**, on the scale
+   * `priority.ts` defines and `WorkspaceRegistry.priorityFor` resolves — epic 3,
+   * story 2, task 1. It is passed rather than looked up for the same reason
+   * `mcpServers` is: the registry lives *above* this seam, and the sentence
+   * directly above is the rule — an implementation writes what it is given. A
+   * runtime that reached back into the registry for its own answer would be the
+   * second scale this ticket exists to prevent, and it could disagree with the
+   * number Butchr's own capacity gate used for the very same activation.
+   *
+   * **Required rather than optional, and that is the whole of the fix.**
+   * `CrabCastRuntime.provision()` sent a hard-coded literal `1` for every agent
+   * from the day it was written: Butchr had a working three-rank scale, used it
+   * under herdr, and threw it away at the CrabCast seam. Under a flat scale
+   * `outranks` is strictly-greater over a set with one value, so **preemption is
+   * unreachable by construction** and every supervisor queues behind the task
+   * agents holding the slots — measured on 2026-08-15 as two epic agents refused
+   * `at capacity` while lower-value work ran. An **optional** parameter here
+   * would have re-created that defect the first time a call site forgot: the
+   * default would be `DEFAULT_WORKSPACE_PRIORITY`, which is `1`, which is
+   * exactly the value the defect sent. Required makes omission a compile error
+   * instead — the fourth value dropped at this seam, and the first one the type
+   * system can see. See `crabcast-runtime.ts`'s `buildConfigureAgentPayload` for
+   * the other half, where the payload's own type is what stops a literal being
+   * written in place of the session's real value.
+   *
+   * **`HerdrBridge` ignores it, and that is correct rather than a shortfall.**
+   * herdr's capacity and preemption decisions are made in `router.ts` — above
+   * this seam, from the same registry lookup — so the runtime has nothing to do
+   * with the number. Under CrabCast the decision is made by a *different
+   * daemon*, so the value has to be told to it.
    */
   spawnSession(
     type: string,
     key: string,
     url: string | undefined,
     promptContent: string,
+    priority: number,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers,
     resume?: ResumeCause

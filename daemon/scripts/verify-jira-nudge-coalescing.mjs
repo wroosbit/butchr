@@ -1005,7 +1005,7 @@ if (LIVE) {
   try {
     console.log('\n  starting two real agents…\n');
     for (const agent of AGENTS) {
-      bridge.spawnSession(agent.type, agent.key, undefined, INERT, 'claude', {});
+      bridge.spawnSession(agent.type, agent.key, undefined, INERT, 1, 'claude', {});
     }
     const ready = await Promise.all(AGENTS.map((a) => waitForAgentReady(bridge, a.key, a.type)));
     row('both panes reached a prompt', ready.every(Boolean) ? 'yes' : 'NO — see the tails');

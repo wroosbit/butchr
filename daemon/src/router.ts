@@ -2333,11 +2333,14 @@ export class MessageRouter {
       // A preempted agent switched back on is resuming interrupted work, not
       // starting it. See resumeCauseFor.
       const resume = this.resumeCauseFor(agentName);
+      // `config.priority` is the SAME expression the capacity gate above was
+      // given, so Butchr's gate and CrabCast's cannot disagree (KAN-482).
       session = this.herdrBridge.spawnSession(
         config.type,
         key,
         data.url,
         renderedPrompt,
+        config.priority,
         data.defaultAgent,
         prepareWorkspaceMcpServers(mcpServers, { type: config.type, key }),
         resume
@@ -2545,11 +2548,14 @@ export class MessageRouter {
         return;
       }
 
+      // The `priority` this handler already resolved for its own capacity gate,
+      // reused rather than re-derived — see the other call site (KAN-482).
       session = this.herdrBridge.spawnSession(
         type,
         key,
         url,
         renderedPrompt,
+        priority,
         defaultAgent,
         prepareWorkspaceMcpServers(mcpServers, { type, key }),
         resume
