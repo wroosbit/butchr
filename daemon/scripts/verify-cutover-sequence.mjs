@@ -104,6 +104,28 @@
 //   node daemon/scripts/verify-cutover-sequence.mjs            # exit 1
 //   git checkout -- docs/crabcast-cutover-sequence.md
 //
+//   # §7, THE ONE THAT FIRES WHEN THE BUG IS FIXED — gate 10 closes (KAN-432)
+//   #     and the document is left describing a defect that no longer exists.
+//   #     This is the direction a guard written around an open bug would miss.
+//   perl -pi -e "s/^(\s*)this\.channelEnabled\.set/\$1if (activated.resumedExistingConversation === true) session.resumedConversation = true;\n\$1this.channelEnabled.set/" daemon/src/crabcast-runtime.ts
+//   node daemon/scripts/verify-cutover-sequence.mjs            # exit 1
+//   git checkout -- daemon/src/crabcast-runtime.ts
+//
+//   # §7, the other direction: the gate is open and the document stops saying so
+//   perl -0pi -e 's/drops `resumedExistingConversation` on the floor/reads it/' docs/crabcast-cutover-sequence.md
+//   node daemon/scripts/verify-cutover-sequence.mjs            # exit 1
+//   git checkout -- docs/crabcast-cutover-sequence.md
+//
+//   # §7, the flip-moment warning is softened while "refining" it — KAN-434 AC1
+//   perl -0pi -e 's/does not resume its conversation; it loses it/may not resume its conversation/' docs/crabcast-cutover-sequence.md
+//   node daemon/scripts/verify-cutover-sequence.mjs            # exit 1
+//   git checkout -- docs/crabcast-cutover-sequence.md
+//
+//   # §7, the mechanism the gate-10 explanation rests on is renamed in the code
+//   perl -pi -e 's/resumedConversation === true/resumedConversation === TRUE_/' daemon/src/reconcile.ts
+//   node daemon/scripts/verify-cutover-sequence.mjs            # exit 1
+//   git checkout -- daemon/src/reconcile.ts
+//
 // Sections:
 //
 //   1. every step carries a precondition, an action, a check, an abort and an owner
@@ -114,6 +136,9 @@
 //   5. the flip step's systemd advice still matches what the installer does
 //   6. every `butchr_*` instrument names the socket action beside it, and the
 //      read-only probe §4b hands the driver exists and stays read-only
+//   7. §1's resume refinement and gate 10 still match the code they describe —
+//      in BOTH directions, so the section fires when the gate closes as well as
+//      when the document drifts (KAN-434)
 //
 // Usage: node daemon/scripts/verify-cutover-sequence.mjs [--verbose]
 
@@ -603,6 +628,152 @@ if (fs.existsSync(path.join(repoRoot, PROBE))) {
     !/(deactivate_by_key|activate_by_key|send_to_agent|reset_by_key)/.test(probe),
     'the probe now carries a write verb. §4b says it reads and never writes, because standing an agent ' +
       'down is a decision with a ticket comment attached and must not be one keystroke from a status read.'
+  );
+}
+
+// ------------------ 7. §1's resume refinement still matches the code --------
+
+rule("7. §1's resume refinement, and gate 10, still match the code they describe");
+
+/**
+ * WHY THIS IS NOT A `verify-doc-constant-pins.mjs` PIN — KAN-434's acceptance
+ * criterion 3 asks for that to be answered rather than assumed.
+ *
+ * A pin binds a sentence to a CONSTANT'S VALUE: it hashes a declaration and
+ * asserts the document quotes what that declaration says. What this section
+ * guards is not a value. It is **the absence of a read** — `provision()` not
+ * consuming `activate_response.resumedExistingConversation` — and an absence
+ * has no declaration to hash.
+ *
+ * Pinning the nearest constant instead would bind the sentence to something
+ * that does not move when the claim goes false, and that is not hypothetical:
+ * it is the failure U-6 records one page over. `docs/crabcast-runtime.md`'s
+ * contract-boundary sentence IS pinned, to `CRABCAST_CONTRACT_VERSION`. The
+ * constant never moved, so the pin stayed green — and the sentence went false
+ * anyway, because what changed was CrabCast's contract growing to cover a
+ * surface, not our constant's value. A pin catches a constant moving; it cannot
+ * catch the world moving underneath a constant that stayed put.
+ *
+ * THE DIRECTION THAT MATTERS MOST IS THE ONE THAT FIRES WHEN THE GATE CLOSES.
+ * KAN-432 is fixing gate 10 in parallel with this document. When it lands,
+ * `provision()` starts reading the field, and this document's "nobody on this
+ * side learns" row, its Gate 10 section, §4's precondition and step 10's
+ * per-agent check all become descriptions of a defect that no longer exists.
+ * This section goes red and names them. **A guard that only fired while the bug
+ * was open would be deleted by the fix**, which is the opposite of what a
+ * document like this needs.
+ */
+
+const reconcile = read('daemon/src/reconcile.ts');
+
+/**
+ * The wire field CrabCast reports its resume decision on. Comments are stripped
+ * first for §2's reason, and it is load-bearing here rather than tidy: this
+ * document's own prose names the field, several comments in the runtime discuss
+ * it, and **a mention is not a read.** Without the strip this leg would report
+ * the gate closed the moment somebody explained why it was open.
+ */
+const RESUME_WIRE_FIELD = 'resumedExistingConversation';
+const runtimeReadsResumeField = stripComments(crabcast).includes(RESUME_WIRE_FIELD);
+
+/**
+ * Whitespace-normalised. The document wraps at 80 columns and every sentence
+ * asserted below spans a line break, so a naive test against `doc` would report
+ * a missing sentence that is sitting there — a false red that teaches a reader
+ * to distrust this script.
+ */
+const flat = doc.replace(/\s+/g, ' ');
+
+const GATE_10_OPEN_CLAIM = /drops `resumedExistingConversation` on the floor/;
+const gateStated = GATE_10_OPEN_CLAIM.test(flat);
+
+check(
+  runtimeReadsResumeField
+    ? `${DOC_REL} has stopped claiming the resume signal is dropped, now that provision() reads it`
+    : `${DOC_REL} states that provision() drops \`${RESUME_WIRE_FIELD}\` — gate 10, open`,
+  runtimeReadsResumeField ? !gateStated : gateStated,
+  runtimeReadsResumeField
+    ? `daemon/src/crabcast-runtime.ts NOW READS \`${RESUME_WIRE_FIELD}\`, so gate 10 looks closed ` +
+      `(KAN-432) — and ${DOC_REL} still tells its reader the signal is dropped on the floor.\n` +
+      `A resumed agent is no longer recorded as a working one, so §1's table row, the Gate 10 section, ` +
+      `§4's precondition and abort condition 7 are describing a defect that has been fixed. Re-read them ` +
+      `together: the cost of leaving them is a driver hand-nudging a fleet that no longer needs it, ` +
+      `during the one operation where invented work is most expensive.`
+    : `daemon/src/crabcast-runtime.ts does not read \`${RESUME_WIRE_FIELD}\`, so gate 10 is open — and ` +
+      `${DOC_REL} no longer says so.\n` +
+      `That sentence is the whole reason step 10 checks each agent for a TURN rather than for presence. ` +
+      `Without it a reader draws from step 9's green that resumed agents are fine, which is precisely ` +
+      `the conclusion this document was corrected to prevent.`,
+  runtimeReadsResumeField ? 'the gate is closed and the document agrees' : 'the gate is open and the document says so'
+);
+
+check(
+  '`daemon/src/reconcile.ts` still branches on `resumedConversation === true`',
+  /resumedConversation === true/.test(reconcile),
+  'the branch this document\'s Gate 10 section describes line by line is gone or renamed.\n' +
+    `${DOC_REL} tells a driver that \`undefined === true\` is what makes a resumed agent look like a ` +
+    `working one. If the comparison moved, that explanation is now fiction, and the step 10 check built ` +
+    `on it has no stated mechanism.`,
+  'the comparison the gate-10 explanation rests on'
+);
+
+check(
+  "the nudge is still guarded by that branch, so a `false` still means nobody is told",
+  /if \(outcome\.resumedConversation\)/.test(reconcile),
+  'the nudge is no longer guarded by `outcome.resumedConversation`.\n' +
+    'The document states that the nudge never fires under CrabCast BECAUSE the guard reads false. ' +
+    'If the guard moved, the consequence may have moved with it, in either direction.'
+);
+
+check(
+  'herdr is still the side that sets it, from `hasRestorableConversation`',
+  /hasRestorableConversation\(/.test(herdr) && /resumedConversation/.test(herdr),
+  'herdr no longer derives `resumedConversation` from `hasRestorableConversation`.\n' +
+    `${DOC_REL} §4 and step R4 both rest on this being a CrabCast-path defect ONLY — that after a ` +
+    `rollback the herdr path sets the field and DOES nudge. If that stopped being true, rollback ` +
+    `acquires the same failure and R4's check is wrong.`,
+  'the producer that makes gate 10 CrabCast-only'
+);
+
+/**
+ * The sentences KAN-434 is accountable for. Presence-only, and worth something
+ * only because the legs above re-read the code they describe — the pairing
+ * `docs/doc-constant-drift.md` calls part 2, and the same reason §4 states.
+ */
+const RESUME_STATEMENTS = [
+  {
+    what: 'the flip-moment warning is intact',
+    test: /does not resume its conversation; it loses it/,
+    why: 'AC1: the refinement must not weaken the warning, and this is the sentence carrying it'
+  },
+  {
+    what: 'the pre-flip conversation is still said to be lost',
+    test: /the pre-flip conversation is lost/i,
+    why: 'AC1: this is a refinement only while this still stands'
+  },
+  {
+    what: 'the cost is stated as one cold start per workspace',
+    test: /one cold start per workspace/i,
+    why: 'the corrected conclusion a reader is meant to draw, and the whole point of the amendment'
+  },
+  {
+    what: "KAN-396's measurement is cited re-runnably rather than asserted",
+    test: /verify-crabcast-second-activation-resumes\.mjs/,
+    why: 'a claim about a peer that a reader cannot re-run is a claim they must take on trust'
+  },
+  {
+    what: 'the unmeasured reconciler path is named',
+    test: /U-5/,
+    why: 'AC5: what remains uncovered is named rather than left to be inferred from silence'
+  }
+];
+
+for (const s of RESUME_STATEMENTS) {
+  check(
+    `${DOC_REL} states: ${s.what}`,
+    s.test.test(flat),
+    `not found. ${s.why}.`,
+    s.why
   );
 }
 
