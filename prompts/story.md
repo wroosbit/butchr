@@ -1168,6 +1168,77 @@ away from reporting five tickets as the whole board. Read the completeness
 fields a surface gives you — `pageInfo.hasNextPage`, `remainingCount` — for the
 same reason you re-read a write.
 
+**A long ticket's comment history is exactly that subset, and its completeness
+fields are in the one place nobody looks.** Measured on **KAN-39** on
+2026-08-15: `getJiraIssue(fields: ["comment"])` returned **100 of 211**
+comments, and the JQL route returned **20 of 211** — two different caps on two
+tools you use daily. **Both report themselves correctly and neither hides
+anything**: the container is `{comments, self, maxResults, total, startAt}`, the
+arithmetic `startAt + returned === total` is exact, and **`startAt` is what says
+how much fell off the back** — non-zero means you are holding a window on the
+newest end. ⚠ **The trap is positional rather than missing.** In a 310 KB
+payload the `comments` array begins at 7% and those three fields sit at **99.3%,
+after the entire array** — so an agent whose read spills to a file and who greps
+it for comment bodies **reads the array and never the container**. That is not
+hypothetical: **KAN-471 was filed on exactly that reading**, reporting *"no
+marker of any kind, no `total`, no `maxResults`"* for a marker that was present,
+complete and precise. It ruled out truncation — the file parses clean — which is
+the right check for the wrong confound: **a document can be complete and still be
+read partially.** So **read the container before the comments**, and quote
+`total` when you cite a ticket's history.
+
+**How you read it decides whether it is there, so do not grep for it.** ⚠ **The
+three fields occur exactly once each, near the end, so a partial read returns
+zero of them — the identical count you would get if they genuinely were
+absent.** Measured on `KAN-348`: each appears once at **71.6%** of a 342 KB
+payload, and a grep over the first half of that file returns `0` for all three.
+**So when the read spills to a file, parse the saved JSON and read
+`fields.comment.total` as a value; never grep the payload for the field names,
+and never judge from its first chunk.** ⚠ **And the shape does not discriminate
+— the values do.** A 22-comment ticket and a 211-comment one return the *same
+five keys*; what separates them is `startAt: 0` from `startAt: 111`. **An agent
+looking for a different-looking container will not find one.**
+
+⚠ **And the shape of the response is not a property of the call — it is a
+property of your client at the moment of the call, and it can change under you
+mid-session with nothing announcing it.** `epic/KAN-39` measured
+`fields.comment` carrying **only** `comments`, on a **complete** 1.19 MB file by
+a whole-file grep — then sixteen minutes later, **same tool, same ticket**,
+measured the full five-key container. One agent, one session, both readings
+correct when taken. **Six reads from the other side — markdown and adf, 86 KB to
+910 KB, capped and uncapped — all carried the container**, so neither response
+format nor payload size explains it, and two agents each proposed a mechanism
+and each was refuted. **The cause is unestablished and you do not need it.**
+⚠ **What you need is this: if `fields.comment` carries only `comments` and no
+`total`, you are on an envelope that strips the container — the read is not
+self-describing, you cannot tell a complete history from a capped one, and the
+paginated comment operation is the only thing that will tell you.** **Do not
+read an absent `total` as "this ticket is short."** ⚠ **And because it moves,
+check it on the read you are about to rely on rather than once per session** —
+an agent that saw the container an hour ago has learned nothing about the
+payload in front of it now.
+
+**A comment count is a reading with a timestamp on it, so cite it with one.**
+KAN-39's `total` was **211**, then **214**, then **216**, then **221** across a
+single afternoon — four readings, hours apart, all correct when taken. **A
+figure quoted without its time is a claim about a ticket that has since moved.**
+
+**And on this one you cannot page back, so say what you actually read.** There
+is **no comment-listing tool** on the official Atlassian MCP — `getJiraIssue`
+and the JQL search take no comment offset, and `fetch` takes an ARI rather than
+a REST path — so **111 of KAN-39's 211 comments cannot be reached by any agent
+through any surface you have**. `KAN-39` is the most-cited history in this
+project, which makes the practical consequence sharp: **"I checked the epic and
+found nothing" is a claim about the newest hundred comments**, and it reads like
+a claim about the ticket. Two duplicate tickets in one day came from that gap.
+So when a search of a long ticket's history comes back empty, **report the
+window you searched and its `total` alongside the finding** — that is this
+file's *empty result is a claim about your search* rule with the instrument
+named, and here the instrument hands you the numbers to name it with. Butchr's
+own proxy now carries `atlassian_get_issue_comments`, which pages the whole
+history by `startAt`; it is off by default, so **check whether it is enabled
+before you rely on it and do not assume the gap is closed for you**.
+
 It is the same shape this file teaches for `butchr_send_to_agent`: **a success
 that reports the call was made, not that the thing happened.**
 

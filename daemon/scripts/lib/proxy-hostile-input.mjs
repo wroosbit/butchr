@@ -114,6 +114,7 @@ export function validFor(field) {
   if (/projectKey/i.test(field)) return 'KAN';
   if (/Id$/i.test(field)) return '163933';
   if (field === 'limit' || field === 'maxResults') return 5;
+  if (field === 'startAt') return 0;
   if (field === 'cql') return 'type=page';
   if (field === 'jql') return 'project = KAN';
   if (field === 'query') return 'butchr';
@@ -314,6 +315,19 @@ export function zeroContainmentArguments(sweep) {
  *     local the builder computed;
  *   - `format` is narrowed by `['storage','atlas_doc_format','view'].includes()`
  *     to one of three literals, with a literal fallback.
+ *   - `pageOffset(args)` (KAN-471) floors to an integer and returns `0` for
+ *     anything non-finite or below 1, so a `startAt` reaches the path as a
+ *     number or as the first page and never as caller text;
+ *   - `listLimit(args, 'maxResults', PROXY_COMMENT_MAX_RESULTS)` (KAN-471) is
+ *     the same clamp as `listLimit(args)` against a different ceiling — the
+ *     third argument is a module constant, not caller input, and the helper's
+ *     return type is unchanged.
+ *
+ * **The two KAN-471 entries are the whole cost of that ticket's operation, and
+ * they are listed rather than pattern-matched on purpose.** Relaxing this to
+ * something like `/^listLimit\(/` would exempt every future call including one
+ * whose ceiling came from `args`, which is exactly the hole the exact-match
+ * rule exists to keep shut.
  *
  * That these really are bounded is asserted dynamically rather than taken on
  * trust here — the limit-bound checks drive every list operation with `10_000`,
@@ -327,7 +341,15 @@ export function zeroContainmentArguments(sweep) {
  * the cost of the list is that it is maintained, and the alternative — inferring
  * boundedness from the declaration — is a type-checker, which is not this.
  */
-export const BOUNDED_INTERPOLATIONS = ['listLimit(args)', 'maxResults', 'limit', 'format'];
+export const BOUNDED_INTERPOLATIONS = [
+  'listLimit(args)',
+  'maxResults',
+  'limit',
+  'format',
+  // KAN-471, both justified in the docblock above.
+  'pageOffset(args)',
+  "listLimit(args, 'maxResults', PROXY_COMMENT_MAX_RESULTS)"
+];
 
 /**
  * Every template literal that forms part of a `path:` expression, with the

@@ -69,7 +69,18 @@ import { JIRA_KEY } from './keys.js';
  *
  * The table below went from four operations to twenty-two — eighteen reads,
  * covering every remaining Jira, Confluence and account read the official
- * Atlassian MCP server offers. Two of them are not what their names suggest,
+ * Atlassian MCP server offers.
+ *
+ * **That parity ended deliberately with KAN-471, and the count below is the
+ * count at KAN-293.** `atlassian_get_issue_comments` is the thirty-third
+ * operation and the first that has no counterpart on the official server at
+ * all: there is no comment-listing tool there, and the issue endpoint both
+ * servers share caps the comment field at 100 with no way to page past it. So
+ * "one operation per official tool" is no longer the table's shape, and should
+ * not be restored as one — the whole value of that entry is that it reads
+ * something nothing else can. See its own comment for the measurement.
+ *
+ * Two of KAN-292's are not what their names suggest,
  * and the header is where that is recorded rather than the ticket, because the
  * ticket is not what the next reader has open:
  *
@@ -642,6 +653,18 @@ function transitionId(args: Record<string, any>): { id: string } | { error: stri
 export const PROXY_LIST_MAX_RESULTS = 50;
 
 /**
+ * How many comments one proxied page of an issue's history may ask for.
+ *
+ * 100 rather than {@link PROXY_LIST_MAX_RESULTS}'s 50 because this is the one
+ * read whose *purpose* is to reach a history the issue endpoint cannot, and
+ * 100 is what that endpoint itself returns — measured on KAN-39, 2026-08-15:
+ * `maxResults: 100, total: 211`. Matching it means a caller pages a long
+ * ticket in the same number of requests either surface would have taken, and
+ * never has to wonder whether the proxy shortened the history further.
+ */
+export const PROXY_COMMENT_MAX_RESULTS = 100;
+
+/**
  * A numeric Atlassian id — a Confluence page, space or comment — or the reason
  * this one is not.
  *
@@ -857,11 +880,29 @@ function typeName(
 }
 
 /** A bounded `limit`, clamped rather than refused. See `maxResults` on search. */
-function listLimit(args: Record<string, any>, field = 'limit'): number {
+function listLimit(
+  args: Record<string, any>,
+  field = 'limit',
+  cap: number = PROXY_LIST_MAX_RESULTS
+): number {
   const asked = Number(args?.[field]);
-  return Number.isFinite(asked) && asked >= 1
-    ? Math.min(Math.floor(asked), PROXY_LIST_MAX_RESULTS)
-    : PROXY_LIST_MAX_RESULTS;
+  return Number.isFinite(asked) && asked >= 1 ? Math.min(Math.floor(asked), cap) : cap;
+}
+
+/**
+ * A 0-based page offset, clamped to something a REST path can carry (KAN-471).
+ *
+ * Unlike {@link listLimit} there is no useful ceiling here — a caller walking a
+ * long history legitimately asks for `startAt=200` — so the only job is to
+ * refuse what would not be a number. **Anything unusable becomes 0**, which is
+ * the first page: a mistyped offset shows the caller the beginning of the
+ * history rather than an empty result they would read as "there is nothing
+ * there". That direction is deliberate and is the same argument
+ * {@link snapshotFrom} makes for defaulting toward the safe reading.
+ */
+function pageOffset(args: Record<string, any>, field = 'startAt'): number {
+  const asked = Number(args?.[field]);
+  return Number.isFinite(asked) && asked >= 1 ? Math.min(Math.floor(asked), 100_000) : 0;
 }
 
 /**
@@ -1009,6 +1050,76 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         path:
           `/rest/api/3/issue/${encodeURIComponent(key.key)}` +
           `?fields=${encodeURIComponent(fields.fields)}`
+      };
+    }
+  },
+  {
+    // KAN-471. THE ONE READ ON THIS TABLE THAT REACHES SOMETHING NO OTHER
+    // SURFACE CAN.
+    //
+    // `atlassian_get_issue` above can ask for `fields=comment`, and when it
+    // does it inherits Jira's cap on the comment field: measured on KAN-39,
+    // 2026-08-15, that endpoint returned **100 of 211** comments and the JQL
+    // route returned **20 of 211**. Both report the cap honestly — the
+    // container carries `total`, `maxResults` and a non-zero `startAt` — but
+    // neither takes a parameter that reaches past it, so the older comments
+    // are not addressable through the issue endpoint at all.
+    //
+    // This operation is the paginated comment endpoint, which is a different
+    // REST resource rather than a bigger `fields` request, and `startAt` is
+    // what makes the whole history reachable one page at a time.
+    //
+    // WHY IT IS WORTH AN OPERATION: this fleet's decisions live in ticket
+    // comments, and KAN-39 is the most-cited history in the project. Before
+    // this entry, 111 of its 211 comments could not be read by any agent
+    // through any surface — official MCP included, which has no
+    // comment-listing tool at all. "I checked the epic and found nothing" was
+    // therefore a claim about the newest 100 comments, and read like a claim
+    // about the ticket.
+    //
+    // `orderBy=created` is pinned rather than left to Jira's default so that
+    // `startAt` means the same thing on every page — a caller walking
+    // `startAt` 0, 100, 200 must not have the ordering change underneath it.
+    tool: 'atlassian_get_issue_comments',
+    mode: 'jira-read',
+    products: ['jira'],
+    scope: 'read:jira-work',
+    method: 'GET',
+    pathShape: '/rest/api/3/issue/{issueKey}/comment?startAt={startAt}&maxResults={maxResults}&orderBy=created',
+    description:
+      "Read one page of a Jira issue's comments through the Butchr daemon's own credential, " +
+      'oldest first. USE THIS RATHER THAN atlassian_get_issue WITH fields=comment WHEN THE ' +
+      'HISTORY MATTERS: the issue endpoint caps the comment field and cannot page past it, ' +
+      'so on a long ticket it returns the newest window and nothing reaches the rest. The ' +
+      'response carries total, maxResults and startAt — read total before you treat a page ' +
+      'as the whole history, and walk startAt until startAt + returned reaches it. A failure ' +
+      'is loud, as above.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issueKey: { type: 'string', description: 'The issue key, e.g. "KAN-39".' },
+        startAt: {
+          type: 'number',
+          description:
+            'Optional. The 0-based index of the first comment to return; defaults to 0. ' +
+            'Page by adding the number returned, and stop when startAt + returned === total.'
+        },
+        maxResults: {
+          type: 'number',
+          description: `Optional. 1..${PROXY_COMMENT_MAX_RESULTS}; defaults to ${PROXY_COMMENT_MAX_RESULTS}.`
+        }
+      },
+      required: ['issueKey']
+    },
+    build(args) {
+      const key = issueKey(args);
+      if ('error' in key) return key;
+      return {
+        path:
+          `/rest/api/3/issue/${encodeURIComponent(key.key)}/comment` +
+          `?startAt=${pageOffset(args)}` +
+          `&maxResults=${listLimit(args, 'maxResults', PROXY_COMMENT_MAX_RESULTS)}` +
+          `&orderBy=created`
       };
     }
   },
@@ -1819,6 +1930,15 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
   // list as every ticket in this epic instructs, because the tickets' own
   // arithmetic has been wrong twice — 21 reads (18 of them KAN-292's, 3
   // KAN-272's) and 10 writes (1 of them KAN-291's transition, 9 here).
+  //
+  // THAT ARITHMETIC IS KAN-293'S AND IS LEFT AS IT WAS. KAN-471 added a
+  // twenty-second read (`atlassian_get_issue_comments`), so the table is 32
+  // and the reads no longer match the official tool list one for one — by
+  // design, because the official server has no comment-listing tool to match.
+  // The number to trust is `PROXY_OPERATIONS.length`, never a figure in a
+  // comment; the read-surface count is asserted in
+  // `verify-atlassian-proxy-read-surface.mjs` and that is where it is kept
+  // honest.
   //
   // WHAT MAKES THESE ONE SLICE IS THE BODY, NOT THE VERB. Every operation below
   // carries content an agent wrote, and all of it goes through ONE converter —
