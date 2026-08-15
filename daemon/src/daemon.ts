@@ -5,6 +5,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { WorkspaceRegistry, isSupervisorType } from './registry.js';
 import { PromptLoader } from './prompt.js';
+import { PromptSourceKeeper } from './prompt-source.js';
 import { HerdrBridge, agentNameFor } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { createAgentRuntime, type RuntimeSwitchReport } from './runtime-switch.js';
@@ -254,6 +255,15 @@ log(
     Object.keys({ ...registry.mcpServerDefinitions(), ...coreMcpServerDefinitions() }).join(', ')
 );
 const promptLoader = new PromptLoader(repoRoot);
+// KAN-442. Briefs are rendered at `origin/main` rather than off this checkout's
+// working tree, whose default branch nothing advances and nothing should. That
+// only means something while the ref is fetched, and until now nobody owned
+// fetching it — every agent did it incidentally at setup, which is a habit
+// rather than a mechanism. This is the owner the ticket asked for. It fetches
+// and nothing else: no pull, no checkout, no rebuild, so no file under a reading
+// agent ever moves.
+const promptSourceKeeper = new PromptSourceKeeper(repoRoot, log);
+promptSourceKeeper.start();
 // KAN-278. Still exactly one construction site for the runtime — the property
 // KAN-223 established and `verify-agent-runtime-seam.mjs` protects — but the
 // choice of *which* runtime now lives behind it. `createAgentRuntime` returns

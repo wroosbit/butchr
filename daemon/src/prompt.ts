@@ -1,6 +1,12 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  describeBuildGap,
+  readTemplateAt,
+  resolvePromptSource,
+  type PromptSource
+} from './prompt-source.js';
 
 /**
  * A workspace brief is a SNAPSHOT, and until KAN-242 nothing in it said so.
@@ -31,6 +37,20 @@ import * as path from 'path';
  * does not make anything current, and it must never be read as claiming to;
  * what acts on it is the agent, instructed by the `## This brief is a snapshot`
  * section the block is rendered into. See docs/prompt-staleness.md.
+ *
+ * KAN-442 CHANGED WHAT THE SNAPSHOT IS A SNAPSHOT OF, and nothing above it.
+ * The template used to be read off the checkout's *working tree*, whose `main`
+ * is never advanced — correctly, since agents read that tree concurrently and
+ * `prompts/task.md` forbids moving it. So the brief was a snapshot of a tree
+ * that was behind `origin/main` by one commit per merge and falling further
+ * behind for as long as the fleet kept merging.
+ *
+ * It is now read at `origin/main` itself, via `git show`, which touches no
+ * working tree and takes no lock — see `prompt-source.ts` for why that dissolves
+ * the concurrency hazard rather than mitigating it. The stamp, the two commands
+ * and the honest-silence rule are all unchanged; what moved is that the commit
+ * they name is now the merged one, so the check they carry usually answers
+ * "current" instead of reliably answering "a rule moved".
  */
 
 /** How long git is given before the render gives up and says so. */
@@ -90,6 +110,16 @@ export interface PromptProvenance {
   commit: TemplateCommit | null;
   /** Why `commit` is null. Present exactly when `commit` is null. */
   unavailable?: string;
+  /**
+   * Which source the bytes came from, so the block cannot claim the wrong one.
+   *
+   * Carried on the provenance rather than recomputed by the renderer: the
+   * loader is what actually chose, and a second resolution could disagree with
+   * the first — which is the KAN-145 shape, a fact with two implementations.
+   */
+  source: PromptSource;
+  /** The `origin/main`-ahead-of-build gap, when there is one to state. */
+  buildGap?: string;
 }
 
 /**
@@ -102,13 +132,16 @@ export interface PromptProvenance {
 export function templateProvenance(
   repoRoot: string,
   templatePath: string,
+  source: PromptSource = { kind: 'worktree', because: 'no source was resolved' },
   now: Date = new Date()
 ): PromptProvenance {
   const base: PromptProvenance = {
     repoRoot,
     templatePath,
     renderedAt: now,
-    commit: null
+    commit: null,
+    source,
+    ...(describeBuildGap(repoRoot, source) ? { buildGap: describeBuildGap(repoRoot, source)! } : {})
   };
 
   if (git(repoRoot, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
@@ -132,11 +165,21 @@ export function templateProvenance(
   // changed after you were briefed" about a change their file already contains.
   // A dull subject line is worth far less than a false positive, because the
   // false positive is what teaches an agent to stop running the check.
+  // WALKED FROM THE SOURCE'S OWN COMMIT, not from HEAD. With the bytes now read
+  // at `origin/main` (KAN-442), a `log` left to default to HEAD would stamp the
+  // last commit touching this path *in the working tree* — an older one — while
+  // the text came from the ref. The reader's `log <stamp>..origin/main` would
+  // then list the very commits their brief already contains, and report "a rule
+  // changed after you were briefed" about a change they are looking at. That is
+  // the false positive `--no-merges` was rejected for causing, arriving by a
+  // different route, and it is the failure that teaches an agent to stop running
+  // the check.
   const line = git(repoRoot, [
     'log',
     '-1',
     '--format=%H%x00%h%x00%s%x00%ad',
     '--date=format:%Y-%m-%d %H:%M',
+    ...(source.kind === 'ref' ? [source.sha] : []),
     '--',
     templatePath
   ]);
@@ -192,7 +235,16 @@ function stamp(at: Date): string {
  *     install would read as "nothing to check here".
  */
 export function renderProvenanceBlock(p: PromptProvenance): string {
-  const lines = [`- **Rendered** ${stamp(p.renderedAt)}, from \`${p.repoRoot}\`.`];
+  // The source is stated on the first line because it changes what the reader
+  // should conclude from everything under it. `origin/main` means the stamp
+  // below names a merged commit and the check will usually come back empty;
+  // the working tree means it names whatever that tree happens to hold, which
+  // is behind by one commit per merge and is the state KAN-442 was filed about.
+  const from =
+    p.source.kind === 'ref'
+      ? `\`${p.repoRoot}\` at \`${p.source.ref}\` — read with \`git show\`, so no working tree was involved`
+      : `\`${p.repoRoot}\`'s **working tree**, which may be behind \`origin/main\` (${p.source.because})`;
+  const lines = [`- **Rendered** ${stamp(p.renderedAt)}, from ${from}.`];
 
   if (!p.commit) {
     lines.push(
@@ -221,6 +273,23 @@ export function renderProvenanceBlock(p: PromptProvenance): string {
       `\`git -C ${p.repoRoot} diff ${shortSha}..origin/main -- ${p.templatePath}\`, ` +
       `and follow what \`origin/main\` says rather than what is written above it.`
   );
+
+  // Stated because the alternative is implying a guarantee we have not got. The
+  // brief is current with what was merged; the daemon answering your tool calls
+  // is not. A rule here can therefore describe a mechanism this install has not
+  // been rebuilt to have — which is a real thing to meet, and much easier to
+  // meet with the sentence in front of you than to work out afterwards.
+  if (p.buildGap) {
+    lines.push(
+      '',
+      `- ⚠ **The brief is current; the running daemon is not.** ${p.buildGap}. ` +
+        `So a rule above may name a tool or a field this install has not been rebuilt to have. ` +
+        `Governance — who approves you, what you may merge — is what this file is for and it is ` +
+        `current. Where a *mechanism* it describes is missing, that is this gap and not your error; ` +
+        `say so on your ticket rather than working around it silently.`
+    );
+  }
+
   return lines.join('\n');
 }
 
@@ -242,12 +311,31 @@ export class PromptLoader {
   }
 
   public loadAndRender(templateRelativePath: string, variables: Record<string, string>): string {
-    const fullPath = path.resolve(this.baseDir, templateRelativePath);
-    if (!fs.existsSync(fullPath)) {
-      throw new Error(`Prompt template file not found: ${fullPath}`);
+    // Resolved per render rather than per loader (KAN-442): a daemon that
+    // started before its first fetch would otherwise be pinned to the working
+    // tree for its whole life, which is the drift this change exists to remove.
+    let source = resolvePromptSource(this.baseDir);
+
+    // The ref is tried first and the working tree is the fallback, never the
+    // other way round. Both legs have to work: a template added since the last
+    // fetch exists on disk and not in the ref, and refusing to render it would
+    // turn a stale ref into a failed activation — trading a small, visible
+    // problem for a total one.
+    let content = readTemplateAt(this.baseDir, source, templateRelativePath);
+    if (content === null && source.kind === 'ref') {
+      source = {
+        kind: 'worktree',
+        because: `${templateRelativePath} could not be read at ${source.ref} (${source.sha.slice(0, 7)})`
+      };
     }
 
-    let content = fs.readFileSync(fullPath, 'utf-8');
+    if (content === null) {
+      const fullPath = path.resolve(this.baseDir, templateRelativePath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`Prompt template file not found: ${fullPath}`);
+      }
+      content = fs.readFileSync(fullPath, 'utf-8');
+    }
 
     // Computed HERE rather than passed in by the caller, and that is the whole
     // point: there are two render call sites (router.ts:1561 and :1803) and a
@@ -255,7 +343,11 @@ export class PromptLoader {
     // KAN-145 is the standing example — a field written where nothing read it —
     // and its lesson is that a fact with two implementations has a wrong one.
     // The loader knows `baseDir` and the template path; nobody else needs to.
-    const provenance = templateProvenance(this.baseDir, templateRelativePath);
+    //
+    // `source` is PASSED rather than re-resolved, so the block cannot describe a
+    // source other than the one these bytes actually came from — including the
+    // fallback narrowing just above.
+    const provenance = templateProvenance(this.baseDir, templateRelativePath, source);
     const resolved: Record<string, string> = {
       ...variables,
       [PROVENANCE_VARIABLE]: renderProvenanceBlock(provenance)
