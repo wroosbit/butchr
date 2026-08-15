@@ -1,0 +1,1201 @@
+{
+  "action": "list_agents_response",
+  "success": true,
+  "agents": [
+    {
+      "sessionless": false,
+      "agentName": "butchr-epic-kan-203",
+      "sessionId": "epic-kan-203-1786738311995",
+      "type": "epic",
+      "key": "KAN-203",
+      "url": null,
+      "createdAt": "2026-08-14T20:11:51.995Z",
+      "status": "active",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-203",
+      "herdrStatus": "done",
+      "agentRuntime": "claude",
+      "supervisor": true,
+      "activatedBy": null,
+      "channel": {
+        "outcome": "unverified-client",
+        "transport": "channel",
+        "proved": false,
+        "clientName": "claude-code",
+        "clientVersion": "2.1.232",
+        "clientVersionVerified": false,
+        "checkedAt": "2026-08-14T20:12:03.427Z",
+        "elapsedMs": 343,
+        "detail": "the loop crossed and the client read the frame — but claude-code 2.1.232 is not a version on which channel delivery to the MODEL has been measured (2.1.224, 2.1.226). Channels are a research preview and the contract may have moved; this agent still uses the channel and is flagged so nobody assumes otherwise"
+      }
+    },
+    {
+      "sessionless": false,
+      "agentName": "butchr-story-kan-117",
+      "sessionId": "story-kan-117-1786738317330",
+      "type": "story",
+      "key": "KAN-117",
+      "url": null,
+      "createdAt": "2026-08-14T20:11:57.330Z",
+      "status": "active",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/story/kan-117",
+      "herdrStatus": "idle",
+      "agentRuntime": "claude",
+      "supervisor": true,
+      "activatedBy": null,
+      "channel": {
+        "outcome": "no-answer",
+        "transport": "composer",
+        "proved": false,
+        "clientName": null,
+        "clientVersion": null,
+        "clientVersionVerified": null,
+        "checkedAt": "2026-08-14T20:12:24.068Z",
+        "elapsedMs": 20001,
+        "detail": "the probe frame was written to conn-129 and this agent's MCP server did not answer within 20000ms. Either it is not running the build this daemon expects, or it is wedged: an addressed send to it would report success and prove nothing"
+      }
+    },
+    {
+      "sessionless": false,
+      "agentName": "butchr-epic-kan-59",
+      "sessionId": "epic-kan-59-1786738321621",
+      "type": "epic",
+      "key": "KAN-59",
+      "url": null,
+      "createdAt": "2026-08-14T20:12:01.624Z",
+      "status": "active",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-59",
+      "herdrStatus": "working",
+      "agentRuntime": "claude",
+      "supervisor": true,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-203"
+      },
+      "channel": {
+        "outcome": "unverified-client",
+        "transport": "channel",
+        "proved": false,
+        "clientName": "claude-code",
+        "clientVersion": "2.1.232",
+        "clientVersionVerified": false,
+        "checkedAt": "2026-08-14T20:12:17.778Z",
+        "elapsedMs": 17,
+        "detail": "the loop crossed and the client read the frame — but claude-code 2.1.232 is not a version on which channel delivery to the MODEL has been measured (2.1.224, 2.1.226). Channels are a research preview and the contract may have moved; this agent still uses the channel and is flagged so nobody assumes otherwise"
+      }
+    },
+    {
+      "sessionless": false,
+      "agentName": "butchr-epic-kan-39",
+      "sessionId": "epic-kan-39-1786738325959",
+      "type": "epic",
+      "key": "KAN-39",
+      "url": null,
+      "createdAt": "2026-08-14T20:12:05.967Z",
+      "status": "active",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39",
+      "herdrStatus": "done",
+      "agentRuntime": "claude",
+      "supervisor": true,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-203"
+      },
+      "channel": {
+        "outcome": "unverified-client",
+        "transport": "channel",
+        "proved": false,
+        "clientName": "claude-code",
+        "clientVersion": "2.1.232",
+        "clientVersionVerified": false,
+        "checkedAt": "2026-08-14T20:12:15.703Z",
+        "elapsedMs": 23,
+        "detail": "the loop crossed and the client read the frame — but claude-code 2.1.232 is not a version on which channel delivery to the MODEL has been measured (2.1.224, 2.1.226). Channels are a research preview and the contract may have moved; this agent still uses the channel and is flagged so nobody assumes otherwise"
+      }
+    },
+    {
+      "sessionless": false,
+      "agentName": "butchr-task-kan-448",
+      "sessionId": "task-kan-448-1786776339808",
+      "type": "task",
+      "key": "KAN-448",
+      "url": null,
+      "createdAt": "2026-08-15T06:45:39.809Z",
+      "status": "active",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-448",
+      "herdrStatus": "working",
+      "agentRuntime": "claude",
+      "supervisor": false,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "channel": {
+        "outcome": "unverified-client",
+        "transport": "channel",
+        "proved": false,
+        "clientName": "claude-code",
+        "clientVersion": "2.1.233",
+        "clientVersionVerified": false,
+        "checkedAt": "2026-08-15T06:45:52.347Z",
+        "elapsedMs": 7,
+        "detail": "the loop crossed and the client read the frame — but claude-code 2.1.233 is not a version on which channel delivery to the MODEL has been measured (2.1.224, 2.1.226). Channels are a research preview and the contract may have moved; this agent still uses the channel and is flagged so nobody assumes otherwise"
+      }
+    },
+    {
+      "sessionless": false,
+      "agentName": "butchr-task-kan-423",
+      "sessionId": "task-kan-423-1786781446966",
+      "type": "task",
+      "key": "KAN-423",
+      "url": null,
+      "createdAt": "2026-08-15T08:10:46.967Z",
+      "status": "active",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-423",
+      "herdrStatus": "working",
+      "agentRuntime": "claude",
+      "supervisor": false,
+      "activatedBy": null,
+      "channel": {
+        "outcome": "unverified-client",
+        "transport": "channel",
+        "proved": false,
+        "clientName": "claude-code",
+        "clientVersion": "2.1.233",
+        "clientVersionVerified": false,
+        "checkedAt": "2026-08-15T08:10:59.408Z",
+        "elapsedMs": 50,
+        "detail": "the loop crossed and the client read the frame — but claude-code 2.1.233 is not a version on which channel delivery to the MODEL has been measured (2.1.224, 2.1.226). Channels are a research preview and the contract may have moved; this agent still uses the channel and is flagged so nobody assumes otherwise"
+      }
+    },
+    {
+      "sessionless": false,
+      "agentName": "butchr-task-kan-451",
+      "sessionId": "task-kan-451-1786781690679",
+      "type": "task",
+      "key": "KAN-451",
+      "url": null,
+      "createdAt": "2026-08-15T08:14:50.680Z",
+      "status": "active",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-451",
+      "herdrStatus": "working",
+      "agentRuntime": "claude",
+      "supervisor": false,
+      "activatedBy": null,
+      "channel": {
+        "outcome": "unverified-client",
+        "transport": "channel",
+        "proved": false,
+        "clientName": "claude-code",
+        "clientVersion": "2.1.233",
+        "clientVersionVerified": false,
+        "checkedAt": "2026-08-15T08:15:03.068Z",
+        "elapsedMs": 11,
+        "detail": "the loop crossed and the client read the frame — but claude-code 2.1.233 is not a version on which channel delivery to the MODEL has been measured (2.1.224, 2.1.226). Channels are a research preview and the contract may have moved; this agent still uses the channel and is flagged so nobody assumes otherwise"
+      }
+    },
+    {
+      "sessionless": true,
+      "agentName": "butchr-story-kan-419",
+      "sessionId": null,
+      "type": "story",
+      "key": "kan-419",
+      "url": null,
+      "createdAt": null,
+      "status": null,
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/story/kan-419",
+      "herdrStatus": "done",
+      "agentRuntime": "claude",
+      "supervisor": true,
+      "activatedBy": null,
+      "channel": {
+        "outcome": "unverified-client",
+        "transport": "channel",
+        "proved": false,
+        "clientName": "claude-code",
+        "clientVersion": "2.1.232",
+        "clientVersionVerified": false,
+        "checkedAt": "2026-08-14T20:11:57.213Z",
+        "elapsedMs": 22,
+        "detail": "the loop crossed and the client read the frame — but claude-code 2.1.232 is not a version on which channel delivery to the MODEL has been measured (2.1.224, 2.1.226). Channels are a research preview and the contract may have moved; this agent still uses the channel and is flagged so nobody assumes otherwise"
+      }
+    }
+  ],
+  "unbackedPanes": [
+    {
+      "agentName": "butchr-cto-agent-story-st-8fbd6dac",
+      "type": "cto",
+      "key": "agent-story-st-8fbd6dac",
+      "workDir": "/home/brooswit",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-cto-agent-story-st-b3cd0778",
+      "type": "cto",
+      "key": "agent-story-st-b3cd0778",
+      "workDir": "/home/brooswit",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-cto-agent-story-st-5a6033e6",
+      "type": "cto",
+      "key": "agent-story-st-5a6033e6",
+      "workDir": "/home/brooswit",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-cto-agent-story-st-7ebfdc3b",
+      "type": "cto",
+      "key": "agent-story-st-7ebfdc3b",
+      "workDir": "/home/brooswit",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-default-workspace",
+      "type": "default",
+      "key": "workspace",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/default/workspace",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-cto-agent-story-st-8068dc38",
+      "type": "cto",
+      "key": "agent-story-st-8068dc38",
+      "workDir": "/home/brooswit",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-cto-agent-story-st-d5a2d773",
+      "type": "cto",
+      "key": "agent-story-st-d5a2d773",
+      "workDir": "/home/brooswit",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-cto-agent-story-st-8b585e4f",
+      "type": "cto",
+      "key": "agent-story-st-8b585e4f",
+      "workDir": "/home/brooswit",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    },
+    {
+      "agentName": "butchr-task-kan-117",
+      "type": "task",
+      "key": "kan-117",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-117",
+      "herdrStatus": "unknown",
+      "reason": "herdr reports no agent running in this pane and this daemon holds no session for it"
+    }
+  ],
+  "missingAgents": [
+    {
+      "agentName": "butchr-task-kan-117",
+      "type": "task",
+      "key": "KAN-117",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-117",
+      "url": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "since": "2026-08-14T11:49:43.426Z",
+      "reason": "The registry records this agent as active, but herdr has no agent by that name and this daemon holds no session for it. It is not running."
+    }
+  ],
+  "censusUnreadableRecordsTotal": 0,
+  "censusUnreadableRecords": [],
+  "preemptedAgents": [],
+  "standbyAgents": [
+    {
+      "agentName": "butchr-task-kan-422",
+      "type": "task",
+      "key": "KAN-422",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-422",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T07:44:27.075Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-445",
+      "type": "task",
+      "key": "KAN-445",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-445",
+      "url": "https://wroosbit.atlassian.net/browse/KAN-445",
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "since": "2026-08-15T06:40:24.141Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-416",
+      "type": "task",
+      "key": "KAN-416",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-416",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T06:21:23.072Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-442",
+      "type": "task",
+      "key": "KAN-442",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-442",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T06:03:08.788Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-433",
+      "type": "task",
+      "key": "KAN-433",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-433",
+      "url": "https://wroosbit.atlassian.net/browse/KAN-433",
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "since": "2026-08-15T05:28:43.216Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-435",
+      "type": "task",
+      "key": "KAN-435",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-435",
+      "url": null,
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-39"
+      },
+      "since": "2026-08-15T05:04:23.954Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-441",
+      "type": "task",
+      "key": "KAN-441",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-441",
+      "url": null,
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-39"
+      },
+      "since": "2026-08-15T04:47:10.781Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-431",
+      "type": "task",
+      "key": "KAN-431",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-431",
+      "url": "https://wroosbit.atlassian.net/browse/KAN-431",
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "since": "2026-08-15T04:18:49.280Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-421",
+      "type": "task",
+      "key": "KAN-421",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-421",
+      "url": "https://wroosbit.atlassian.net/browse/KAN-421",
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "story",
+        "key": "KAN-419"
+      },
+      "since": "2026-08-15T03:53:25.616Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-403",
+      "type": "task",
+      "key": "KAN-403",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-403",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T03:51:27.644Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-428",
+      "type": "task",
+      "key": "KAN-428",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-428",
+      "url": "https://wroosbit.atlassian.net/browse/KAN-428",
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "since": "2026-08-15T03:07:54.852Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-429",
+      "type": "task",
+      "key": "KAN-429",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-429",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T02:44:36.805Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-426",
+      "type": "task",
+      "key": "KAN-426",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-426",
+      "url": "https://wroosbit.atlassian.net/browse/KAN-426",
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "since": "2026-08-15T01:59:32.069Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-432",
+      "type": "task",
+      "key": "KAN-432",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-432",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T01:25:38.700Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-392",
+      "type": "task",
+      "key": "KAN-392",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-392",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T01:17:21.423Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-437",
+      "type": "task",
+      "key": "KAN-437",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-437",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T01:09:26.527Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-420",
+      "type": "task",
+      "key": "KAN-420",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-420",
+      "url": "https://wroosbit.atlassian.net/browse/KAN-420",
+      "defaultAgent": null,
+      "activatedBy": {
+        "type": "story",
+        "key": "KAN-419"
+      },
+      "since": "2026-08-15T00:54:13.100Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-434",
+      "type": "task",
+      "key": "KAN-434",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-434",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-15T00:33:57.137Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-391",
+      "type": "task",
+      "key": "KAN-391",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-391",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-14T19:27:05.672Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-396",
+      "type": "task",
+      "key": "KAN-396",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-396",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-14T19:16:52.790Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-394",
+      "type": "task",
+      "key": "KAN-394",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-394",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-14T18:45:29.930Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-395",
+      "type": "task",
+      "key": "KAN-395",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-395",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-14T18:37:21.636Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-424",
+      "type": "task",
+      "key": "KAN-424",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-424",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-14T18:12:02.065Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-406",
+      "type": "task",
+      "key": "KAN-406",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-406",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-14T17:29:19.742Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    },
+    {
+      "agentName": "butchr-task-kan-402",
+      "type": "task",
+      "key": "KAN-402",
+      "workDir": "/home/brooswit/.local/share/butchr/workspaces/task/kan-402",
+      "url": null,
+      "defaultAgent": "claude",
+      "activatedBy": null,
+      "since": "2026-08-14T17:28:22.252Z",
+      "reason": "Switched off deliberately. Its workspace is still on disk, so switching it back on resumes the conversation it was stopped in rather than starting a new one."
+    }
+  ],
+  "standbyTotal": 44,
+  "capacity": {
+    "cap": 11,
+    "running": 3,
+    "supervisors": 5,
+    "headroom": 0,
+    "atCapacity": true,
+    "capBoundBy": "memory",
+    "headroomBoundBy": "cpu",
+    "reason": "3.69 of this machine's 4 cores are already in use, and 1 core is held back for you",
+    "cores": 4,
+    "load1": 5.81,
+    "cpuBusyCores": 3.69,
+    "cpuBusySource": "measured",
+    "cpuBusyWindowSeconds": 5,
+    "stallPercent": 0.18,
+    "stallSource": "io",
+    "stallIoPercent": 0.18,
+    "stallMemoryPercent": 0.01,
+    "stallRefusePercent": 20,
+    "stalled": false,
+    "headroomBeforeStall": 0,
+    "totalMb": 15737,
+    "availableMb": 7044,
+    "agentMemoryMb": 805,
+    "agentCores": 0.077,
+    "agentMemorySource": "measured",
+    "agentCoresSource": "measured",
+    "unobservedStarts": {
+      "count": 0,
+      "totalCores": 0,
+      "totalMemoryMb": 0,
+      "perStartCores": 0.75,
+      "perStartMemoryMb": 805,
+      "because": "after-window"
+    },
+    "liveCoresBound": null,
+    "measuredAt": "2026-08-15T08:21:05.912Z",
+    "measuredWindowSeconds": 60,
+    "measuredAgentTrees": 3,
+    "supervisorReserve": {
+      "count": 5,
+      "perSupervisorMb": 811,
+      "reservedMb": 4053,
+      "source": "measured"
+    },
+    "capByCpu": 32,
+    "capByMemory": 11,
+    "headroomByCap": 8,
+    "headroomByCpu": 0,
+    "headroomByMemory": 5,
+    "summary": "not enough cpu — 3.69 of this machine's 4 cores are already in use, and 1 core is held back for you; 3/11 task agents, room for 0 more (4 cores, 3.69 in use, 6.9 GiB available; bound by cpu)"
+  },
+  "priorities": [
+    {
+      "agentName": "butchr-epic-kan-203",
+      "type": "epic",
+      "key": "KAN-203",
+      "priority": 3,
+      "herdrStatus": "done"
+    },
+    {
+      "agentName": "butchr-story-kan-117",
+      "type": "story",
+      "key": "KAN-117",
+      "priority": 2,
+      "herdrStatus": "idle"
+    },
+    {
+      "agentName": "butchr-epic-kan-59",
+      "type": "epic",
+      "key": "KAN-59",
+      "priority": 3,
+      "herdrStatus": "working"
+    },
+    {
+      "agentName": "butchr-epic-kan-39",
+      "type": "epic",
+      "key": "KAN-39",
+      "priority": 3,
+      "herdrStatus": "done"
+    },
+    {
+      "agentName": "butchr-task-kan-448",
+      "type": "task",
+      "key": "KAN-448",
+      "priority": 1,
+      "herdrStatus": "working"
+    },
+    {
+      "agentName": "butchr-task-kan-423",
+      "type": "task",
+      "key": "KAN-423",
+      "priority": 1,
+      "herdrStatus": "working"
+    },
+    {
+      "agentName": "butchr-task-kan-451",
+      "type": "task",
+      "key": "KAN-451",
+      "priority": 1,
+      "herdrStatus": "working"
+    },
+    {
+      "agentName": "butchr-story-kan-419",
+      "type": "story",
+      "key": "KAN-419",
+      "priority": 2,
+      "herdrStatus": "done"
+    }
+  ],
+  "boardControl": {
+    "mode": "converge",
+    "health": {
+      "diagnostic": {
+        "answered": true,
+        "consecutiveFailures": 0
+      },
+      "agents": [],
+      "at": "2026-08-15T08:20:55.711Z"
+    },
+    "cycleSeconds": 60,
+    "jurisdictionTypes": [
+      "epic",
+      "story",
+      "task"
+    ],
+    "controlled": {
+      "butchr-epic-kan-203": "KAN-203",
+      "butchr-story-kan-117": "KAN-117",
+      "butchr-epic-kan-59": "KAN-59",
+      "butchr-epic-kan-39": "KAN-39",
+      "butchr-task-kan-448": "KAN-448",
+      "butchr-task-kan-423": "KAN-423",
+      "butchr-task-kan-451": "KAN-451",
+      "butchr-story-kan-419": "KAN-419",
+      "butchr-task-kan-117": "KAN-117",
+      "butchr-task-kan-422": "KAN-422",
+      "butchr-task-kan-445": "KAN-445",
+      "butchr-task-kan-416": "KAN-416",
+      "butchr-task-kan-442": "KAN-442",
+      "butchr-task-kan-433": "KAN-433",
+      "butchr-task-kan-435": "KAN-435",
+      "butchr-task-kan-441": "KAN-441",
+      "butchr-task-kan-431": "KAN-431",
+      "butchr-task-kan-421": "KAN-421",
+      "butchr-task-kan-403": "KAN-403",
+      "butchr-task-kan-428": "KAN-428",
+      "butchr-task-kan-429": "KAN-429",
+      "butchr-task-kan-426": "KAN-426",
+      "butchr-task-kan-432": "KAN-432",
+      "butchr-task-kan-392": "KAN-392",
+      "butchr-task-kan-437": "KAN-437",
+      "butchr-task-kan-420": "KAN-420",
+      "butchr-task-kan-434": "KAN-434",
+      "butchr-task-kan-391": "KAN-391",
+      "butchr-task-kan-396": "KAN-396",
+      "butchr-task-kan-394": "KAN-394",
+      "butchr-task-kan-395": "KAN-395",
+      "butchr-task-kan-424": "KAN-424",
+      "butchr-task-kan-406": "KAN-406",
+      "butchr-task-kan-402": "KAN-402"
+    }
+  },
+  "undeliveredNotifications": {
+    "pending": [],
+    "abandoned": [
+      {
+        "type": "task",
+        "key": "KAN-397",
+        "count": 14,
+        "lastAt": "2026-08-14T13:57:12.916Z",
+        "lastSubject": "[butchr daemon] wroosbit/butchr#168 (butchr/KAN-397) has an approval recorded at its current head (KAN-306's `approval-r",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-381",
+        "count": 13,
+        "lastAt": "2026-08-14T14:17:43.024Z",
+        "lastSubject": "[butchr daemon] wroosbit/butchr#167 (butchr/KAN-381) has an approval recorded at its current head (KAN-306's `approval-r",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-169",
+        "count": 5,
+        "lastAt": "2026-08-14T14:24:42.913Z",
+        "lastSubject": "[butchr daemon] wroosbit/CrabCast#108 (butchr/KAN-169) has a new comment. It is the pull request for your own ticket KAN",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-400",
+        "count": 1,
+        "lastAt": "2026-08-14T15:04:42.987Z",
+        "lastSubject": "[butchr daemon] wroosbit/butchr#173 (butchr/KAN-400) has an approval recorded at its current head (KAN-306's `approval-r",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-409",
+        "count": 8,
+        "lastAt": "2026-08-14T15:44:13.036Z",
+        "lastSubject": "[butchr daemon] KAN-409 has a new comment. It is your own ticket. Re-read KAN-409 when you next look; this is a notifica",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-266",
+        "count": 5,
+        "lastAt": "2026-08-14T16:03:13.085Z",
+        "lastSubject": "[butchr daemon] wroosbit/butchr#176 (butchr/KAN-266) has an approval recorded at its current head (KAN-306's `approval-r",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "story",
+        "key": "KAN-419",
+        "count": 4,
+        "lastAt": "2026-08-14T20:11:01.352Z",
+        "lastSubject": "[butchr daemon] KAN-419 has a new comment. It is your own ticket. Re-read KAN-419 when you next look; this is a notifica",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-434",
+        "count": 5,
+        "lastAt": "2026-08-14T20:11:01.352Z",
+        "lastSubject": "[butchr daemon] wroosbit/butchr#184 (butchr/KAN-434) has an approval recorded at its current head (KAN-306's `approval-r",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-391",
+        "count": 1,
+        "lastAt": "2026-08-14T19:42:13.371Z",
+        "lastSubject": "[butchr daemon] wroosbit/CrabCast#112 (butchr/KAN-391) has a new comment. It is the pull request for your own ticket KAN",
+        "lastReason": "no-connection"
+      },
+      {
+        "type": "task",
+        "key": "KAN-441",
+        "count": 4,
+        "lastAt": "2026-08-15T04:48:05.655Z",
+        "lastSubject": "[butchr daemon] wroosbit/butchr#189 (butchr/KAN-441) has a new comment. It is the pull request for your own ticket KAN-4",
+        "lastReason": "selfcheck-failed"
+      },
+      {
+        "type": "task",
+        "key": "KAN-416",
+        "count": 6,
+        "lastAt": "2026-08-15T06:36:05.712Z",
+        "lastSubject": "[butchr daemon] wroosbit/butchr#191 (butchr/KAN-416) has a new comment. It is the pull request for your own ticket KAN-4",
+        "lastReason": "selfcheck-failed"
+      }
+    ],
+    "detail": "No notification is currently held. 66 have been ABANDONED for 11 agent(s) since this daemon started — those agents were never told, and their tickets are the only record. This count is never reset. Nothing here was delivered by typing at a pane (KAN-301)."
+  },
+  "prWatch": {
+    "repos": [
+      {
+        "repo": "wroosbit/butchr",
+        "source": "checkout",
+        "heldBy": [
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-167"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-168"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-169"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-170"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-171"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-172"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-173"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-174"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-175"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-176"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-177"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-178"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-180"
+          },
+          {
+            "type": "epic",
+            "key": "KAN-39",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/epic/kan-39/review-181"
+          },
+          {
+            "type": "task",
+            "key": "KAN-423",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/task/kan-423/butchr"
+          },
+          {
+            "type": "task",
+            "key": "KAN-451",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/task/kan-451/butchr"
+          }
+        ]
+      },
+      {
+        "repo": "wroosbit/CrabCast",
+        "source": "checkout",
+        "heldBy": [
+          {
+            "type": "task",
+            "key": "KAN-448",
+            "path": "/home/brooswit/.local/share/butchr/workspaces/task/kan-448/crabcast"
+          }
+        ]
+      }
+    ],
+    "releasedRepos": [],
+    "lastAttemptAt": "2026-08-15T08:20:57.644Z",
+    "lastSuccessAt": "2026-08-15T08:21:04.983Z",
+    "consecutiveFailures": 0,
+    "lastError": null,
+    "degraded": false,
+    "watchedCount": 80,
+    "openCount": 1,
+    "nobodyLiveCount": 0,
+    "unmatched": [],
+    "detail": "Watching 2 repositories: wroosbit/butchr (a live agent holds a checkout: epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, epic/KAN-39, task/KAN-423, task/KAN-451); wroosbit/CrabCast (a live agent holds a checkout: task/KAN-448). Last looked successfully at 2026-08-15T08:21:04.983Z (37s ago), so \"nothing new\" here means nothing new rather than nothing seen. As of the last successful look, 1 OPEN pull request(s) matched a ticket, 0 of them with no live agent to tell. A further 79 matched row(s) in the read window are already merged or closed and are polled only so that a state change on one is still recognisable — they are not outstanding work. 0 row(s) matched no ticket at all."
+  },
+  "channelLiveness": {
+    "lastProof": {
+      "outcome": "echoed",
+      "proved": true,
+      "address": {
+        "type": "epic",
+        "key": "KAN-39"
+      },
+      "clientName": "claude-code",
+      "clientVersion": "2.1.232",
+      "clientVersionVerified": false,
+      "connectionId": "conn-2",
+      "startedAt": "2026-08-14T18:27:14.784Z",
+      "elapsedMs": 15029,
+      "waitedMs": 15018,
+      "detail": "epic/KAN-39 printed the assembled token, so a channel frame reached its MODEL and came back: legs 4 and 5 of the loop, on claude-code 2.1.232. Neither half of the token was adjacent to the other in the message, so nothing but an assembly could have put it on that pane"
+    },
+    "lastRun": {
+      "outcome": "no-answer",
+      "proved": false,
+      "address": {
+        "type": "epic",
+        "key": "KAN-59"
+      },
+      "clientName": "claude-code",
+      "clientVersion": "2.1.232",
+      "clientVersionVerified": false,
+      "connectionId": "conn-134",
+      "startedAt": "2026-08-15T04:25:33.890Z",
+      "elapsedMs": 600763,
+      "waitedMs": 600757,
+      "detail": "epic/KAN-59 was sent a channel frame and did not print the token within 601s. THIS IS A NON-ANSWER, NOT A FAILURE: a model that read the probe and declined it is behaving as its brief describes, and from here that is indistinguishable from a client that dropped the frame. What is worth acting on is a run of them — see the drought count on this daemon's channel liveness record"
+    },
+    "nonAnswersSinceProof": 1,
+    "unrunSinceProof": 0,
+    "drought": false,
+    "runs": 3,
+    "recent": [
+      {
+        "outcome": "no-answer",
+        "address": {
+          "type": "epic",
+          "key": "KAN-203"
+        },
+        "startedAt": "2026-08-14T12:17:13.581Z"
+      },
+      {
+        "outcome": "echoed",
+        "address": {
+          "type": "epic",
+          "key": "KAN-39"
+        },
+        "startedAt": "2026-08-14T18:27:14.784Z"
+      },
+      {
+        "outcome": "no-answer",
+        "address": {
+          "type": "epic",
+          "key": "KAN-59"
+        },
+        "startedAt": "2026-08-15T04:25:33.890Z"
+      }
+    ],
+    "intervalMs": 21600000,
+    "detail": "a channel frame last reached a model at 2026-08-14T18:27:14.784Z — epic/KAN-39, client 2.1.232 (a version channel-selfcheck.ts has no measurement for). 1 delivered run(s) since have gone unanswered, which is ordinary: a model may decline and be right to."
+  },
+  "guardian": {
+    "address": {
+      "type": "epic",
+      "key": "KAN-203"
+    },
+    "configured": true,
+    "intervalMs": 1800000,
+    "setBy": "[from epic/KAN-39]",
+    "setAt": "2026-08-11T23:55:00.775Z",
+    "lastPoke": {
+      "outcome": "delivered",
+      "delivered": true,
+      "address": {
+        "type": "epic",
+        "key": "KAN-203"
+      },
+      "connectionId": "conn-128",
+      "transport": "channel",
+      "interrupted": false,
+      "reason": null,
+      "startedAt": "2026-08-15T08:09:05.866Z",
+      "elapsedMs": 1,
+      "detail": "a poke was written to epic/KAN-203's channel connection (conn-128). THAT IS C1 AND C2 AND NOTHING MORE: the frame reached a live connection. Whether a model read it, whether it swept, and whether the sweep was right are three further questions and none of them is answered here"
+    },
+    "lastDelivered": {
+      "outcome": "delivered",
+      "delivered": true,
+      "address": {
+        "type": "epic",
+        "key": "KAN-203"
+      },
+      "connectionId": "conn-128",
+      "transport": "channel",
+      "interrupted": false,
+      "reason": null,
+      "startedAt": "2026-08-15T08:09:05.866Z",
+      "elapsedMs": 1,
+      "detail": "a poke was written to epic/KAN-203's channel connection (conn-128). THAT IS C1 AND C2 AND NOTHING MORE: the frame reached a live connection. Whether a model read it, whether it swept, and whether the sweep was right are three further questions and none of them is answered here"
+    },
+    "sinceLastDeliveryMs": 756447,
+    "consecutiveUndelivered": 0,
+    "overdue": false,
+    "pokes": 33,
+    "recent": [
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T03:39:05.828Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T04:09:05.829Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T04:39:05.831Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T05:09:05.847Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T05:39:05.849Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T06:09:05.850Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T06:39:05.852Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T07:09:05.854Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T07:39:05.856Z",
+        "reason": null
+      },
+      {
+        "outcome": "delivered",
+        "startedAt": "2026-08-15T08:09:05.866Z",
+        "reason": null
+      }
+    ],
+    "proves": "delivery",
+    "provesDetail": "This records whether the poke was delivered, not whether the fleet is being supervised. A heartbeat proves the loop turns; it says nothing about whether its decisions are right.",
+    "detail": "a poke last reached epic/KAN-203 at 2026-08-15T08:09:05.866Z (13 minutes ago), on a 30-minute timer. This records whether the poke was delivered, not whether the fleet is being supervised. A heartbeat proves the loop turns; it says nothing about whether its decisions are right."
+  },
+  "staleness": {
+    "repoRoot": "/home/brooswit/code/wroosbit/butchr",
+    "checkedAt": "2026-08-15T08:21:42.206Z",
+    "stale": true,
+    "summary": "main is 10 commits behind origin/main; daemon/dist is older than daemon's build inputs; extension/dist is older than extension's build inputs",
+    "items": [
+      {
+        "id": "git",
+        "label": "local checkout",
+        "state": "stale",
+        "headline": "main is 10 commits behind origin/main",
+        "detail": "HEAD is 4bb8145, origin/main is 87e6aab: 10 commits merged that this checkout does not have. Anything built here predates 87e6aab. origin/main is as known at the last fetch, 6m ago.",
+        "remedy": "git -C /home/brooswit/code/wroosbit/butchr pull --ff-only"
+      },
+      {
+        "id": "daemon-build",
+        "label": "daemon build",
+        "state": "stale",
+        "headline": "daemon/dist is older than daemon's build inputs",
+        "detail": "daemon/src/workspace-dir.ts was modified 9h ago, 30h after the newest file in daemon/dist (native-host.js, 2d old). The build does not contain that change. Judged against inputs: package-lock.json, package.json, src, tsconfig.json — not inputs: dist, node_modules, scripts, bin, systemd, typecheck, .*.",
+        "remedy": "cd daemon && npm run build && restart the daemon"
+      },
+      {
+        "id": "daemon-process",
+        "label": "running daemon",
+        "state": "fresh",
+        "headline": "running the build that is on disk",
+        "detail": "Up 20h, started after daemon/dist was last written (native-host.js, 2d old)."
+      },
+      {
+        "id": "extension-build",
+        "label": "extension build",
+        "note": "Whether Chrome has actually loaded this build cannot be observed from here, and cannot be triggered from here either. After rebuilding, press Reload on the extension at chrome://extensions.",
+        "state": "stale",
+        "headline": "extension/dist is older than extension's build inputs",
+        "detail": "extension/public/manifest.json was modified 9h ago, 2d after the newest file in extension/dist (agents.html, 3d old). The build does not contain that change. Judged against inputs: agents.html, agents.jsx, options.html, options.jsx, package-lock.json, package.json, public, sidepanel.css, sidepanel.html, sidepanel.jsx, src, vite.config.js — not inputs: dist, node_modules, scripts, .*.",
+        "remedy": "cd extension && npm run build, then reload the extension at chrome://extensions"
+      }
+    ]
+  },
+  "herdrHealth": {
+    "pid": 1815608,
+    "openFds": 734,
+    "softLimit": 65536,
+    "headroomPanes": 12960,
+    "fdPressure": 0.01
+  }
+}
