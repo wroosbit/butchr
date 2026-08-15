@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 92 |
+| `yes` | 93 |
 | `partial` | 10 |
 | `quarantined` | 3 |
 | `no` | 20 |
-| **total** | **125** |
+| **total** | **126** |
 
-**102 of 125** run on every pull request.
+**103 of 126** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -124,6 +124,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-pr-watch` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal, and no network (§1 replays RECORDED `gh` output; §2-6 stub the reader). |
 | `verify-prompt-poller-seam` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-prompt-provenance-stamp` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-prompt-source-is-fetched-ref` | yes | builds scratch git repositories under `os.tmpdir()` and imports the built daemon modules in process; git and node builtins only, no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-resumed-conversation-nudge` | yes | imports the built daemon modules, stands up its own unix socket in a temporary directory, and needs no herdr, no pty, no network, no credential and no CrabCast. Sections 3 and 4 create and remove probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-selfcheck-verdict-outlives-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-staleness-check` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |

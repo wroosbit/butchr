@@ -1,6 +1,7 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { FETCH_INTERVAL_MS, PROMPT_REF, resolvePromptSource } from './prompt-source.js';
 
 /**
  * Is the code running here the code that was merged?
@@ -51,6 +52,35 @@ export const FETCH_KNOWLEDGE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const GIT_TIMEOUT_MS = 5_000;
 
 /**
+ * Age at which the ref briefs are rendered from stops being credibly current.
+ *
+ * Much tighter than {@link FETCH_KNOWLEDGE_MAX_AGE_MS}, and deliberately so:
+ * that constant asks "is our picture of the remote worth asserting", which is a
+ * question about a human's fetch habits. This one asks whether
+ * `PromptSourceKeeper` is *running*, and that is a machine on a timer. At
+ * `FETCH_INTERVAL_MS` this is six consecutive missed fetches — a keeper that is
+ * dead, not one that was briefly unlucky with the network.
+ */
+export const PROMPT_REF_MAX_AGE_MS = 30 * 60 * 1000;
+
+/**
+ * How old this clone's knowledge of its remote is, or null if never fetched.
+ *
+ * `FETCH_HEAD` lives in the common git dir, which is not `.git` when the
+ * checkout is a linked worktree — every task agent's is.
+ */
+function fetchHeadAgeMs(repoRoot: string, now: number): number | null {
+  const commonDir = git(repoRoot, ['rev-parse', '--git-common-dir']);
+  if (!commonDir) return null;
+  const abs = path.isAbsolute(commonDir) ? commonDir : path.join(repoRoot, commonDir);
+  try {
+    return now - fs.statSync(path.join(abs, 'FETCH_HEAD')).mtimeMs;
+  } catch {
+    return null; // never fetched in this clone
+  }
+}
+
+/**
  * Directory names never descended into when timestamping sources.
  *
  * `node_modules` and `dist` are outputs, `.git` churns on every read. Excluding
@@ -71,6 +101,7 @@ export type Freshness =
 
 export type StalenessItemId =
   | 'git'
+  | 'prompt-source'
   | 'daemon-build'
   | 'daemon-process'
   | 'extension-build';
@@ -479,20 +510,9 @@ function checkGit(repoRoot: string, now: number): StalenessItem {
   const head = git(repoRoot, ['rev-parse', '--short', 'HEAD']) ?? '(unknown)';
   const remoteHead = git(repoRoot, ['rev-parse', '--short', remoteRef]) ?? '(unknown)';
 
-  // How old our knowledge of the remote is. FETCH_HEAD lives in the common git
-  // dir, which is not `.git` when this checkout is a linked worktree.
-  let fetchedAgo: string | null = null;
-  let fetchAgeMs: number | null = null;
-  const commonDir = git(repoRoot, ['rev-parse', '--git-common-dir']);
-  if (commonDir) {
-    const abs = path.isAbsolute(commonDir) ? commonDir : path.join(repoRoot, commonDir);
-    try {
-      fetchAgeMs = now - fs.statSync(path.join(abs, 'FETCH_HEAD')).mtimeMs;
-      fetchedAgo = describeAge(fetchAgeMs);
-    } catch {
-      // never fetched in this clone
-    }
-  }
+  // How old our knowledge of the remote is.
+  const fetchAgeMs = fetchHeadAgeMs(repoRoot, now);
+  const fetchedAgo = fetchAgeMs === null ? null : describeAge(fetchAgeMs);
   const provenance = fetchedAgo
     ? `${remoteRef} is as known at the last fetch, ${fetchedAgo} ago`
     : `${remoteRef} has never been fetched in this clone`;
@@ -604,6 +624,96 @@ function checkGit(repoRoot: string, now: number): StalenessItem {
     detail:
       `HEAD is ${head}, the same commit as ${remoteRef}` +
       `${unpushed > 0 ? ` (plus ${unpushed} unpushed local commit${unpushed === 1 ? '' : 's'})` : ''}. ${provenance}.`
+  };
+}
+
+/**
+ * Are the briefs agents are being handed rendered from something current?
+ *
+ * THE ITEM KAN-442 ASKED FOR, and it is deliberately not "is the working tree
+ * behind". That question already had an answer — `checkGit` above — and the
+ * answer was always going to be yes: nothing advances the shared clone's `main`,
+ * nothing should, and after KAN-442 nothing needs to. An item that went red
+ * every day for a condition nobody is meant to fix is how a warning gets
+ * ignored, which is the failure mode `checkGit` is already careful about.
+ *
+ * What can actually regress is the *source*: `PromptLoader` renders at
+ * `origin/main` and falls back to the working tree when it cannot. That fallback
+ * is the old defect returning, and it is silent — the brief still ships and
+ * still reads like a standing rule. So this item asks two things the old check
+ * could not:
+ *
+ *   1. **Which source would a render use right now?** `worktree` is the
+ *      regression: briefs are stale again by exactly the mechanism KAN-442
+ *      removed.
+ *   2. **How old is the ref?** A `PromptSourceKeeper` that has stopped fetching
+ *      leaves rendering from `origin/main` technically true and progressively
+ *      meaningless. Nothing else on this machine would notice.
+ *
+ * WHAT IT STILL CANNOT SEE, named because a check's silence is not evidence:
+ * whether an *already-briefed* agent re-reads anything. It cannot — that is the
+ * KAN-242 finding, the brief lives in a context nothing on this machine can
+ * reach, and no check here will ever close it. This item is about what the next
+ * activation will be handed.
+ */
+function checkPromptSource(repoRoot: string, now: number): StalenessItem {
+  const base = { id: 'prompt-source' as const, label: 'prompt source' };
+  const source = resolvePromptSource(repoRoot);
+
+  if (source.kind === 'worktree') {
+    return {
+      ...base,
+      state: 'stale',
+      headline: `briefs are being rendered from the WORKING TREE, not ${PROMPT_REF}`,
+      detail:
+        `${source.because}. The working tree's default branch is never advanced — agents read it ` +
+        `concurrently and \`prompts/task.md\` forbids moving it — so it falls behind by one commit per ` +
+        `merge and every brief rendered from it carries governance that has moved. That is the defect ` +
+        `KAN-442 removed by reading templates at ${PROMPT_REF} with \`git show\`, and this is what its ` +
+        `return looks like.`,
+      remedy: `git -C ${repoRoot} fetch origin`
+    };
+  }
+
+  const ageMs = fetchHeadAgeMs(repoRoot, now);
+  const at = `${source.ref} is ${source.sha.slice(0, 7)}`;
+
+  if (ageMs === null) {
+    return {
+      ...base,
+      state: 'unknown',
+      headline: `rendering from ${PROMPT_REF}, but this clone records no fetch`,
+      detail:
+        `${at}, and templates are read there rather than from the working tree — but there is no ` +
+        `FETCH_HEAD, so how old that ref is cannot be established from here. The ref exists, so it was ` +
+        `fetched at some point; nothing says when.`,
+      remedy: `git -C ${repoRoot} fetch origin`
+    };
+  }
+
+  if (ageMs > PROMPT_REF_MAX_AGE_MS) {
+    return {
+      ...base,
+      state: 'stale',
+      headline: `${PROMPT_REF} was last fetched ${describeAge(ageMs)} ago — briefs are that far behind`,
+      detail:
+        `${at}, and templates are read there rather than from the working tree, so briefs are current ` +
+        `with whatever that fetch brought and nothing since. PromptSourceKeeper fetches every ` +
+        `${describeAge(FETCH_INTERVAL_MS)}, so a gap this size is a keeper that is not running rather ` +
+        `than a slow network. Until it fetches again, rendering from ${PROMPT_REF} is true and means ` +
+        `progressively less.`,
+      remedy: `Check the daemon is up and grep its log for 'prompt-source:'; git -C ${repoRoot} fetch origin`
+    };
+  }
+
+  return {
+    ...base,
+    state: 'fresh',
+    headline: `briefs are rendered from ${PROMPT_REF}, fetched ${describeAge(ageMs)} ago`,
+    detail:
+      `${at}. Templates are read there with \`git show\`, so no working tree is opened and no lock is ` +
+      `taken — the checkout's own branch being behind ${PROMPT_REF} does not reach the briefs. ` +
+      `PromptSourceKeeper fetches every ${describeAge(FETCH_INTERVAL_MS)}.`
   };
 }
 
@@ -775,6 +885,7 @@ export function getStalenessReport(options: StalenessOptions): StalenessReport {
   try {
     items = [
       checkGit(options.repoRoot, now),
+      checkPromptSource(options.repoRoot, now),
       checkBuild(
         'daemon-build',
         'daemon build',
