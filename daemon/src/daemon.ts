@@ -95,6 +95,7 @@ import {
   staleMeasurementMaxAgeMs,
   type MeasurementGap
 } from './cost-sampler-policy.js';
+import { DaemonLog } from './log-file.js';
 import { execFileSync } from 'child_process';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
@@ -107,16 +108,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../');
 
 ensureButchrDir();
-const logStream = fs.createWriteStream(path.join(BUTCHR_DIR, 'daemon.log'), { flags: 'a' });
+// `DaemonLog.open` repairs before it appends. Anything that reads this file
+// reads it with `grep`, and one NUL byte — which an unclean shutdown leaves
+// behind as the lost tail of an append — makes every such search answer "no
+// matches" for lines that are present. See daemon/src/log-file.ts; KAN-422.
+const daemonLog = DaemonLog.open(path.join(BUTCHR_DIR, 'daemon.log'));
 const log = (...args: any[]) => {
   const line = args
     .map((a) => (a instanceof Error ? a.stack : typeof a === 'string' ? a : JSON.stringify(a)))
     .join(' ');
-  logStream.write(`[${new Date().toISOString()}] ${line}\n`);
+  daemonLog.append(`[${new Date().toISOString()}] ${line}\n`);
 };
 // The daemon normally runs detached; shared modules log via console.
 console.log = log;
 console.error = log;
+
+// Said out loud rather than healed in silence: the repair is evidence that
+// bytes were lost, and a reader who greps this file wants to know which run
+// they are missing the tail of.
+if (daemonLog.repair.repaired) {
+  log(
+    `[log-repair] daemon.log carried ${daemonLog.repair.bytes} non-text byte(s) in ` +
+      `${daemonLog.repair.runs} run(s) — every grep of this file was reporting zero matches ` +
+      `for lines that were present. Replaced in place with markers; line numbering unchanged.`
+  );
+} else if (daemonLog.repair.error) {
+  log(`WARNING: could not repair daemon.log: ${daemonLog.repair.error}`);
+}
 
 process.on('uncaughtException', (err) => {
   log('Uncaught exception:', err);

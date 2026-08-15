@@ -951,13 +951,30 @@ if (probeMcp) note('probe MCP server', `pid ${probeMcp.pid}, argv ${JSON.stringi
 // identified `hello` from this probe's address is the stamp arriving at the
 // daemon through the exact path `activatedBy` is computed from.
 //
-// READ IN TEXT MODE, AND THAT IS NOT A DETAIL. daemon.log carries raw pane bytes,
-// so tools that sniff for binary content report ZERO MATCHES for lines that are
-// present — measured while writing this section: `grep -F 'Client connected'`
-// answered 0 against 1,960 real occurrences, and the same search with `-a`
-// answered 1,960. A silent zero from this file is the instrument's verdict on
-// itself, not the daemon's on the fleet, and it fails toward "nothing happened".
-// Reading the bytes here rather than shelling out sidesteps it entirely.
+// READ IN TEXT MODE, AND THAT IS NOT A DETAIL. Tools that sniff for binary
+// content report ZERO MATCHES for lines in daemon.log that are present —
+// measured while writing this section: `grep -F 'Client connected'` answered 0
+// against 1,960 real occurrences, and the same search with `-a` answered 1,960.
+// A silent zero from this file is the instrument's verdict on itself, not the
+// daemon's on the fleet, and it fails toward "nothing happened". Reading the
+// bytes here rather than shelling out sidesteps it entirely.
+//
+// THE CONCLUSION ABOVE IS UNCHANGED; THE REASON IT ORIGINALLY GAVE WAS WRONG,
+// and it is corrected here rather than left, because a false reason in a
+// comment does not stay in the comment. This block used to open "daemon.log
+// carries raw pane bytes, so …". It does not carry them: across 36,271 lines
+// there is not one ESC byte, not one CR and not one other C0 control character
+// (KAN-422, measured with a positive control on the counter). What made the
+// file binary was 2,074 NUL bytes in five runs, each immediately before a
+// `PATH resolved to:` startup line — the tail of an appended file lost to an
+// unclean shutdown, which ext4 delayed allocation reads back as zeros.
+//
+// The cost of the wrong reason is why this edit exists rather than a shrug:
+// KAN-422 was filed on it as its stated premise, and `epic/KAN-39` carried it
+// from there into KAN-348's standing rules as a fleet-wide claim before anyone
+// measured it. Since KAN-422 the daemon repairs this damage at startup and
+// cannot write such a byte itself (daemon/src/log-file.ts), so the zero should
+// not recur — but reading bytes here is still right, and costs nothing.
 let helloLine = null;
 let helloSearched = 0;
 if (daemonLogOffsetBefore !== null && fs.existsSync(daemonLogPath)) {
