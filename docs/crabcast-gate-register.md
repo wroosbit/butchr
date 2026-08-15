@@ -197,6 +197,9 @@ Two consequences, and the second is the one that matters for the cap:
    re-round-trips the whole document and adds a few characters to it. **Part of
    the pressure on the cap was manufactured by the maintenance method itself**,
    and nothing would have shown that.
+
+---
+
 ## Rulings since the snapshot
 
 **Everything below this heading post-dates the archive and belongs OUTSIDE it.**
@@ -326,9 +329,6 @@ herdr pane, so **the human drives the re-test**; the evidence is
 the panel: that is [KAN-475](https://wroosbit.atlassian.net/browse/KAN-475), a
 second blocker sitting immediately behind this one, and the daemon.log line is
 what tells the two apart.
-
----
-
 
 ---
 
