@@ -10,6 +10,7 @@ import type {
   HerdrSession,
   PtyDiscontinuity,
   PtyStreamListener,
+  SessionAddressResolution,
   SessionEndedEvent,
   TailSource
 } from './herdr.js';
@@ -23,30 +24,34 @@ import type {
  *
  * ## Derived from call sites, not from the class
  *
- * The 24 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
+ * The 25 methods below are exactly those `daemon.ts`, `jira-poll.ts`,
  * `nudge.ts`, `reconcile.ts` and `router.ts` actually call. (KAN-223 derived 20
  * from 43 call sites; KAN-246 added `setAgentSpawnedListener` and
  * `pressPaneKey`, both called from `daemon.ts`; KAN-247 added `resolveAddress`
- * with its caller in `router.ts`; and KAN-400 added `briefLocation` with its
- * caller in `nudge.ts` — all by the same rule, that a method is on this
- * interface because daemon code calls it.) `HerdrBridge` declares 35 methods
- * (26 public, 9 private); the other 11 are implementation and are deliberately
+ * with its caller in `router.ts`; KAN-400 added `briefLocation` with its
+ * caller in `nudge.ts`; and KAN-473 added `resolveSessionByAddress` with its
+ * callers in `router.ts` — all by the same rule, that a method is on this
+ * interface because daemon code calls it.) `HerdrBridge` declares 36 methods
+ * (26 public, 10 private); the other 11 are implementation and are deliberately
  * absent:
  *
- * - **9 are private** — `liveAttachFor`, `startAgentInOwnTab`,
- *   `createAgentTab`, `closeTabPlaceholder`, `initPty`, `runHerdr`,
- *   `resolveAgentName`, `agentNameForAddress`, `closePaneForAgent`.
- * - **`getSessionByKey`** is public but has no caller in `daemon/src`. It is
- *   reached internally, by `getSessionByAddress` when no type is given
- *   (`herdr.ts`), and directly by one verify script asserting on a real
- *   bridge. Several verify scripts also include it in their hand-written stub
- *   bridges, but those mirror the class's shape rather than respond to a call
- *   from daemon code. Test scaffolding is not the contract.
+ * - **10 are private** — `liveAttachFor`, `startAgentInOwnTab`,
+ *   `createAgentTab`, `closeTabPlaceholder`, `initPty`, `activeSessionsForKey`,
+ *   `runHerdr`, `resolveAgentName`, `agentNameForAddress`, `closePaneForAgent`.
  * - **`getPtyBuffer`** is public and called from nowhere at all.
  *
- * An interface mirroring all 35 would have copied the implementation instead
+ * An interface mirroring all 36 would have copied the implementation instead
  * of declaring the contract, and would make a second implementation harder
- * rather than easier — so the 11 stay out. (35 − 11 = 24.)
+ * rather than easier — so the 11 stay out. (36 − 11 = 25.)
+ *
+ * **KAN-473 moved two of these numbers, and the entry it deleted is worth a
+ * line.** `getSessionByKey` used to sit here as a third bullet: public, with no
+ * caller in `daemon/src`, reached internally by `getSessionByAddress` when no
+ * type was given. That fall-through was the defect KAN-473 is about — it
+ * answered a bare key with the FIRST active session on it, over a map whose
+ * keys are shared across workspace types by design. It is now the private
+ * `activeSessionsForKey`, which returns the whole list, so public went 26 → 26
+ * (`resolveSessionByAddress` replacing it) and private 9 → 10.
  *
  * **The three counts in this header were all wrong until KAN-278**, which is
  * worth a sentence because of how they got that way rather than for its own
@@ -252,9 +257,25 @@ export interface AgentRuntime {
 
   /**
    * The dominant lookup — 8 of the 43 call sites. Addresses an agent by
-   * (key, type); a bare key matches whatever type it lands on.
+   * (key, type), **both halves required**.
+   *
+   * `type` was optional until KAN-473, and the docblock here read *"a bare key
+   * matches whatever type it lands on"* — an accurate description of a
+   * first-match pick over a map whose keys are shared across types by design.
+   * The two callers that had no type to give reached that arbitrary answer
+   * without saying so, one of them to stand an agent down. Requiring the type
+   * is what makes the arbitrary answer unnameable: a caller that may have no
+   * type has {@link resolveSessionByAddress}, and cannot get a session out of
+   * it without handling the ambiguous outcome.
    */
-  getSessionByAddress(key: string, type?: string): HerdrSession | undefined;
+  getSessionByAddress(key: string, type: string): HerdrSession | undefined;
+
+  /**
+   * The lookup for a caller that may have only a key. Answers with the session,
+   * *or* with every agent the key matched — see {@link SessionAddressResolution}
+   * for why ambiguity is an outcome here rather than an arbitrary pick.
+   */
+  resolveSessionByAddress(key: string, type?: string): SessionAddressResolution;
 
   listActiveSessions(): HerdrSession[];
 
@@ -370,6 +391,13 @@ export interface AgentRuntime {
     truncated?: boolean;
     source?: TailSource | null;
     sourcesTried?: TailSource[];
+    /**
+     * Every agent an AMBIGUOUS bare key matched, and set only in that case
+     * (KAN-473). A tail never throws, so without this a caller learns that the
+     * read was refused and not which agents collided — which is the one thing
+     * that lets it re-issue the call correctly.
+     */
+    candidates?: string[];
     error?: string;
   }>;
 

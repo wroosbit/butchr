@@ -16,6 +16,12 @@
 // failure path's abandonSession killed task/K's PTY: a healthy, unrelated
 // agent destroyed by someone else's activation.
 //
+// `getSessionByKey` no longer exists — KAN-473 removed it, because the same
+// key-only first-match was still reachable from the bare-key MCP verbs it did
+// not fix. The sentence above is kept as the history of THIS ticket's defect;
+// `verify-ambiguous-key-refusal.mjs` covers the addressing surface, and this
+// script continues to own the activation path.
+//
 // Four sections:
 //
 //   1. A up      — activate task/KAN-83: the live type-A agent the ticket

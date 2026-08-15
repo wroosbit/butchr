@@ -346,7 +346,6 @@ function stubBridge(runningAgentNames) {
     // proof: it is still cited.
     listHerdrAgentsChecked: () => ({ reachable: true, agents }),
     listActiveSessions: () => [],
-    getSessionByKey: () => undefined,
     // The same drift again, one ticket later: KAN-83 moved session lookup from
     // key alone to (key, type) and the router now asks for this one, so every
     // section below that drives the real router died on a TypeError before
@@ -354,6 +353,16 @@ function stubBridge(runningAgentNames) {
     // `getSessionByKey` answered — no session exists in these sections — so the
     // repair restores the proof rather than changing what it asserts.
     getSessionByAddress: () => undefined,
+    // KAN-473 added this to the AgentRuntime seam, and it is DERIVED from the
+    // stub's own `getSessionByAddress` rather than written twice, so a stub
+    // cannot disagree with itself about what an address resolves to. The real
+    // runtimes answer `ambiguous` here; no stub here holds two sessions on one
+    // key, so none of them can reach that outcome — see
+    // `verify-ambiguous-key-refusal.mjs` for the case that does.
+    resolveSessionByAddress(key, type) {
+      const session = this.getSessionByAddress(key, type);
+      return session ? { outcome: 'one', session } : { outcome: 'none' };
+    },
     spawnSession: () => {
       throw new Error('spawnSession must not be reached when capacity refuses');
     }
