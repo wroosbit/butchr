@@ -125,6 +125,7 @@ it was written, which is why this is a list of literal ids and not a count.
 - `H-26` — KAN-399 — when you do poke, name the actual work; a generic "continue" produces a generic answer
 - `H-27` — KAN-399 — the check-in is always right, the work order usually is not; a sweep that finds nothing to poke is the sweep working
 - `H-28` — KAN-388 — an empty result is a claim about your search, a green is a claim about your check: say what the instrument would have printed and confirm it could have reached you
+- `H-29` — KAN-466 — `gh pr merge` misreports both ways: `.merged` off REST is the only authority, the exit code and the surviving branch are one cause read twice rather than two votes, and the branch delete is performed and proved explicitly
 - `R-1` — KAN-237 — retired: the 2026-08-03 rule that the epic agent reviews and merges
 - `R-2` — KAN-239 — retired: the fallback naming a task's supervisor of record as its approver
 - `R-3` — KAN-334 — retired: the workaround telling agents to avoid nesting a blockquote in a list item
