@@ -254,12 +254,21 @@ export function deleteWorkspaceDir(type: string, key: string): { success: boolea
  *
  * `servers['toString']` on a `JSON.parse` result inherits a function from
  * `Object.prototype`, so a plain truthiness test answers "present" for a key
- * nobody wrote and "present" for `constructor`, `valueOf` and `__proto__` too.
- * CrabCast hit exactly this in `provisionMcpConfig` and records it as *"the
- * second bug of the prototype family"* — theirs failed toward clobbering the
- * caller's file; the same idiom here would fail toward removing a key we do not
- * own. Same guard, same reason, arrived at from their write-up rather than
- * independently.
+ * nobody wrote — and the same for `constructor`, `valueOf` and `__proto__`.
+ * Every key in this map comes out of a file on disk that Butchr does not solely
+ * own, so all four are reachable inputs rather than hypotheticals.
+ *
+ * **The direction of the failure is why this is a guard and not a nicety.** The
+ * naive test reports a key as *ours to remove* when nothing of ours wrote it,
+ * so the removal would delete a server entry belonging to somebody else — the
+ * precise outcome {@link clearWorkspaceMcpResidue} is key-scoped to avoid. It
+ * fails toward destroying the caller's configuration, silently, on a file this
+ * function is only permitted to touch its own entries in.
+ *
+ * §7 of `verify-crabcast-mcp-residue-cleared.mjs` exercises both arms: an
+ * inherited name is not reported as removed and the file is left byte-identical,
+ * while an *own* key literally called `toString` still is removed when we sent
+ * it.
  */
 function ownKey(map: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(map, key);
@@ -292,11 +301,17 @@ export type McpResidueClearance =
  * ## The defect this exists for
  *
  * CrabCast refuses to activate an agent whose `.mcp.json` already defines a
- * server it is being asked to write and has no record of writing —
- * `provisionMcpConfig`, refusal 2 at the pinned commit: *"they are the
- * caller's, and they are not ours to take over. NOTHING WAS WRITTEN and nothing
- * was started."* Measured on 2026-08-15 across four human-driven cutover
- * attempts: **36 spawn failures, 0 activations**, every one this refusal.
+ * server it is being asked to write and has no record of writing. **Its own
+ * words, off the wire** — the `configure_agent` refusal as it reached
+ * `daemon.log` and was quoted on KAN-474:
+ *
+ *   > `<path>/.mcp.json` already defines the MCP server(s) 'atlassian',
+ *   > 'butchr', and CrabCast has no record of writing them — so they are the
+ *   > caller's, and they are not ours to take over. NOTHING WAS WRITTEN and
+ *   > nothing was started.
+ *
+ * Measured on 2026-08-15 across four human-driven cutover attempts: **36 spawn
+ * failures, 0 activations**, every one this refusal.
  *
  * **The colliding entries are Butchr's, and they are residue.** Under herdr,
  * `writeWorkspaceMcpConfig` rewrites `.mcp.json` on *every* activation; the
@@ -315,12 +330,18 @@ export type McpResidueClearance =
  *
  * ## Why the keys and not the file
  *
- * CrabCast **merges** into this file rather than replacing it, and refuses only
- * on the keys it was asked to write. So a non-Butchr entry in there is honoured
- * today and is not part of the collision. Deleting the whole file would destroy
- * it — which is Butchr committing, against its own workspace, precisely the
- * offence CrabCast's refusal exists to prevent. Key-scoped removal is strictly
- * narrower, costs nothing, and needs no opinion about anybody else's entries.
+ * **CrabCast merges into this file rather than replacing it — observed, not
+ * assumed.** §5 of `verify-crabcast-mcp-residue-cleared.mjs` puts a third
+ * party's entry in the file, runs the clearance, lets a real CrabCast provision
+ * over it, and finds that entry still there byte-identical. The refusal quoted
+ * above also names only the servers it was asked to write, so a non-colliding
+ * entry is not what it is objecting to.
+ *
+ * So a non-Butchr entry in there is live configuration today and is no part of
+ * the collision. Deleting the whole file would destroy it — which is Butchr
+ * committing, against its own workspace, precisely the offence CrabCast's
+ * refusal exists to prevent. Key-scoped removal is strictly narrower, costs
+ * nothing, and needs no opinion about anybody else's entries.
  *
  * **Removing a key we wrote is not taking over the caller's file. We are the
  * caller.** This is the same ownership `spawnSession` and {@link

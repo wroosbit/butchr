@@ -540,9 +540,11 @@ try {
   // ═════════════════════════════════════════════════════════════════════════
   rule('§7  The prototype family, and the file we will not touch   [imports dist]');
   // ═════════════════════════════════════════════════════════════════════════
-  // CrabCast records this as "the second bug of the prototype family" and fixed
-  // it in both directions. The same idiom here fails the other way: claiming to
-  // have removed a key nobody wrote.
+  // Every key in the map comes from a file Butchr does not solely own, so a
+  // server named `toString` — or `constructor`, `valueOf`, `__proto__` — is a
+  // reachable input. The naive membership test would report one as OURS TO
+  // REMOVE when nothing of ours wrote it, so it fails toward deleting somebody
+  // else's entry: the precise outcome key-scoping exists to prevent.
 
   fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: { [FOREIGN]: foreignDefinition } }, null, 2));
   const proto = ours.clearWorkspaceMcpResidue(TYPE, KEY, ['toString', 'constructor', '__proto__']);
