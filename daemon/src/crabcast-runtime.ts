@@ -763,6 +763,42 @@ function joinSupersession(
     : { outcome: 'ran-found-nothing', claimsPath };
 }
 
+/** The two pty verbs that write. `pty_init` is a read and is not one of these. */
+type PtyWriteAction = 'pty_input' | 'pty_resize';
+
+/**
+ * What became of a pty write, as a closed vocabulary (KAN-459).
+ *
+ * **Two values, and there is deliberately no third for "fine".** A write that
+ * succeeded produces no record at all, so this type can only ever name a way of
+ * not working — which is what stops a future author counting successes into the
+ * same field and burying the signal. The split is `CrabCastLink.request`'s own
+ * distinction, made unrepresentable-if-collapsed rather than asserted:
+ *
+ * - `refused` — CrabCast answered `success: false`. **We asked and it said no**,
+ *   so the peer is reachable and has disowned the session.
+ * - `undelivered` — the promise rejected. **We could not ask**: the link was
+ *   down, the socket write threw, or no answer arrived inside the timeout. This
+ *   says nothing about the session.
+ */
+type PtyWriteOutcome = 'refused' | 'undelivered';
+
+/** The most recent pty write that did not work, kept so a count has an example. */
+interface PtyWriteFailure {
+  outcome: PtyWriteOutcome;
+  action: PtyWriteAction;
+  /** Butchr's session id — the one an operator can look up. */
+  sessionId: string;
+  /**
+   * CrabCast's own machine-readable refusal code where it sent one, e.g.
+   * `unknown_session`. Null on an `undelivered`, and null if a future peer
+   * refuses without one — an absent code is not a missing refusal.
+   */
+  refusal: string | null;
+  detail: string;
+  at: string;
+}
+
 export interface CrabCastRuntimeOptions {
   link: CrabCastLink;
   /** How often the census is refreshed while connected. */
@@ -790,6 +826,29 @@ export class CrabCastRuntime implements AgentRuntime {
    */
   private readonly channelEnabled = new Map<string, boolean | null>();
   private readonly ptyMirrors = new Map<string, PtyMirror>();
+
+  /**
+   * pty writes that did not work, since this runtime started (KAN-459).
+   *
+   * **Counts only, and a single example.** Not a ring buffer of every refusal:
+   * a stale session refuses once per keystroke, so anything retaining
+   * per-occurrence detail is a memory leak keyed to typing speed. The count is
+   * unbounded and cheap; `last` is one frame deep and overwritten.
+   */
+  private readonly ptyWrites: {
+    refused: number;
+    undelivered: number;
+    last: PtyWriteFailure | null;
+  } = { refused: 0, undelivered: 0, last: null };
+
+  /**
+   * `outcome:action:sessionId` already logged once, to keep the log line
+   * first-of-kind. Bounded by sessions × 2 outcomes × 2 verbs, and entries are
+   * dropped with the session by {@link endMirror} — so a session id that is
+   * somehow reissued gets its first line again rather than being silently
+   * suppressed by a dead session's key.
+   */
+  private readonly ptyWritesLogged = new Set<string>();
 
   private census: Census = NO_CENSUS;
   private censusTimer: NodeJS.Timeout | null = null;
@@ -1698,22 +1757,118 @@ export class CrabCastRuntime implements AgentRuntime {
 
   // ── pty: KAN-224's design, implemented ───────────────────────────────────
 
+  /**
+   * **Returns "do I have this session?", and the ack is read behind it**
+   * (KAN-459).
+   *
+   * The boolean is the whole of what this method promises, and it is the same
+   * promise `HerdrBridge.writePty` makes: a local lookup, never "did the bytes
+   * reach the pty". That much was always true and is unchanged.
+   *
+   * **What is not fire-and-forget is the frame.** `CrabCastLink.request`
+   * attaches an `id` to every frame it sends — there is no id-less path — so
+   * CrabCast acks every keystroke, and the ack is already on the wire whether
+   * or not anything reads it. This method therefore does not *choose* to spend
+   * a round trip by observing the answer: the round trip is spent either way,
+   * and until KAN-459 the answer was thrown away by the `void` in front of it.
+   * Nothing here awaits, so no caller gains a per-keystroke wait.
+   *
+   * This is `terminateSession`'s shape — a synchronous signature over an
+   * asynchronous verb, returning "asked" and logging what came back — applied
+   * to the one pair of methods that had it and did not use it.
+   */
   writePty(sessionId: string | undefined, data: string): boolean {
+    // Narrowed rather than asserted: `remoteFor` already returns null for a
+    // falsy id, so this branch is unreachable — but the narrowing is what lets
+    // `sessionId` be a `string` below without a `!`.
+    if (!sessionId) return false;
     const remote = this.remoteFor(sessionId);
     if (!remote) return false;
-    // Fire and forget, with no `id`: CrabCast only acks a frame that carries
-    // one, and a keystroke wants no ack. This matches the in-process version's
-    // meaning exactly — `HerdrBridge.writePty` returns "do I have this
-    // session?", never "did the bytes reach the pty".
-    void this.link.request({ action: 'pty_input', sessionId: remote, data }).catch(() => {});
+    this.observePtyWrite(
+      'pty_input',
+      sessionId,
+      remote,
+      this.link.request({ action: 'pty_input', sessionId: remote, data })
+    );
     return true;
   }
 
   resizePty(sessionId: string | undefined, cols: number, rows: number): boolean {
+    if (!sessionId) return false;
     const remote = this.remoteFor(sessionId);
     if (!remote) return false;
-    void this.link.request({ action: 'pty_resize', sessionId: remote, cols, rows }).catch(() => {});
+    this.observePtyWrite(
+      'pty_resize',
+      sessionId,
+      remote,
+      this.link.request({ action: 'pty_resize', sessionId: remote, cols, rows })
+    );
     return true;
+  }
+
+  /**
+   * Read a pty write's ack without waiting for it.
+   *
+   * **The two outcomes are kept apart because they are different claims**, and
+   * collapsing them is what `CrabCastLink.request`'s own docblock exists to
+   * prevent: a rejection is *"we could not ask"*, and `success: false` is *"we
+   * asked and it said no"*. An operator seeing `refused` knows CrabCast is
+   * reachable and has disowned the session; `undelivered` says nothing about
+   * the session at all.
+   *
+   * **Logging is first-of-kind per session and verb, and the counter is the
+   * authority.** A stale session under a held-down key refuses once per
+   * keystroke, so a line per refusal would be a log storm keyed to typing
+   * speed. The first line says more may follow silently; {@link describe}
+   * carries the count that does not lie.
+   */
+  private observePtyWrite(
+    action: PtyWriteAction,
+    sessionId: string,
+    remote: string,
+    answer: Promise<Record<string, unknown>>
+  ): void {
+    void answer.then(
+      (res) => {
+        if (res.success === true) return;
+        this.recordPtyWriteOutcome('refused', action, sessionId, remote, {
+          refusal: typeof res.refusal === 'string' ? res.refusal : null,
+          detail: String(res.error ?? 'no reason given')
+        });
+      },
+      (err: unknown) => {
+        this.recordPtyWriteOutcome('undelivered', action, sessionId, remote, {
+          refusal: null,
+          detail: err instanceof Error ? err.message : String(err)
+        });
+      }
+    );
+  }
+
+  private recordPtyWriteOutcome(
+    outcome: PtyWriteOutcome,
+    action: PtyWriteAction,
+    sessionId: string,
+    remote: string,
+    reason: { refusal: string | null; detail: string }
+  ): void {
+    this.ptyWrites[outcome]++;
+    this.ptyWrites.last = {
+      outcome,
+      action,
+      sessionId,
+      refusal: reason.refusal,
+      detail: reason.detail,
+      at: new Date().toISOString()
+    };
+    const key = `${outcome}:${action}:${sessionId}`;
+    if (this.ptyWritesLogged.has(key)) return;
+    this.ptyWritesLogged.add(key);
+    this.log(
+      `${action} ${outcome} for session ${sessionId} (CrabCast ${remote})` +
+        `${reason.refusal ? ` [${reason.refusal}]` : ''}: ${reason.detail} ` +
+        `— further ${outcome} ${action} on this session are counted, not logged`
+    );
   }
 
   /**
@@ -2094,6 +2249,13 @@ export class CrabCastRuntime implements AgentRuntime {
     // read a stale `true` — and dropping it renders as `null`, which is the
     // honest answer for a session there is no longer a spawn to be about.
     this.channelEnabled.delete(sessionId);
+    // Same reasoning as the verdict above, applied to the log-suppression keys
+    // (KAN-459): they exist to stop one session's refusals repeating, and this
+    // session is over. The COUNTS are deliberately not reset — they are
+    // since-startup totals, and a total that forgets is not one.
+    for (const key of this.ptyWritesLogged) {
+      if (key.endsWith(`:${sessionId}`)) this.ptyWritesLogged.delete(key);
+    }
     const mirror = this.ptyMirrors.get(sessionId);
     if (mirror) {
       this.link.releasePty(mirror.remoteSessionId);
@@ -2435,6 +2597,36 @@ export class CrabCastRuntime implements AgentRuntime {
      * been re-subscribed.
      */
     ptyDiscontinuities: { total: number; open: number };
+    /**
+     * pty writes that did not work, since startup (KAN-459).
+     *
+     * **`refused` is the field that was unreadable before this existed**: the
+     * ack was already arriving and was discarded by a `void`, so a session
+     * CrabCast had disowned went on accepting keystrokes at this interface
+     * forever. A non-zero `refused` beside `link.connected: true` is the
+     * combination worth acting on — the peer is up and is turning our writes
+     * away, which is what `peerIdentity: 'restarted'` looks like from the pty
+     * side.
+     *
+     * ⚠ **NOTHING IN PRODUCTION READS THIS REPORT.** `describe()` has no
+     * caller outside `daemon/scripts`: the router holds this runtime as an
+     * `AgentRuntime`, and that interface declares no `describe`. That was true
+     * of every field here before KAN-459 and is not a gap KAN-459 introduced or
+     * closed — it is recorded here so the next reader does not mistake a
+     * populated field for a surfaced one.
+     *
+     * **The surface that carries a refusal to a human is the daemon log**,
+     * written first-of-kind per session and verb by
+     * {@link recordPtyWriteOutcome}: `grep pty_input ~/.local/share/butchr/daemon.log`.
+     * ⚠ **And that grep is empty on a stock install, for a reason that is not
+     * this class's usual one**: `BUTCHR_AGENT_RUNTIME` is unset by default, so
+     * this whole runtime is inert and no pty write reaches this file at all.
+     * The line is real and reaches a real log — it reaches it only where
+     * CrabCast is actually serving agents. Anyone reading a quiet log as
+     * evidence of no refusals should check which runtime is live first
+     * (`grep '\[runtime\]' ~/.local/share/butchr/daemon.log`).
+     */
+    ptyWrites: { refused: number; undelivered: number; last: PtyWriteFailure | null };
     censusAgeMs: number | null;
     censusReachable: boolean;
     /**
@@ -2483,6 +2675,7 @@ export class CrabCastRuntime implements AgentRuntime {
       ptyMirrors: this.ptyMirrors.size,
       ptyMirrorStates: mirrorStates,
       ptyDiscontinuities: { total: totalGaps, open: openGaps },
+      ptyWrites: { ...this.ptyWrites },
       censusAgeMs: this.census.at ? Date.now() - this.census.at : null,
       censusReachable: this.census.reachable,
       censusUnreadableRecordsTotal: this.census.unreadableRecordsTotal,

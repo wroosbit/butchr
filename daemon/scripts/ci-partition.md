@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 96 |
+| `yes` | 97 |
 | `partial` | 10 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **131** |
+| **total** | **132** |
 
-**106 of 131** run on every pull request.
+**107 of 132** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -127,6 +127,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-prompt-poller-seam` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-prompt-provenance-stamp` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-prompt-source-is-fetched-ref` | yes | builds scratch git repositories under `os.tmpdir()` and imports the built daemon modules in process; git and node builtins only, no live daemon, no herdr, no credential, no peer, no terminal, no network. |
+| `verify-pty-write-refusal-is-read` | yes | imports the built daemon modules and serves its own CrabCast over a unix socket in a temp dir; node builtins only, no live daemon, no herdr, no credential, no network, no terminal. |
 | `verify-resumed-conversation-nudge` | yes | imports the built daemon modules, stands up its own unix socket in a temporary directory, and needs no herdr, no pty, no network, no credential and no CrabCast. Sections 3 and 4 create and remove probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-selfcheck-rechecks-replaced-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. §4 opens a Unix socket inside its own scratch directory. |
 | `verify-selfcheck-verdict-outlives-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
