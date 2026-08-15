@@ -136,6 +136,14 @@
  * record is dropped when the connection it was measured on goes away so that
  * `unchecked` always means *"the connection you would write to has not been
  * checked"* rather than *"something was checked once"*.
+ *
+ * **AND UNPROVED IS NOT UNPROVABLE (KAN-450).** The same asymmetry produced its
+ * own gap: KAN-435 made a replaced connection report `connection-replaced` and
+ * stop, which is honest and leaves the agent's real channel measured by nobody,
+ * for the life of the daemon, in exactly the population whose channel is least
+ * known. A swap is therefore re-run **once**, against the connection that
+ * replaced it. See {@link runChannelSelfCheck} for the bound, why it is the
+ * shape of the code rather than a counter, and what the re-run costs.
  */
 
 import type { AgentAddress, AgentConnectionRegistry } from './agent-connections.js';
@@ -203,6 +211,16 @@ export type SelfCheckOutcome =
    * registered at 04:01:07.792, `no-answer → composer` recorded at 04:01:27.360.
    * `story/KAN-117` took the same path 7h49m earlier and sat on the composer for
    * every minute since, holding a live channel the whole time.
+   *
+   * **SINCE KAN-450 THIS IS A TERMINAL VERDICT RATHER THAN THE FIRST ONE**, and
+   * that changes what a reader may conclude from it. It no longer means *"a swap
+   * happened"* — a swap is now re-run once against the replacement, so an
+   * ordinary bring-up swap resolves to `passed` or `unverified-client` on the
+   * second attempt and this outcome is never reached. What reaching it means is
+   * that **the connection was replaced again while the re-run was in flight**:
+   * two swaps, one check. The agent is still not degraded, for the reason above —
+   * nothing was measured about the connection it is holding — but the population
+   * that lands here is now much smaller and much more interesting.
    */
   | 'connection-replaced'
   /** The loop crossed, on a client version nobody has measured. */
@@ -275,6 +293,30 @@ export interface ChannelSelfCheckReport {
   clientVersionVerified: boolean | null;
   /** The connection the probe frame was written to, and which this describes. */
   connectionId: string | null;
+  /**
+   * How many probe attempts produced this verdict (KAN-450).
+   *
+   * `1` is every ordinary check. `2` means the first attempt's connection was
+   * replaced under it and the check was re-run once against the replacement, so
+   * this verdict describes {@link connectionId} — the *second* connection — and
+   * the first one is named in {@link detail}.
+   *
+   * **`1 | 2` rather than `number`, and that is the bound rather than a record
+   * of it.** A report claiming three attempts is not a value this interface can
+   * carry, so the ceiling cannot drift apart from the field that reports it; the
+   * control flow in {@link runChannelSelfCheck} holds the same ceiling
+   * structurally, and this is the belt to that braces.
+   */
+  attempts: 1 | 2;
+  /**
+   * How long the whole check took, **across both attempts** where there were
+   * two.
+   *
+   * Deliberately cumulative rather than per-attempt: the question a supervisor
+   * asks of a row is *"how long did this take"*, and a re-run that reported only
+   * its own leg would show ~20s for a check that occupied ~40 — with nothing on
+   * the row able to say so. {@link attempts} is what explains the number.
+   */
   elapsedMs: number;
   checkedAt: string;
   /** One sentence for a supervisor who reads nothing else on the row. */
@@ -333,6 +375,55 @@ let nonceSeq = 0;
  *
  * Never throws: it is fired from a watcher that is itself fired from the middle
  * of an activation, and there is nobody to catch it there.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BOUNDED RE-RUN (KAN-450), AND WHY THE BOUND IS THE SHAPE RATHER THAN A COUNTER
+ * ---------------------------------------------------------------------------
+ *
+ * KAN-435 stopped a replaced connection from degrading a healthy agent, and left
+ * the replacement **unproved for the life of the daemon**: the row read
+ * `connection-replaced, transport: channel, proved: false` and nothing ever
+ * looked again. Honest, and a permanent absence of evidence for exactly the
+ * population whose channel nobody has checked.
+ *
+ * So a swap is now re-run **once**, against the connection that replaced it.
+ *
+ * **The ceiling is structural, not asserted.** The second attempt is a call to
+ * {@link attemptChannelSelfCheck}, which contains no retry path at all — so
+ * *"try a third time"* is not a thing this function can be made to do by
+ * adjusting a number, it is a thing somebody would have to add new code for. A
+ * counter would have been a bound you can typo; two calls to a single-shot
+ * function is a bound the reader can see and the compiler keeps. {@link
+ * ChannelSelfCheckReport.attempts} is `1 | 2` for the same reason, one layer up.
+ *
+ * **`connection-replaced` STAYS REACHABLE, and that is a requirement rather than
+ * a side effect.** A state nothing can reach is a state nobody maintains: had
+ * the re-run looped until it got a stable connection, the outcome would have
+ * become unreachable-in-practice while remaining in the type, and the honest
+ * verdict would have been traded for an invisible one — or for a loop. The
+ * second attempt returns whatever it finds, `connection-replaced` included, so a
+ * world that swaps on **every** resolve terminates in exactly that outcome. That
+ * ceiling has its own control in
+ * `verify-selfcheck-rechecks-replaced-connection.mjs` §3; a retry proof that
+ * never drives the ceiling proves the cheap half.
+ *
+ * **WHAT IT COSTS: one extra probe write and one extra ack wait, per swapped
+ * activation, off the critical path.** The whole chain hangs off a `void` in
+ * daemon.ts, so no activation waits for any of it. Two numbers are worth having
+ * in front of a reader rather than behind one:
+ *
+ *   - **The ordinary swapped case adds one loopback round trip** — measured at
+ *     ~0.1 ms median over a real Unix socket, 200 round trips
+ *     (`verify-selfcheck-rechecks-replaced-connection.mjs` §4), against KAN-435's
+ *     live figures of 13 ms and 17 ms for a whole self-check answered by a real
+ *     agent. It is noise beside the 20 s the *first* attempt has already spent
+ *     timing out on the connection that closed.
+ *   - **The worst case doubles the ack timeout: ~40 s rather than ~20 s**, when
+ *     the replacement never answers either. That is the honest ceiling and it is
+ *     deliberately not shortened — a second, different timeout for attempt 2
+ *     would be a policy nobody asked for. What it delays is the *verdict*, never
+ *     the routing: an agent with no record yet is `unchecked`, and unchecked
+ *     routes (see this module's header on that asymmetry).
  */
 export async function runChannelSelfCheck(opts: {
   address: AgentAddress;
@@ -341,16 +432,71 @@ export async function runChannelSelfCheck(opts: {
   startupOutcome?: string;
   ackTimeoutMs?: number;
 }): Promise<ChannelSelfCheckReport> {
-  const { address, world } = opts;
   const timeoutMs = opts.ackTimeoutMs ?? ACK_TIMEOUT_MS;
+  // ONE `startedAt` FOR BOTH ATTEMPTS. See ChannelSelfCheckReport.elapsedMs.
+  const startedAt = opts.world.now();
+
+  const first = await attemptChannelSelfCheck({
+    address: opts.address,
+    world: opts.world,
+    startupOutcome: opts.startupOutcome,
+    timeoutMs,
+    startedAt,
+    attempt: 1,
+    replacedConnectionId: null
+  });
+
+  // EVERY OTHER OUTCOME IS RETURNED AS IT STANDS, and the narrowness is the
+  // point. `no-answer` is a reading of the connection this agent is holding, so
+  // re-running it would be asking the same wedged server the same question; only
+  // `connection-replaced` says the subject went missing, and only a missing
+  // subject can be found again.
+  if (first.outcome !== 'connection-replaced') return first;
+
+  return attemptChannelSelfCheck({
+    address: opts.address,
+    world: opts.world,
+    startupOutcome: opts.startupOutcome,
+    timeoutMs,
+    startedAt,
+    attempt: 2,
+    replacedConnectionId: first.connectionId
+  });
+}
+
+/**
+ * ONE attempt. No retry lives in here, and that absence is what bounds
+ * {@link runChannelSelfCheck} — see its header.
+ */
+async function attemptChannelSelfCheck(opts: {
+  address: AgentAddress;
+  world: ChannelSelfCheckWorld;
+  startupOutcome?: string;
+  timeoutMs: number;
+  /** When the whole check began, so `elapsedMs` spans both attempts. */
+  startedAt: number;
+  attempt: 1 | 2;
+  /** The connection the previous attempt was measuring. `null` on attempt 1. */
+  replacedConnectionId: string | null;
+}): Promise<ChannelSelfCheckReport> {
+  const { address, world, timeoutMs, startedAt, attempt, replacedConnectionId } = opts;
   const who = describeAddress(address);
-  const startedAt = world.now();
 
   const done = (
     outcome: SelfCheckOutcome,
     detail: string,
     extra: Partial<ChannelSelfCheckReport> = {}
   ): ChannelSelfCheckReport => {
+    // THE RE-RUN SAYS SO IN THE VERDICT ITSELF, not only in the log. A reader
+    // meets `detail` on the `butchr_list_agents` row and nowhere else, and a
+    // `passed` that took two attempts is a different fact from one that took
+    // one — it names an agent whose bring-up swapped connections under it.
+    const fullDetail =
+      attempt === 2
+        ? `${detail} — and this was the SECOND attempt: ${replacedConnectionId ?? 'the first ' +
+            'connection'} was replaced while the first check was in flight, so the check was ` +
+          `re-run once against the connection this agent is actually holding (KAN-450)`
+        : detail;
     const report: ChannelSelfCheckReport = {
       outcome,
       transport: transportFor(outcome),
@@ -359,13 +505,15 @@ export async function runChannelSelfCheck(opts: {
       clientVersion: extra.clientVersion ?? null,
       clientVersionVerified: extra.clientVersionVerified ?? null,
       connectionId: extra.connectionId ?? null,
+      attempts: attempt,
       elapsedMs: world.now() - startedAt,
       checkedAt: new Date(world.now()).toISOString(),
-      detail
+      detail: fullDetail
     };
     world.log(
       `[ChannelSelfCheck] ${who}: ${outcome} → ${report.transport} ` +
-      `(client ${report.clientVersion ?? 'unknown'}, ${report.elapsedMs}ms) — ${detail}`
+      `(client ${report.clientVersion ?? 'unknown'}, ${report.elapsedMs}ms, ` +
+      `attempt ${attempt}/2) — ${fullDetail}`
     );
     if (report.transport === 'composer') {
       // Beside the verdict rather than only in a runbook, for the reason
@@ -445,6 +593,13 @@ export async function runChannelSelfCheck(opts: {
   // connection has gone and not been replaced — nothing supersedes the reading,
   // so `no-answer` about the connection that closed is the honest answer and is
   // left alone.
+  //
+  // ON ATTEMPT 1 THIS RETURN IS NOT THE END OF THE CHECK (KAN-450): its caller
+  // reads the outcome and re-runs once against `live`. On attempt 2 it IS the
+  // end — a second swap inside one check — and that is what keeps the outcome
+  // reachable rather than theoretical. Nothing here branches on which, because
+  // there is nothing to decide: an attempt reports what it found, and the bound
+  // belongs to the one function that owns the sequencing.
   const live = world.resolveConnection();
   if (live && live.id !== connection.id) {
     return done(
@@ -453,7 +608,11 @@ export async function runChannelSelfCheck(opts: {
       `${live.id} was the connection registered for this agent — the bring-up sequence spawns ` +
       `an MCP server per \`claude\` invocation and the last one wins. Whatever ${connection.id} ` +
       `did or did not answer is not evidence about ${live.id}, so nothing is concluded about ` +
-      `this agent's channel and it is NOT degraded. Re-activating it runs the check again`,
+      `this agent's channel and it is NOT degraded` +
+      (attempt === 1
+        ? `. The check is being re-run once against ${live.id}`
+        : `, and this attempt was already the re-run — two swaps inside one check, so nothing ` +
+          `further is tried. Re-activating this agent runs the check again`),
       { connectionId: connection.id }
     );
   }

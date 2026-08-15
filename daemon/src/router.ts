@@ -275,6 +275,22 @@ interface ListedAgentChannel {
   clientVersionVerified: boolean | null;
   checkedAt: string | null;
   elapsedMs: number | null;
+  /**
+   * How many probe attempts the verdict took, or `null` when there is no
+   * verdict (KAN-450).
+   *
+   * `2` means this agent's bring-up replaced its MCP connection while the first
+   * check was in flight and the check was re-run against the replacement — so
+   * the verdict beside it describes the connection the agent is actually
+   * holding, and `elapsedMs` spans both attempts. It is not a fault and needs no
+   * action; it is here so that a doubled `elapsedMs` has something on the row
+   * that explains it.
+   *
+   * `null` is the `unchecked` shape's answer, and is the same "answered with
+   * nothing" as every other null here — not "this daemon cannot say", which is
+   * the ABSENT `channel` key.
+   */
+  attempts: 1 | 2 | null;
   detail: string;
 }
 
@@ -5247,6 +5263,7 @@ export class MessageRouter {
           clientVersionVerified: null,
           checkedAt: null,
           elapsedMs: null,
+          attempts: null,
           detail:
             'no startup channel self-check has run for this agent — most often because it ' +
             'outlived the daemon that would have checked it, or because it was spawned while ' +
@@ -5272,6 +5289,7 @@ export class MessageRouter {
         clientVersionVerified: report.clientVersionVerified,
         checkedAt: report.checkedAt,
         elapsedMs: report.elapsedMs,
+        attempts: report.attempts,
         detail:
           verdict && verdict.transport !== report.transport
             ? `${report.detail} — but its next steer takes: ${verdict.transport}. ${verdict.detail}`
