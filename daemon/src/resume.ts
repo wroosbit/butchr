@@ -123,6 +123,96 @@ export function hasRestorableConversation(workDir: string): boolean {
 export type ResumeCause = 'reboot' | 'daemon-restart' | 'preempted';
 
 /**
+ * Whether a restored agent came back holding its old conversation — **three
+ * states, and `'unknown'` is not `'fresh'`** (KAN-432).
+ *
+ * `'restored'` means the agent has all of its memory and no turn to take:
+ * Claude Code resumes at an empty prompt and waits, so it must be *told* to
+ * carry on. `'fresh'` means no conversation came back, the launcher's
+ * degraded-resume prompt went in on the command line, and it is already
+ * working. `undefined` — the field absent altogether — means this was not a
+ * resume, and nothing here is about it.
+ *
+ * ## Why `'unknown'` exists, and why it is not a boolean
+ *
+ * Because a runtime can be *unable to say*, and that is a different claim from
+ * either answer. `HerdrBridge` always knows — it reads the transcript directory
+ * itself, before the spawn. {@link CrabCastRuntime} does not: it learns the
+ * verdict from `activate_response`, and CrabCast's published read-path contract
+ * v8 puts `resumedExistingConversation` on the **spawning** branch only. Their
+ * own words on the asymmetry: *"a reconciling caller's ordinary call is
+ * `activate` on an agent that is already up, so the response a reconciler sees
+ * most often is the one missing those four keys"* — and the decision *"is
+ * recorded nowhere"* and cannot be recovered afterwards, because the activation
+ * that made it sets `everActivated` to `true` on its way past. **So absence is
+ * the reconciler's ordinary case rather than a version-skew edge**, and it has
+ * no second source.
+ *
+ * ## Why this is a string union and not `boolean | null`
+ *
+ * So that **the boolean collapse becomes a compile error** — for the two kinds
+ * of site that can be one, which is not all of them. Restoring all five
+ * pre-KAN-432 expressions at once and building produces exactly three errors,
+ * and the shape of what it does and does not catch is measured rather than
+ * assumed:
+ *
+ * * **Caught, `TS2367`** — an equality against a boolean: `=== true` in
+ *   `router.ts`, `=== false` in `herdr.ts`. *"This comparison appears to be
+ *   unintentional because the types have no overlap."*
+ * * **Caught, `TS2322`** — assigning a boolean *into* a field of this type,
+ *   which is how `reconcile.ts`'s `response.resumedConversation === true` is
+ *   rejected even though it reads an untyped `any`. The read is invisible to
+ *   the compiler; the write is not.
+ * * **NOT caught** — a truthiness test. `if (x)` and `x && …` compile clean
+ *   against a string union, and there were two of them, in `reconcile.ts` and
+ *   `daemon.ts`. **They also change meaning silently**, and in the opposite
+ *   direction: every state of this union is truthy, so a truthiness site left
+ *   alone flips from under-nudging to nudging everything, `'fresh'` included.
+ *
+ * So the type is what makes three of the five sites impossible to inherit
+ * wrongly, and {@link needsResumeNudge} — not the type — is what covers the
+ * other two. Saying which is which matters, because *"the compiler will catch
+ * it"* is exactly the belief that would let the next truthiness site through.
+ *
+ * The residual failure direction is at least the safer one. A naive
+ * `if (resumedConversation)` over-nudges, which is loud, recoverable and
+ * self-describing; the same naive read against the old boolean *under*-nudged,
+ * which is silent, permanent and needs a human to notice.
+ */
+export type ResumedConversation = 'restored' | 'fresh' | 'unknown';
+
+/**
+ * Whether a restored agent has to be told to carry on.
+ *
+ * **The ruling on `'unknown'`, made explicitly rather than left to fall out of
+ * a comparison (KAN-432 AC2): it is nudged.** The two errors are not
+ * symmetric, and that asymmetry is the whole argument:
+ *
+ * * **Not nudging an agent that needed it** is the KAN-21 incident. The agent
+ *   sits at an empty prompt holding all of its memory, the pane looks healthy,
+ *   the reconciler reports `restored`, and nothing is doing anything. Two
+ *   agents sat like that until a human retyped their instructions. It is silent,
+ *   it is indefinite, and no later sweep detects it — `herdrStatus` reads `done`
+ *   for an idle agent and `done` is also what a correct agent awaiting review
+ *   reads.
+ * * **Nudging an agent that did not need it** costs one turn. {@link
+ *   nudgeResumedAgent} reads the pane for a prompt before it types, and the
+ *   message it sends says in words that the agent was interrupted and should
+ *   check the repository and workspace for what it already did — which is
+ *   exactly the recovery a spuriously-nudged agent needs. It is loud, it lands
+ *   in the daemon log, and it is recoverable.
+ *
+ * A recoverable-and-loud failure beats a silent-and-permanent one, so the
+ * unknown takes the nudge. What is **not** acceptable, and what the ticket
+ * names, is an unknown being *silently* recorded as already-working; callers
+ * therefore log the unknown distinctly rather than folding it in with
+ * `'restored'`.
+ */
+export function needsResumeNudge(resumed: ResumedConversation | undefined): boolean {
+  return resumed === 'restored' || resumed === 'unknown';
+}
+
+/**
  * The filename herdr's own brief is written under, and the one place it is
  * spelled.
  *

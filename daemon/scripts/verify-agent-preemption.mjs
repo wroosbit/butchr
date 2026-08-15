@@ -178,7 +178,18 @@ function stubHerdr(running, { statuses = {}, sessions = [] } = {}) {
         onDataListeners: [],
         // The real spawnSession's own rule, run against the real function: a
         // resume asks the disk whether there is a conversation to continue.
-        ...(resume ? { resume, resumedConversation: hasRestorableConversation(workDir) } : {})
+        //
+        // KAN-432 MADE THIS A THREE-STATE VERDICT RATHER THAN A BOOLEAN, and
+        // this stub has to mirror the mapping `HerdrBridge.spawnSession` makes
+        // — `'restored'` / `'fresh'` — because the code it feeds now branches
+        // through `needsResumeNudge`. **Nothing could have told us**: this is a
+        // `.mjs` stub, so no compiler sees it, and a stale boolean here reads as
+        // `'fresh'`'s opposite in neither direction — it is simply not one of
+        // the three, so the nudge never fires and section 7 goes red on the
+        // `nudged` half. That is how it was found.
+        ...(resume
+          ? { resume, resumedConversation: hasRestorableConversation(workDir) ? 'restored' : 'fresh' }
+          : {})
       };
       spawns.push({ type, key, defaultAgent, resume, resumedConversation: session.resumedConversation });
       alive.push(`butchr-${type}-${key.toLowerCase()}`);
@@ -631,7 +642,7 @@ rule('7. SURVIVAL — a preempted agent, re-activated, resumes rather than start
   );
 
   verdict(
-    back.resume === 'preempted' && back.resumedConversation === true && Boolean(nudge),
+    back.resume === 'preempted' && back.resumedConversation === 'restored' && Boolean(nudge),
     'it came back with its own conversation AND an instruction to carry on. Without\n' +
     '    the second half this would be KAN-21\'s idle-forever failure reached by a new\n' +
     '    route: Claude Code resumes at an empty prompt and waits, so a restored agent\n' +
