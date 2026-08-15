@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 102 |
+| `yes` | 103 |
 | `partial` | 12 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **139** |
+| **total** | **140** |
 
-**114 of 139** run on every pull request.
+**115 of 140** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -89,6 +89,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-reconnect-resync` | yes | stands up its own Unix socket and answers its own frames in process; no live daemon, no herdr, no PTY, no credential, no peer, no network. It writes nothing to disk outside os.tmpdir(). |
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-cutover-health-predicate` | yes | node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. Every frame is a literal in this file or a recorded line quoted in it. |
 | `verify-cutover-sequence` | yes | reads `docs/*.md`, `daemon/src/*.ts` and `daemon/scripts/install-service.sh` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-daemon-log-is-greppable` | yes | builds its fixtures in a temp directory and asserts against the built daemon modules in process. No live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-dep-linking-covers-every-repo-shape` | yes | builds every fixture in a temporary directory, runs `npm ci` only against a hand-written zero-dependency lockfile (no network), and reads `prompts/task.md` off the checkout. Node builtins plus `npm` and `cp`. |

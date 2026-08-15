@@ -151,8 +151,31 @@ interface AgentDto {
   sessionId: string;
   type: string;
   key: string;
-  /** Absent when the session was activated by key without a known page URL. */
-  url?: string;
+  /**
+   * `null` when the session was activated by key without a known page URL and
+   * the registry recorded none either — never absent (KAN-481).
+   *
+   * **It is `string | null` rather than `?: string` so that the vanishing key
+   * is not expressible.** `recordedUrlFor` returns `string | undefined` and
+   * documents the contract its callers owe it — *"`undefined` here means
+   * nothing was written down, and callers render that as `null`"* — and
+   * `ListedAgent` states the same invariant for the whole response: *"Nulls
+   * are explicit rather than omitted … over JSON an absent field reads as 'not
+   * answered', and these are answered — with nothing."* {@link toAgentDto} was
+   * the one caller that honoured neither. It spread straight into
+   * `agent_status`, `JSON.stringify` dropped the `undefined`, and the key left
+   * the response entirely.
+   *
+   * **What that cost is the reason this is a type and not a comment.** The same
+   * agent, read at the same moment, answered `url: null` on `list_agents` and
+   * carried no `url` key at all on `agent_status` — so one condition wore two
+   * faces, and `epic/KAN-203` reasonably filed them as possibly-three defects
+   * ("absent, null, or sometimes populated … those are three different defects
+   * and I have not distinguished them"). An optional field would let a later
+   * author reintroduce that silently; this one makes it `TS2322` at the
+   * assignment.
+   */
+  url: string | null;
   createdAt: string;
   status: HerdrSession['status'];
   workDir: string;
@@ -3490,7 +3513,13 @@ export class MessageRouter {
       // fallback the restart repair would hand back an addressable session
       // bound to nothing. See {@link recordedUrlFor}: this is a read of what
       // the activation wrote down, never a url derived from the key.
-      url: session.url ?? this.recordedUrlFor(agentNameFor(session.type, session.key)),
+      // `?? null` closes the contract `recordedUrlFor` states and this one
+      // caller used to break: it returns `undefined` for an agent the registry
+      // never recorded a url for, every other caller renders that as `null`,
+      // and this one spread it raw into `agent_status` where `JSON.stringify`
+      // deleted the key (KAN-481). The type on {@link AgentDto.url} is what
+      // now refuses the raw form; this is the belt beside those braces.
+      url: session.url ?? this.recordedUrlFor(agentNameFor(session.type, session.key)) ?? null,
       createdAt: session.createdAt.toISOString(),
       status: session.status,
       workDir: session.workDir,
