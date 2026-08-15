@@ -30,7 +30,7 @@ import {
   type TailSource
 } from './herdr.js';
 import type { McpServerDefinitions } from './integrations/integration.js';
-import type { BriefLocation, ResumeCause } from './resume.js';
+import type { BriefLocation, ResumeCause, ResumedConversation } from './resume.js';
 import { deleteWorkspaceDir } from './workspace-dir.js';
 
 /**
@@ -433,6 +433,59 @@ const PTY_BUFFER_LIMIT = 100_000;
 export function readChannelEnabled(frame: Record<string, unknown>): boolean | null {
   const value = frame.channelEnabled;
   return typeof value === 'boolean' ? value : null;
+}
+
+/**
+ * Read CrabCast's resume verdict off an `activate_response`, **and the only
+ * place in this repository where their spelling meets ours** (KAN-432 AC1).
+ *
+ * ## The two names, converted here and nowhere else
+ *
+ * Theirs is `resumedExistingConversation`; ours is `resumedConversation`. One
+ * fact, two names, across a project boundary — which is the KAN-346 / KAN-397 /
+ * KAN-429 class, and the reason this is a named function with the conversion
+ * inside it rather than a field read at the call site. A second site spelling
+ * the translation for itself is the defect that class describes, so the ticket
+ * asks for exactly one and this is it. `grep -c resumedExistingConversation
+ * daemon/src` answering anything but `1` is the drift.
+ *
+ * **CrabCast also publishes a field called `resumedConversation` — our
+ * spelling, on their wire — and it is NOT this one.** It sits in the `spawned`
+ * branch's `sometimes` list beside `resume`, and it is their record of a resume
+ * *they* were asked for. Reading it here because the name matches would be
+ * taking a different question's answer, so the field this function names is
+ * theirs-by-their-name and the conversion is deliberate rather than incidental.
+ *
+ * ## Why absence is `'unknown'` and never `'fresh'`
+ *
+ * Because their contract says absence is not an answer. `resumedExistingConversation`
+ * is on the **spawning** branch and off the **idempotent** one, deliberately —
+ * v8 rules that *"no field moves"* and gives the reason: the value is
+ * `session.mayResume`, *"the resume decision this spawn made"*, and on a branch
+ * where nothing spawned there is no such decision. It is recoverable from
+ * nothing afterwards: *"the decision itself is recorded nowhere"*, and its
+ * durable input `everActivated` is set to `true` by the very activation that
+ * read it.
+ *
+ * So the absent case is not a peer-version edge — it is **the branch a
+ * reconciler meets most**, in their own words: *"a reconciling caller's
+ * ordinary call is `activate` on an agent that is already up, so the response a
+ * reconciler sees most often is the one missing those four keys."*
+ *
+ * Collapsing that to `'fresh'` is the precise defect KAN-432 was filed for.
+ * `'fresh'` is a claim — *this agent came up with its prompt on the command
+ * line and is already working* — and asserting it about a response that said
+ * nothing is how a fleet of resumed agents comes up idle while every instrument
+ * reports them healthy. **An unrecognised type is `'unknown'` too**, for the
+ * same reason `readChannelEnabled` refuses to guess at one: a string `"true"`
+ * would be a shape nobody has seen, and reading it either way would be
+ * inventing an answer.
+ */
+export function readResumedConversation(frame: Record<string, unknown>): ResumedConversation {
+  const value = frame.resumedExistingConversation;
+  if (value === true) return 'restored';
+  if (value === false) return 'fresh';
+  return 'unknown';
 }
 
 /**
@@ -1011,10 +1064,43 @@ export class CrabCastRuntime implements AgentRuntime {
     // proof pointed at it (`verify-channel-spawn-verdict.mjs` §2).
     this.channelEnabled.set(session.sessionId, readChannelEnabled(activated));
 
+    // THE RESUME VERDICT, TAKEN HERE FOR THE SAME REASON AS THE CHANNEL ONE AND
+    // FOR ONE STRONGER (KAN-432). `activate_response` is the only surface that
+    // carries it — the census this runtime polls does not, and CrabCast's own
+    // contract says the decision "is recorded nowhere" and cannot be recovered
+    // from `everActivated` afterwards, because the activation that made it sets
+    // `everActivated` to `true` on its way past. So this is not a cache of
+    // something re-readable; it is the single moment the fact exists.
+    //
+    // WHAT WAS WRONG BEFORE THIS LINE. Nothing read the field at all — `grep -c
+    // resumedExistingConversation` over this file answered `0` while the value
+    // sat on the wire, published in read-path contract v8 and observed live by
+    // `task/KAN-396`. `session.resumedConversation` therefore stayed
+    // `undefined` for every agent this runtime ever spawned, and all four
+    // readers of it tested `=== true`, so `undefined` read as *already
+    // working*. Under CrabCast every resumed agent took the no-nudge branch
+    // while sitting in the state the nudge exists for — and CrabCast resumes
+    // any path it has run before, unasked, so after the cutover that is the
+    // whole fleet at the first daemon restart.
+    //
+    // NOTHING IS ASKED FOR HERE, and that is the boundary this stays inside.
+    // `activate_agent` is sent exactly as it was — `{ action, path }` — and no
+    // resume key, documented or otherwise, is added. AC1 of KAN-396 established
+    // that Butchr cannot *ask* for a resume and `epic/KAN-39` refused re-opening
+    // it permanently. This reads an output they already publish and already
+    // send; it does not reach for an affordance they have closed.
+    session.resumedConversation = readResumedConversation(activated);
+
     session.status = 'active';
     this.log(
       `activated ${agentNameFor(session.type, session.key)} as ${remoteId} ` +
-        `(channelEnabled=${JSON.stringify(readChannelEnabled(activated))})`
+        `(channelEnabled=${JSON.stringify(readChannelEnabled(activated))}, ` +
+        `resumedConversation=${session.resumedConversation}` +
+        (session.resumedConversation === 'unknown'
+          ? ' — CrabCast said nothing, which its contract makes the ordinary answer on the ' +
+            'idempotent branch; this agent is NOT recorded as already-working'
+          : '') +
+        `)`
     );
   }
 

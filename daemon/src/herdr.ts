@@ -16,7 +16,7 @@ import {
   hasRestorableConversation,
   workspaceBrief
 } from './resume.js';
-import type { BriefLocation } from './resume.js';
+import type { BriefLocation, ResumedConversation } from './resume.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -171,16 +171,38 @@ export interface HerdrSession {
    */
   resume?: ResumeCause;
   /**
-   * On a resume, whether a conversation was there to restore — decided before
-   * the spawn by {@link hasRestorableConversation}.
+   * On a resume, whether a conversation was there to restore.
    *
-   * `true` means the agent comes back remembering everything and therefore
-   * needs to be *told* to carry on, because Claude Code resumes at an empty
-   * prompt and waits indefinitely. `false` means the launcher's fallback ran
-   * with the degraded-resume prompt and the agent is already working. The
-   * caller uses this to decide whether to nudge; undefined outside a resume.
+   * **Three states — see {@link ResumedConversation}, which carries the whole
+   * argument, and {@link needsResumeNudge}, which is the only thing that should
+   * be deciding anything from it.**
+   *
+   * **Which runtime set it matters, and the two do not learn it the same way.**
+   * `HerdrBridge` decides it *before* the spawn, from {@link
+   * hasRestorableConversation} reading the transcript directory, so it is never
+   * `'unknown'` there and it is `undefined` unless `resume` is set. That
+   * pairing — present exactly when `resume` is — was this field's whole meaning
+   * until KAN-432, and it no longer holds on both runtimes.
+   *
+   * **`CrabCastRuntime` sets it on EVERY activation, resume or not, and the
+   * asymmetry is deliberate.** It reads the verdict off `activate_response`,
+   * and CrabCast decides a resume from its own durable record rather than from
+   * anything Butchr asks — `task/KAN-396` measured a second activation at a
+   * path resuming with nobody requesting it. So under that runtime a
+   * `'restored'` next to an absent `resume` is a real, reachable state:
+   * **CrabCast resumed an activation Butchr never called a resume.** Their
+   * contract makes the verdict unrecoverable once the call returns, so
+   * recording it unconditionally is the difference between holding that fact
+   * and destroying it.
+   *
+   * ⚠ **Nothing nudges on that combination yet.** Both nudge sites gate on
+   * `resume` being set before they look at this at all, so an unrequested
+   * CrabCast resume is recorded here and acted on by nobody. That is a named
+   * remaining hole rather than an oversight — KAN-432's scope is the
+   * reconciler's path, where `resume` is always set — and it is filed and
+   * linked from KAN-432 rather than left to be rediscovered.
    */
-  resumedConversation?: boolean;
+  resumedConversation?: ResumedConversation;
   /**
    * Set when this session was **reconstructed from a runtime's census** rather
    * than created by a spawn of this daemon's (KAN-346).
@@ -1000,11 +1022,23 @@ export class HerdrBridge implements AgentRuntime {
     // and the launcher is about to write into it. It decides which resume
     // framing the agent gets, and — for the caller — whether the restored agent
     // will need to be told to carry on.
-    const resumedConversation = resume ? hasRestorableConversation(defaultWorkDir) : undefined;
+    //
+    // **This runtime never answers `'unknown'`, and that is a property of where
+    // it looks rather than of care taken here** (KAN-432): the transcript
+    // directory is on this machine and readable synchronously, so there is no
+    // state in which HerdrBridge has to guess. `CrabCastRuntime` learns the
+    // same fact from a peer's response and can be told nothing, which is why
+    // {@link ResumedConversation} has a third state that never appears on this
+    // line.
+    const resumedConversation: ResumedConversation | undefined = resume
+      ? hasRestorableConversation(defaultWorkDir)
+        ? 'restored'
+        : 'fresh'
+      : undefined;
     if (resume) {
       console.log(
         `[HerdrBridge] Resuming ${agentName} after ${resume}: ` +
-        (resumedConversation
+        (resumedConversation === 'restored'
           ? 'a conversation is on disk, so --continue will restore it'
           : 'no conversation on disk, so it will start with the degraded-resume prompt')
       );
@@ -1343,8 +1377,18 @@ export class HerdrBridge implements AgentRuntime {
       // agent greeted as if it were starting fresh would claim its ticket and
       // begin again, silently redoing — or conflicting with — work it had
       // already committed. See resume.ts.
+      // CONSUMER 3 OF 4 (KAN-432). `=== false` became `=== 'fresh'` and the
+      // meaning is unchanged *on this path*, because this branch only ever runs
+      // inside `HerdrBridge`, which cannot produce `'unknown'` (see
+      // `spawnSession` above). Stated rather than assumed: what makes the
+      // rewrite safe is not that `'unknown'` is handled here, it is that it
+      // cannot arrive here. Were it ever to — a runtime other than this one
+      // reusing `initPty` — the degraded prompt would correctly NOT be used,
+      // since an unknown is not a known-fresh start and greeting an agent that
+      // may hold its whole conversation as though it were starting over is the
+      // failure `degradedResumePrompt` exists to avoid.
       const fallbackPrompt =
-        session.resume && session.resumedConversation === false
+        session.resume && session.resumedConversation === 'fresh'
           ? degradedResumePrompt(
               session.type,
               session.key,

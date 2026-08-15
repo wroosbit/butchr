@@ -548,9 +548,24 @@ Gate 2 measured, in passing, that **`.butchr-prompt.md` is never written on this
 path**. The consequence was three daemon-composed messages telling an agent to
 read a file that is not there — `resume.ts`'s nudge and cold-start prompt, and
 the `butchr` MCP server's own `instructions` string, which is the one of the
-three that reaches a CrabCast agent **today** (the two resume messages are
-unreachable on this path until KAN-396 lands a resume signal; `resumedConversation`
-is set in `herdr.ts` and nowhere else).
+three that reaches a CrabCast agent **today** (the two resume messages were
+unreachable on this path until a resume signal landed; `resumedConversation` was
+set in `herdr.ts` and nowhere else).
+
+**KAN-432 landed that signal, and it switched ONE of the two on — not both.**
+`provision()` now reads `activate_response.resumedExistingConversation`, so
+`resumedConversation` is set on this path for the first time. What follows from
+that is asymmetric, and the difference is which side of the runtime boundary
+each message is composed on:
+
+| latent site | reachable under CrabCast now? |
+| --- | --- |
+| `resumeNudge`, via `nudgeResumedAgent` | **yes.** It is runtime-agnostic — it asks `AgentRuntime.briefLocation(type, key)` and gets this runtime's `runtime-owned` arm. It was latent only because nothing set `resumedConversation`. `verify-resumed-conversation-nudge.mjs` §5 drives a real nudge through `reconcileAgents` and asserts the delivered text carries CrabCast's pointer and never names `.butchr-prompt.md`. |
+| `degradedResumePrompt` | **no.** Its one call site is inside `HerdrBridge.initPty`, composing an argv fallback. `CrabCastRuntime` has no `initPty` and composes no fallback — `provision()` hands the prompt to `configure_agent`. So it stays unreachable here, and gate 9's wording on it stays unverified against this runtime. §5 asserts that absence rather than describing it. |
+
+KAN-432's own description says both go live; the tree says one does. The
+disagreement is recorded here rather than reconciled quietly, because the half
+that is **not** live is the half a reader would otherwise take as covered.
 
 **The decision was where the brief lives, not how to patch a sentence**, and it
 is settled by their published contract rather than by preference.

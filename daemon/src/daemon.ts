@@ -60,6 +60,7 @@ import {
   clearGuardian
 } from './guardian.js';
 import { reconcileAgents } from './reconcile.js';
+import { needsResumeNudge } from './resume.js';
 import { SupervisionNotifier } from './nudge.js';
 import { PendingNotifications, channelNotifier } from './notify.js';
 import { DAEMON_SENDER_TAG, senderTagFor } from './provenance.js';
@@ -1884,7 +1885,18 @@ function onListen() {
       // find out why the fleet is smaller than the board. A count alone would
       // say the machine held back without saying who it held back.
       const deferred = result.outcomes.filter((o) => o.result === 'deferred');
-      const idle = restored.filter((o) => o.resumedConversation && o.nudged === false);
+      // CONSUMER 4 OF 4 (KAN-432). This read `o.resumedConversation &&`, a
+      // truthiness test over what was then a boolean, and it carried a latent
+      // second defect that the string union surfaced rather than introduced:
+      // under the union every state is truthy, so left alone this line would
+      // have counted a `'fresh'` agent — one that came up already working and
+      // was correctly never nudged — as an agent that "could not be told to
+      // carry on". `needsResumeNudge` is the same predicate the nudge sites use,
+      // so what this reports as idle is exactly what was meant to be nudged and
+      // was not, `'unknown'` included.
+      const idle = restored.filter(
+        (o) => needsResumeNudge(o.resumedConversation) && o.nudged === false
+      );
       log(
         `[reconcile] Done: ${result.expected} expected, ` +
         `${restored.length} restored, ` +

@@ -707,22 +707,45 @@ check(
   runtimeReadsResumeField ? 'the gate is closed and the document agrees' : 'the gate is open and the document says so'
 );
 
+/**
+ * KAN-432 LANDED, SO THESE TWO LEGS ASSERT THE FIX RATHER THAN THE DEFECT.
+ *
+ * They read `resumedConversation === true` and `if (outcome.resumedConversation)`
+ * — the two expressions the Gate 10 section used to describe line by line. Both
+ * are gone: the comparison is a compile error against the three-state
+ * `ResumedConversation`, and the guard is now `needsResumeNudge`. Keeping the
+ * old assertions would have pinned this document to a defect that no longer
+ * exists, which is what §7's own preamble says a guard must not do.
+ *
+ * ⚠ **COMMENTS ARE STRIPPED FIRST, AND THAT IS LOAD-BEARING RATHER THAN TIDY.**
+ * The `if (outcome.resumedConversation)` leg was GREEN against the fixed tree on
+ * the run that found this — not because the guard was there, but because
+ * `reconcile.ts`'s new comment *quotes the old expression* while explaining what
+ * replaced it. A mention is not a branch. §7 already draws exactly that
+ * distinction for `RESUME_WIRE_FIELD` and did not apply it here, so the leg most
+ * likely to be read as "the guard is unchanged" was the one that could not tell
+ * the difference. It fails toward the comfortable answer, which is why it is
+ * fixed rather than left.
+ */
+const reconcileCode = stripComments(reconcile);
+
 check(
-  '`daemon/src/reconcile.ts` still branches on `resumedConversation === true`',
-  /resumedConversation === true/.test(reconcile),
-  'the branch this document\'s Gate 10 section describes line by line is gone or renamed.\n' +
-    `${DOC_REL} tells a driver that \`undefined === true\` is what makes a resumed agent look like a ` +
-    `working one. If the comparison moved, that explanation is now fiction, and the step 10 check built ` +
-    `on it has no stated mechanism.`,
-  'the comparison the gate-10 explanation rests on'
+  '`daemon/src/reconcile.ts` no longer branches on `resumedConversation === true`',
+  !/resumedConversation === true/.test(reconcileCode),
+  'the pre-KAN-432 comparison is back in `reconcile.ts`.\n' +
+    `${DOC_REL}'s Gate 10 section now records that comparison as HISTORY. If it has returned, a ` +
+    `third state is being folded into an answer again and the gate is reopened — the document, the ` +
+    `nudge and step 10's stated mechanism all go false together.`,
+  'the comparison the gate-10 explanation rests on, asserted absent'
 );
 
 check(
-  "the nudge is still guarded by that branch, so a `false` still means nobody is told",
-  /if \(outcome\.resumedConversation\)/.test(reconcile),
-  'the nudge is no longer guarded by `outcome.resumedConversation`.\n' +
-    'The document states that the nudge never fires under CrabCast BECAUSE the guard reads false. ' +
-    'If the guard moved, the consequence may have moved with it, in either direction.'
+  'the nudge is guarded by `needsResumeNudge`, so an UNKNOWN verdict is told rather than assumed',
+  /needsResumeNudge\(outcome\.resumedConversation\)/.test(reconcileCode),
+  'the nudge is no longer guarded by `needsResumeNudge`.\n' +
+    'The document states that a resumed agent IS now told to carry on, and that an unknown verdict ' +
+    'is nudged rather than silently recorded as already-working. Both of those claims are this ' +
+    'guard. If it moved, the consequence moved with it, in either direction.'
 );
 
 check(

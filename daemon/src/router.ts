@@ -43,7 +43,7 @@ import {
   sameSupervisorOfRecord,
   toSupervisorOfRecord
 } from './agent-registry.js';
-import { ResumeCause } from './resume.js';
+import { ResumeCause, needsResumeNudge } from './resume.js';
 import { nudgeResumedAgent } from './nudge.js';
 import { senderTagFor, withSenderTag } from './provenance.js';
 import type { CarrierVerdict, ChannelCarrier, ChannelMeta, ChannelRouteOutcome } from './channel.js';
@@ -1973,11 +1973,21 @@ export class MessageRouter {
    * inside this call would run it *before* the handler reaches `respond`, and
    * the user would watch a toggle hang on a message it is not waiting for.
    *
-   * Only when a conversation actually came back. The other branch started with
-   * the degraded-resume prompt on its command line and is already working.
+   * Only when a conversation actually came back, **or when the runtime could
+   * not say whether one did** (KAN-432). The `'fresh'` branch started with the
+   * degraded-resume prompt on its command line and is already working; the
+   * unknown has not been shown to be that, and {@link needsResumeNudge} carries
+   * the argument for why it is nudged rather than assumed.
+   *
+   * CONSUMER 2 OF 4. This read `session.resumedConversation !== true`, which
+   * folded an absent verdict into the already-working branch — the same
+   * collapse as `reconcile.ts`, on the path a sidepanel re-activation of a
+   * preempted agent takes rather than the path a reboot takes. Under
+   * `CrabCastRuntime` the field was never set at all, so this returned early
+   * for every agent it was ever asked about.
    */
   private nudgeIfResumed(session: HerdrSession, defaultAgent?: string): void {
-    if (!session.resume || session.resumedConversation !== true) return;
+    if (!session.resume || !needsResumeNudge(session.resumedConversation)) return;
     const cause = session.resume;
     setTimeout(() => {
       void nudgeResumedAgent({

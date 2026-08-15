@@ -1,7 +1,7 @@
 import { AgentRegistry } from './agent-registry.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { MessageRouter } from './router.js';
-import { ResumeCause } from './resume.js';
+import { ResumeCause, ResumedConversation, needsResumeNudge } from './resume.js';
 import { delay, monotonicNow, nudgeResumedAgent } from './nudge.js';
 
 /**
@@ -46,8 +46,11 @@ export interface RestoreOutcome {
    * outage in a log somebody scans.
    */
   result: 'already-running' | 'restored' | 'failed' | 'deferred';
-  /** True when the agent's prior conversation was there to continue. */
-  resumedConversation?: boolean;
+  /**
+   * Whether the agent's prior conversation was there to continue — three
+   * states, and `'unknown'` is a runtime that could not say (KAN-432).
+   */
+  resumedConversation?: ResumedConversation;
   /** Whether the interrupted-work message was delivered, and why not. */
   nudged?: boolean;
   error?: string;
@@ -56,6 +59,32 @@ export interface RestoreOutcome {
 export interface ReconcileResult {
   expected: number;
   outcomes: RestoreOutcome[];
+}
+
+/**
+ * Read the resume verdict off an `activate_response` **that arrives here as
+ * `any`** (KAN-432).
+ *
+ * This is not the spelling conversion — that happens once, in
+ * `crabcast-runtime.ts`'s `readResumedConversation`, and this reads Butchr's
+ * own field under Butchr's own name off Butchr's own response.
+ *
+ * `handleActivateByKey` answers through a `Respond` callback into a local
+ * `let response: any`, so nothing about the property itself is typed. What
+ * caught the old `=== true` here was not the read but the **write**: the
+ * boolean it produced no longer assigns into {@link RestoreOutcome}, which is
+ * `TS2322` and is measured rather than assumed (see the red drive in
+ * `verify-resumed-conversation-nudge.mjs`). Narrowing it in a named function
+ * rather than restoring a comparison is what makes the value arriving here a
+ * verdict instead of whatever the response happened to carry.
+ *
+ * **An unrecognised value is `'unknown'`, and so is an absent one.** Both mean
+ * the same thing here — nothing on this response established that the agent came
+ * up already working — and that is the reading whose absence caused the defect.
+ */
+function readResumedConversation(response: any): ResumedConversation {
+  const value = response?.resumedConversation;
+  return value === 'restored' || value === 'fresh' ? value : 'unknown';
 }
 
 /**
@@ -218,16 +247,31 @@ export async function reconcileAgents(opts: {
       type,
       key,
       result: 'restored',
-      resumedConversation: response.resumedConversation === true
+      resumedConversation: readResumedConversation(response)
     };
 
     // The half of a resume that is not respawning. An agent whose conversation
     // came back has all of its memory and no turn to take: Claude Code resumes
     // at an empty prompt and waits, which is precisely how two agents sat idle
     // on the day this ticket was filed until a human retyped their
-    // instructions. The other branch needs no message — its prompt went in on
-    // the command line and it is already working.
-    if (outcome.resumedConversation) {
+    // instructions. The `'fresh'` branch needs no message — its prompt went in
+    // on the command line and it is already working.
+    //
+    // CONSUMER 1 OF 4, AND THE ONE KAN-432 WAS FILED ABOUT. This read
+    // `if (outcome.resumedConversation)` over a boolean built with `=== true`,
+    // so a response that said nothing arrived here as `false` and took the
+    // already-working branch — silently, and for every agent under
+    // `CrabCastRuntime`, which never set the field at all. `needsResumeNudge`
+    // is what rules on the third state instead of a truthiness test that cannot.
+    if (needsResumeNudge(outcome.resumedConversation)) {
+      if (outcome.resumedConversation === 'unknown') {
+        log(
+          `[reconcile] ${agentName}: the runtime did not report whether a conversation was ` +
+          `restored, so this is NOT being recorded as already-working. Nudging it — an agent ` +
+          `that did not need the message loses one turn and is told why, and an agent that ` +
+          `needed it and did not get one idles until a human notices (KAN-432).`
+        );
+      }
       const nudge = await nudgeResumedAgent({
         herdrBridge,
         type,
