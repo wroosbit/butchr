@@ -135,13 +135,15 @@ export function templateProvenance(
   source: PromptSource = { kind: 'worktree', because: 'no source was resolved' },
   now: Date = new Date()
 ): PromptProvenance {
+  // Once, not once per use: this is on the activation path and it shells out.
+  const buildGap = describeBuildGap(repoRoot, source);
   const base: PromptProvenance = {
     repoRoot,
     templatePath,
     renderedAt: now,
     commit: null,
     source,
-    ...(describeBuildGap(repoRoot, source) ? { buildGap: describeBuildGap(repoRoot, source)! } : {})
+    ...(buildGap ? { buildGap } : {})
   };
 
   if (git(repoRoot, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
