@@ -181,6 +181,30 @@ export type SelfCheckOutcome =
   | 'emit-failed'
   /** The notification was emitted and the client did not answer the ping. */
   | 'client-unresponsive'
+  /**
+   * The connection this check was measuring was replaced while it ran (KAN-435).
+   *
+   * **Not a fault of the agent, and it is on the passing side of
+   * {@link transportFor} for that reason.** The probe was written to the
+   * connection that was current when the check started; by the time the answer
+   * settled, a *different* connection was registered for this address. Whatever
+   * the old connection did or did not say is not evidence about the new one, so
+   * this reports the swap rather than converting it into a verdict about a
+   * channel nobody tested.
+   *
+   * **It exists because the alternative was measured degrading healthy agents.**
+   * The bring-up sequence registers more than one MCP server — `claude
+   * --continue || claude` spawns one per invocation — and the last one wins. When
+   * `superviseChannelStartup` declared ready on a connection that closed
+   * milliseconds later, this check wrote its probe there, waited the full 20s,
+   * and returned `no-answer`: a verdict blaming the recipient's build for a
+   * connection swap on our own side. Live, 2026-08-15: `task/KAN-441` ready on
+   * `conn-176` at 04:01:07.360, `conn-176` closed at 04:01:07.412, `conn-178`
+   * registered at 04:01:07.792, `no-answer → composer` recorded at 04:01:27.360.
+   * `story/KAN-117` took the same path 7h49m earlier and sat on the composer for
+   * every minute since, holding a live channel the whole time.
+   */
+  | 'connection-replaced'
   /** The loop crossed, on a client version nobody has measured. */
   | 'unverified-client'
   /** The loop crossed, on a client version a probe has measured to the model. */
@@ -199,9 +223,21 @@ export type SelfCheckTransport = 'channel' | 'composer';
  * client upgrade a silent fleet-wide transport change — which is the class of
  * event this ticket exists to make loud, arriving from the direction the ticket
  * created. It is reported, prominently, and it routes.
+ *
+ * **`connection-replaced` is here for a different reason, and it is the stronger
+ * one (KAN-435): it is not a reading of the live connection at all.** The other
+ * failures are things that happened to the channel being measured. This one is
+ * the measurement losing its subject — so treating it as a failure would degrade
+ * an agent on the strength of a connection that no longer exists, which is
+ * exactly the defect the outcome was added to name. Unproved is not failed, by
+ * the same asymmetry this module's header argues for `unchecked`.
  */
 export function transportFor(outcome: SelfCheckOutcome): SelfCheckTransport {
-  return outcome === 'passed' || outcome === 'unverified-client' ? 'channel' : 'composer';
+  return outcome === 'passed' ||
+    outcome === 'unverified-client' ||
+    outcome === 'connection-replaced'
+    ? 'channel'
+    : 'composer';
 }
 
 /** What `mcp.ts` reports back about its own end of the loop. */
@@ -395,6 +431,32 @@ export async function runChannelSelfCheck(opts: {
   }
 
   const ack = await answer;
+
+  // DID THIS CHECK STILL HAVE A SUBJECT WHEN IT FINISHED? (KAN-435)
+  //
+  // Asked BEFORE the ack is interpreted, and that order is the whole of it: every
+  // branch below describes `connection`, and if a different connection is
+  // registered now then none of those sentences is about this agent's channel.
+  // A timeout in particular reads as "your MCP server is wedged" when what
+  // actually happened is that the server we wrote to exited normally and its
+  // successor was never asked.
+  //
+  // ONLY WHEN A DIFFERENT ONE IS LIVE. A `null` here is an agent whose
+  // connection has gone and not been replaced — nothing supersedes the reading,
+  // so `no-answer` about the connection that closed is the honest answer and is
+  // left alone.
+  const live = world.resolveConnection();
+  if (live && live.id !== connection.id) {
+    return done(
+      'connection-replaced',
+      `the probe frame was written to ${connection.id}, and by the time this check settled ` +
+      `${live.id} was the connection registered for this agent — the bring-up sequence spawns ` +
+      `an MCP server per \`claude\` invocation and the last one wins. Whatever ${connection.id} ` +
+      `did or did not answer is not evidence about ${live.id}, so nothing is concluded about ` +
+      `this agent's channel and it is NOT degraded. Re-activating it runs the check again`,
+      { connectionId: connection.id }
+    );
+  }
 
   if (!ack) {
     return done(
@@ -597,13 +659,71 @@ export class ChannelSelfCheckStore {
   }
 
   /**
-   * Whether this agent has been degraded to the composer by a failed check.
+   * Whether this agent has been degraded to the composer by a failed check
+   * **of the connection it is holding right now**.
    *
    * **`false` for an agent with no record**, which is the whole asymmetry
    * described in this module's header: unchecked is not failed. The gate in
    * `routeChannelMessage` asks exactly this question and no other.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THE LIVE CONNECTION IS A PARAMETER AND NOT AN OPTION (KAN-435)
+   * ---------------------------------------------------------------------------
+   *
+   * **A verdict is about a connection, so this question cannot be answered about
+   * an address alone** — and it was, until this ticket, which is how two agents
+   * came to sit on the composer over channels that were working perfectly.
+   *
+   * {@link releaseConnection} is the only thing that drops a verdict, and it
+   * fires from the socket's `close`. That covers the ordinary order — verdict
+   * first, close later. It cannot cover the reverse: the check takes up to 20
+   * seconds, so a connection that closes *while it runs* is released before
+   * there is anything to release, and the verdict lands afterwards naming a
+   * connection that is already gone. **Nothing else ever looks at it again**, so
+   * it degrades the agent for the life of the daemon.
+   *
+   * Measured on this fleet, 2026-08-15T04:04:29Z — two of eight agents:
+   *
+   * | agent | verdict about | actually holding | pinned for |
+   * | --- | --- | --- | --- |
+   * | `story/KAN-117` | conn-129, closed 20:12:04 | conn-130, live | ~7h52m |
+   * | `task/KAN-441` | conn-176, closed 04:01:07 | conn-178, live | since 04:01 |
+   *
+   * Making the live connection a **required argument** is what stops that coming
+   * back, and it is the reason this is not an optional field with a default: a
+   * caller cannot ask *"is this agent degraded?"* without saying which connection
+   * it means, so a reader that has not got one is a compile error rather than a
+   * silent reintroduction of the address-only question. The same shape as
+   * `ChannelMeta` in channel.ts — the wrong call is not caught, it is not
+   * nameable.
+   *
+   * **`null` keeps the pre-KAN-435 answer, deliberately.** An agent holding no
+   * connection at all is not the case this fixes, and `carrierFor` puts
+   * `degraded` ahead of `registered` on purpose so that an agent which is both
+   * degraded and disconnected reads as degraded — the cause somebody can act on.
+   * Nothing here disturbs that; the new rule bites only when a **different**
+   * connection is live, which is precisely the stale verdict.
    */
-  public degraded(address: AgentAddress): boolean {
-    return this.get(address)?.transport === 'composer';
+  public degraded(address: AgentAddress, liveConnectionId: string | null): boolean {
+    const held = this.get(address);
+    if (held?.transport !== 'composer') return false;
+    // A live connection exists and this verdict is not about it — whether it
+    // named a different one or (for `not-ready`, `no-connection`,
+    // `channel-disabled`) named none at all. In every one of those cases the
+    // verdict has nothing to say about the channel this agent is holding now.
+    //
+    // `typeof === 'string'` RATHER THAN `!== null`, AND IT IS NOT PEDANTRY. The
+    // type makes the argument mandatory for every TypeScript caller; the proofs
+    // under daemon/scripts are JavaScript and import this out of `dist`, where an
+    // omitted argument arrives as `undefined`. Against `!== null` that omission
+    // read as "some other connection is live" and answered **not degraded** — a
+    // fail-open, in the one direction that matters: it would put a genuinely
+    // unproven agent back on the channel silently. `undefined` is not a live
+    // connection id; only a string is, and anything else keeps the conservative
+    // pre-KAN-435 answer.
+    if (typeof liveConnectionId === 'string' && held.connectionId !== liveConnectionId) {
+      return false;
+    }
+    return true;
   }
 }

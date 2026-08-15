@@ -423,18 +423,30 @@ rule('3. The store: a verdict belongs to a connection, not to an address');
 
 const store = new ChannelSelfCheckStore();
 check(store.get(ADDRESS) === undefined, 'an agent nobody checked has no verdict');
-check(store.degraded(ADDRESS) === false, '  …and UNCHECKED IS NOT FAILED — it does not degrade');
+check(
+  store.degraded(ADDRESS, null) === false,
+  '  …and UNCHECKED IS NOT FAILED — it does not degrade'
+);
 
 const failed = (await run({ ack: null })).report;
 store.record(ADDRESS, { ...failed, connectionId: 'conn-OLD' });
-check(store.degraded(ADDRESS) === true, 'a failed verdict degrades the agent');
+// THE LIVE CONNECTION IS NAMED ON EVERY CALL SINCE KAN-435. `degraded` is a
+// question about the connection an agent is holding, so these read
+// "degraded WHILE HOLDING conn-OLD" — which is the case a verdict about
+// conn-OLD is entitled to answer.
+check(store.degraded(ADDRESS, 'conn-OLD') === true, 'a failed verdict degrades the agent');
+check(
+  store.degraded(ADDRESS, 'conn-NEW') === false,
+  '  …and it does NOT degrade an agent that is now holding a DIFFERENT connection',
+  'KAN-435: story/KAN-117 sat on the composer for 7h52m on a verdict about a socket that had closed'
+);
 
 check(
   store.releaseConnection(ADDRESS, 'conn-SOMEONE-ELSE') === false,
   "releasing a DIFFERENT connection leaves the verdict alone",
   'the reconnect case: a close for the old socket must not delete the new verdict'
 );
-check(store.degraded(ADDRESS) === true, '  …the verdict is still there');
+check(store.degraded(ADDRESS, 'conn-OLD') === true, '  …the verdict is still there');
 check(
   store.releaseConnection(ADDRESS, 'conn-OLD') === true,
   'releasing the connection it was measured on drops it'
@@ -452,7 +464,7 @@ const orphan = new ChannelSelfCheckStore();
 const neverConnected = (await run({ connection: null })).report;
 orphan.record(ADDRESS, neverConnected);
 check(
-  neverConnected.connectionId === null && orphan.degraded(ADDRESS) === true,
+  neverConnected.connectionId === null && orphan.degraded(ADDRESS, null) === true,
   'a verdict with NO connection degrades the agent and no release can drop it'
 );
 check(
@@ -467,7 +479,7 @@ check(
 const spellings = new ChannelSelfCheckStore();
 spellings.record({ type: 'Task', key: 'kan-248' }, { ...failed, connectionId: 'c1' });
 check(
-  spellings.degraded({ type: 'task', key: 'KAN-248' }) === true,
+  spellings.degraded({ type: 'task', key: 'KAN-248' }, 'c1') === true,
   'two spellings of one agent are one agent, as everywhere else in the daemon'
 );
 

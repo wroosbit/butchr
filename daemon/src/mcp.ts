@@ -551,8 +551,30 @@ const PROXY_STATUS_TIMEOUT_MS = 3000;
  * ON FAILURE, ADVERTISE NOTHING. A daemon that cannot be asked is not a daemon
  * that said yes, and the safe direction here is the same one
  * `selectedProxyMode` takes for an unreadable value.
+ *
+ * ⚠ THAT RATIONALE STANDS AND KAN-441 DID NOT WEAKEN IT — the fix went the
+ * other way. Advertising operations you cannot deliver is worse than
+ * advertising none, so both non-serving outcomes still carry an EMPTY list,
+ * and the type says so: `readonly []` on each, which makes "advertise
+ * something on failure" un-writable rather than merely discouraged. What
+ * changed is that the two are no longer the SAME VALUE. `off` and
+ * `unreachable` are separate variants carrying separate evidence, so a caller
+ * that wants to tell "correctly off" from "the daemon is down" reads
+ * `outcome` — a question the byte-identical empty list it advertises could
+ * never answer. See `butchr_atlassian_proxy_status`, which is where an
+ * ordinary agent reads it.
  */
-async function proxiedOperations(): Promise<ReturnType<typeof operationsFor>> {
+type ProxyAdvertisement =
+  | {
+      outcome: 'serving';
+      mode: ProxyMode;
+      operations: ReturnType<typeof operationsFor>;
+      status: any;
+    }
+  | { outcome: 'off'; operations: readonly []; status: any }
+  | { outcome: 'unreachable'; because: string; operations: readonly [] };
+
+async function proxiedOperations(): Promise<ProxyAdvertisement> {
   try {
     const res: any = await Promise.race([
       callDaemonAPI('atlassian_proxy_status'),
@@ -564,17 +586,34 @@ async function proxiedOperations(): Promise<ReturnType<typeof operationsFor>> {
       )
     ]);
     const mode: ProxyMode | undefined = res?.report?.mode;
-    if (res?.success !== true || !mode || mode === 'off') return [];
-    return operationsFor(mode);
+    // A daemon that answered `success: false`, or answered without a mode, has
+    // not said yes either — it is asked-and-unusable rather than switched off,
+    // so it lands in `unreachable` with what it actually said.
+    if (res?.success !== true || !mode) {
+      return {
+        outcome: 'unreachable',
+        because:
+          'the daemon answered but named no usable proxy mode' +
+          (typeof res?.error === 'string' ? `: ${res.error}` : ''),
+        operations: []
+      };
+    }
+    if (mode === 'off') return { outcome: 'off', operations: [], status: res };
+    return { outcome: 'serving', mode, operations: operationsFor(mode), status: res };
   } catch (err: any) {
     // Said on stderr rather than swallowed, for `hello_response`'s reason: an
     // agent silently missing tools it was meant to have is the failure that
     // takes longest to notice.
+    //
+    // ⚠ AND STDERR IS EXACTLY WHY THIS WAS NOT ENOUGH. It reaches the client's
+    // log, not the agent's context, so the agent whose tools went missing is
+    // the one reader who cannot see this line. That is the half
+    // `butchr_atlassian_proxy_status` closes.
     console.error(
       `Atlassian proxy tools not offered: ${err?.message ?? String(err)}. ` +
         "This agent's own Atlassian MCP session is unaffected."
     );
-    return [];
+    return { outcome: 'unreachable', because: err?.message ?? String(err), operations: [] };
   }
 }
 
@@ -637,7 +676,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
   return {
     tools: [
-      ...proxied.map((op) => ({
+      ...proxied.operations.map((op) => ({
         name: op.tool,
         description: op.description,
         inputSchema: op.inputSchema
@@ -647,6 +686,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: op.description,
         inputSchema: op.inputSchema
       })),
+      // ⚠ ADVERTISED UNCONDITIONALLY, AND THAT IS THE WHOLE POINT (KAN-441).
+      // It sits OUTSIDE the `proxied.operations` spread above, so its presence
+      // is constant and is evidence of NOTHING about the mode — which is what
+      // lets its *answer* be evidence. A tool that appeared only when the proxy
+      // was on would be one more thing whose absence means both "off" and
+      // "broken", which is the defect rather than the fix.
+      {
+        name: "butchr_atlassian_proxy_status",
+        description:
+          "Reports whether the daemon-side Atlassian proxy is serving, switched off, or could not be asked at all — the question an empty tool list CANNOT answer. READ `outcome` RATHER THAN COUNTING YOUR TOOLS: `serving` means the proxy is on and the `atlassian_*` tools in your list are real; `off` means the daemon was reached and said the switch is off, which is the ordinary default and NOT a fault; `unreachable` means the daemon could not be asked or gave no usable answer, and `because` carries what went wrong. THE FIRST TWO ARE INDISTINGUISHABLE FROM YOUR TOOL LIST and always will be: the proxy deliberately advertises nothing when it cannot deliver, because advertising tools that will refuse is worse than advertising none, so an empty `atlassian_*` menu means `off` AND `unreachable` alike. That is why this tool exists. ⚠ `outcome: 'off'` IS NOT A FAILURE and needs no action — every agent still has its own Atlassian MCP session and nothing about the off state is a degradation. `unreachable` IS worth acting on: your Atlassian tools are missing for a reason nobody chose. ALSO READ `credential.configured` WHEN PRESENT: it says a token is on that machine, NOT that Atlassian still accepts it — only a call establishes the second, and none is made while the proxy is off. `available: false` is a third thing again: the daemon answered but has no Jira service at all, so it could proxy nothing however the switch is set.",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          required: []
+        }
+      },
       {
         name: "butchr_capacity",
         description:
@@ -810,7 +865,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_agent_status",
         description:
-          "Reports an agent's full state: session id, workspace type and key, url, creation time, session status, working directory, and herdr's own view of what the agent is doing. If the daemon has restarted and lost its session, the herdr-only fields are still returned with sessionless: true.",
+          "Reports an agent's full state: session id, workspace type and key, url, creation time, session status, working directory, and herdr's own view of what the agent is doing. If the daemon has restarted and lost its session, the herdr-only fields are still returned with sessionless: true. IT ALSO CARRIES `channel`, THE SAME BLOCK butchr_list_agents PUTS ON A ROW, AND BEFORE KAN-435 IT DID NOT — the key was absent for every agent in every state, including agents with a live channel and a millisecond round trip, which was read as `this agent has no channel` and filed as a defect on two agents that were both fine. READ `channel.transport` BEFORE SENDING: `channel` means a send costs the recipient nothing, `composer` means it begins with a Ctrl+C that destroys the tool call in flight, and `unregistered` means a steer is refused rather than delivered. A FRESH AGENT IS NOT A CHANNEL-LESS ONE: registration takes about twelve seconds from spawn while the client answers its startup dialogs, so a missing or `unregistered` carrier in an agent's first seconds clears by itself and waiting costs less than the interrupt does.",
         inputSchema: {
           type: "object",
           properties: {
@@ -941,6 +996,59 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // remove, and an empty flag list that is really a dead credential is
         // exactly the shape it takes here.
         isError: res?.success === false,
+      };
+    }
+
+    // KAN-441. Answers the question the tool list cannot: is the proxy off, or
+    // is the daemon simply not answering?
+    //
+    // ⚠ ONE ROUND TRIP, NOT TWO, AND THE TYPE IS WHY. `proxiedOperations()`
+    // already asked the daemon, so its answer is carried on the advertisement
+    // and reported from there. A second, independent call could reach a daemon
+    // in a different state from the one that built the menu, and this tool
+    // would then describe a world the agent's tool list did not come from — the
+    // same two-readings-of-one-switch mistake `proxiedOperations`' own header
+    // warns about.
+    //
+    // ⚠ AND THE `unreachable` VARIANT DELIBERATELY CARRIES NO `status` AT ALL.
+    // That is not tidiness: it makes "report a daemon's answer when no daemon
+    // answered" un-writable rather than merely wrong. The first draft did fetch
+    // a second time, guarded by an `outcome` check — and a mutation that
+    // collapsed `unreachable` into `off` sent it to `await` a daemon that was
+    // wedged, where it hung for the full 30s `callDaemonAPI` timeout instead of
+    // failing. The field being absent from the variant is what removes that
+    // whole class; a guard I have to remember to write is not.
+    if (name === "butchr_atlassian_proxy_status") {
+      const advertised = await proxiedOperations();
+      const status: any = advertised.outcome === 'unreachable' ? null : advertised.status;
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                outcome: advertised.outcome,
+                ...(advertised.outcome === 'unreachable'
+                  ? { because: advertised.because }
+                  : {}),
+                ...(advertised.outcome === 'serving' ? { mode: advertised.mode } : {}),
+                toolsAdvertised: advertised.operations.map((op) => op.tool),
+                // Stated rather than left to be inferred from an empty list,
+                // because inferring it from an empty list is the defect.
+                whatAnEmptyToolListMeans:
+                  "both 'off' and 'unreachable' — read `outcome`, not your tool list",
+                ...(status?.success === true
+                  ? { available: status.available, report: status.report }
+                  : {})
+              },
+              null,
+              2
+            )
+          }
+        ],
+        // `off` is not an error — it is the default and nothing is wrong. Only
+        // a daemon that could not be asked is.
+        isError: advertised.outcome === 'unreachable',
       };
     }
 

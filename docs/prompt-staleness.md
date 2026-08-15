@@ -188,3 +188,18 @@ a real interaction worth stating: **the daemon's own checkout can be behind
 `origin/main`**, so a brief rendered one second ago can still carry a superseded
 rule. That is why the check in the block compares against `origin/main` and not
 against the local `main` the brief was rendered from.
+
+**That paragraph described an open defect, and KAN-442 closed it** — see
+`docs/shared-clone-currency.md`. The checkout could be behind because nothing
+advances the shared clone's `main` and nothing should; measured, it was 22
+commits behind on 2026-08-14 and `[behind 7]` again six hours after being
+repaired by hand. Templates are now read at `origin/main` with `git show`, which
+opens no working tree and takes no lock, so the drift no longer reaches a brief.
+
+**Nothing above this paragraph changes.** The brief is still a snapshot, still
+rendered once at activation, and still unreachable in a running agent's context
+— KAN-442 moved *what the snapshot is taken of*, not whether it is one. The
+stamp, the two commands and the honest-silence rule are untouched. What changed
+for a reader is that the check they carry now usually comes back **empty**, and
+the block names which source it actually used so that a fallback to the working
+tree cannot pass itself off as the ref.
