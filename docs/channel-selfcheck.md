@@ -125,11 +125,37 @@ with a probe run and a document to point at, not because the fleet upgraded.
 | `not-ready` | **composer** | T3's watcher never reached `ready`, so there was no loop to test. |
 | `channel-disabled` | **composer** | Emission was switched off before the check ran. |
 | `no-connection` | **composer** | Nothing to write the probe frame to. |
+| `connection-replaced` | channel | The connection under test was replaced **twice**, once under each attempt. Nothing was measured, and nothing is concluded. See below. |
 | *(absent)* | channel | **`unchecked`** — nobody has checked. Not a fault. See below. |
 
 Every outcome that learned a client version carries it, **including the
 failures**: a `no-answer` on an unmeasured client is a different investigation
 from the same failure on a measured one.
+
+### A replaced connection is re-run once, and `connection-replaced` is what is left
+
+Bring-up registers **more than one MCP server** — `claude --continue || claude`
+spawns one per invocation, and the last one wins — so an agent's connection can
+be replaced while its self-check is still waiting, for up to the full 20-second
+ack timeout. Two of eight live agents were measured in that state on 2026-08-15.
+
+**KAN-435** stopped that degrading anybody: the check asks, before it interprets
+its answer, whether a *different* connection is now registered, and if so
+declines to conclude anything. **KAN-450** stopped it leaving the agent unproved
+forever: a swap is **re-run once**, against the connection that replaced it.
+
+| | |
+|---|---|
+| **When it re-runs** | Only for `connection-replaced`. Every other outcome is a reading of the connection the agent is holding, and re-asking a wedged server the same question is patience rather than evidence. |
+| **How many times** | Once. The second attempt calls a function with **no retry path in it**, so a third attempt is not something a number can be adjusted to produce. `attempts` on the row is typed `1 \| 2`. |
+| **What is left** | `connection-replaced` now means the connection was replaced under **both** attempts — rarer, and more interesting. It stays reachable on purpose: a state nothing can reach is a state nobody maintains. |
+| **What it costs** | One extra probe frame and one extra ack — **~0.1 ms** over a Unix socket, beside the 20 s the first attempt already spent timing out. Worst case is a replacement that also never answers: **~40 s rather than ~20 s**, off the critical path. |
+| **What the delay delays** | The **verdict**, never the routing. An agent with no verdict is `unchecked`, and unchecked routes. |
+| **What you see** | `attempts: 2` on the `butchr_list_agents` row, the two connection ids in `detail`, and `attempt N/2` on each `[ChannelSelfCheck]` log line. |
+
+Proof: `daemon/scripts/verify-selfcheck-rechecks-replaced-connection.mjs`. Its §2
+is the control for the **bound** rather than for the retry — a world that swaps on
+every resolve must terminate, and must still report `connection-replaced`.
 
 ### Unchecked is not failed
 

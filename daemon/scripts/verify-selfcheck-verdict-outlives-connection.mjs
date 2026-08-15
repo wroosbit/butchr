@@ -225,9 +225,18 @@ rule('1. The check notices that its subject was replaced, and does not blame the
 
 /**
  * Drive the SHIPPED check against a world whose connection changes underneath
- * it. `resolveConnection` answers conn-A up to and including the write, and
- * conn-B afterwards — which is the ordering the daemon log shows, expressed as
- * an ordering rather than as a race.
+ * it. `resolveConnection` answers the current generation up to and including the
+ * write, and the next one afterwards — which is the ordering the daemon log
+ * shows, expressed as an ordering rather than as a race.
+ *
+ * THE GENERATION ADVANCES ON EVERY ATTEMPT, AND SINCE KAN-450 IT HAS TO. Until
+ * then this check was single-shot, so one swap was enough to reach
+ * `connection-replaced` and the world could settle on conn-B afterwards. A swap
+ * is now re-run once against its replacement, so a world that swaps and then
+ * settles resolves to a verdict about conn-B — correctly, and it is what
+ * `verify-selfcheck-rechecks-replaced-connection.mjs` §1 asserts. Reaching this
+ * outcome at all therefore needs the ceiling case: a connection replaced under
+ * BOTH attempts, which is the state this outcome now names.
  */
 async function runWithSwap({ swap, ack = null }) {
   const logLines = [];
@@ -236,9 +245,10 @@ async function runWithSwap({ swap, ack = null }) {
   // counting calls encodes today's call sequence instead, and would go quietly
   // green — or quietly red — the next time a line is added ahead of the await.
   // The first draft counted, put the swap one call too late, and reported no
-  // swap at all.
-  let waiting = false;
-  const resolve = () => ({ id: swap && waiting ? 'conn-B' : 'conn-A' });
+  // swap at all. `armed` counts attempts-that-have-started-waiting, which is the
+  // same phase one level up now that there can be two attempts.
+  let armed = 0;
+  const resolve = () => ({ id: `conn-${String.fromCharCode(65 + (swap ? armed : 0))}` });
   const report = await runChannelSelfCheck({
     address: ADDRESS,
     ackTimeoutMs: 1,
@@ -248,7 +258,7 @@ async function runWithSwap({ swap, ack = null }) {
       expectAck: async () => {
         // Everything from here on is after the probe went out, which is exactly
         // the window daemon.log shows the real connection closing in.
-        waiting = true;
+        armed += 1;
         return ack;
       },
       // Re-resolves, as the production `writeProbe` does.
@@ -277,9 +287,9 @@ check(
   `proved=${swapped.report.proved}`
 );
 check(
-  swapped.report.connectionId === 'conn-A' &&
-    swapped.report.detail.includes('conn-A') &&
-    swapped.report.detail.includes('conn-B'),
+  swapped.report.connectionId === 'conn-B' &&
+    swapped.report.detail.includes('conn-B') &&
+    swapped.report.detail.includes('conn-C'),
   '  …and it names BOTH connections, so a reader can see the swap',
   swapped.report.detail.slice(0, 90) + '…'
 );
