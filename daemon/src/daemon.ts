@@ -416,17 +416,21 @@ const channelLiveness = new ChannelLivenessProbe({
     emissionEnabled: () => channelEmissionEnabled(),
     candidates: () =>
       agentConnections.addresses().flatMap((address) => {
-        // A degraded agent is excluded because it is ON THE COMPOSER: the gate
-        // would refuse its frame, and asking anyway would spend a run to learn
-        // something `list_agents` already says. This is a reader of the same
-        // verdict `routeChannelMessage` consults, not a second opinion on it.
-        if (channelSelfChecks.degraded(address)) return [];
         // `addresses()` only returns agents that resolve, so this cannot be
         // undefined — it is asked anyway because the connection ID is what a
         // reader matches this run against in the daemon log, and inventing one
         // would be worse than dropping the candidate.
+        //
+        // RESOLVED FIRST, because `degraded` is a question about this connection
+        // (KAN-435): a verdict left behind by a connection that has since been
+        // replaced must not exclude an agent whose channel is working.
         const conn = agentConnections.resolve(address);
         if (!conn) return [];
+        // A degraded agent is excluded because it is ON THE COMPOSER: the gate
+        // would refuse its frame, and asking anyway would spend a run to learn
+        // something `list_agents` already says. This is a reader of the same
+        // verdict `routeChannelMessage` consults, not a second opinion on it.
+        if (channelSelfChecks.degraded(address, conn.id)) return [];
         const report = channelSelfChecks.get(address);
         return [{
           address,
@@ -1035,14 +1039,24 @@ const server = net.createServer((socket) => {
       // KAN-274. The row and the route ask the same function, so a row cannot
       // report a carrier the next send will not take — which is what it did for
       // every agent that outlived a daemon restart.
-      channelCarrier: (address, degraded) =>
-        carrierFor({
+      //
+      // AND THE ROUTER NO LONGER PASSES A DEGRADATION IN (KAN-435). It used to
+      // hand one over, derived from `report.transport === 'composer'` — a second
+      // answer to a question the store owns, and after this ticket a *wrong* one,
+      // since whether a verdict degrades depends on which connection is live and
+      // the router has never known what a connection is. The parameter is gone
+      // rather than ignored, so a listing cannot express a degradation opinion at
+      // all. One resolve serves both fields, so the two cannot disagree either.
+      channelCarrier: (address) => {
+        const conn = agentConnections.resolve(address);
+        return carrierFor({
           emissionEnabled: channelEmissionEnabled(),
-          degraded,
-          registered: agentConnections.resolve(address) !== undefined,
+          degraded: channelSelfChecks.degraded(address, conn?.id ?? null),
+          registered: conn !== undefined,
           managed: isManagedAgent(address),
           switchPath: CHANNEL_SWITCH_PATH
-        }),
+        });
+      },
       // What each agent's startup self-check found, for `list_agents` (KAN-248).
       // A reader rather than the store, for the same reason `channelRoute` is a
       // closure: the router does not learn what a connection is.

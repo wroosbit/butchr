@@ -558,7 +558,13 @@ check(connections.addresses().length === 2,
   'both agents are in the identity map',
   connections.addresses().map((a) => `${a.type}/${a.key}`).join(', '));
 
-const eligible = connections.addresses().filter((a) => !selfChecks.degraded(a));
+// THE CONNECTION IS RESOLVED FIRST AND NAMED IN THE CALL, exactly as daemon.ts's
+// candidate list does since KAN-435: `degraded` is a question about the
+// connection an agent is holding, and asking it about an address alone is what
+// left two agents on the composer over channels that were working.
+const eligible = connections
+  .addresses()
+  .filter((a) => !selfChecks.degraded(a, connections.resolve(a)?.id ?? null));
 check(eligible.length === 1 && eligible[0].key === ADDRESS.key,
   'the agent degraded to the composer by its startup self-check is not asked',
   eligible.map((a) => `${a.type}/${a.key}`).join(', ') || '(none)');
