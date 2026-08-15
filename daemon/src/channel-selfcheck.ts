@@ -201,7 +201,7 @@ export type SelfCheckOutcome =
    * connection swap on our own side. Live, 2026-08-15: `task/KAN-441` ready on
    * `conn-176` at 04:01:07.360, `conn-176` closed at 04:01:07.412, `conn-178`
    * registered at 04:01:07.792, `no-answer → composer` recorded at 04:01:27.360.
-   * `story/KAN-117` took the same path 3h52m earlier and sat on the composer for
+   * `story/KAN-117` took the same path 7h49m earlier and sat on the composer for
    * every minute since, holding a live channel the whole time.
    */
   | 'connection-replaced'
@@ -686,7 +686,7 @@ export class ChannelSelfCheckStore {
    *
    * | agent | verdict about | actually holding | pinned for |
    * | --- | --- | --- | --- |
-   * | `story/KAN-117` | conn-129, closed 20:12:04 | conn-130, live | ~3h52m |
+   * | `story/KAN-117` | conn-129, closed 20:12:04 | conn-130, live | ~7h52m |
    * | `task/KAN-441` | conn-176, closed 04:01:07 | conn-178, live | since 04:01 |
    *
    * Making the live connection a **required argument** is what stops that coming

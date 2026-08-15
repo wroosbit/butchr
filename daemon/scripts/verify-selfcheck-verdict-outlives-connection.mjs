@@ -28,7 +28,7 @@
 //   afterwards naming a socket that is already gone. Nothing looks at it again.
 //
 // MEASURED ON THE LIVE FLEET, from ~/.local/share/butchr/daemon.log. Two agents,
-// same mechanism, ~4 hours apart, neither involving a daemon restart:
+// same mechanism, ~8 hours apart, neither involving a daemon restart:
 //
 //   04:01:07.360Z  [ChannelStartup] task/KAN-441: ready (connection conn-176)
 //   04:01:07.412Z  Client disconnected — task/KAN-441 unregistered (conn-176)
@@ -42,7 +42,7 @@
 //   20:12:06.534Z  Connection conn-130 is story/KAN-117         <- the real one
 //   20:12:24.068Z  [ChannelSelfCheck] story/KAN-117: no-answer -> composer
 //
-// At 04:04:29Z, `story/KAN-117` had been on the composer for 3h52m while holding
+// At 04:04:29Z, `story/KAN-117` had been on the composer for 7h52m while holding
 // conn-130, and `task/KAN-441` since 04:01 while holding conn-178. Two of the
 // eight agents on the board.
 //

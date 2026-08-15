@@ -438,7 +438,7 @@ check(store.degraded(ADDRESS, 'conn-OLD') === true, 'a failed verdict degrades t
 check(
   store.degraded(ADDRESS, 'conn-NEW') === false,
   '  …and it does NOT degrade an agent that is now holding a DIFFERENT connection',
-  'KAN-435: story/KAN-117 sat on the composer for 3h52m on a verdict about a socket that had closed'
+  'KAN-435: story/KAN-117 sat on the composer for 7h52m on a verdict about a socket that had closed'
 );
 
 check(

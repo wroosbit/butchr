@@ -643,7 +643,7 @@ not before.** A self-check verdict is about the one connection it measured, and
 bring-up registers more than one — `claude --continue || claude` spawns an MCP
 server per invocation. A connection that closed while its check was still running
 used to leave a `no-answer` verdict pinned to the agent for the life of the
-daemon: `story/KAN-117` spent 3h52m on the composer holding a channel that worked
+daemon: `story/KAN-117` spent 7h52m on the composer holding a channel that worked
 throughout, and every steer at it took a Ctrl+C. Since KAN-435 a verdict is
 consulted only about the connection the agent is holding now, and a replacement
 is reported as `connection-replaced` rather than as the recipient's fault.
