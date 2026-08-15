@@ -39,12 +39,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 89 |
-| `partial` | 8 |
+| `partial` | 9 |
 | `quarantined` | 3 |
 | `no` | 19 |
-| **total** | **119** |
+| **total** | **120** |
 
-**97 of 119** run on every pull request.
+**98 of 120** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -151,6 +151,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
 | `verify-pty-init-rejects-unknown-session` | partial | the rejection path asserts in CI. The regression stage needs herdr to start a real agent and prints `SKIPPED: no herdr to start an agent with` instead. |
+| `verify-shared-clone-is-not-grafted` | partial | sections 1 and 2 build their own git repositories in a temp dir and need nothing but `git`, node and a built `dist`, so they assert in full on a runner. Section 3 classifies the real shared clone at ~/code/wroosbit/butchr, which no CI runner has; it skips loudly and does not fail, and it is the only section that observes a clone this script did not create. |
 | `verify-supervisor-cost-exclusion` | partial | the exclusion arithmetic asserts in CI. Section 5 needs a running fleet and is skipped without one — the header already said so before this partition existed. |
 
 ## `quarantined` — CI-runnable but currently RED — excluded loudly, with a reason and a ticket

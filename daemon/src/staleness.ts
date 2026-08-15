@@ -387,6 +387,54 @@ function describeInputs(spec: BuildInputs, classified: ClassifiedEntries): strin
 // --- the three (and a half) checks ------------------------------------------
 
 /**
+ * How this checkout stands to its remote — a shape, not a pair of integers.
+ *
+ * KAN-437 is what two loose numbers cost. The report named `behind`, said
+ * nothing about `ahead`, and prescribed `pull --ff-only` — a fast-forward that
+ * was not available, against a clone that was not behind in the way the number
+ * implied. A reader acts on the number they are given.
+ *
+ * As a union, every relation that needs a *different* remedy is its own kind,
+ * and the remedy is chosen per kind rather than printed unconditionally. Adding
+ * a kind without handling it makes the `level` narrowing below fail to compile,
+ * so "forgot one" surfaces as a build error instead of as confident wrong
+ * advice.
+ */
+export type RemoteRelation =
+  /** The object graph is truncated: no count here means what it appears to. */
+  | { kind: 'shallow'; ahead: number; behind: number }
+  /** Local commits the remote lacks *and* remote commits this clone lacks. */
+  | { kind: 'diverged'; ahead: number; behind: number }
+  /** Strictly behind — a fast-forward is genuinely available. */
+  | { kind: 'behind'; behind: number }
+  /** Nothing to fetch. `ahead` may still be non-zero: unpushed local work. */
+  | { kind: 'level'; ahead: number };
+
+/**
+ * Shallowness is asked *first*, and that order is the whole point.
+ *
+ * On a grafted clone `ahead` and `behind` are not divergence counts at all —
+ * they are the sizes of each ref's whole *visible* history, because the shared
+ * ancestry sits outside the graft horizon. KAN-437's clone reported
+ * `[ahead 179, behind 4]` while being 22 behind and 0 ahead. Reading those
+ * numbers before establishing the graph is intact is reading noise.
+ */
+export function classifyRemoteRelation(repoRoot: string, remoteRef: string): RemoteRelation | null {
+  const counts = git(repoRoot, ['rev-list', '--left-right', '--count', `HEAD...${remoteRef}`]);
+  const parts = counts ? counts.split(/\s+/).map(Number) : [];
+  const ahead = parts[0];
+  const behind = parts[1];
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return null;
+
+  if (git(repoRoot, ['rev-parse', '--is-shallow-repository']) === 'true') {
+    return { kind: 'shallow', ahead, behind };
+  }
+  if (ahead > 0 && behind > 0) return { kind: 'diverged', ahead, behind };
+  if (behind > 0) return { kind: 'behind', behind };
+  return { kind: 'level', ahead };
+}
+
+/**
  * Local `HEAD` against the last-known `origin/main`.
  *
  * No network. The remote ref is whatever the last `git fetch` left behind, and
@@ -469,11 +517,8 @@ function checkGit(repoRoot: string, now: number): StalenessItem {
     };
   }
 
-  const counts = git(repoRoot, ['rev-list', '--left-right', '--count', `HEAD...${remoteRef}`]);
-  const parts = counts ? counts.split(/\s+/).map(Number) : [];
-  const ahead = parts[0];
-  const behind = parts[1];
-  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
+  const relation = classifyRemoteRelation(repoRoot, remoteRef);
+  if (!relation) {
     return {
       ...base,
       state: 'unknown',
@@ -482,18 +527,60 @@ function checkGit(repoRoot: string, now: number): StalenessItem {
     };
   }
 
-  if (behind > 0) {
+  // A graft makes every other number on this item meaningless, so it is
+  // reported as the finding rather than folded into a commit count. It alarms:
+  // a truncated clone silently serves stale files to everything reading them,
+  // and `pull --ff-only` cannot repair it.
+  if (relation.kind === 'shallow') {
     return {
       ...base,
       state: 'stale',
-      headline: `${defaultBranch} is ${behind} commit${behind === 1 ? '' : 's'} behind ${remoteRef}`,
+      headline: `${defaultBranch} is in a SHALLOW clone — its relation to ${remoteRef} cannot be measured`,
       detail:
-        `HEAD is ${head}, ${remoteRef} is ${remoteHead}: ${behind} commit${behind === 1 ? '' : 's'} merged that ` +
-        `this checkout does not have${ahead > 0 ? `, and ${ahead} local commit${ahead === 1 ? '' : 's'} it does not know about` : ''}. ` +
+        `\`git rev-parse --is-shallow-repository\` is true, so this clone's history is truncated at a graft ` +
+        `point and the shared ancestry with ${remoteRef} may sit outside it. The raw counts here ` +
+        `(${relation.ahead} ahead, ${relation.behind} behind) are the sizes of each ref's *visible* history, not a measure of ` +
+        `divergence — KAN-437's clone read [ahead 179, behind 4] while being 22 behind and 0 ahead. ` +
+        `Restore the history before trusting any comparison, including this one. ${provenance}.`,
+      remedy: `git -C ${repoRoot} fetch --unshallow origin`
+    };
+  }
+
+  // Diverged is not "behind with an extra number". The fast-forward that
+  // `behind` implies does not exist here, so the remedy must not be one.
+  if (relation.kind === 'diverged') {
+    return {
+      ...base,
+      state: 'stale',
+      headline:
+        `${defaultBranch} has DIVERGED from ${remoteRef} — ` +
+        `${relation.ahead} ahead, ${relation.behind} behind`,
+      detail:
+        `HEAD is ${head}, ${remoteRef} is ${remoteHead}. This checkout has ${relation.ahead} local ` +
+        `commit${relation.ahead === 1 ? '' : 's'} the remote does not have, and is missing ${relation.behind} ` +
+        `that it does. **\`pull --ff-only\` will fail here** — there is no fast-forward to take. Inspect the ` +
+        `local commits before deciding whether to rebase, reset or push them. ${provenance}.`,
+      remedy: `git -C ${repoRoot} log --oneline ${remoteRef}..HEAD`
+    };
+  }
+
+  if (relation.kind === 'behind') {
+    return {
+      ...base,
+      state: 'stale',
+      headline: `${defaultBranch} is ${relation.behind} commit${relation.behind === 1 ? '' : 's'} behind ${remoteRef}`,
+      detail:
+        `HEAD is ${head}, ${remoteRef} is ${remoteHead}: ${relation.behind} commit${relation.behind === 1 ? '' : 's'} merged that ` +
+        `this checkout does not have, and nothing local it does not know about — so a fast-forward is available. ` +
         `Anything built here predates ${remoteHead}. ${provenance}.`,
       remedy: `git -C ${repoRoot} pull --ff-only`
     };
   }
+
+  // `relation` is narrowed to `level` here. A new kind added to RemoteRelation
+  // without a branch above breaks this line rather than falling through to a
+  // freshness claim it has not earned.
+  const unpushed: number = relation.ahead;
 
   // Level with what we know — but if that knowledge is old, say so instead of
   // asserting freshness we cannot support. `unknown`, not `stale`: nothing here
@@ -516,7 +603,7 @@ function checkGit(repoRoot: string, now: number): StalenessItem {
     headline: `${defaultBranch} is level with ${remoteRef}`,
     detail:
       `HEAD is ${head}, the same commit as ${remoteRef}` +
-      `${ahead > 0 ? ` (plus ${ahead} unpushed local commit${ahead === 1 ? '' : 's'})` : ''}. ${provenance}.`
+      `${unpushed > 0 ? ` (plus ${unpushed} unpushed local commit${unpushed === 1 ? '' : 's'})` : ''}. ${provenance}.`
   };
 }
 
