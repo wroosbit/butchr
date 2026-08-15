@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 97 |
+| `yes` | 98 |
 | `partial` | 10 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **132** |
+| **total** | **133** |
 
-**107 of 132** run on every pull request.
+**108 of 133** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -93,6 +93,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-dep-linking-covers-every-repo-shape` | yes | builds every fixture in a temporary directory, runs `npm ci` only against a hand-written zero-dependency lockfile (no network), and reads `prompts/task.md` off the checkout. Node builtins plus `npm` and `cp`. |
 | `verify-diagnostic-evidence-visible` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no network, no terminal. Section 5 additionally shells out to the repo's own `tsc`, as verify-absence-is-not-intent.mjs §5 does. |
 | `verify-doc-constant-pins` | yes | reads `docs/*.md` and `daemon/src/*.ts` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
+| `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-idle-fleet-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Section 1 reads this machine's real /proc for its machine facts and says so. |
