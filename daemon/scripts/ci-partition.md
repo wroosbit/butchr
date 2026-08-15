@@ -41,10 +41,10 @@ classification is the deliverable and the CI job is downstream of it.
 | `yes` | 96 |
 | `partial` | 10 |
 | `quarantined` | 3 |
-| `no` | 21 |
-| **total** | **130** |
+| `no` | 22 |
+| **total** | **131** |
 
-**106 of 130** run on every pull request.
+**106 of 131** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -182,6 +182,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-confirm-present-name-join` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET` (or the default socket path) and it spawns a real `claude` agent. It attempts nothing without one. Its output goes on the pull request. |
 | `verify-crabcast-peer-restart-live` | no | needs the `crabcast` binary, a real herdr and a real pty. It asserts nothing without them. |
 | `verify-crabcast-reconnect-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`, a real herdr and a real pty; it attempts nothing without one. |
+| `verify-crabcast-rude-death-live` | no | needs the `crabcast` binary on PATH. Every setup failure prints "setup:" and asserts nothing; none may be read as a red against KAN-456. |
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-crabcast-second-activation-resumes` | no | needs a real CrabCast daemon, real capacity for one agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
