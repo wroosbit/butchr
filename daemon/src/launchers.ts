@@ -8,6 +8,7 @@ import { McpServerDefinitions } from './integrations/integration.js';
 // exists only in the type graph, where TypeScript resolves it.
 import type { WorkspaceMcpServers } from './agent-runtime.js';
 import { channelEmissionEnabled, CHANNEL_SWITCH_PATH } from './channel.js';
+import { WORKSPACE_MCP_CONFIG } from './workspace-dir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -226,7 +227,7 @@ export function unusableMcpServers(defs: McpServerDefinitions): Array<[string, s
 export function writeWorkspaceMcpConfig(workDir: string, defs: McpServerDefinitions): void {
   if (Object.keys(defs).length === 0) return;
 
-  const configPath = path.join(workDir, '.mcp.json');
+  const configPath = path.join(workDir, WORKSPACE_MCP_CONFIG);
   let config: any = {};
   if (fs.existsSync(configPath)) {
     try {

@@ -66,6 +66,18 @@ import * as path from 'path';
  */
 
 /**
+ * The file Claude Code reads its MCP servers from, and — in CrabCast's own
+ * words at the pin — *"from nowhere else"*.
+ *
+ * Declared in this leaf module and imported by both writers (`launchers.ts` for
+ * the herdr path, and the residue clearance below for the CrabCast one) so the
+ * name has exactly one spelling. Two writers reaching a caller-owned file by
+ * two string literals is a drift nobody would notice until the day one of them
+ * stopped matching.
+ */
+export const WORKSPACE_MCP_CONFIG = '.mcp.json';
+
+/**
  * The one directory tree Butchr owns and may therefore destroy. Every
  * workspace is created under it (see `initPty`, and `spawnSession` in
  * `crabcast-runtime.ts`), and reset refuses to delete anything that does not
@@ -234,4 +246,168 @@ export function deleteWorkspaceDir(type: string, key: string): { success: boolea
     console.error('[workspace-dir]', error);
     return { success: false, error };
   }
+}
+
+/**
+ * Own-property test that ignores the prototype chain, for a map whose keys are
+ * caller-controlled.
+ *
+ * `servers['toString']` on a `JSON.parse` result inherits a function from
+ * `Object.prototype`, so a plain truthiness test answers "present" for a key
+ * nobody wrote and "present" for `constructor`, `valueOf` and `__proto__` too.
+ * CrabCast hit exactly this in `provisionMcpConfig` and records it as *"the
+ * second bug of the prototype family"* — theirs failed toward clobbering the
+ * caller's file; the same idiom here would fail toward removing a key we do not
+ * own. Same guard, same reason, arrived at from their write-up rather than
+ * independently.
+ */
+function ownKey(map: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(map, key);
+}
+
+/**
+ * What {@link clearWorkspaceMcpResidue} found and did. Every outcome is
+ * distinguishable, deliberately: the caller logs this into `daemon.log`, and
+ * "we removed nothing" and "there was nothing to remove" are different facts
+ * about a cutover that four attempts failed on.
+ */
+export type McpResidueClearance =
+  /** No workspace directory, or no `.mcp.json` in it. Nothing to do. */
+  | { readonly outcome: 'absent' }
+  /** The file is there and holds none of the names asked about. */
+  | { readonly outcome: 'nothing-of-ours'; readonly present: readonly string[] }
+  /** Keys were removed and the file rewritten. */
+  | {
+      readonly outcome: 'cleared';
+      readonly removed: readonly string[];
+      readonly kept: readonly string[];
+    }
+  /** Left strictly alone, and why. Never a silent skip. */
+  | { readonly outcome: 'refused'; readonly reason: string };
+
+/**
+ * Remove Butchr's **own** MCP server entries from a workspace's `.mcp.json`,
+ * leaving everything else in the file exactly as it was (KAN-474).
+ *
+ * ## The defect this exists for
+ *
+ * CrabCast refuses to activate an agent whose `.mcp.json` already defines a
+ * server it is being asked to write and has no record of writing —
+ * `provisionMcpConfig`, refusal 2 at the pinned commit: *"they are the
+ * caller's, and they are not ours to take over. NOTHING WAS WRITTEN and nothing
+ * was started."* Measured on 2026-08-15 across four human-driven cutover
+ * attempts: **36 spawn failures, 0 activations**, every one this refusal.
+ *
+ * **The colliding entries are Butchr's, and they are residue.** Under herdr,
+ * `writeWorkspaceMcpConfig` rewrites `.mcp.json` on *every* activation; the
+ * file it leaves behind outlives the runtime that wrote it, because a workspace
+ * directory is not reset between runtimes and `reclaim.ts` deliberately
+ * preserves this file. 368 of the 372 workspaces on this machine carried one at
+ * the time of writing, all 368 defining both `atlassian` and `butchr`.
+ *
+ * **Note what is NOT the defect, because the obvious fix follows from it and is
+ * a no-op.** Butchr does not pre-write `.mcp.json` under CrabCast and never
+ * did: `writeWorkspaceMcpConfig`'s only production caller is `herdr.ts`, inside
+ * `HerdrBridge`, and `runtime-switch.ts` constructs exactly one runtime at boot.
+ * *"Stop writing it when `BUTCHR_AGENT_RUNTIME=crabcast`"* is therefore already
+ * true, and shipping it would have closed the ticket while leaving all 368 files
+ * — and every future flip — exactly as broken.
+ *
+ * ## Why the keys and not the file
+ *
+ * CrabCast **merges** into this file rather than replacing it, and refuses only
+ * on the keys it was asked to write. So a non-Butchr entry in there is honoured
+ * today and is not part of the collision. Deleting the whole file would destroy
+ * it — which is Butchr committing, against its own workspace, precisely the
+ * offence CrabCast's refusal exists to prevent. Key-scoped removal is strictly
+ * narrower, costs nothing, and needs no opinion about anybody else's entries.
+ *
+ * **Removing a key we wrote is not taking over the caller's file. We are the
+ * caller.** This is the same ownership `spawnSession` and {@link
+ * deleteWorkspaceDir} already exercise from both ends — Butchr creates the
+ * workspace directory under this runtime because CrabCast will not, and deletes
+ * it for the same reason.
+ *
+ * ## What it will not touch
+ *
+ * An **unparseable** file is refused and left alone rather than replaced, which
+ * is the opposite of what `writeWorkspaceMcpConfig` does on the herdr path
+ * (*"Butchr owns this file; a corrupt one is replaced"*). The asymmetry is the
+ * point: under herdr Butchr is the sole writer, under CrabCast the file is
+ * co-owned, and CrabCast's own refusal for that case names the file and says
+ * `NOTHING WAS STARTED`. A better error than anything we would produce by
+ * destroying the evidence first.
+ *
+ * **Address, never a path** — guard 1 of this module's docblock. The caller
+ * cannot aim this at a file outside a workspace it named by `type`/`key`, and
+ * the containment check that proves it is the same one the delete uses.
+ *
+ * Idempotent: a second call removes nothing and answers `nothing-of-ours`.
+ */
+export function clearWorkspaceMcpResidue(
+  type: string,
+  key: string,
+  names: readonly string[]
+): McpResidueClearance {
+  if (names.length === 0) return { outcome: 'nothing-of-ours', present: [] };
+
+  const containment = containWorkspaceDir(type, key);
+  if (containment.outcome === 'absent') return { outcome: 'absent' };
+  if (containment.outcome === 'refused') {
+    return {
+      outcome: 'refused',
+      reason:
+        `${containment.reason}. Only ${WORKSPACE_MCP_CONFIG} inside '${workspacesRoot()}' ` +
+        `may be edited.`
+    };
+  }
+
+  const file = path.join(containment.dir, WORKSPACE_MCP_CONFIG);
+  if (!fs.existsSync(file)) return { outcome: 'absent' };
+
+  let config: any;
+  try {
+    config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e: any) {
+    return {
+      outcome: 'refused',
+      reason:
+        `${file} is not readable as JSON (${e?.message ?? String(e)}), so the entries to ` +
+        `remove cannot be identified. IT WAS NOT REPLACED — this file may hold entries ` +
+        `Butchr did not write.`
+    };
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return {
+      outcome: 'refused',
+      reason:
+        `${file} parses to ${Array.isArray(config) ? 'an array' : typeof config}, not a JSON ` +
+        `object, so it has no mcpServers map to clear. It was left as it is.`
+    };
+  }
+
+  const servers = config.mcpServers;
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) {
+    return { outcome: 'nothing-of-ours', present: [] };
+  }
+
+  const removed = names.filter((name) => ownKey(servers, name));
+  if (removed.length === 0) {
+    return { outcome: 'nothing-of-ours', present: Object.keys(servers) };
+  }
+  for (const name of removed) delete servers[name];
+
+  // The file is rewritten and never unlinked, even when this empties
+  // `mcpServers`. An empty map collides with nothing, CrabCast merges into it
+  // happily, and not deleting is one fewer thing this function can get wrong on
+  // a file it only part-owns.
+  try {
+    fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
+  } catch (e: any) {
+    return {
+      outcome: 'refused',
+      reason: `${file} could not be rewritten (${e?.message ?? String(e)}); it is unchanged.`
+    };
+  }
+  return { outcome: 'cleared', removed, kept: Object.keys(servers) };
 }
