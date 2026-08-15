@@ -91,10 +91,22 @@ function walkByHand(dir, match, prefix = '') {
  * this defect cheap enough to actually do.
  */
 export function everySourceFile(root, match = IS_TS) {
+  // `withFileTypes` rather than the shorter string form, and it is load-bearing:
+  // a recursive `readdirSync` in string mode returns DIRECTORIES as well as
+  // files, so a directory named `foo.ts` would be swept as though it were a
+  // source file. Measured on Node 20.20 — `readdirSync(dir, {recursive:true})`
+  // over a tree containing `real.ts/inner.ts` answers
+  // `['actual.ts', 'real.ts', 'real.ts/inner.ts']`, with `real.ts` the directory
+  // itself. The hand walk below already excludes directories, so the two would
+  // have disagreed and the coverage control would have fired — a FALSE RED, on a
+  // required check, for a tree that was being read correctly. Failing loudly is
+  // the better direction to be wrong in, and not being wrong is better still.
   return fs
-    .readdirSync(root, { recursive: true, encoding: 'utf8' })
-    .map((name) => name.split(path.sep).join('/'))
-    .filter((rel) => match(path.basename(rel)))
+    .readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && match(entry.name))
+    .map((entry) =>
+      path.relative(root, path.join(entry.parentPath, entry.name)).split(path.sep).join('/')
+    )
     .sort();
 }
 

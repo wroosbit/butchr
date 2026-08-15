@@ -118,15 +118,27 @@ banner '3. the walker itself — its coverage control is not vacuous'
 # sweep to depth 1 and require that the control notices, in the walker rather
 # than in a caller.
 cp daemon/scripts/lib/sweep-sources.mjs "$SCRATCH/sweep-sources.mjs.orig"
+# The needle is the enumerator's WHOLE call, not the bare words `recursive: true`
+# — the module's header discusses `recursive: true` in prose, and a mutation that
+# edits a comment applies cleanly, changes nothing, and hands back a green.
+#
+# This needle has already gone stale once, which is the argument for the assert
+# rather than a hypothetical about one: the enumerator moved from
+# `encoding: 'utf8'` to `withFileTypes: true` and the old string stopped
+# matching. The `assert` fired, `assert_present` printed EDIT DID NOT APPLY, and
+# §3 was reported as a MISMATCH instead of as a pass. That is the whole reason
+# a mutation is asserted before its script is trusted.
 python3 - <<'PY'
-import re, pathlib
+import pathlib
 p = pathlib.Path('daemon/scripts/lib/sweep-sources.mjs')
 s = p.read_text()
-s2 = s.replace("{ recursive: true, encoding: 'utf8' }", "{ recursive: false, encoding: 'utf8' }")
+needle = '.readdirSync(root, { recursive: true, withFileTypes: true })'
+assert needle in s, 'MUTATION NEEDLE IS STALE — the enumerator has moved, fix the red drive'
+s2 = s.replace(needle, '.readdirSync(root, { recursive: false, withFileTypes: true })')
 assert s2 != s, 'MUTATION DID NOT APPLY'
 p.write_text(s2)
 PY
-assert_present daemon/scripts/lib/sweep-sources.mjs 'recursive: false'
+assert_present daemon/scripts/lib/sweep-sources.mjs 'recursive: false, withFileTypes: true'
 run_expect 'walker forced flat -> control must fire' daemon/scripts/verify-channel-meta-renderable.mjs RED flatwalk
 echo
 echo '  what the control says when the sweep it controls goes flat:'
