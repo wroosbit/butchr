@@ -13,7 +13,9 @@
 //
 // CI-RUNNABLE: yes — node builtins only, no build, no daemon, no herdr, no
 // credential, no peer, no terminal, no network. Every frame is a literal in
-// this file or a recorded line quoted in it.
+// this file or a recorded line quoted in it. §5 spawns cutover-health.mjs as a
+// child node process and writes its frames under os.tmpdir(), never into the
+// repository, then removes them.
 //
 // THIS PROOF IMPORTS NOTHING FROM `dist`. It imports the predicate module from
 // `daemon/scripts/lib/`, which is source. `prompts/task.md` requires the
@@ -38,28 +40,44 @@
 //     `docs/crabcast-runtime.md` — *"`sessionless: true`, `sessionId: null`,
 //     `url: null` on every agent"* — and the construction is the claim being
 //     made. If that description is wrong, this section is wrong with it.
-//   - §4 constructs minimal frames to establish the predicate's branches.
+//   - §4 constructs minimal frames to establish the predicate's branches, and
+//     ends by asserting that those frames carry every field a REAL row carries
+//     — see REAL_ROW_KEYS for the mutation that got past this proof before it
+//     did.
+//   - §5 spawns the real `cutover-health.mjs` over `--frame` and asserts its
+//     exit codes. That is the process boundary, not just the function.
 //
 // ## WHAT THIS DOES NOT COVER, AND WHO DOES
 //
-//   - **That `cutover-health.mjs` reads the socket correctly.** Every section
-//     here calls `fleetHealth` directly on a frame. The socket read is
-//     exercised by running the prober against the live daemon, which is not
-//     something CI has, so it is an observation pasted into the pull request
-//     rather than a section here. NOBODY ELSE COVERS IT — this is the edge of
+//   - **That `cutover-health.mjs` reads the SOCKET correctly.** §5 exercises
+//     the prober as a process, but only over `--frame`; the socket path needs
+//     a live daemon, which CI has not got. It is an observation pasted into
+//     the pull request instead. NOBODY ELSE COVERS IT — this is the edge of
 //     this proof and it is marked rather than papered over.
-//   - **That the watchdog calls this at all.** `~/butchr-cutover/watchdog.sh`
-//     is outside this repository and outside CI's reach, so no script here can
-//     assert on it. The rewiring is recorded on KAN-481 and in the pull
-//     request body, and a human drives the cutover that would exercise it.
+//   - **That the watchdog and `cutover.sh` call this correctly.**
+//     `~/butchr-cutover/` is outside this repository and outside CI's reach,
+//     so no script here can assert on it — which is exactly how `cutover.sh`
+//     came to squeeze a three-valued answer through `[ -n "$(...)" ]` and let
+//     an UNHEALTHY fleet pass its pre-flip gate (found by `epic/KAN-203`).
+//     §5 holds the CONTRACT those callers read; it cannot hold the callers.
+//     The sandbox runs that do are pasted in the pull request, and a human
+//     drives the cutover that would exercise them for real.
 //   - **Whether `channel` is the right second route.** §4 asserts the branch
 //     exists and can be false; that it is the RIGHT reachability signal is a
 //     judgement, argued in the predicate's docblock, and the only cover for it
 //     is a reader who is not the author.
+//   - **A route reading a field REAL_ROW_KEYS does not list.** The fidelity
+//     check is only as complete as that list, which was transcribed by hand on
+//     2026-08-15. A field added to the wire later is a field no fixture models
+//     until somebody adds it here. That is narrowed, not closed.
 //
 // Usage: node daemon/scripts/verify-cutover-health-predicate.mjs
 
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { tmpdir } from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { fleetHealth, retiredPredicate, retiredCounts } from './lib/cutover-health-predicate.mjs';
 
 let failures = 0;
@@ -77,13 +95,69 @@ function check(label, actual, expected) {
   }
 }
 
-/** A `list_agents` row, with only the fields either predicate reads. */
-function row({ name, session = null, url = null, transport = 'channel' }) {
+/**
+ * The keys a REAL `list_agents` row carries, transcribed from the daemon
+ * socket on 2026-08-15 (`{"action":"list_agents"}`, six agents, every row the
+ * same shape).
+ *
+ * ⚠ THIS EXISTS BECAUSE A FIXTURE THAT IS MISSING A FIELD SILENTLY EXCUSES ANY
+ * BOGUS USE OF IT. `epic/KAN-39` found it reviewing this PR, and the
+ * demonstration is exact: the fixtures below used to carry four keys, so
+ * adding `|| typeof row?.herdrStatus === 'string'` to the reachability test —
+ * a route that can NEVER be false, since every real row carries a
+ * `herdrStatus` — left this proof **green** (`MUTATED_EXIT=0`, reproduced
+ * independently). The predicate would have become incapable of ever tripping
+ * on a real fleet while its own proof said it was fine.
+ *
+ * That is the ticket's whole subject arriving inside the fix for it: a check
+ * that cannot go red is not a weak check, it is a check that does not exist
+ * while appearing to. §4's `fixtures carry every field a real row carries`
+ * is what keeps this list honest, and the list is what makes the next bogus
+ * route land on a fixture that can contradict it.
+ *
+ * It is the same shape as `task/KAN-475`'s finding the same day — a fixture
+ * whose rows disagree with the live wire in exactly the field the predicate
+ * gates on.
+ */
+const REAL_ROW_KEYS = [
+  'sessionless', 'agentName', 'sessionId', 'type', 'key', 'url', 'createdAt',
+  'status', 'workDir', 'herdrStatus', 'agentRuntime', 'supervisor',
+  'activatedBy', 'channel'
+];
+
+/**
+ * A `list_agents` row shaped like a real one — every key in `REAL_ROW_KEYS`,
+ * not merely the ones today's predicate happens to read.
+ *
+ * `herdrStatus` is populated on EVERY row including the sessionless ones,
+ * because that is what the wire does: measured `working, working, done, idle,
+ * idle, done` across six rows, four of them sessionless. A fixture that left
+ * it out would be modelling a fleet that does not exist.
+ */
+function row({
+  name,
+  session = null,
+  url = null,
+  transport = 'channel',
+  herdrStatus = 'working',
+  type = 'task',
+  key = 'KAN-0'
+}) {
   return {
+    sessionless: session === null,
     agentName: name,
     sessionId: session,
-    sessionless: session === null,
+    type,
+    key,
     url,
+    createdAt: session === null ? null : '2026-08-15T19:49:01.559Z',
+    status: session === null ? null : 'active',
+    workDir: `/home/brooswit/.local/share/butchr/workspaces/${type}/${key.toLowerCase()}`,
+    // Present on every real row, sessionless included — see REAL_ROW_KEYS.
+    herdrStatus,
+    agentRuntime: 'claude',
+    supervisor: false,
+    activatedBy: null,
     channel: transport === null ? undefined : { transport }
   };
 }
@@ -279,8 +353,95 @@ const reachableWithoutUrl = fleetHealth([row({ name: 'a', session: 'sid', url: n
 check('and a MISSING url does not condemn a reachable one — the defect itself',
   reachableWithoutUrl.unhealthy, false);
 
+// ⚠ FIXTURE FIDELITY — the check that makes every check above worth something.
+//
+// A route reading a field no fixture carries is inert against every frame in
+// this file, so the mutation that introduces it stays green. Asserting that
+// fixtures carry what real rows carry is what forces such a mutation to land
+// on data that can contradict it. See REAL_ROW_KEYS.
+const sampleRows = [
+  ...LIVE_2026_08_15,
+  ...SIGNATURE_2026_08_12,
+  row({ name: 'shape-probe', session: 'sid' })
+];
+const missingKeys = sampleRows.flatMap((r) =>
+  REAL_ROW_KEYS.filter((k) => !(k in r)).map((k) => `${r.agentName}:${k}`)
+);
+check(
+  'every fixture row carries every field a REAL list_agents row carries',
+  missingKeys,
+  []
+);
+check(
+  '  …including `herdrStatus` on the UNREACHABLE rows, which is what catches a bogus route through it',
+  SIGNATURE_2026_08_12.every((r) => typeof r.herdrStatus === 'string'),
+  true
+);
+check(
+  '  …and those rows are STILL unreachable, so a herdrStatus route would flip §3 red',
+  fleetHealth(SIGNATURE_2026_08_12).unhealthy,
+  true
+);
+
 // ---------------------------------------------------------------------------
-console.log(bold('\n5. `url` renders ONE way — the absence that wore two faces'));
+console.log(bold('\n5. the 0/1/2 exit contract the cutover kit reads'));
+// ---------------------------------------------------------------------------
+// Spawns the real `cutover-health.mjs`. No socket is needed — `--frame` feeds
+// it a document — so this runs in CI, and it tests the contract rather than
+// the prose describing it.
+//
+// ⚠ WHY THIS IS HERE: the kit distinguishes three answers, and `cutover.sh`
+// squeezed them through a two-valued test (`[ -n "$(butchr_health)" ]`), so an
+// UNHEALTHY fleet — which prints a perfectly good line saying so — passed the
+// pre-flip gate. Found by `epic/KAN-203` sweeping while this PR was open, and
+// reproduced. `cutover.sh` is outside this repository and CI cannot see it;
+// what CI CAN hold is the contract it depends on, which is this.
+
+const frameDir = mkdtempSync(path.join(tmpdir(), 'kan481-frames-'));
+function runProber(args) {
+  const r = spawnSync(process.execPath, [
+    fileURLToPath(new URL('./cutover-health.mjs', import.meta.url)), ...args
+  ], { encoding: 'utf8' });
+  return { code: r.status, stdout: r.stdout ?? '' };
+}
+function frameFile(name, agents) {
+  const p = path.join(frameDir, name);
+  writeFileSync(p, JSON.stringify({ agents, missingAgents: [] }));
+  return p;
+}
+
+const healthyFrame = frameFile('healthy.json', LIVE_2026_08_15);
+const unhealthyFrame = frameFile('unhealthy.json', SIGNATURE_2026_08_12);
+const emptyFrame = frameFile('empty.json', []);
+
+const healthyRun = runProber(['--frame', healthyFrame]);
+check('a reachable fleet exits 0', healthyRun.code, 0);
+check('  …and prints its verdict rather than only signalling it',
+  JSON.parse(healthyRun.stdout).unhealthy, false);
+check('  …with the margin on the line, so a log reader can watch it shrink',
+  JSON.parse(healthyRun.stdout).marginAgents, 6);
+
+const unhealthyRun = runProber(['--frame', unhealthyFrame]);
+check('an unreachable fleet exits 1 — a VERDICT', unhealthyRun.code, 1);
+check('  …and still prints, so the caller can say WHY it refused',
+  JSON.parse(unhealthyRun.stdout).unreachableAgents.length, 3);
+
+// ⚠ A drained fleet must be able to flip. The cutover sequence drains BEFORE
+// it flips, so an empty fleet exiting non-zero would make the pre-flip gate
+// refuse every correctly-prepared cutover.
+check('an EMPTY fleet exits 0 — a drain is not a failure', runProber(['--frame', emptyFrame]).code, 0);
+
+// 2, never 1: "I could not look" is not "I looked and it is broken".
+check('an unreadable frame exits 2 — NOT a verdict about the fleet',
+  runProber(['--frame', path.join(frameDir, 'does-not-exist.json')]).code, 2);
+check('  …and 2 is distinct from the unhealthy 1, which is what lets a caller tell them apart',
+  runProber(['--frame', path.join(frameDir, 'does-not-exist.json')]).code !== unhealthyRun.code,
+  true);
+
+rmSync(frameDir, { recursive: true, force: true });
+
+// ---------------------------------------------------------------------------
+console.log(bold('\n6. `url` renders ONE way — the absence that wore two faces'));
 // ---------------------------------------------------------------------------
 // Reads `daemon/src/router.ts` AS TEXT. It is not the compiler and does not
 // pretend to be: the assignment is already `TS2322` if `toAgentDto` stops
