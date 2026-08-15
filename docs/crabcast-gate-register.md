@@ -1,3 +1,7 @@
+<!-- constant-pin: CRABCAST_PIN
+     src: daemon/src/crabcast-link.ts
+     sha256: 8b5c3f4072d9
+     says: **CrabCast pin at the time of this ruling:** `8d7348fa98201b61642d2454b3a797373361128a` -->
 <!-- constant-pin-exempt: RUNTIME_ENV_VAR — every mention of BUTCHR_AGENT_RUNTIME in
      this file is inside the VERBATIM ARCHIVE below, which is a byte-identical snapshot
      of KAN-348's description and must not be edited. A pin here would assert a present
@@ -193,6 +197,138 @@ Two consequences, and the second is the one that matters for the cap:
    re-round-trips the whole document and adds a few characters to it. **Part of
    the pressure on the cap was manufactured by the maintenance method itself**,
    and nothing would have shown that.
+
+---
+
+## Rulings since the snapshot
+
+**Everything below this heading post-dates the archive and belongs OUTSIDE it.**
+The region under `# ARCHIVE` is a byte-identical snapshot of KAN-348's
+description and must not be edited; a ruling made today is live status, which is
+the index's half of the seam KAN-457 drew. ⚠ **This section exists because
+KAN-474 originally wrote its ruling INTO the archive**, which `epic/KAN-39`
+caught in review — the schema check cannot see it, because nothing in CI can
+compare a repo file against a Jira description, so a green there means *"the
+schema is well-formed"* and never *"the archive is still the archive."*
+
+### ⚠ Gate 2 OBSERVED at last — and the flip found a fourth leg nobody had listed
+
+⚠ **The flip happened on 2026-08-15, four times, human-driven, and gate 2's
+unobservable seam was finally observed. It refused.** `epic/KAN-203` measured
+**36 spawn failures and 0 activations** across all 8 agents in a 15-minute
+window, every one the same `configure_agent` refusal, before the dead-man
+reverted it. Not intermittent, not a race, not a warm-up.
+[KAN-474](https://wroosbit.atlassian.net/browse/KAN-474) is that observation and
+this is its ruling.
+
+**The refusal is CrabCast working exactly as designed, and it is not theirs to
+relax** — in its own words on the wire, *"they are the caller's, and they are not
+ours to take over. NOTHING WAS WRITTEN and nothing was started."* **The colliding
+entries were Butchr's**, written by
+`writeWorkspaceMcpConfig` on every prior herdr activation. **368 of the 372
+workspaces on this machine carried one**, all 368 defining both `atlassian` and
+`butchr`. This was Butchr's side to fix and it is fixed.
+
+⚠ **The obvious fix is a NO-OP, and shipping it would have closed the ticket
+with the fleet still unflippable.** The ticket's own leading candidate was
+*"Butchr stops pre-writing `.mcp.json` when `BUTCHR_AGENT_RUNTIME=crabcast`"*.
+**Butchr already does not, and never did**: `writeWorkspaceMcpConfig` has exactly
+one production caller, `herdr.ts`, inside `HerdrBridge`, and `runtime-switch.ts`
+constructs exactly one runtime at boot. **There is no write on that path to
+suppress.** What collides is what the *previous* runtime left on disk — the file
+is **residue**, not output. Anybody reaching for that candidate is aiming at a
+code path that does not run.
+
+**THE DECISION.** Butchr clears **its own** server entries — by name, the ones it
+is about to send — out of the workspace's `.mcp.json` immediately before
+`configure_agent`, and only under this runtime.
+`clearWorkspaceMcpResidue` in `workspace-dir.ts`, called from
+`CrabCastRuntime.provision()`.
+
+**Why that module:** it already owns *"what Butchr may do to a workspace
+directory"*, and the clearance reuses its containment discipline unchanged — it
+takes an **address, never a path**, so no caller can aim it. Butchr already owns
+both ends of that directory's lifecycle under this runtime (it creates it because
+CrabCast will not, and deletes it for the same reason); this is the same
+ownership applied to a file inside it. **Removing a key we wrote is not taking
+over the caller's file — we are the caller.**
+
+**What happens to the 368 existing files: nothing, and deliberately.** Each
+workspace is repaired by its own first CrabCast activation, in the same call that
+needed it. No sweep to order, no step before a flip, no window in which a
+workspace created after a sweep is broken again. **A migration would have been
+strictly worse**: it covers only what exists when it runs, and herdr *rewrites*
+this file on every activation, so a rollback regrows exactly what it cleared.
+**Rollback is self-healing for the same reason** — nothing in the fix runs under
+herdr, and the first herdr activation after a revert restores the entries.
+
+**Rejected, named as the ticket asked:**
+
+| option | why not |
+| --- | --- |
+| Stop pre-writing under `crabcast` | **Already true.** A no-op that looks like a fix. See above. |
+| Rename or move the file per-runtime | Claude Code reads MCP config from the project root **and nowhere else** (CrabCast's own `callers-directory.md`). A renamed file is a file no client reads — this silences the refusal by deleting the configuration, which is KAN-294's silent-no-servers defect in a new costume. |
+| Omit the colliding entries from what we send | Incoherent: CrabCast writes **only** what we send. Omitting them means the agent gets no `butchr` and no `atlassian` at all. There is no re-add step. |
+| Delete the whole `.mcp.json` | CrabCast **merges** rather than replaces — **observed in §5 of the proof**, where a third party's entry survives clear + provision byte-identical — so a non-Butchr entry in that file is live configuration. Deleting wholesale would have Butchr commit, against its own workspace, the exact offence their refusal exists to prevent. Key-scoped removal is strictly narrower and costs nothing. |
+| Ask CrabCast to relax the refusal | Invariant 10, and the ticket forbade it. Their refusal is principled, documented in its own error text, and correct. |
+| A one-shot sweep of the 368 files | Decays. See above. Kept available as a supplement, needed by nothing. |
+
+**An unparseable `.mcp.json` is refused and left alone**, which is the opposite of
+what the herdr writer does (*"Butchr owns this file; a corrupt one is
+replaced"*). The asymmetry is deliberate: under herdr Butchr is the sole writer,
+under CrabCast the file is co-owned, and CrabCast's own refusal for that case
+names the file and says `NOTHING WAS STARTED` — a better error than one produced
+by destroying the evidence first.
+
+**The proof drives CrabCast's real code, not a reproduction of it.**
+`verify-crabcast-mcp-residue-cleared.mjs` imports `provisionMcpConfig` from the
+peer checkout, having first asserted its tree is clean, its HEAD is at or after
+`CRABCAST_PIN`, its `dist` is not stale, and that `src/provisioning.ts` is
+**unchanged between the pin and that HEAD**. So the red it produces is the
+production refusal firing.
+
+**CrabCast pin at the time of this ruling:** `8d7348fa98201b61642d2454b3a797373361128a`
+
+⚠ **The proof's first draft asserted `HEAD === CRABCAST_PIN` and went red on a
+perfectly valid peer** — the checkout is at `9d4d999`, a *descendant* of the pin
+above and the commit this register already cites for gate 3. The question that
+matters is whether the **file under test** moved between the two, and it has not:
+zero commits touch `src/provisioning.ts` in that range. ⚠ **Note the two are not
+the same commit, and no ticket owns the gap** — `docs/crabcast-runtime.md` and
+the gate-3 live proof both cite `9d4d999` as the peer they were proved against,
+while `CRABCAST_PIN` — the value `runtime-switch.ts` prints to an operator — is
+its ancestor. Nothing is broken by that today. It is recorded here because the
+pin block above will now go red the moment the constant moves, and whoever
+repairs it should know the docs and the constant have already diverged once.
+
+### ⚠ An invariant 10 breach, recorded rather than normalised
+
+**`task/KAN-474` read CrabCast's source while investigating this** — four content
+reads on 2026-08-15, the substantive one being `src/provisioning.ts`, which is
+where the collision rule, the merge behaviour and the prototype-family hazard
+came from. **Invariant 10 is permanent and this broke it.** It is written here,
+in the register, because a breach recorded costs less than one absorbed
+silently — and because the next agent reaching for that checkout should meet this
+paragraph rather than the reasoning it produced.
+
+**What is NOT affected:** the shipped artefact. `epic/KAN-39` checked it before
+anything else and it reaches the peer only through `git` metadata, `find` mtimes
+and `import()` of their built `dist` — no source text, nothing written into their
+tree, nothing built there. **What WAS affected is the prose**, which cited their
+internal refusal numbering and quoted a source comment; those citations now rest
+on the wire, on `docs/crabcast-runtime.md`, and on what the proof observes.
+**Re-citing afterwards is repair, not erasure** — the read happened and informed
+the design.
+
+⚠ **WHAT THIS DOES NOT CLOSE.** The gate's ruling above is untouched: this was
+observed only because the fleet was flipped, and whether the refusals **stop** can
+be established the same way and no other. `cutover.sh` refuses to run inside a
+herdr pane, so **the human drives the re-test**; the evidence is
+`grep -a "spawn failed" ~/.local/share/butchr/daemon.log | tail` (the `-a` matters
+— KAN-422). And a flip that activates agents may still show *"no live agent"* in
+the panel: that is [KAN-475](https://wroosbit.atlassian.net/browse/KAN-475), a
+second blocker sitting immediately behind this one, and the daemon.log line is
+what tells the two apart.
 
 ---
 

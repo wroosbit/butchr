@@ -31,7 +31,11 @@ import {
 } from './herdr.js';
 import type { McpServerDefinitions } from './integrations/integration.js';
 import type { BriefLocation, ResumeCause, ResumedConversation } from './resume.js';
-import { deleteWorkspaceDir } from './workspace-dir.js';
+import {
+  clearWorkspaceMcpResidue,
+  deleteWorkspaceDir,
+  WORKSPACE_MCP_CONFIG
+} from './workspace-dir.js';
 
 /**
  * A second implementation of {@link AgentRuntime}, backed by CrabCast (KAN-278).
@@ -1141,6 +1145,76 @@ export class CrabCastRuntime implements AgentRuntime {
     // where before it was reporting a spawn whose MCP request it had discarded.
     if (mcpServers && Object.keys(mcpServers).length > 0) {
       configure.mcpServers = mcpServers;
+
+      // GATE 2 (KAN-474). Clear Butchr's own entries out of the workspace's
+      // `.mcp.json` before CrabCast is asked to write into it.
+      //
+      // Without this, `configure_agent` refuses every activation whose
+      // workspace has ever been started under herdr — which on 2026-08-15 was
+      // 368 of 372 workspaces, and was 36 spawn failures and 0 activations
+      // across four human-driven cutover attempts. The refusal is CrabCast
+      // working as designed and is not theirs to relax: the entries really were
+      // written by somebody else, and that somebody is us.
+      //
+      // WHY HERE, AND NOT AT THE WRITE. There is no write to suppress on this
+      // path. `writeWorkspaceMcpConfig` lives in `HerdrBridge` and
+      // `runtime-switch.ts` builds exactly one runtime at boot, so under
+      // CrabCast it never runs. What collides is what the *previous* runtime
+      // left on disk, so the repair belongs at the moment of provisioning, on
+      // the workspace being provisioned.
+      //
+      // WHICH MAKES THE 368 EXISTING FILES A NON-EVENT, and that is the reason
+      // for this shape rather than a migration script: each workspace is
+      // repaired by its own first CrabCast activation, in the same call that
+      // needed it. There is no sweep to order, nothing to run before a flip,
+      // and no window in which a workspace created after the sweep is broken
+      // again. A backfill would have covered only the workspaces that existed
+      // when it ran — and herdr *rewrites* this file on every activation, so a
+      // rollback would regrow exactly what the sweep had cleared.
+      //
+      // ROLLBACK IS SELF-HEALING FOR THE SAME REASON: nothing here runs under
+      // herdr, and the first herdr activation after a rollback rewrites the
+      // entries this removed.
+      //
+      // Disclosed at every outcome, including the ones that changed nothing. A
+      // cutover that failed four times on this file is one where "there was
+      // nothing to clear" and "we cleared nothing" must not read alike in the
+      // log.
+      const clearance = clearWorkspaceMcpResidue(
+        session.type,
+        session.key,
+        Object.keys(mcpServers)
+      );
+      const agent = agentNameFor(session.type, session.key);
+      switch (clearance.outcome) {
+        case 'cleared':
+          this.log(
+            `${agent}: cleared Butchr's own MCP entries from ${WORKSPACE_MCP_CONFIG} before ` +
+              `configure_agent — removed ${clearance.removed.map((n) => `'${n}'`).join(', ')}` +
+              `${clearance.kept.length ? `, kept ${clearance.kept.map((n) => `'${n}'`).join(', ')}` : ''}. ` +
+              'CrabCast writes them back from what we send it.'
+          );
+          break;
+        case 'nothing-of-ours':
+          this.log(
+            `${agent}: ${WORKSPACE_MCP_CONFIG} holds none of the servers we are sending` +
+              `${clearance.present.length ? ` (it defines ${clearance.present.map((n) => `'${n}'`).join(', ')})` : ''}, ` +
+              'so there was nothing to clear.'
+          );
+          break;
+        case 'absent':
+          this.log(`${agent}: no ${WORKSPACE_MCP_CONFIG} in the workspace, so nothing to clear.`);
+          break;
+        case 'refused':
+          // Deliberately not fatal. CrabCast's own refusal for a file it cannot
+          // parse names the file and says NOTHING WAS STARTED, which is a
+          // better error than any we would produce by destroying it first.
+          this.log(
+            `${agent}: left ${WORKSPACE_MCP_CONFIG} alone — ${clearance.reason} ` +
+              'Proceeding; if it collides, CrabCast will refuse and say so.'
+          );
+          break;
+      }
     }
 
     const configured = await this.link.request(configure);
