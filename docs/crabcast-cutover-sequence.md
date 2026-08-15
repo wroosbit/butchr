@@ -874,6 +874,18 @@ goes wrong again.**
   saying on that ticket that it has read the diff, re-run the acceptance proof
   against the head itself, and is taking authorship. From that comment on it is
   an ordinary PR under ordinary merge governance.
+  ⚠ **Adoption can be satisfied retroactively, and by more than one reader**
+  (ruling by `epic/KAN-39` on KAN-483). A live agent's independent verification
+  **plus an approver's review** is adoption, whether or not either was called
+  that at the time. **The worked case is PR #210 itself**, the one this policy
+  was written about: it was verified by the live `task/KAN-473` agent, who found
+  nothing contradicting its twin's claims, and reviewed by the epic agent with
+  two mutations of its own — so the accountability chain exists and is
+  documented, and **#210 is not re-opened.** Without this clause R5 read
+  strictly would require re-litigating merged work whose provenance nobody can
+  now change, **which buys nothing.** The clause is about who may satisfy the
+  requirement and when; it does not weaken *what* is required, which is still
+  that a named reader took authorship on the record.
 - **Check:** every orphan-produced branch is either adopted by a named live
   agent on its ticket, or closed with the reason on the ticket. **Nothing is
   left merely open**, because an unadopted PR that looks ordinary is exactly how
