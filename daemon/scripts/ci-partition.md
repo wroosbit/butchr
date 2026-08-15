@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 94 |
+| `yes` | 95 |
 | `partial` | 10 |
 | `quarantined` | 3 |
 | `no` | 20 |
-| **total** | **127** |
+| **total** | **128** |
 
-**104 of 127** run on every pull request.
+**105 of 128** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -111,6 +111,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-ld-credential-diagnostics` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ld-log-hygiene` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-ld-storage-disclosure` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-list-agents-answer-is-bounded` | yes | reads a captured census fixture and imports the built budget module in process; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-list-agents-survives-restart` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-message-provenance` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-notifications-never-type` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. |

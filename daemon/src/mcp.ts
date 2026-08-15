@@ -20,6 +20,11 @@ import {
 } from './channel-selfcheck.js';
 import { operationByTool, operationsFor, ProxyMode } from './atlassian-proxy.js';
 import { ldOperationByTool, ldOperationsFor, LdProxyMode } from './launchdarkly-proxy.js';
+import {
+  fitListAgentsResponse,
+  fitGenericResponse,
+  MEASURED_CLIENT_CAP_CHARS
+} from './mcp-response-budget.js';
 
 /**
  * Which agent this server belongs to, read off this process's own argv.
@@ -885,10 +890,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_list_agents",
         description:
-          "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK censusUnreadableRecordsTotal BEFORE YOU TRUST THE AGENT COUNT: it is how many registry rows the census could not read and therefore did NOT count, and a zero there is what makes the list above trustworthy. A non-zero means THIS LIST IS SHORT BY THAT MANY and the agents it omits are named in censusUnreadableRecords with the reason each was skipped — so an agent may be running with no row here, and concluding 'nothing is working on that' from a short list is exactly the mistake this field exists to prevent. `null` is NOT zero and must not be read as one: it means no disclosure reached this daemon at all — the census could not be taken, or the peer predates read-path contract v4 — so the count may be short with nothing able to say so. READ EACH ROW'S `standing` RATHER THAN WATCHING THE COUNT: the count never falls on its own, so a steady non-zero is the ordinary state and is NOT a fault, while ANY INCREASE is a real event. `standing.available: false` means the peer is too old to have rendered a verdict (`because: 'peer-below-v7'`) — that is a fact about the CONNECTION and is NOT the same as `standing: 'unknown'`, which is a verdict about the row; do not read either as an all-clear. Where `standing.available` is true, read the verdict at `standing.verdict` with its evidence `standing.claimsEvent` beside it: `'retired'` means the row records an agent being switched off and nothing was going to be restored from it, while `'claims-an-agent'` is the one to look at. For those, READ `supersession` RATHER THAN GUESSING: `matched` means a later readable row already covers that agent and there is nothing to do, `ran-found-nothing` means nothing readable supersedes it and IS the case worth acting on, and `could-not-run` means the row named no path to join on so THE QUESTION WAS NOT ANSWERED — that is not evidence either way, and treating it as 'lost' manufactures an alarm that never clears. Use `identity` to find the line in the registry by hand; never join on it, because it is in the row's own vocabulary and matches nothing in a path-keyed list. `standing.claimsAt` is a quotation of what the row said and is NOT guaranteed to parse as a date. All three v7 fields sit together behind `standing.available` because they arrive together: a peer below v7 sends none of them, and reading a missing `claimsAt` as 'the row named no timestamp' is the same collapse one field over. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down. ALSO CHECK preemptedAgents: agents deliberately stood down to free capacity for higher-priority work, listed until they are put back. Their work was interrupted rather than finished, so their tickets must NOT be left In Progress — move each back to To Do with a comment naming what took its slot. Re-activating one resumes the conversation it was stopped in. standbyAgents is NOT a problem to fix: agents somebody switched off on purpose whose workspace is still on disk, listed so they can be started again (butchr_activate_agent with their type and key, and their recorded defaultAgent so they come back as what they were). standbyTotal is the unclipped count when more exist than are listed. ALSO CHECK each agent's `channel`: what its startup channel self-check found, and the carrier its messages will actually take. `transport: 'composer'` means that agent's channel loop did not prove out at bring-up, so a message to it will interrupt whatever it is doing — an agent silently on the composer while you believe it is on channels is exactly what this field exists to prevent. `outcome: 'unverified-client'` means the loop works but the Claude Code version it is running is one nobody has measured channel delivery on; channels are a research preview and the contract can move, so treat delivery to that agent as unproven and say so if you rely on it. `outcome: 'unchecked'` is NOT a fault: nobody has checked, usually because the agent outlived a daemon restart. READ `transport` RATHER THAN `outcome` FOR THE CARRIER — they are different questions and an unchecked agent can be on any of the three. `transport: 'unregistered'` means the agent holds no channel registration while the registry expects it to: a steer to it is REFUSED rather than delivered, it is the ordinary state for the first seconds after a daemon restart or a socket error, and it clears by itself when the agent's MCP server re-announces. Before KAN-274 this field read `'channel'` in that state and a send to such an agent interrupted it, so an older daemon's row cannot be trusted on this point. `clientVersion` is the client's own report of itself and is what pins any of this to a version. An absent `channel` field means this daemon cannot answer, which is different from every value it could carry. ALSO CHECK undeliveredNotifications: news the DAEMON ITSELF could not deliver — a ticket status change, a new comment, an agent of yours going blocked. Since KAN-301 the daemon never types a notification into a terminal, so a notification whose recipient held no channel registration is HELD rather than delivered by interrupt, and this is where it is visible. `pending` is recoverable: each entry names the recipient, how many notices are waiting, how long the oldest has waited and why the channel would not take it, and every one is retried on the daemon's 30-second sweep and delivered the moment that agent's registration comes back. `abandoned` is the one to act on: those notices waited past their window and were DROPPED, so the agents named there were never told and their Jira tickets are the only remaining record — go and read the ticket named in `lastSubject` rather than assuming somebody was informed. The abandoned count is never reset while this daemon lives. An empty `pending` and an empty `abandoned` together mean every notification this daemon produced reached a live channel. An ABSENT `undeliveredNotifications` field means this daemon does not track that, which is different from tracking it and holding nothing. ALSO CHECK boardControl.health: whether the board reconciler could establish, on its last cycle, that anybody MEANT to stop the agents it is not being told to run. Since KAN-342 an agent is stood down only where the board SAID something — a status that excludes its ticket, or an assignee that is somebody else's — and every other absence spares it. That evidence comes from one diagnostic query, so `health.diagnostic.answered: false` means NO AGENT CAN BE STOOD DOWN AT ALL while it lasts: a ticket moved to Done keeps its agent running, the fleet stops shrinking, and the capacity gate starts refusing real work while the reconciler goes on reporting that it converged. READ `consecutiveFailures` RATHER THAN `answered`, because they answer different questions: 1 is the ordinary one-off 5xx or timeout that the next cycle fixes and is NOT worth acting on, while a number in the tens means stand-downs have been off for that many minutes and somebody has to look — `failingSince` says when it started and `detail` carries Jira's own words, so a partial page is distinguishable from an outage. `health.agents` lists every agent left running for want of evidence, each with the `condition` that spared it: `undetermined` is the diagnostic being silent (the case above), while `no-assignee` is one ticket whose assignee field is empty and is fixed by assigning it to this machine's Jira account. `health: null` is NOT a healthy board — it means no cycle has completed yet, which is the ordinary state for the first minute after a daemon restart. An ABSENT `boardControl` field means no reconciler is wired here at all.",
+          "READ `completeness` FIRST, BEFORE THE LIST AND BEFORE ANY COUNT YOU TAKE OFF IT. It is the first field on every answer and it says whether this answer is the whole answer. `kind: 'complete'` means every field is present and every list is entire. `kind: 'clipped'` means this response was reduced to fit a declared character budget before it was sent, and it carries a `clipped` array naming each field, what was done to it, and the exact call that returns the rest. THE TWO ARE DIFFERENT SHAPES, NOT ONE SHAPE WITH A FLAG: a complete verdict has no `clipped` key at all, so there is no value you can misread as 'fine' — this is deliberately unlike Jira's `hasNextPage`, which reads `false` in both the complete and the truncated case. `agentsTotal` IS ALWAYS PRESENT AND IS NEVER CLIPPED: compare it against `agents.length` and you have checked the count in one step, whoever did the clipping. WHY THIS EXISTS (KAN-423): this response used to be serialised whole and handed to the client, which cut it to fit — measured at 44,557 characters against a client that delivered 10,000, with the middle of the `agents` array among the bytes that went. A short list and a clipped list were the same bytes, so an agent reading its own fleet under-counted it and concluded things about absence: nothing else is running, nobody holds that file, that key is free. Reduction now happens here, where it can be described. `agentsView` says how much is said about each row when the full rows would not fit: absent means whole rows, `'summarised'` means identity and status per agent, `'addresses'` means type/key only — NOTE THAT NEITHER OF THOSE DROPS AN AGENT, so the count stays exact and only the detail goes. A field reduced away leaves a stub carrying `omitted: 'for-budget'` and a `readWith` recipe rather than vanishing, because a deleted key and a key this daemon does not carry are the same absence and this response uses absence to mean the second one. Pass `view: 'summary'` for counts and addresses only, `section: '<field>'` to get one field back in full, or `offset: <n>` to walk a fleet too large for one answer. "
+          + "Lists every running agent, from herdr's view of what exists rather than the daemon's session map — so agents that outlived a daemon restart are still listed. Each entry carries sessionless: true when the daemon is not attached to it, in which case the session-only fields (sessionId, url, createdAt, status) are null. Panes named like agents but with no agent behind them are reported separately under unbackedPanes and are not counted as agents. ALSO CHECK censusUnreadableRecordsTotal BEFORE YOU TRUST THE AGENT COUNT: it is how many registry rows the census could not read and therefore did NOT count, and a zero there is what makes the list above trustworthy. A non-zero means THIS LIST IS SHORT BY THAT MANY and the agents it omits are named in censusUnreadableRecords with the reason each was skipped — so an agent may be running with no row here, and concluding 'nothing is working on that' from a short list is exactly the mistake this field exists to prevent. `null` is NOT zero and must not be read as one: it means no disclosure reached this daemon at all — the census could not be taken, or the peer predates read-path contract v4 — so the count may be short with nothing able to say so. READ EACH ROW'S `standing` RATHER THAN WATCHING THE COUNT: the count never falls on its own, so a steady non-zero is the ordinary state and is NOT a fault, while ANY INCREASE is a real event. `standing.available: false` means the peer is too old to have rendered a verdict (`because: 'peer-below-v7'`) — that is a fact about the CONNECTION and is NOT the same as `standing: 'unknown'`, which is a verdict about the row; do not read either as an all-clear. Where `standing.available` is true, read the verdict at `standing.verdict` with its evidence `standing.claimsEvent` beside it: `'retired'` means the row records an agent being switched off and nothing was going to be restored from it, while `'claims-an-agent'` is the one to look at. For those, READ `supersession` RATHER THAN GUESSING: `matched` means a later readable row already covers that agent and there is nothing to do, `ran-found-nothing` means nothing readable supersedes it and IS the case worth acting on, and `could-not-run` means the row named no path to join on so THE QUESTION WAS NOT ANSWERED — that is not evidence either way, and treating it as 'lost' manufactures an alarm that never clears. Use `identity` to find the line in the registry by hand; never join on it, because it is in the row's own vocabulary and matches nothing in a path-keyed list. `standing.claimsAt` is a quotation of what the row said and is NOT guaranteed to parse as a date. All three v7 fields sit together behind `standing.available` because they arrive together: a peer below v7 sends none of them, and reading a missing `claimsAt` as 'the row named no timestamp' is the same collapse one field over. ALSO CHECK missingAgents: agents the durable registry records as active that are not running at all — a ticket of theirs will still read In Progress while nothing is working on it, so treat a non-empty missingAgents as work that has silently stopped and needs re-activating or standing down. ALSO CHECK preemptedAgents: agents deliberately stood down to free capacity for higher-priority work, listed until they are put back. Their work was interrupted rather than finished, so their tickets must NOT be left In Progress — move each back to To Do with a comment naming what took its slot. Re-activating one resumes the conversation it was stopped in. standbyAgents is NOT a problem to fix: agents somebody switched off on purpose whose workspace is still on disk, listed so they can be started again (butchr_activate_agent with their type and key, and their recorded defaultAgent so they come back as what they were). standbyTotal is the unclipped count when more exist than are listed. ALSO CHECK each agent's `channel`: what its startup channel self-check found, and the carrier its messages will actually take. `transport: 'composer'` means that agent's channel loop did not prove out at bring-up, so a message to it will interrupt whatever it is doing — an agent silently on the composer while you believe it is on channels is exactly what this field exists to prevent. `outcome: 'unverified-client'` means the loop works but the Claude Code version it is running is one nobody has measured channel delivery on; channels are a research preview and the contract can move, so treat delivery to that agent as unproven and say so if you rely on it. `outcome: 'unchecked'` is NOT a fault: nobody has checked, usually because the agent outlived a daemon restart. READ `transport` RATHER THAN `outcome` FOR THE CARRIER — they are different questions and an unchecked agent can be on any of the three. `transport: 'unregistered'` means the agent holds no channel registration while the registry expects it to: a steer to it is REFUSED rather than delivered, it is the ordinary state for the first seconds after a daemon restart or a socket error, and it clears by itself when the agent's MCP server re-announces. Before KAN-274 this field read `'channel'` in that state and a send to such an agent interrupted it, so an older daemon's row cannot be trusted on this point. `clientVersion` is the client's own report of itself and is what pins any of this to a version. An absent `channel` field means this daemon cannot answer, which is different from every value it could carry. ALSO CHECK undeliveredNotifications: news the DAEMON ITSELF could not deliver — a ticket status change, a new comment, an agent of yours going blocked. Since KAN-301 the daemon never types a notification into a terminal, so a notification whose recipient held no channel registration is HELD rather than delivered by interrupt, and this is where it is visible. `pending` is recoverable: each entry names the recipient, how many notices are waiting, how long the oldest has waited and why the channel would not take it, and every one is retried on the daemon's 30-second sweep and delivered the moment that agent's registration comes back. `abandoned` is the one to act on: those notices waited past their window and were DROPPED, so the agents named there were never told and their Jira tickets are the only remaining record — go and read the ticket named in `lastSubject` rather than assuming somebody was informed. The abandoned count is never reset while this daemon lives. An empty `pending` and an empty `abandoned` together mean every notification this daemon produced reached a live channel. An ABSENT `undeliveredNotifications` field means this daemon does not track that, which is different from tracking it and holding nothing. ALSO CHECK boardControl.health: whether the board reconciler could establish, on its last cycle, that anybody MEANT to stop the agents it is not being told to run. Since KAN-342 an agent is stood down only where the board SAID something — a status that excludes its ticket, or an assignee that is somebody else's — and every other absence spares it. That evidence comes from one diagnostic query, so `health.diagnostic.answered: false` means NO AGENT CAN BE STOOD DOWN AT ALL while it lasts: a ticket moved to Done keeps its agent running, the fleet stops shrinking, and the capacity gate starts refusing real work while the reconciler goes on reporting that it converged. READ `consecutiveFailures` RATHER THAN `answered`, because they answer different questions: 1 is the ordinary one-off 5xx or timeout that the next cycle fixes and is NOT worth acting on, while a number in the tens means stand-downs have been off for that many minutes and somebody has to look — `failingSince` says when it started and `detail` carries Jira's own words, so a partial page is distinguishable from an outage. `health.agents` lists every agent left running for want of evidence, each with the `condition` that spared it: `undetermined` is the diagnostic being silent (the case above), while `no-assignee` is one ticket whose assignee field is empty and is fixed by assigning it to this machine's Jira account. `health: null` is NOT a healthy board — it means no cycle has completed yet, which is the ordinary state for the first minute after a daemon restart. An ABSENT `boardControl` field means no reconciler is wired here at all.",
         inputSchema: {
           type: "object",
-          properties: {},
+          properties: {
+            view: {
+              type: "string",
+              enum: ["full", "summary"],
+              description:
+                "Optional, default 'full'. 'summary' answers with every agent's type/key and the fleet counts, and none of the diagnostic sections — the answer that stays small however large the fleet gets. Use it when the question is who is running rather than what each one is doing. `agentsTotal` is present either way, so a summary is still a trustworthy count.",
+            },
+            section: {
+              type: "string",
+              description:
+                "Optional. Return exactly one top-level field of the response, in full, instead of the whole thing. This is what a `readWith` recipe on an omitted stub is telling you to call. An unknown name is refused with the list of names this response actually carries, rather than answered empty — 'no such section' and 'that section is empty' are different facts.",
+            },
+            offset: {
+              type: "number",
+              description:
+                "Optional, default 0. Where the `agents` window starts, for a fleet too large to answer in one call. Only ever needed when `completeness.clipped` reports `agents` with `reduction: 'entries-omitted'`, and the `readTheRest` on that record names the offset to pass.",
+            },
+          },
           required: [],
         },
       },
@@ -946,8 +969,82 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+/** What a tool hands back, before the budget gate below sees it. */
+type ToolResult = {
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+};
+
+/**
+ * THE BUDGET GATE — KAN-423, and it is deliberately the last thing every tool
+ * answer passes through.
+ *
+ * `butchr_list_agents` is fitted properly, by `fitListAgentsResponse`, at its
+ * own call site: it knows which fields matter and gives up the passengers
+ * before the fleet. Everything else lands here, where the only safe reduction
+ * on an unknown shape is to give up whole top-level fields largest-first —
+ * which is worse, and is still incomparably better than handing the client more
+ * than it will carry and letting it cut bytes off the end.
+ *
+ * WHY A GATE RATHER THAN A CALL PER TOOL. There are two dozen `return` sites in
+ * this handler and a new tool adds another. A rule enforced at each of them is a
+ * rule that holds until somebody adds the twenty-fifth; a rule enforced at the
+ * one place they all pass through covers the tools nobody has written yet. The
+ * defect KAN-423 was filed about is exactly what happens when a size limit is
+ * nobody's job.
+ *
+ * IT IS A BACKSTOP AND NOT THE FIX. On every tool but `butchr_list_agents` it
+ * should never fire — measured 2026-08-15, the next largest answer on this
+ * server is well under the budget. If it starts firing, that is a tool that has
+ * grown a fleet-sized field and wants a ladder of its own.
+ */
+function boundToBudget(name: string, result: ToolResult): ToolResult {
+  // Only the text payload is gated. `isError` is a verdict about the call and
+  // is carried through untouched: a refusal that got large must not become a
+  // success because it was reduced.
+  const single = result.content.length === 1 ? result.content[0] : null;
+  if (!single || single.type !== 'text') return result;
+
+  // Already fitted at its own call site. Re-fitting a fitted answer would wrap
+  // a completeness block around a completeness block, so the only case worth
+  // handling here is the one that means the call-site fit has a bug in it.
+  if (name === 'butchr_list_agents' && single.text.length <= MEASURED_CLIENT_CAP_CHARS) {
+    return result;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(single.text);
+  } catch {
+    // Not JSON — an `Error: ...` string from the catch in `dispatchTool`, which
+    // is short by construction. Nothing to reduce, and nothing safe to cut.
+    return result;
+  }
+
+  if (name === 'butchr_list_agents') {
+    // Over the cap despite the call-site fit: a bug in the fit, and not a
+    // reason to ship the overflow. Reduced again rather than let through.
+    return {
+      ...result,
+      content: [{ type: 'text', text: fitListAgentsResponse(parsed as Record<string, unknown>, {}).text }]
+    };
+  }
+
+  const fitted = fitGenericResponse(parsed, { tool: name });
+  // An answer already inside the budget goes back exactly as its tool wrote it.
+  // The gate is a ceiling, not a reformatter: adding a `completeness` block to
+  // every small answer on this server would churn two dozen tool contracts to
+  // say something none of them had a problem with.
+  if (fitted.completeness.kind === 'complete') return result;
+  return { ...result, content: [{ type: 'text', text: fitted.text }] };
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  return boundToBudget(name, await dispatchTool(name, args));
+});
+
+async function dispatchTool(name: string, args: unknown): Promise<ToolResult> {
 
   try {
     // The Atlassian proxy (KAN-272). Matched against the shared operation table
@@ -1136,9 +1233,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (name === "butchr_list_agents") {
+      const { view, section, offset } = (args ?? {}) as any;
       const res = await callDaemonAPI('list_agents');
+      // KAN-423. The census goes out through the fitter rather than through
+      // `JSON.stringify`, so what leaves here is inside a declared budget and
+      // carries a `completeness` verdict saying whether it is whole. The daemon
+      // socket above is untouched: the board page reads it with no cap, and the
+      // census itself is not this ticket's business.
+      const fitted = fitListAgentsResponse(res as Record<string, unknown>, {
+        view: view === 'summary' ? 'summary' : 'full',
+        section: typeof section === 'string' && section ? section : null,
+        offset: typeof offset === 'number' ? offset : 0
+      });
       return {
-        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        content: [{ type: "text", text: fitted.text }],
         // isError when an agent is missing, for the reason the staleness check
         // does the same: a supervisor skimming tool output for problems must
         // not skim past this one. A silently-stopped agent leaves its ticket
@@ -1196,7 +1304,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       isError: true,
     };
   }
-});
+}
 
 async function run() {
   const transport = new StdioServerTransport();
