@@ -262,11 +262,11 @@ if (!diagnosticOutcome.ok) {
       diff.toStop,
       diff.toStop.map((a) => ({
         agentName: a.agentName,
-        reason: explainAbsence(a.key, diagnostic, accountId)
+        reason: explainAbsence(a, diff.desired, diagnostic, accountId)
       }))
     );
     for (const a of diff.toStop) {
-      const reason = explainAbsence(a.key, diagnostic, accountId);
+      const reason = explainAbsence(a, diff.desired, diagnostic, accountId);
       console.log(`\n     ${a.type}/${a.key}`);
       console.log(`       condition: ${reason.condition}`);
       console.log(`       verdict:   ${isIntent(reason.condition)

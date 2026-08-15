@@ -434,11 +434,64 @@ import {
  * queries would miss a ticket together and `explainAbsence` would report
  * `wrong-status` — narrowed to what it observed, but still not the whole truth.
  * The `queries-disagree` branch narrows that a little: it catches the two
- * searches disagreeing with *each other*. **It has never fired, and it is not
- * what happened on KAN-59** — it is a branch for a case that is possible and
+ * searches disagreeing with *each other*. Closing the gap properly needs an
+ * authoritative per-key GET on the stand-down candidates; that is filed rather
+ * than done.
+ *
+ * ---------------------------------------------------------------------------
+ * `queries-disagree` HAS FIRED, AND EVERY ONE OF THOSE FIRINGS WAS THIS FILE'S
+ * OWN BUG RATHER THAN JIRA'S (KAN-470)
+ * ---------------------------------------------------------------------------
+ *
+ * Until 2026-08-15 the paragraph above ended: *"**It has never fired, and it is
+ * not what happened on KAN-59** — it is a branch for a case that is possible and
  * unobserved, and it is written to say so when it fires rather than to imply it
- * explains anything. Closing the gap properly needs an authoritative per-key GET
- * on the stand-down candidates; that is filed rather than done.
+ * explains anything."*
+ *
+ * **That was true when it was written and false for the 44 hours before anybody
+ * re-read it.** The branch had fired **1307 times** by 2026-08-15T13:40Z, every
+ * cycle since **2026-08-13T17:10:43Z**, and the sentence telling the reader it
+ * was hypothetical is what kept 1307 log lines unread — a reader who is told a
+ * branch is unobserved discounts the line that proves it is not. **What changed
+ * is not that a possible case finally happened. It is that the branch was
+ * reachable without its premise holding at all.**
+ *
+ * **What was actually firing.** Every one of the 1307 named `task/KAN-117`, and
+ * never `story/KAN-117` on the same key, and never any other key in the fleet.
+ * KAN-117 is a **Story**, In Progress, assigned to this machine's account, and
+ * `BOARD_JQL` returned it on every one of those cycles — the same cycles logged
+ * `8 desired, 8 already right`, and `story/KAN-117` was one of the eight.
+ * Two agents were running on the one key, and {@link computeBoardDiff} matches on
+ * **type and key together** (KAN-83), so `task/KAN-117` was not in the desired
+ * list and became a stand-down candidate — correctly.
+ *
+ * **The bug was the next line.** {@link explainAbsence} was handed `agent.key`
+ * and nothing else, so it asked *"is KAN-117 on the board?"* where the diff had
+ * asked *"is `task/KAN-117` on the board?"*. KAN-117 was; `task/KAN-117` was not.
+ * Right status, right assignee, and no explanation left — so it fell to the last
+ * branch and reported the two searches disagreeing. **The two searches never
+ * disagreed. Both returned KAN-117 every time.** The disagreement was between
+ * the diff's question and this function's, and the log line asserted a fact about
+ * Jira to describe it.
+ *
+ * **The class, which is why this is written out rather than just patched.** Two
+ * stages decided on different identifiers for the same agent, and the second one
+ * was written to explain the first's verdict. Nothing type-checked that they were
+ * answering about the same thing, because a key is a string and an address is a
+ * string. `explainAbsence` now takes the {@link RunningAgent} the diff acted on
+ * and the desired list the diff computed, so it cannot be asked a question the
+ * diff did not ask; and the case above has its own condition,
+ * `same-key-other-type`, which names what was observed instead of blaming an
+ * index. **It is deliberately not in {@link INTENT_CONDITIONS}** — the sparing was
+ * always right and nothing here changes it. What changes is the sentence.
+ *
+ * **What the old wording cost, stated because it is this file's own lesson.** The
+ * guard behaved correctly for 44 hours while describing itself wrongly, and the
+ * docblock promised the reader that the description could be ignored. That is
+ * the same defect this header warns about elsewhere — an artifact whose sentence
+ * claims more than its mechanism covers — and it survived because everything it
+ * touched kept working. **A branch's own comment is not evidence about whether it
+ * has fired. The log is.**
  */
 
 /**
@@ -634,6 +687,7 @@ export type AbsenceCondition =
   | IntentCondition
   | 'no-assignee'
   | 'assignee-uncompared'
+  | 'same-key-other-type'
   | 'queries-disagree'
   | 'undetermined';
 
@@ -646,6 +700,15 @@ export type AbsenceCondition =
  * Every other member of {@link AbsenceCondition} is an absence — a field that
  * was empty, a question the diagnostic could not answer, or two searches
  * contradicting each other — and an absence is not an instruction.
+ *
+ * `same-key-other-type` is deliberately **not** here either, and it is the one
+ * that looks most like an instruction while being none. The board *did* answer
+ * about that key — it said the key belongs to a different workspace type — so it
+ * is tempting to read it as "and therefore stop the other one". It is not: the
+ * board was asked which agents should run and never asked whether a second agent
+ * on the same key should stop, and a ticket cannot express that it wants one.
+ * Standing an agent down on it would let a single Jira issue-type field kill a
+ * pane that no ticket ever mentioned (KAN-470).
  *
  * `assignee-uncompared` is deliberately **not** here, and it is the subtle one.
  * It means the row carries an assignee that could not be checked against this
@@ -713,7 +776,9 @@ export interface SparedAgent {
  *
  * Pure, and a separate stage from {@link computeBoardDiff} on purpose. The diff
  * is computed from {@link BOARD_JQL} alone and its meaning is unchanged — every
- * running agent the partitioned query did not return is still a *candidate*.
+ * running agent whose **address** the partitioned query did not return is still
+ * a *candidate*. (Address, not key: the distinction reads pedantic until it
+ * isn't — see KAN-470 in the header.)
  * What is new is that being a candidate is no longer sufficient, and keeping
  * that as a second function rather than a third argument to the first is what
  * keeps {@link BOARD_DIAGNOSTIC_JQL}'s promise literally true: the diagnostic
@@ -1145,7 +1210,22 @@ export function fleetProjects(board: JiraBoardIssue[], running: RunningAgent[]):
 }
 
 /**
- * Why {@link BOARD_JQL} did not return `key` — decided from evidence.
+ * Why {@link BOARD_JQL} did not return `agent`'s **address** — decided from
+ * evidence.
+ *
+ * **It takes the agent, not its key, and that is load-bearing rather than
+ * convenience (KAN-470).** The question this function answers has to be the
+ * question {@link computeBoardDiff} asked, and the diff asks about `type` and
+ * `key` together. For 44 hours it was handed a bare `key`, answered a question
+ * about the ticket, and reported that answer as though it were about the agent —
+ * which is how a correctly-returned board row became 1307 log lines blaming
+ * Jira's search index. A key is a string and an address is a string, so nothing
+ * caught it; taking the {@link RunningAgent} is what makes the wrong question
+ * unaskable. See the header section `queries-disagree` HAS FIRED.
+ *
+ * `desired` is the partitioned query's own resolved rows — what the diff
+ * actually compared against — so the first branch is settled without consulting
+ * the diagnostic at all.
  *
  * Pure, and separated from the logging on purpose: what makes the old line
  * wrong is not its prose but that no code anywhere had established which
@@ -1169,11 +1249,56 @@ export function fleetProjects(board: JiraBoardIssue[], running: RunningAgent[]):
  * least able to check it by hand.
  */
 export function explainAbsence(
-  key: string,
+  agent: RunningAgent,
+  desired: DesiredAgent[],
   diagnostic: JiraBoardIssue[] | null,
   accountId: string | null
 ): AbsenceReason {
-  const wanted = key.trim().toUpperCase();
+  const wanted = agent.key.trim().toUpperCase();
+
+  // FIRST, AND BEFORE THE DIAGNOSTIC IS EVEN CONSULTED (KAN-470).
+  //
+  // This branch is decided from the *partitioned* result the diff itself was
+  // computed from, so it needs no second query and cannot be wrong about one.
+  //
+  // Every branch below asks the diagnostic about a KEY. The diff that produced
+  // this candidate asked about an ADDRESS — type and key together, never key
+  // alone (KAN-83) — so a key whose board row resolves to a *different* type
+  // reaches those branches with its status right, its assignee right, and no
+  // explanation left, and falls out of the bottom as `queries-disagree`: a
+  // claim that Jira contradicted itself, made about a query that answered
+  // correctly both times. That is not hypothetical; it is what ran 1307 times
+  // over 44 hours on `task/KAN-117` while `story/KAN-117` held the key. See the
+  // header section `queries-disagree` HAS FIRED.
+  //
+  // Taking the agent rather than its key is the half that stops this recurring:
+  // a later branch cannot silently ask about a key again, because a key is no
+  // longer what this function is given.
+  const sameKeyOtherType = desired.find(
+    (row) => row.key.trim().toUpperCase() === wanted && row.agentName !== agent.agentName
+  );
+  if (sameKeyOtherType) {
+    return {
+      condition: 'same-key-other-type',
+      statusName: sameKeyOtherType.statusName,
+      // The partitioned query's rows all satisfy `assignee = currentUser()`, so
+      // this is known to be this machine's — but `DesiredAgent` does not carry
+      // the display name, and inventing one here is the exact habit this whole
+      // module exists to break.
+      assignee: null,
+      detail:
+        `\`${BOARD_JQL}\` DID return ${wanted} this cycle — as a ` +
+        `${sameKeyOtherType.issueTypeName}, so the board wants ` +
+        `\`${sameKeyOtherType.agentName}\` and that is the agent it is asking for. What it ` +
+        `did not return is THIS address, \`${agent.agentName}\`: agents are matched on type ` +
+        `AND key together and never on key alone (KAN-83), so a second agent on the same key ` +
+        `with a different type can never be in the desired list while the board says ` +
+        `${sameKeyOtherType.issueTypeName}. Nothing is wrong with Jira, nothing is wrong with ` +
+        `the ticket, and the two searches did not disagree — this is one key with two agents ` +
+        `on it. The board was never asked whether this second agent should stop, and an issue ` +
+        `type is not an instruction to kill a pane no ticket mentioned (KAN-470)`
+    };
+  }
 
   if (!diagnostic) {
     return {
@@ -1518,7 +1643,10 @@ export class BoardReconciler {
         cycle.absences.push({
           agentName: agent.agentName,
           key: agent.key,
-          reason: explainAbsence(agent.key, diagnostic, accountId)
+          // The agent and the desired list, never the bare key: this call is
+          // explaining `diff`'s verdict and must be asked `diff`'s question
+          // (KAN-470).
+          reason: explainAbsence(agent, diff.desired, diagnostic, accountId)
         });
       }
     } catch (e: any) {
@@ -1536,9 +1664,11 @@ export class BoardReconciler {
 
     // ------------------------------------------------------ absence or intent --
     //
-    // KAN-342. `diff.toStop` is every running agent the partitioned query did
-    // not return, which is a question rather than an answer: the board may have
-    // said "stop", or it may have said nothing at all. This is where the two
+    // KAN-342. `diff.toStop` is every running agent whose ADDRESS the
+    // partitioned query did not return — type and key together, which is not
+    // the same set as "every agent whose key it did not return" and the gap
+    // between the two is KAN-470. It is a question rather than an answer: the
+    // board may have said "stop", or it may have said nothing at all. This is where the two
     // are separated, and it is the only gate between a candidate and a killed
     // pane. See the header section AN ABSENT ASSIGNEE PROTECTS TOO.
     const { standDowns, spared } = partitionStandDowns(diff.toStop, cycle.absences);
@@ -1838,7 +1968,14 @@ export class BoardReconciler {
     // KAN-221 made and KAN-342 is here to undo.
     for (const { agent, reason } of cycle.spared) {
       this.opts.log(
-        `[board] ${address(agent)} is running and \`${this.jql}\` did not return it, but ` +
+        // "did not return this type and key together" rather than the old "did
+        // not return it" (KAN-470). The old wording said the query had not
+        // returned the *ticket*, which for `same-key-other-type` is flatly
+        // false — the query returned it, under the other type. The precise
+        // clause is true of every condition here, because `toStop` is computed
+        // by address and never by key.
+        `[board] ${address(agent)} is running and \`${this.jql}\` did not return this type ` +
+        `and key together (agents match on both, never on key alone — KAN-83), but ` +
         `nothing established that anybody asked it to stop — ${renderedKey(agent.key)}: ` +
         `${reason.detail}. Leaving it running: this loop honours what the board says, and an ` +
         `absent field has not said anything (KAN-342, condition \`${reason.condition}\`).`
