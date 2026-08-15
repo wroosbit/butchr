@@ -127,7 +127,7 @@ is the reason this correction is a cutover matter rather than a footnote.
 | what **decides** whether a conversation comes back | Butchr, from the directory it is about to launch in | **CrabCast, off its own durable record, with nobody asking.** It reports the decision on `activate_response.resumedExistingConversation` — published contract, covered since v5 |
 | result at a workspace's **first** CrabCast activation | the conversation comes back | **a new conversation starts in the same directory.** CrabCast holds no record of a path it has never run, so there is nothing for its resume rule to find |
 | result at **every activation after that** | the conversation comes back | **the conversation comes back** — measured, two instruments, KAN-396 |
-| who learns that a resume happened | `spawnSession` sets `resumedConversation` on the session (`daemon/src/herdr.ts`) | **nobody on this side.** `provision()` reads `sessionId` and `channelEnabled` off `activate_response` and **drops `resumedExistingConversation` on the floor** — [gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one) |
+| who learns that a resume happened | `spawnSession` sets `resumedConversation` on the session (`daemon/src/herdr.ts`) | **`provision()` does, since KAN-432.** It reads `activate_response.resumedExistingConversation` through `readResumedConversation` and sets `session.resumedConversation` — [gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one), now closed |
 
 **The transcript file is not deleted, and that is not a reprieve.**
 `claude --continue` is documented by the CLI as *"Continue the most recent
@@ -138,45 +138,65 @@ it by id with `claude --resume`; **Butchr has no path that does**, and nothing
 re-attaches such a session to an agent record. See *Open questions*, U-2: whether
 that hand recovery actually produces a working agent has not been measured.
 
-### Gate 10: a resumed agent is recorded as a working one
+### Gate 10: a resumed agent is recorded as a working one — **CLOSED (KAN-432)**
 
 **This is the reason the section above is a cutover matter and not a footnote.**
 A reader of the old wording concluded *"agents always start fresh under
 CrabCast"*, and from that it follows that a resumed-agent problem cannot arise.
-**That conclusion is a cutover blocker, and it is
+**That conclusion was a cutover blocker, and it was
 [KAN-432](https://wroosbit.atlassian.net/browse/KAN-432) — gate 10 on
-[KAN-348](https://wroosbit.atlassian.net/browse/KAN-348).**
+[KAN-348](https://wroosbit.atlassian.net/browse/KAN-348). It has landed.**
 
-**The mechanism, in three lines of this repository:**
+**The mechanism it fixed, kept because a gate's history is what stops it being
+reopened:**
 
-1. `provision()` in `daemon/src/crabcast-runtime.ts` reads `sessionId` and
-   `channelEnabled` off `activate_response` and **never reads
-   `resumedExistingConversation`.** The field is on the wire; nothing here
-   consumes it.
-2. `resumedConversation` is therefore set on a session by **herdr only**
+1. `provision()` in `daemon/src/crabcast-runtime.ts` read `sessionId` and
+   `channelEnabled` off `activate_response` and **never read
+   `resumedExistingConversation`.** The field was on the wire; nothing here
+   consumed it.
+2. `resumedConversation` was therefore set on a session by **herdr only**
    (`daemon/src/herdr.ts`, from `hasRestorableConversation`). Under CrabCast it
-   is `undefined`.
-3. `daemon/src/reconcile.ts` reads `response.resumedConversation === true`, so
-   `undefined === true` is `false`, and the nudge guarded by it never fires.
+   was `undefined`.
+3. `daemon/src/reconcile.ts` read `response.resumedConversation === true`, so
+   `undefined === true` was `false`, and the nudge guarded by it never fired.
 
-**What that costs, in `reconcile.ts`'s own words** — the comment on the branch
-that does not run names the incident it exists to prevent:
+**What that cost, in `reconcile.ts`'s own words** — the comment on the branch
+that did not run names the incident it exists to prevent:
 
 > An agent whose conversation came back has all of its memory and no turn to
 > take: Claude Code resumes at an empty prompt and waits, which is precisely how
 > two agents sat idle on the day this ticket was filed until a human retyped
 > their instructions.
 
-**So under CrabCast a resumed agent is silently idle and is recorded as
-working.** It has a `sessionId`, it is in the census, it answers a tail — and it
-will sit at an empty prompt indefinitely. **Every check in step 9 below passes
-for it.**
+**What is true now.** `provision()` reads the field through
+`readResumedConversation`, the one place CrabCast's spelling meets ours. The
+verdict is a three-state `ResumedConversation` — `'restored' | 'fresh' |
+'unknown'` — and every consumer branches on `needsResumeNudge` rather than on a
+comparison that can silently fold a third state into an answer.
 
-**This document does not fix that** — KAN-432 does, and carrying the field across
-the seam is deliberately not in scope here. What this document owes its reader is
-that the failure is **visible to somebody walking the sequence on the day**, which
-is why it is a precondition in §4 and a check in steps 10 and R4 rather than
-prose alone.
+⚠ **`'unknown'` is not a hypothetical, and a driver should know why it exists.**
+CrabCast's contract puts `resumedExistingConversation` on the **spawning**
+branch and deliberately not on the **idempotent** one, and says a reconciler
+meets the idempotent branch most often. **An unknown verdict is nudged**, and
+the daemon log says so distinctly — so a driver reading `[reconcile]` on the day
+will see unknowns named rather than folded into the already-working count.
+
+**What this does NOT close, and step 10 still earns its place:**
+
+- **Nothing has been observed end to end against a real CrabCast, and nothing
+  can be before the flip.** Each link is measured and the join is reasoning.
+  `verify-resumed-conversation-nudge.mjs` drives the real `reconcileAgents`,
+  `MessageRouter` and `CrabCastRuntime` over a socket **it stands up itself**,
+  so it cannot notice CrabCast sending something else, or nothing.
+- **The reconciler path after a real daemon restart is still unexercised** —
+  `task/KAN-396` named that gap and it is not closed here.
+- **An unrequested CrabCast resume is still nudged by nobody.** Both nudge sites
+  gate on `session.resume` first, and CrabCast resumes paths unasked. Filed as
+  [KAN-440](https://wroosbit.atlassian.net/browse/KAN-440).
+
+**So step 10's per-agent check for a TURN rather than for presence stays.** The
+mechanism that made it necessary is fixed; the evidence that the fix works on
+the day is exactly what step 10 collects.
 
 ---
 
@@ -328,24 +348,31 @@ of them is checked by anything automatic.
 
 - **The open gates are closed.** KAN-379 (gate 2, the `claude` launcher
   path), KAN-380 (gate 4, workspace deletion), KAN-381 (gate 5, reconnect
-  resync), **KAN-432 (gate 10, the dropped resume signal — see below)**, and
-  gate 3, which is CrabCast's leg and has no Butchr ticket. Read
+  resync), and gate 3, which is CrabCast's leg and has no Butchr ticket.
+  **KAN-432 (gate 10, the dropped resume signal) has landed — see below.** Read
   KAN-348 for their current state; do not read this list as their status.
-- ⚠ **Gate 10 specifically, because it is the one whose failure looks like
-  success.** Until `provision()` carries `resumedExistingConversation` through to
-  the `resumedConversation` that `daemon/src/reconcile.ts` branches on, **a
-  resumed agent is nudged by nothing and is recorded as working.** See
-  [Gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one). This
-  precondition is **not** satisfied by reading that the gate exists; it is
-  satisfied by KAN-432 having landed, or by the paragraph below being accepted in
-  writing on the cutover's ticket.
+- ✅ **Gate 10 is closed, and it is kept here because it is the one whose failure
+  looked like success.** `provision()` now carries
+  `resumedExistingConversation` through to the `resumedConversation` that
+  `daemon/src/reconcile.ts` branches on, so **a resumed agent is told to carry
+  on**, and a verdict the runtime could not supply is nudged rather than
+  silently recorded as working. See
+  [Gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one).
 
-  **What an unresolved gate 10 means for step order, because that is a real
-  question and not a formality.** It does **not** move the flip, and it does not
-  reorder steps 1–9: gate 10 cannot fire before a workspace's *second* CrabCast
-  activation, and at step 9 every workspace on the machine has had at most one.
-  **What it changes is everything from step 10 onward.** Concretely, while gate
-  10 is open:
+  ⚠ **What closing it did NOT buy, because this precondition is still not
+  satisfied by reading that the gate is shut.** Nothing has been observed end to
+  end against a real CrabCast and nothing can be before the flip — each link is
+  measured, the join is reasoning. **So the day's evidence is still step 10's**,
+  and the paragraph below is retained rather than deleted: it is what a driver
+  falls back to if the chain turns out not to compose.
+
+  **What an unresolved gate 10 would mean for step order — retained because a
+  sequence that quietly stops mentioning a hazard leaves its reader unable to
+  tell "fixed" from "never existed."** It does **not** move the flip, and it does
+  not reorder steps 1–9: gate 10 cannot fire before a workspace's *second*
+  CrabCast activation, and at step 9 every workspace on the machine has had at
+  most one. **What it changes is everything from step 10 onward.** Were gate 10
+  open — or were the fix to prove not to compose on the day:
 
   1. **Step 10's stagger stops being a courtesy and becomes the check.** Agents
      must be brought back **one at a time**, each confirmed to be *taking a
@@ -356,15 +383,28 @@ of them is checked by anything automatic.
      to silently-idle in one step. Under an open gate 10, plan a restart as a
      drain-and-restore with step 10's per-agent check, not as a restart.
   3. **Rollback step R4 does NOT carry this burden, and saying so precisely
-     matters.** Gate 10 is a defect on the *CrabCast* path only: herdr's
+     matters.** Gate 10 was a defect on the *CrabCast* path only: herdr's
      `spawnSession` sets `resumedConversation` from
      `hasRestorableConversation(workDir)`, so after a rollback `reconcile.ts`
-     branches correctly and **does** nudge. What R4 carries instead is a
-     different correction, and it is in that step.
+     branches correctly and **does** nudge. That was true while the gate was
+     open and is unchanged by closing it — herdr's producer never moved, and
+     KAN-432 only added a second producer beside it. What R4 carries instead is
+     a different correction, and it is in that step.
 
-  **If that is accepted rather than fixed, write the acceptance on the cutover's
-  ticket with a named owner for the manual nudging.** An accepted cost with
-  nobody holding it is an unaccepted cost.
+  **That acceptance is no longer the live option — KAN-432 fixed it rather than
+  accepting it.** The clause is kept because the choice may recur: if the chain
+  turns out not to compose on the day, accepting the cost is still available,
+  and **an acceptance written without a named owner for the manual nudging is an
+  unaccepted cost.**
+
+  ⚠ **One resume case is still nudged by nobody, and it is not covered by
+  closing gate 10.** Both nudge sites gate on `session.resume` before they read
+  the verdict, and CrabCast resumes paths it has run before **with nobody
+  asking** — so an ordinary activation that CrabCast silently resumes is
+  recorded correctly and acted on by no one. It is filed as
+  [KAN-440](https://wroosbit.atlassian.net/browse/KAN-440) and it is latent
+  until the flip, exactly as gate 10 was. **Step 10's per-agent turn check is
+  what would catch it on the day.**
 - **Closing a gate is not clearing the way.** The first flip, at 10:58Z on
   2026-08-12, was made on six preconditions that were *all genuinely met*. They
   asked whether the runtime connects. The gates ask whether it can do the job.
@@ -636,19 +676,28 @@ restores a conversation.
   directory.
 - **Who:** the driver.
 
-⚠ **A green step 9 says nothing about gate 10, and this is the step at which that
-is easiest to miss.** The canary is at its workspace's *first* CrabCast
-activation, so it cold-starts, so its prompt goes in on the command line and it
-is genuinely working. **Every check above passes for it — and would pass equally
-for a resumed agent sitting at an empty prompt.** Gate 10 cannot fire before a
-second activation. Do not read this step's green as covering it.
+⚠ **A green step 9 says nothing about a resumed agent, and this is the step at
+which that is easiest to miss — closing gate 10 does not change it.** The canary
+is at its workspace's *first* CrabCast activation, so it cold-starts, so its
+prompt goes in on the command line and it is genuinely working. **Every check
+above passes for it — and would pass equally for a resumed agent sitting at an
+empty prompt.** The resume path cannot be exercised before a second activation,
+so this step does not reach it either way.
+
+**What closing gate 10 changed is the expected outcome, not the coverage.** A
+resumed agent should now be nudged; step 9 still cannot see whether it was, and
+step 10 is still the first step that can.
 
 ### Step 10 — One supervisor, then the rest
 
 - **Precondition:** step 9 fully checked, not partially.
 - **Action:** activate one supervisor and run step 9's checklist against it.
-  Then bring the remaining agents back, staggered rather than all at once. **While
-  gate 10 is open the stagger is one at a time**, and §4 says why.
+  Then bring the remaining agents back, staggered rather than all at once.
+  **Gate 10 is closed, so the stagger is no longer forced to one at a time by
+  it** — but keep it one at a time on the *first* restore after the flip
+  regardless. That restore is the first time the resume chain runs against a
+  real CrabCast at all, and §4 says why nothing before the day can establish
+  that it composes.
 - **Check:** step 9's list, per agent. Plus: capacity is not exhausted, and the
   machine's load is not what a mass restore made it. **Plus, per agent, the one
   step 9 could not cover: that it is TAKING A TURN and not merely present.**
@@ -659,6 +708,16 @@ second activation. Do not read this step's green as covering it.
   is **indistinguishable in the census** from an agent working normally, and it
   is what a resumed, un-nudged agent looks like. If you see it, prompt the agent
   by hand and record that you had to.
+
+  ⚠ **This check is MORE informative now that gate 10 is closed, not less.**
+  Before, a bare prompt was the expected outcome and told you nothing you did
+  not already know. Now it means one of three things, and they are worth telling
+  apart on the day: the nudge was attempted and did not land (the daemon log
+  says so — `grep '\[nudge\]'`), the verdict came back `'unknown'` and the nudge
+  was sent anyway (also logged, distinctly), or **CrabCast resumed an activation
+  Butchr never called a resume**, which nothing nudges —
+  [KAN-440](https://wroosbit.atlassian.net/browse/KAN-440). Read the log before
+  prompting by hand, and record which of the three it was.
 - **Abort:** the same list. A supervisor that starts and cannot reach its tools
   looks alive and is useless, and it is the population that has no conversation
   left to fall back on. **Also abort if an agent cannot be got to take a turn
@@ -758,10 +817,15 @@ Stop and do not proceed if any of these is observed at any point:
 7. **An agent that is in the census and has taken no turn.** It has a
    `sessionId`, it tails, it answers — and it has done nothing since activation.
    **Every other condition on this list is blind to it**, which is why it is
-   here. While gate 10 is open this is the *expected* shape of a resumed agent,
-   so it is not by itself evidence that the cutover is going wrong; it is
-   evidence that nothing is driving that agent. Stop bringing more agents back,
-   prompt it by hand, and record it. See
+   here. **While gate 10 was open this was the *expected* shape of a resumed
+   agent. It no longer is** — KAN-432 closed that gate, so a resumed agent
+   should be taking a turn, and this condition has gone from expected to
+   anomalous. That makes it a *stronger* abort signal than it was, not a
+   retired one. It is still not by itself evidence that the cutover is going
+   wrong; it is evidence that nothing is driving that agent. Stop bringing more
+   agents back, **read the daemon log for `[nudge]` before prompting by hand**
+   (step 10 names the three things it distinguishes), prompt it, and record
+   which. See
    [Gate 10](#gate-10-a-resumed-agent-is-recorded-as-a-working-one).
 8. **Anything this document does not predict.** The sequence is only as good as
    its stated mechanism; an unpredicted observation means the mechanism is wrong,
