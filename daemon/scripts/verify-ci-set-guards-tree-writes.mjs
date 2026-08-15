@@ -59,11 +59,17 @@
 // which is the only test that separates a verdict that fires from one that
 // cannot.
 //
-// What runs under test is the SHIPPED runner: `run-ci-verify-set.mjs` and
-// `lib/ci-partition.mjs` are copied byte-for-byte into a temporary git
+// What runs under test is the SHIPPED runner: `run-ci-verify-set.mjs` and the
+// whole of `daemon/scripts/lib/` are copied byte-for-byte into a temporary git
 // repository at run time, never re-implemented here, and §5 asserts the copy is
 // identical. The fixture children are generated, because the defect has to be
 // deliberate — the whole point is watching the gate catch it.
+//
+// The staging copied `lib/ci-partition.mjs` BY NAME until KAN-465, which was
+// right until that module grew a second import and then died with
+// ERR_MODULE_NOT_FOUND — ten of sixteen checks red, in the file whose subject is
+// a gate going red for the wrong reason. The directory is copied now, so the
+// fixture has no list to keep in step.
 //
 // CI-RUNNABLE: yes — it builds a throwaway git repository under `os.tmpdir()`
 // and spawns the copied runner in it. No live daemon, no herdr, no credential,
@@ -87,11 +93,13 @@ import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { everySourceFile } from './lib/sweep-sources.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(here, '..', '..');
 const RUNNER = path.join(REPO_ROOT, 'daemon', 'scripts', 'run-ci-verify-set.mjs');
 const PARTITION_LIB = path.join(REPO_ROOT, 'daemon', 'scripts', 'lib', 'ci-partition.mjs');
+const LIB_DIR = path.join(REPO_ROOT, 'daemon', 'scripts', 'lib');
 
 const verbose = process.argv.includes('--verbose');
 
@@ -169,7 +177,21 @@ function fixture({ scripts, git = true, uncommitted = null }) {
 
   // The shipped files, copied rather than re-implemented. §5 asserts identity.
   fs.copyFileSync(RUNNER, path.join(dir, 'daemon', 'scripts', 'run-ci-verify-set.mjs'));
-  fs.copyFileSync(PARTITION_LIB, path.join(dir, 'daemon', 'scripts', 'lib', 'ci-partition.mjs'));
+
+  // THE WHOLE OF `lib/`, not a named list of it (KAN-465). This staged
+  // `ci-partition.mjs` and nothing else, which was correct for exactly as long
+  // as `ci-partition.mjs` imported nothing — and the moment it grew a second
+  // import the fixture died with ERR_MODULE_NOT_FOUND, ten of sixteen checks
+  // red, in a script whose own subject is a gate going red for the wrong
+  // reason. A hand-maintained list of a module's dependencies is the same
+  // defect this ticket is about wearing different clothes: it reads correctly,
+  // it is right until it silently is not, and nothing about the copy says which.
+  // Copying the directory has no such failure mode.
+  for (const rel of everySourceFile(LIB_DIR, (base) => base.endsWith('.mjs'))) {
+    const dest = path.join(dir, 'daemon', 'scripts', 'lib', rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(path.join(LIB_DIR, rel), dest);
+  }
 
   // The two build artifacts the runner checks for up front.
   fs.writeFileSync(path.join(dir, 'daemon', 'dist', 'daemon.js'), '// fixture\n');

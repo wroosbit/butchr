@@ -76,6 +76,7 @@ import { tmpdir } from 'os';
 import net from 'net';
 import path from 'path';
 import { pathToFileURL, fileURLToPath } from 'url';
+import { sweepTree } from './lib/sweep-sources.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
@@ -570,9 +571,24 @@ rule('4. the allowlist has not drifted from what the daemon actually emits');
 // The direction an allowlist fails in: an event added to the daemon and not to
 // the list is dropped in silence. Read out of the sources rather than restated,
 // so the two cannot be kept in step by hand.
+// RECURSIVE SINCE KAN-465. This read `readdirSync(path.join(daemonDir, 'src'))`
+// and enumerated 58 of the 62 `.ts` under `daemon/src`. The direction that
+// matters is the one this rule already names: an event added to the daemon and
+// not to the allowlist is dropped in silence — and an event added in
+// `integrations/` was invisible to the check that would have caught it, so the
+// silence was doubled. Nothing in those four files emits an event today
+// (measured on KAN-465), so this changes no verdict on this build; it changes
+// what the verdict is about.
+const emissionSweep = sweepTree(path.join(daemonDir, 'src'), { label: 'daemon/src' });
+console.log(`  ${emissionSweep.coverage}`);
+check(
+  'the sweep behind this rule reached every daemon source',
+  emissionSweep.reachedEverything,
+  emissionSweep.detail
+);
+
 const emitted = new Set();
-for (const file of readdirSync(path.join(daemonDir, 'src'))) {
-  if (!file.endsWith('.ts')) continue;
+for (const file of emissionSweep.files) {
   const src = readFileSync(path.join(daemonDir, 'src', file), 'utf8');
   for (const m of src.matchAll(/action:\s*'([a-z_]+_event)'/g)) emitted.add(m[1]);
 }

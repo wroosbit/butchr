@@ -34,12 +34,16 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { everySourceFile } from './sweep-sources.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(here, '..', '..', '..');
 
 /** The two directories the sweep polices, kept identical to it on purpose. */
 export const SCRIPT_DIRS = ['daemon/scripts', 'extension/scripts'];
+
+/** A `verify-` script, by BASENAME — the sweep hands back relative paths. */
+const IS_VERIFY = (base) => base.startsWith('verify-') && base.endsWith('.mjs');
 
 /**
  * The four classes. `yes` and `partial` are what CI runs; `quarantined` and
@@ -99,8 +103,15 @@ export function readPartition(repoRoot = REPO_ROOT) {
   for (const dir of SCRIPT_DIRS) {
     const abs = path.join(repoRoot, dir);
     if (!fs.existsSync(abs)) continue;
-    for (const name of fs.readdirSync(abs).sort()) {
-      if (!name.startsWith('verify-') || !name.endsWith('.mjs')) continue;
+    // RECURSIVE SINCE KAN-465, for the reason `sweep-verify-exit-paths.mjs`
+    // gives at its own sweep: `daemon/scripts` HAS depth (`lib/`, `fixtures/`),
+    // so a flat enumeration holding today is a fact about where files sit and
+    // not about the sweep. These two must move together — the partition guard
+    // compares `ci-partition.md` against this generator, so a sweep here that
+    // saw fewer scripts than the exit-path sweep would make the two disagree
+    // about the population and put a required check into a fight nobody could
+    // resolve from the output.
+    for (const name of everySourceFile(abs, IS_VERIFY)) {
       const rel = path.join(dir, name);
       const source = fs.readFileSync(path.join(abs, name), 'utf8');
       const annotation = parseAnnotation(source);

@@ -89,6 +89,7 @@ import { fileURLToPath } from 'url';
 import { boardPageFor } from '../dist/board-page.js';
 import { MessageRouter } from '../dist/router.js';
 import { GuardianRecord, DEFAULT_POKE_INTERVAL_MS, OVERDUE_INTERVALS } from '../dist/guardian.js';
+import { sweepTree } from './lib/sweep-sources.mjs';
 
 const identityOnly = process.argv.includes('--identity-only');
 const dropInvariant = process.argv.includes('--drop-invariant');
@@ -451,10 +452,23 @@ check(
   offenders.length ? offenders.map((f) => path.relative(repo, f)).join(', ') : `${extensionSources.length} files read`
 );
 
-const daemonMatchers = fs
-  .readdirSync(path.join(repo, 'daemon', 'src'))
-  .filter((f) => f.endsWith('.ts'))
-  .filter((f) => /jira\\\/software|boards\\\/\(/.test(fs.readFileSync(path.join(repo, 'daemon', 'src', f), 'utf8')));
+// RECURSIVE SINCE KAN-465, and this script is the reason the ticket's own table
+// needed re-deriving: it was classified CONFIRMED RECURSIVE on the strength of
+// the `recursive: dir === 'src'` sweep above, which walks the EXTENSION sources.
+// This second sweep, of `daemon/src`, was flat and read 58 of 62. A script is
+// not recursive because one of its enumerations is — the classification belongs
+// to the call site, not to the file.
+const daemonSweep = sweepTree(path.join(repo, 'daemon', 'src'), { label: 'daemon/src' });
+console.log(`  ${daemonSweep.coverage}`);
+check(
+  'the daemon-side sweep reached every source file',
+  daemonSweep.reachedEverything,
+  daemonSweep.detail
+);
+
+const daemonMatchers = daemonSweep.files.filter((f) =>
+  /jira\\\/software|boards\\\/\(/.test(fs.readFileSync(path.join(repo, 'daemon', 'src', f), 'utf8'))
+);
 check(
   'and exactly one daemon module holds it',
   daemonMatchers.length === 1 && daemonMatchers[0] === 'board-page.ts',
