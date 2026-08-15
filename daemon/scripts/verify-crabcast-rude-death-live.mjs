@@ -114,6 +114,66 @@ async function until(fn, budgetMs, stepMs = 120) {
 // §4 first, because it needs neither a build nor a peer.
 // ══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Every `.ts` under `daemon/src`, **recursively**, with paths relative to it.
+ *
+ * **This walked depth 1 only until `epic/KAN-39` mutated it, and that is why it
+ * is a named function with a control below rather than an inline
+ * `readdirSync`.** The flat version enumerated 58 files where the tree holds
+ * 62: a real `if (event.errno === 'ECONNRESET')` in
+ * `src/integrations/integration.ts` was invisible to this gate, which reported
+ * *"1 read"* and passed. **The gate that makes "no difference is needed"
+ * enforceable was itself unenforceable in four files.**
+ *
+ * It is the fourth instance of a non-recursive sweep on this board and the
+ * third found by mutation rather than by review — see the close-out on KAN-456
+ * for whether a shared walker is worth filing.
+ */
+function everySourceFile(dir, prefix = '') {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...everySourceFile(path.join(dir, entry.name), rel));
+    else if (entry.name.endsWith('.ts')) out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * Blank everything that is not executable code, preserving line numbers.
+ *
+ * **A mention of `event.errno` in prose is not a read of it**, and this gate
+ * goes red on *branches*, so it must not fire on a docblock discussing the
+ * field or on a string that quotes a branch. That matters more here than it
+ * looks: this PR's own diff corrects a comment about errno, so a gate that
+ * could not tell code from commentary would be red on its own documentation.
+ *
+ * **Comments were handled from the start; string literals were not, and that
+ * hole was invisible while the walk was flat.** `epic/KAN-39` injected both a
+ * comment and a string-literal branch to check for a false positive and got a
+ * green — but from a file the walk never opened, so the green was about the
+ * enumeration rather than about string handling. Re-run against a *swept* file,
+ * the string literal alone turned this section red. Both defects are fixed
+ * here, and the second was only reachable by fixing the first.
+ *
+ * Template literals are deliberately left intact: a read inside `${…}` is being
+ * rendered, which is the presentational case the caller already recognises.
+ */
+function codeOnly(text) {
+  const withoutBlockComments = text.replace(/\/\*[\s\S]*?\*\//g, (m) =>
+    m.replace(/[^\n]/g, ' ')
+  );
+  return withoutBlockComments
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/\/\/.*$/, '')
+        .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+        .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    )
+    .join('\n');
+}
+
 function sectionFourStaticErrnoGate() {
   rule('§4  STATIC: nothing branches on `event.errno` — the "no difference is needed" gate');
 
@@ -123,21 +183,67 @@ function sectionFourStaticErrnoGate() {
   );
 
   let sources;
+  let files;
   try {
-    sources = fs
-      .readdirSync(srcDir)
-      .filter((f) => f.endsWith('.ts'))
-      .map((f) => ({ file: f, text: fs.readFileSync(path.join(srcDir, f), 'utf8') }));
+    files = everySourceFile(srcDir);
+    sources = files.map((file) => ({
+      file,
+      raw: fs.readFileSync(path.join(srcDir, file), 'utf8')
+    }));
   } catch (err) {
     console.error(`setup: could not read ${srcDir}: ${err?.message ?? err}`);
     process.exit(1);
   }
 
-  // Every read of the drop event's errno, anywhere in the daemon.
+  // ── the control on the instrument itself ────────────────────────────────
+  //
+  // **An enumeration that silently stopped recursing would report a smaller
+  // number and pass**, which is exactly what happened. So the sweep is asked to
+  // prove it reached the subdirectories that exist, rather than asked for a
+  // count nobody can check. Named directories are NOT hard-coded: the control
+  // reads the tree and requires coverage of whatever it finds.
+  const subdirsWithSources = fs
+    .readdirSync(srcDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .filter((name) => files.some((f) => f.startsWith(`${name}/`)));
+  const subdirsMissed = fs
+    .readdirSync(srcDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .filter(
+      (name) =>
+        !subdirsWithSources.includes(name) &&
+        fs.existsSync(path.join(srcDir, name)) &&
+        everySourceFile(path.join(srcDir, name)).length > 0
+    );
+
+  console.log(
+    `   swept ${files.length} .ts file(s) under daemon/src, ` +
+      `including ${files.filter((f) => f.includes('/')).length} below the top level` +
+      (subdirsWithSources.length
+        ? ` (${subdirsWithSources.map((d) => `${d}/`).join(', ')})`
+        : '') +
+      `\n`
+  );
+
+  check(
+    'the sweep RECURSES — every subdirectory of daemon/src holding .ts files is covered',
+    subdirsMissed.length === 0,
+    `missed: ${subdirsMissed.join(', ') || '(none)'}. A flat enumeration is how this gate ` +
+      `passed while a real branch sat four files away; the count it reports is not ` +
+      `checkable by a reader, so the sweep proves its own reach instead.`
+  );
+
+  // Every read of the drop event's errno, anywhere in the daemon, counted off
+  // code rather than off prose.
   const reads = [];
-  for (const { file, text } of sources) {
-    text.split('\n').forEach((line, i) => {
-      if (/event\.errno/.test(line)) reads.push({ file, line: i + 1, text: line.trim() });
+  for (const { file, raw } of sources) {
+    const code = codeOnly(raw).split('\n');
+    raw.split('\n').forEach((rawLine, i) => {
+      if (/event\.errno/.test(code[i] ?? '')) {
+        reads.push({ file, line: i + 1, text: rawLine.trim(), code: (code[i] ?? '').trim() });
+      }
     });
   }
 
@@ -159,10 +265,10 @@ function sectionFourStaticErrnoGate() {
   // a literal errno) is a branch on a value this ticket measured to be `null` on
   // both arms, which is the defect.
   const branchy = reads.filter((r) => {
-    const t = r.text;
-    if (/^\s*\*/.test(t) || /^\s*\/\//.test(t)) return false; // a comment is not a branch
-    const insideTemplate = /\$\{[^}]*event\.errno/.test(t);
-    if (insideTemplate) return false;
+    // `r.code` already has comments and string literals blanked, so anything
+    // left here is executable. A read inside `${…}` is being rendered.
+    const t = r.code;
+    if (/\$\{[^}]*event\.errno/.test(t)) return false;
     return /\b(if|switch|while)\s*\(|===|!==|==|case\s|\?\s*[^:]*:/.test(t);
   });
 
