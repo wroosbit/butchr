@@ -1626,6 +1626,150 @@ const RULES = [
       ],
     },
   },
+  {
+    // KAN-471. A long ticket's comment history is a window, and the fields
+    // that say so sit after the payload that hides them.
+    //
+    // WHAT WAS MEASURED, because the rule is worthless without the numbers:
+    // on KAN-39, 2026-08-15, `getJiraIssue(fields: ["comment"])` returned
+    // **100 of 211** comments and the JQL search route returned **20 of 211**.
+    // Both containers carried `total`, `maxResults` and a non-zero `startAt`,
+    // and `startAt + returned === total` held exactly on both. The cap is real
+    // and the reporting of it is complete.
+    //
+    // WHY IT IS CARRIED BY ALL FOUR PROMPTS RATHER THAN task.md ALONE, which
+    // is the question H-29's docblock had to answer in the opposite direction:
+    // H-29 is task-only because only task agents merge, and an epic prompt
+    // teaching merge mechanics would be green only because somebody pasted an
+    // irrelevant paragraph. Nothing like that applies here. **Every agent type
+    // reads tickets, and supervisors read the longest ones** — KAN-39 is the
+    // epic whose history is already past the cliff, and an epic agent
+    // reconstructing a ruling off it is the exact reader this rule is for. Its
+    // sibling H-28 is carried by all four for the same reason.
+    //
+    // THE FILING IS THE SPECIMEN, AND THAT IS WHY IT IS QUOTED RATHER THAN
+    // TIDIED AWAY. KAN-471 reported "no `total`, no `maxResults`, no marker of
+    // any kind" for fields that were present. It was not careless — it checked
+    // the confound it could think of, that the spilled file was truncated, and
+    // ruled it out correctly because the file parses clean. But truncation was
+    // the wrong confound: the document was complete and the *reading* was
+    // partial, and at 99.3% of a 310 KB payload the difference is invisible.
+    // A rule that only said "the read is capped" would leave the next agent
+    // making the same mistake, so the positional half is pinned too.
+    //
+    // FIVE PHRASES ACROSS TWO PARAGRAPHS, SPLIT SO THAT DELETING EITHER
+    // PARAGRAPH FAILS AT LEAST TWO — KAN-467's lesson, applied at the time of
+    // writing rather than after a reviewer catches it:
+    //   - `startAt is what says how much fell off the back` + `after the
+    //     entire array` + `reads the array and never the container` — the
+    //     mechanism paragraph. The first is the instrument, the second is why
+    //     it is missed, the third is the failure mode in the reader's own
+    //     terms. Pinned separately because a length pass that keeps "the read
+    //     is capped" and drops the positional half leaves the rule true and
+    //     useless.
+    //   - `no comment-listing tool` + `a claim about the newest hundred` — the
+    //     reachability paragraph. The first is the fact that nothing pages
+    //     back; the second is the consequence for the sentence agents actually
+    //     write. Without the second this reads as trivia about an API.
+    //
+    // WHAT THIS ENTRY DOES NOT COVER, said plainly: it asserts the sentences
+    // are present, never that any agent read the container before the
+    // comments. Nothing mechanical can see that. And it says nothing about
+    // whether the proxy operation this ticket added is *enabled* — it is off
+    // by default, which is why the prompt text tells the reader to check
+    // rather than to assume.
+    id: 'H-30',
+    // The title said the fields "sit after the array that hides them" until
+    // review round 2. That is true of one envelope and false of the other, and
+    // an inventory line is read as a statement about the rule rather than
+    // about the payload one agent happened to hold — the overclaim this epic
+    // keeps re-finding, caught here in the title rather than in the text.
+    title:
+      "a long ticket's comment history is a window: read the container by parsing rather than grepping, and where the envelope strips it an absent `total` means not-self-describing rather than short — no route on the official MCP pages back to the rest",
+    carriedBy: Object.fromEntries(
+      PROMPTS.map((f) => [
+        f,
+        [
+          // Backtick-tolerant: the prompts write `startAt` as inline code, and
+          // a pattern that breaks when a wording pass adds or removes the
+          // backticks would be guarding the markup rather than the rule.
+          /startAt`? is what says how much fell off the back/i,
+          /after the entire array/i,
+          /reads the array and never the container/i,
+          /no comment-listing tool/i,
+          /a claim about the newest hundred/i,
+          // The how-to-read paragraphs, added over two review rounds.
+          //
+          // ROUND 1: `epic/KAN-39` withheld the marker reporting the fields
+          // ABSENT. The rule said "read the container" without saying how, and
+          // the how is what their review earned.
+          //
+          // ROUND 2, AND IT REFUTED THE MECHANISM ROUND 1 INFERRED. The first
+          // explanation offered was a partial read — plausible, because each
+          // field really does occur once at 71.6% of a 342 KB payload and a
+          // half-file grep really does return zero. **It was wrong.** They
+          // re-ran over a COMPLETE 1.19 MB file and still measured zero. A
+          // second guess, that the container is stripped on large payloads,
+          // was refuted too: a 910 KB adf read of KAN-39 carries
+          // `total: 220, maxResults: 100, startAt: 120`.
+          //
+          // ROUND 3 REFUTED THE REPLACEMENT EXPLANATION TOO, and is why this
+          // entry names no cause at all. The reconciliation offered in round 2
+          // — that the two agents were on different envelopes and had
+          // therefore made different calls — was withdrawn by its own author
+          // sixteen minutes later, after they watched the envelope CHANGE
+          // under them: one key at 14:48, the full container at 15:04, same
+          // tool and same ticket. So the shape is a property of the client at
+          // the moment of the call.
+          //
+          // THREE EXPLANATIONS WERE OFFERED FOR ONE MEASUREMENT AND ALL THREE
+          // WERE WRONG — a partial read, two different calls, a size-dependent
+          // strip. The measurements were never in doubt. That is the shape
+          // this epic keeps arriving at, in its sharpest form yet: a correct
+          // finding with a wrong `because` attached, where the `because` is
+          // the part nobody re-checks, and where each author had to withdraw
+          // their own. So the rule tells the reader what an absent `total`
+          // MEANS and what to do about it, and says the cause is
+          // unestablished. Both agents' measurements are in the text as
+          // measurements; none of the three explanations is.
+          //
+          // `fails toward absent` was the obvious phrase for this and is
+          // DELIBERATELY NOT USED: it already appears twice in task.md and
+          // once in confluence.md under H-28, so it would be saturated by
+          // neighbouring prose and match with this paragraph deleted. Checked
+          // rather than assumed.
+          /parse the saved JSON/i,
+          /returns zero of them/i,
+          // Round 2's paragraph. This is the one an agent on the stripping
+          // envelope actually needs, and it is the half that survives however
+          // the cause turns out.
+          /strips the container/i,
+          // ROUND 3, and it is the reason the rule is written without a cause
+          // at all. `epic/KAN-39` retracted their own explanation after
+          // measuring the envelope CHANGE under them: one key at 14:48, the
+          // full container at 15:04, same tool and same ticket. So the shape
+          // is a property of the client at the moment of the call, and an
+          // agent cannot establish it once and rely on it. That is what makes
+          // this a per-read check rather than a per-session one, and it is the
+          // single most actionable sentence in the entry.
+          /change under you mid-session/i,
+          // And the count itself moves — 211/214/216/221 in one afternoon — so
+          // a figure quoted without its time is a claim about a ticket that
+          // has since moved. Pinned separately because it is the half a length
+          // pass reads as an anecdote about one ticket.
+          /reading with a timestamp on it/i,
+          // Two phrases for the timestamp paragraph, because the red drive
+          // caught it failing only ONE: a single-pin paragraph is what
+          // KAN-467's lesson is about, and a length pass that reworded the
+          // opening sentence would have taken the whole thing with the check
+          // still green. `has since moved` was the obvious second and is NOT
+          // used — it already appears elsewhere in epic.md, so it would be
+          // saturated. Checked, not assumed, for the second time in this entry.
+          /quoted without its time/i,
+        ],
+      ])
+    ),
+  },
 ];
 
 /**
