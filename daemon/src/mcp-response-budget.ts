@@ -506,8 +506,7 @@ export function fitListAgentsResponse(
           clips as [ClipRecord, ...ClipRecord[]]
         );
 
-  const payload = withCompleteness(working, completeness);
-  return { payload, text: JSON.stringify(payload, null, 2), completeness };
+  return serialiseWithExactChars(working, completeness);
 }
 
 /** One named section, answered on its own. */
@@ -523,19 +522,15 @@ function fitSection(
     // A refusal rather than an empty answer. "That section is not on this
     // response" and "that section is empty" are different facts, and a caller
     // that cannot tell them apart is back inside this ticket.
-    const payload = {
-      completeness: completeVerdict(0, ctx.budgetChars),
-      action: response.action ?? null,
-      success: false,
-      error: `no section '${section}' on this response`,
-      availableSections: available
-    };
-    const text = JSON.stringify(payload, null, 2);
-    return {
-      payload,
-      text,
-      completeness: payload.completeness
-    };
+    return serialiseWithExactChars(
+      {
+        action: response.action ?? null,
+        success: false,
+        error: `no section '${section}' on this response`,
+        availableSections: available
+      },
+      completeVerdict(0, ctx.budgetChars)
+    );
   }
 
   const value = response[section];
@@ -592,8 +587,7 @@ function fitSection(
       ? completeVerdict(chars, ctx.budgetChars)
       : clippedVerdict(chars, ctx.budgetChars, sizeOf(base), clips as [ClipRecord, ...ClipRecord[]]);
 
-  const payload = withCompleteness(working, completeness);
-  return { payload, text: JSON.stringify(payload, null, 2), completeness };
+  return serialiseWithExactChars(working, completeness);
 }
 
 /**
@@ -609,6 +603,38 @@ function withCompleteness(
 ): Record<string, unknown> {
   const { completeness: _drop, ...rest } = payload;
   return { completeness, ...rest };
+}
+
+/**
+ * Serialise, and make `completeness.chars` the length of what was serialised.
+ *
+ * `chars` is inside the string whose length it reports, so writing it changes
+ * it — one more digit in the number is one more character in the answer. Every
+ * call site here computed it against a *provisional* block and happened to
+ * agree with the final one, which is agreement by luck rather than by
+ * construction; the section-refusal path did not agree at all and reported
+ * `chars: 0` for an 825-character answer.
+ *
+ * A ticket about a field that misreports what it describes should not ship a
+ * field that misreports what it describes. So this iterates to the fixed point:
+ * stamp the measured length, re-measure, and stop when they agree. It converges
+ * in at most a couple of passes because only the digit count can move, and it
+ * returns whatever it has if they oscillate across a digit boundary — an answer
+ * one character out is not worth a loop that does not terminate.
+ */
+function serialiseWithExactChars(
+  payload: Record<string, unknown>,
+  completeness: Completeness
+): { payload: Record<string, unknown>; text: string; completeness: Completeness } {
+  let verdict = completeness;
+  let full = withCompleteness(payload, verdict);
+  let text = JSON.stringify(full, null, 2);
+  for (let pass = 0; pass < 3 && verdict.chars !== text.length; pass += 1) {
+    verdict = { ...verdict, chars: text.length } as Completeness;
+    full = withCompleteness(payload, verdict);
+    text = JSON.stringify(full, null, 2);
+  }
+  return { payload: full, text, completeness: verdict };
 }
 
 function completeVerdict(chars: number, budgetChars: number): Completeness {
@@ -744,6 +770,5 @@ export function fitGenericResponse(
     clips.length === 0
       ? completeVerdict(chars, budgetChars)
       : clippedVerdict(chars, budgetChars, unclippedChars, clips as [ClipRecord, ...ClipRecord[]]);
-  const payload = withCompleteness(working, completeness);
-  return { payload, text: JSON.stringify(payload, null, 2), completeness };
+  return serialiseWithExactChars(working, completeness);
 }

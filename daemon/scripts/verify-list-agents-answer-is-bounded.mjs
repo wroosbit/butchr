@@ -214,6 +214,17 @@ check(
   `first key is ${Object.keys(reparsed ?? {})[0]}`
 );
 
+// The field that reports a length is inside the string whose length it
+// reports, so writing it changes it. This held by arithmetic luck on the main
+// path and was flatly wrong on the section-refusal path — 0 reported for an
+// 825-character answer — until `serialiseWithExactChars` made it a fixed point.
+// A ticket about a field that misdescribes its own answer should not ship one.
+check(
+  `\`completeness.chars\` equals the real length (${fitted.completeness.chars} === ${fitted.text.length})`,
+  fitted.completeness.chars === fitted.text.length,
+  `claims ${fitted.completeness.chars}, is ${fitted.text.length}`
+);
+
 check(
   `\`agentsTotal\` states the true fleet size (${reparsed?.agentsTotal} === ${trueAgentCount})`,
   reparsed?.agentsTotal === trueAgentCount,
@@ -414,11 +425,17 @@ check(
   sectionAnswer.section === 'guardian' && sectionAnswer.guardian !== undefined,
   JSON.stringify(Object.keys(sectionAnswer))
 );
-const unknownSection = JSON.parse(fitListAgentsResponse(census, { section: 'nope' }).text);
+const refusal = fitListAgentsResponse(census, { section: 'nope' });
+const unknownSection = JSON.parse(refusal.text);
 check(
   'an unknown section is REFUSED with the available names, not answered empty',
   unknownSection.success === false && Array.isArray(unknownSection.availableSections),
   JSON.stringify(unknownSection).slice(0, 200)
+);
+check(
+  `the refusal reports its own length honestly too (${refusal.completeness.chars} === ${refusal.text.length})`,
+  refusal.completeness.chars === refusal.text.length,
+  `claims ${refusal.completeness.chars}, is ${refusal.text.length}`
 );
 
 // ───────────────────────────────────────────────────────────────────────────
