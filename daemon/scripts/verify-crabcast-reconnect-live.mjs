@@ -60,6 +60,34 @@
 // one thing a constructed fixture cannot do, and it is why this ticket asks for
 // a live reconnect rather than a fixture.
 //
+// ── ⚠ AND THE INPUT IT SUPPLIES IS NOW CHECKED TO HAVE ARRIVED (KAN-416) ───
+//
+// **That paragraph is exactly the shape of defect this epic keeps re-finding: a
+// proof that supplies its own input and never tests that the input arrives.**
+// The bytes are produced by a real shell — WHEN the command that starts the job
+// reaches it. `pty_input` sometimes delivers a prefix and drops the rest
+// (KAN-452), bash is left at its `>` continuation prompt, and the job never
+// runs. This script then read an empty pane and reported `MIRRORED STATE IS
+// CORRECT` as a red — blaming KAN-381's resync for losing output that was never
+// produced. Measured 2-in-13 by `task/KAN-408`, 4-in-17 by `task/KAN-416`.
+//
+// §2 now waits for the SHELL to acknowledge the job before the drop, retries
+// with a Ctrl-C reset, and exits `setup:` rather than asserting if it cannot get
+// the line in. **What that buys is narrow and worth stating: it removes a false
+// RED. It does not make the assertion below stronger, and it cannot make
+// `pty_input` reliable** — a run that meets three truncations in a row still
+// tells you nothing about the resync, it just says so instead of lying.
+//
+// **What is still uncovered, and nothing here covers it:** whether the marker
+// could be produced and then genuinely lost by the re-subscription. On the four
+// truncated runs measured for KAN-416 an independent `pty_init` on a separate
+// connection, read while this script's own link was still down, showed the pane
+// did not hold the marker either — so those reds were all input, none of them
+// resync. **A resync that really did drop a window would look identical from
+// inside this script**, and only that independent read tells them apart. It is
+// `probe-kan416-resync-snapshot.mjs`, it is a probe rather than a gate, and
+// nobody runs it on a schedule.
+//
 // ── RUNNING IT ─────────────────────────────────────────────────────────────
 //
 //   BUTCHR_CRABCAST_SOCKET=~/.local/share/crabcast/crabcast.sock \
@@ -586,10 +614,84 @@ rule('2. a background job in the real pane, timed to fire during the outage');
 // exists only in the job's OUTPUT.
 const GAP_MARKER = 'KANGAPMARKER';
 const cr = String.fromCharCode(13);
-runtime.writePty(session.sessionId, `SUF=MARKER${cr}`);
-await sleep(500);
-runtime.writePty(session.sessionId, `(sleep 5; echo KANGAP$SUF; echo KANGAP$SUF) &${cr}`);
-await sleep(500);
+
+// ── ⚠ THE JOB HAS TO BE CONFIRMED RUNNING BEFORE THE DROP (KAN-416) ────────
+//
+// **This is the precondition that was missing, and its absence is the whole of
+// this script's intermittency.** `writePty` does not always deliver the whole
+// line. Measured 2026-08-15 against this fleet's real CrabCast: of 17 writes of
+// the job line below on a live pane, **4 arrived truncated** — three of them at
+// **exactly 32 of 45 bytes**, cut mid-word after `; echo `. Bash is then left
+// holding an unbalanced `(`, drops to its `>` continuation prompt, and from that
+// moment **echoes every later keystroke and executes none of them**. The
+// background job never runs, the marker is never printed, and the assertion
+// below — `MIRRORED STATE IS CORRECT` — goes red about output that never
+// existed, blaming the resync for losing something the pane never held.
+//
+// That is the 2-in-13 KAN-408 measured (KAN-416), and it is a defect in THIS
+// SCRIPT rather than in KAN-381's resync: the re-subscription settled
+// `succeeded` on every failing run, and an independent `pty_init` read of the
+// same pane on a separate connection, taken while this script's own link was
+// still down, showed the pane did not hold the marker either. Nothing was lost
+// in transit because nothing was produced. The truncation itself is below
+// `CrabCastRuntime.writePty` — which sends the whole string in one frame — and
+// is [KAN-452](https://wroosbit.atlassian.net/browse/KAN-452).
+//
+// **The acknowledgement is the shell's, not ours, and it validates all three
+// writes at once.** `echo KAN$J$SUF` prints `KANJOBUPMARKER` only if `J` and
+// `SUF` both landed intact AND bash was at a real prompt rather than inside an
+// unterminated command — a truncated job line swallows this echo as
+// continuation, so its silence is the detector. Nothing here asserts: a line
+// this script failed to deliver is a fact about the world, in the same class as
+// the capacity refusal above, so it retries and then exits as `setup:`.
+const JOB_ACK = 'KANJOBUPMARKER';
+const jobLine = `(sleep 5; echo KANGAP$SUF; echo KANGAP$SUF) &`;
+let jobStarted = false;
+let jobAttempts = 0;
+while (!jobStarted && jobAttempts < 3) {
+  jobAttempts++;
+  if (jobAttempts > 1) {
+    // Abandon whatever partial command bash is holding, or the retry is typed
+    // straight into the same continuation prompt and cannot possibly work.
+    runtime.writePty(session.sessionId, String.fromCharCode(3));
+    await sleep(600);
+    runtime.writePty(session.sessionId, cr);
+    await sleep(600);
+  }
+  const mark = events.length;
+  runtime.writePty(session.sessionId, `J=JOBUP${cr}`);
+  await sleep(400);
+  runtime.writePty(session.sessionId, `SUF=MARKER${cr}`);
+  await sleep(400);
+  runtime.writePty(session.sessionId, `${jobLine}${cr}`);
+  await sleep(400);
+  runtime.writePty(session.sessionId, `echo KAN$J$SUF${cr}`);
+  jobStarted = await until(
+    () => events.slice(mark).some((e) => e.kind === 'data' && paneLetters(e.data).includes(JOB_ACK)),
+    5_000
+  );
+  if (!jobStarted) {
+    console.log(
+      `   setup: attempt ${jobAttempts} — the pane did not acknowledge the background job.\n` +
+        `          The typed line was truncated before bash could parse it (KAN-416/KAN-452).`
+    );
+  }
+}
+if (!jobStarted) {
+  console.error(
+    `\nsetup: the background job never started after ${jobAttempts} attempts — the job line was\n` +
+      'not delivered whole to the pane, so there is nothing for the outage to contain and\n' +
+      'NOTHING WAS ASSERTED. This is KAN-416/KAN-452, not a failure of the resync: before\n' +
+      'this guard existed the run continued anyway and reported `MIRRORED STATE IS CORRECT`\n' +
+      'as a red, about output that was never produced.\n'
+  );
+  dispose?.();
+  runtime.dispose();
+  await cutRelay();
+  await cleanup();
+  process.exit(1);
+}
+console.log(`   the pane acknowledged the background job (attempt ${jobAttempts} of at most 3)`);
 
 check(
   'the marker is NOT already in the mirror — the job has not run yet',
