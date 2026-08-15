@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 101 |
+| `yes` | 102 |
 | `partial` | 11 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **137** |
+| **total** | **138** |
 
-**112 of 137** run on every pull request.
+**113 of 138** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -132,6 +132,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-prompt-source-is-fetched-ref` | yes | builds scratch git repositories under `os.tmpdir()` and imports the built daemon modules in process; git and node builtins only, no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-pty-write-refusal-is-read` | yes | imports the built daemon modules and serves its own CrabCast over a unix socket in a temp dir; node builtins only, no live daemon, no herdr, no credential, no network, no terminal. |
 | `verify-resumed-conversation-nudge` | yes | imports the built daemon modules, stands up its own unix socket in a temporary directory, and needs no herdr, no pty, no network, no credential and no CrabCast. Sections 3 and 4 create and remove probe workspaces under the workspaces root, per path and never by reverting a directory. |
+| `verify-runtime-agnostic-census` | yes | imports the built daemon modules, stands a fake CrabCast peer on a Unix socket in a scratch $HOME, and asserts in process. No live daemon, no real CrabCast, no herdr, no credential, no terminal. |
 | `verify-same-key-other-type` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-selfcheck-rechecks-replaced-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. §4 opens a Unix socket inside its own scratch directory. |
 | `verify-selfcheck-verdict-outlives-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

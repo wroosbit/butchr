@@ -43,7 +43,12 @@ import { HerdrBridge } from './herdr.js';
  * that too.
  */
 
-export type RuntimeMode = 'herdr' | 'crabcast';
+// Moved to `agent-runtime.ts` by KAN-475, where `AgentRuntime.runtimeName`
+// makes it part of the seam rather than a detail of the switch. Re-exported
+// here because this is where every existing caller imports it from, and a
+// gratuitous import churn is not what that ticket is for.
+export type { RuntimeMode } from './agent-runtime.js';
+import type { RuntimeMode } from './agent-runtime.js';
 
 /** The environment variable that selects a runtime. */
 export const RUNTIME_ENV_VAR = 'BUTCHR_AGENT_RUNTIME';

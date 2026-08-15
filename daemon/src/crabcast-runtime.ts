@@ -815,6 +815,9 @@ export interface CrabCastRuntimeOptions {
 }
 
 export class CrabCastRuntime implements AgentRuntime {
+  /** See {@link AgentRuntime.runtimeName}. */
+  public readonly runtimeName = 'crabcast' as const;
+
   private readonly link: CrabCastLink;
   private readonly log: (message: string) => void;
   private readonly censusIntervalMs: number;
