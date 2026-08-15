@@ -1,3 +1,11 @@
+<!-- constant-pin-exempt: RUNTIME_ENV_VAR — every mention of BUTCHR_AGENT_RUNTIME in
+     this file is inside the VERBATIM ARCHIVE below, which is a byte-identical snapshot
+     of KAN-348's description and must not be edited. A pin here would assert a present
+     fact about the constant from inside a dated quotation, and keeping that pin honest
+     would mean rewriting the archive — which is the one thing this file exists to
+     prevent. The live pin for RUNTIME_ENV_VAR is `docs/crabcast-runtime.md`'s, and the
+     cutover sequence carries its own. Added by KAN-457. -->
+
 # The CrabCast gate register — schema and archive
 
 **Status: this is the register's ARCHIVE and its SCHEMA. It is not the gate
