@@ -17,12 +17,20 @@
  * THE DESIGN, AND THE ONE VARIABLE
  * ---------------------------------------------------------------------------
  *
- * Two arms. Identical MCP server, identical prompt, identical client binary,
- * same machine, same minute, both in a pty. They differ in exactly one
- * byte-range of argv:
+ * Three arms. Identical MCP fixture, identical prompt, identical client binary,
+ * same machine, same minute, all in a pty. The first two differ in exactly one
+ * byte-range of argv; the third (KAN-503) differs from the second by one MCP
+ * server entry and nothing else:
  *
- *   ARM WITH   : claude --dangerously-load-development-channels server:channelprobe …
- *   ARM WITHOUT: claude …
+ *   ARM WITH            : claude --dangerously-load-development-channels server:channelprobe …
+ *   ARM WITHOUT         : claude …
+ *   ARM WITH-CRABCAST   : claude …   + CrabCast's real `crabcast` builtin MCP server
+ *
+ * The third arm exists because KAN-503 proposed sending CrabCast's
+ * `{"crabcast": "builtin"}` sentinel as the fix for the state KAN-495 measured,
+ * on the reading that CrabCast "has its own built-in channel" Butchr had never
+ * asked for. That is a claim about whether a frame reaches a model, so it is
+ * settled here rather than by reading docblocks at each other.
  *
  * `--dangerously-load-development-channels` is composed in exactly one place in
  * this codebase — `launchers.ts` `developmentChannelFlags()` — and reaches an
@@ -167,7 +175,71 @@ const STARTUP_DIALOGS = [
   }
 ];
 
-function runArm({ label, withFlag, halfA, halfB }) {
+/**
+ * CrabCast's own `crabcast` builtin MCP server, as CrabCast itself writes it.
+ *
+ * ⚠ **OBTAINED FROM THEM, NOT WRITTEN HERE, and that is the whole point of the
+ * dance.** A definition this file composed would be this probe asserting on
+ * input it supplied — and worse, a *guess* at their bytes would make a negative
+ * arm meaningless: "the token did not come back" would be equally explained by
+ * a server that never started because the path was wrong. So the real thing is
+ * fetched the only way their published surface offers it: configure a throwaway
+ * agent with `--mcp crabcast`, activate it (the file is written *at
+ * activation*, which `configure_response.willWrite` says in as many words),
+ * read the `.mcp.json` they wrote, then deactivate and forget.
+ *
+ * `--gate-exempt` so the throwaway is not charged against their capacity gate,
+ * and the cleanup is unconditional: `forget` removes the record, their sidecar
+ * and the `.mcp.json` they created.
+ *
+ * ⚠ **Invariant 10 (KAN-478) is not brushed against here.** Nothing in
+ * CrabCast's source is read. This reads a file *they* wrote into a directory
+ * *we* own, which is an artifact of their published behaviour — the same class
+ * of evidence as a wire reply.
+ *
+ * Returns `null` when there is no CrabCast socket, which is the CI case; the
+ * arm that needs it then announces itself skipped rather than running against a
+ * server definition nobody supplied.
+ */
+function fetchCrabCastBuiltinDefinition() {
+  const socketPath = path.join(os.homedir(), '.local', 'share', 'crabcast', 'crabcast.sock');
+  if (!fs.existsSync(socketPath)) return null;
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanprobe-builtin-fetch-'));
+  const cc = (...argv) =>
+    spawnSync('crabcast', [...argv, '--json'], { encoding: 'utf8', cwd: os.tmpdir() });
+  try {
+    const configured = cc(
+      'configure',
+      dir,
+      '--priority',
+      '1',
+      '--launcher',
+      'claude',
+      '--prompt',
+      'throwaway: this agent exists only so CrabCast writes its .mcp.json. Print OK and stop.',
+      '--mcp',
+      'crabcast',
+      '--gate-exempt'
+    );
+    if (!/"success":\s*true/.test(configured.stdout ?? '')) return null;
+    const activated = cc('activate', dir);
+    if (!/"success":\s*true/.test(activated.stdout ?? '')) return null;
+
+    const written = path.join(dir, '.mcp.json');
+    if (!fs.existsSync(written)) return null;
+    const parsed = JSON.parse(fs.readFileSync(written, 'utf8'));
+    const definition = parsed?.mcpServers?.crabcast;
+    return definition ? { definition, channelEnabled: /"channelEnabled":\s*true/.test(activated.stdout) } : null;
+  } catch {
+    return null;
+  } finally {
+    cc('deactivate', dir);
+    cc('forget', dir);
+  }
+}
+
+function runArm({ label, withFlag, halfA, halfB, extraServers }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `chanprobe-${label}-`));
   const configPath = path.join(dir, 'mcp.json');
   // A FILE, because a stdio MCP server's stderr belongs to the CLIENT — Claude
@@ -185,7 +257,8 @@ function runArm({ label, withFlag, halfA, halfB }) {
           command: process.execPath,
           args: [SERVER],
           env: { PROBE_HALF_A: halfA, PROBE_HALF_B: halfB, PROBE_LOG: logPath }
-        }
+        },
+        ...(extraServers ?? {})
       }
     })
   );
@@ -201,7 +274,10 @@ function runArm({ label, withFlag, halfA, halfB }) {
     PROMPT
   );
 
-  const argvShown = `claude ${withFlag ? `${DEV_CHANNELS_FLAG} server:${SERVER_NAME} ` : ''}…`;
+  const extraNames = Object.keys(extraServers ?? {});
+  const argvShown =
+    `claude ${withFlag ? `${DEV_CHANNELS_FLAG} server:${SERVER_NAME} ` : ''}…` +
+    (extraNames.length ? `   [+ mcp servers: ${extraNames.join(', ')}]` : '');
   const joined = `${halfA}${halfB}`;
   process.stdout.write(`\n--- ARM ${label} ---\n`);
   process.stdout.write(`argv : ${argvShown}\n`);
@@ -307,6 +383,44 @@ const withoutArm = await runArm({
   halfB: 'Q3M8'
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// THE THIRD ARM (KAN-503) — the route the ticket proposed, run rather than
+// argued about.
+//
+// KAN-503 was filed to give Butchr's agents CrabCast's `{"crabcast":
+// "builtin"}` sentinel, on the reading that CrabCast "has its own built-in
+// channel" that Butchr had simply never asked for. This arm is that world: the
+// same client, the same fixture, the same prompt, NO dev-channels flag, and
+// CrabCast's real builtin MCP server sitting alongside the fixture exactly as
+// `provision()` sending the sentinel would leave it.
+//
+// ⚠ IT IS A THIRD ARM RATHER THAN A REPLACEMENT, and the two it joins are what
+// make it readable: WITH-FLAG is the positive control that says this probe can
+// see a token at all, and WITHOUT-FLAG is the baseline this arm must be
+// compared against. An arm run on its own would report "no token" and could not
+// separate *the sentinel does not help* from *the probe is broken today*.
+const builtin = fetchCrabCastBuiltinDefinition();
+let sentinelArm = null;
+if (!builtin) {
+  process.stdout.write(
+    `\n--- ARM WITH-CRABCAST-BUILTIN ---\nSKIPPED: no CrabCast socket on this machine, so their ` +
+      `real server definition could not be fetched. This is the CI case. It is NOT run against a ` +
+      `definition this script invented — that would make a negative arm meaningless.\n`
+  );
+} else {
+  process.stdout.write(
+    `\n  [probe] fetched CrabCast's own builtin server definition from the .mcp.json they wrote ` +
+      `(their activation reported channelEnabled=${builtin.channelEnabled})\n`
+  );
+  sentinelArm = await runArm({
+    label: 'WITH-CRABCAST-BUILTIN',
+    withFlag: false,
+    halfA: 'K503C',
+    halfB: 'B6V1',
+    extraServers: { crabcast: builtin.definition }
+  });
+}
+
 process.stdout.write('\n=== VERDICT ===\n');
 
 const failures = [];
@@ -357,6 +471,44 @@ if (controlHeld) {
         '  WITHOUT it                  -> the fixture emitted the frame and the model never saw it\n' +
         'The frame dies AT THE CLIENT. The server emitted it; the client discarded it because\n' +
         'development channels were not loaded for that server.\n'
+    );
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// THE THIRD ARM'S VERDICT (KAN-503)
+// ───────────────────────────────────────────────────────────────────────────
+if (sentinelArm) {
+  // Same order of reading as above: the arm has to have RUN before its silence
+  // means anything. A sentinel arm whose model never called the tool is a fact
+  // about the prompt, and it fails toward the comfortable answer for whichever
+  // conclusion the reader arrived wanting.
+  if (!sentinelArm.toolCalled || !sentinelArm.emitted) {
+    failures.push(
+      `WITH-CRABCAST-BUILTIN: the arm did not run (tools/call=${sentinelArm.toolCalled}, ` +
+        `frame emitted=${sentinelArm.emitted}), so it has measured NOTHING about the sentinel. ` +
+        `Do not read its silence as a result either way.`
+    );
+  } else if (!controlHeld) {
+    failures.push(
+      'WITH-CRABCAST-BUILTIN: the positive control did not hold, so this arm is unreadable.'
+    );
+  } else if (sentinelArm.sawToken) {
+    process.stdout.write(
+      "\nTHE SENTINEL IS A ROUTE AFTER ALL. CrabCast's builtin MCP server, with NO dev-channels\n" +
+        'flag, delivered the frame to the model. That contradicts the argv-gating this file and\n' +
+        "KAN-495 both rest on — do not quietly fold it in, and re-run before believing it.\n"
+    );
+  } else {
+    process.stdout.write(
+      '\nTHE SENTINEL IS NOT A ROUTE TO A CHANNEL (KAN-503). Three arms, one client, one minute:\n' +
+        `  WITH ${DEV_CHANNELS_FLAG}         -> token assembled and printed\n` +
+        '  WITHOUT it                       -> frame emitted, model never saw it\n' +
+        "  WITHOUT it + CrabCast's builtin  -> frame emitted, model never saw it EITHER\n" +
+        'Provisioning the `crabcast` builtin MCP server changes nothing about whether a\n' +
+        '`notifications/claude/channel` frame reaches a model. The gate is argv, and an MCP\n' +
+        'server entry is not argv. `channelEnabled: true` is CrabCast answering a DIFFERENT\n' +
+        "question — whether the agent can reach THEIR daemon — not whether Butchr's frames land.\n"
     );
   }
 }

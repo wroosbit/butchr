@@ -264,6 +264,19 @@ rule('§2  The configure_agent frame carries no argv');
 // those are still guarded exactly as before. A capacity flag cannot spawn a
 // channel server. If a future addition is NOT of that kind, it does not belong
 // on these lists.
+//
+// ⚠ READ "CHANNEL" HERE AS *CRABCAST'S*, NOT BUTCHR'S (KAN-503). The two words
+// are the same and the things are not. CrabCast's `channelEnabled` is about the
+// agent's reach TOWARD THEIR DAEMON — their read-path contract: an agent without
+// it "has no identity: it cannot reach this daemon". Butchr's channel is a
+// `notifications/claude/channel` frame going DAEMON → MODEL, and the client
+// renders one only when `--dangerously-load-development-channels` is in argv.
+// So this section guards a premise of DIALOG supervision, which is what it has
+// always been for, and it is NOT a guard on frame delivery. Measured 2026-08-16
+// by `probe-channel-reaches-model.mjs`'s third arm: with CrabCast's real builtin
+// server present and no flag, the frame is emitted and the model never sees it.
+// A future reader who makes this file red by sending the sentinel has NOT
+// thereby given the fleet a channel — see `buildConfigureAgentPayload`.
 const typeMatch = runtimeSrc.match(/export type ConfigureAgentPayload = \{([\s\S]*?)\n\};/);
 const ALLOWED = [
   'action',
@@ -496,6 +509,16 @@ if (failures > 0) {
     say('This is the expected red for --builtin-sentinel. The behaviour that made it red:');
     say('provision() sends {"crabcast":"builtin"}, so channelEnabled answers true and');
     say("daemon.ts's gate stops returning early. Reason 2 of the ruling is gone.");
+    say('');
+    say('⚠ AND ONLY REASON 2 (KAN-503). Reason 1 still holds — measured, not assumed: an');
+    say('agent really configured --mcp crabcast and really activated answered');
+    say('channelEnabled: true and still ran claude with NO --dangerously-load-development-');
+    say('channels on its argv, and met no dev-channels dialog. Reason 3 is untouched.');
+    say('⚠ DO NOT READ THIS RED AS "so we should send the sentinel". It would NOT give the');
+    say('fleet a channel: CrabCast\'s channelEnabled is about reach toward THEIR daemon, and');
+    say('a notifications/claude/channel frame still dies at the client without the argv flag.');
+    say('probe-channel-reaches-model.mjs arm 3 measures exactly that world. See');
+    say('buildConfigureAgentPayload for why this is now a ruling and not a deferral.');
   }
 } else {
   say('OK — gate 3 is closed by construction: the dev-channels flag cannot reach a');

@@ -915,14 +915,69 @@ export type ConfigureAgentPayload = {
  * servers in it, and the absence is a request to write no file at all.
  *
  * **WHAT IS DELIBERATELY NOT SENT.** Their `"builtin"` sentinel —
- * `{"crabcast": "builtin"}` — is how an agent would be given CrabCast's own
- * channel server, and it is what makes `channelEnabled` answer `true`. This
- * does not send it. Giving Butchr's agents a CrabCast channel is a cutover
- * decision about which daemon an agent talks to, and cutover is out of scope
- * (KAN-294 item 5). The consequence, stated rather than left to be found: an
+ * `{"crabcast": "builtin"}` — provisions CrabCast's own `crabcast` MCP server
+ * into the agent, and it is what makes `channelEnabled` answer `true`. This
+ * does not send it. The consequence, stated rather than left to be found: an
  * agent spawned through this runtime answers `channelEnabled: false`, and that
  * `false` is now honest — it is CrabCast reporting a spawn that decided, where
  * before it was reporting a spawn whose MCP request it had discarded.
+ *
+ * ### ⚠ WHY NOT, AND IT IS NO LONGER "CUTOVER IS OUT OF SCOPE" (KAN-503)
+ *
+ * **This paragraph read *"giving Butchr's agents a CrabCast channel is a cutover
+ * decision, and cutover is out of scope (KAN-294 item 5)"* until 2026-08-16, and
+ * that sentence has now outlived its condition.** The cutover happened at
+ * 05:46:21Z that morning and the human's ruling was *"stay on crabcast"* — so
+ * the deferral expired, silently, exactly as a conditional plan with no watcher
+ * does. KAN-503 was filed to collect on it. **The answer is still no, and the
+ * reason is now a measurement rather than a deferral**, which is the whole point
+ * of rewriting this rather than deleting it: a reader who finds only *"we do not
+ * send it"* re-files KAN-503, and a reader who finds the stale conditional
+ * re-files it with a reason.
+ *
+ * ⚠ **SENDING IT WOULD NOT GIVE THIS FLEET A CHANNEL, because CrabCast's
+ * `channelEnabled` is not answering the question Butchr is asking.** Theirs is
+ * about the agent's reach **toward their daemon** — their read-path contract
+ * says an agent without it *"has no identity: it cannot reach this daemon, so it
+ * cannot activate anything"*. Butchr's channel is the opposite direction: a
+ * `notifications/claude/channel` frame travelling **daemon → model**, and
+ * whether the client renders one is gated on
+ * `--dangerously-load-development-channels` **in argv** (KAN-495). An MCP server
+ * entry is not argv, and no MCP server can turn on a client flag parsed at
+ * process start.
+ *
+ * **Measured, on this machine, rather than argued:**
+ *
+ *   * `crabcast configure --help` publishes `--mcp <a,b>` as *"MCP servers
+ *     CrabCast builds itself"* — a server, not a switch. Their own contract
+ *     says so in as many words: *"not a command-line switch, because CrabCast
+ *     has none for it."* `epic/KAN-59` is quoted to the same effect in
+ *     `daemon.ts`'s `setAgentSpawnedListener` gate.
+ *   * A throwaway agent configured `--mcp crabcast` and activated answered
+ *     `channelEnabled: true`, and its `claude` process ran
+ *     `claude --permission-mode bypassPermissions <prompt>` — **no flag** (`ps`
+ *     on the live pid, 2026-08-16).
+ *   * `probe-channel-reaches-model.mjs`'s third arm runs that world end to end:
+ *     same client, same fixture, no flag, CrabCast's real builtin server
+ *     alongside. **The frame is emitted and the model never sees it**, exactly
+ *     as the plain WITHOUT-FLAG arm — against a WITH-FLAG positive control that
+ *     assembles the token in the same minute.
+ *
+ * ⚠ **AND IT WOULD COST SOMETHING, which is why this is a refusal rather than a
+ * shrug.** `channelEnabled: false` is currently the one honest signal on this
+ * seam. Sending the sentinel flips it to `true` fleet-wide while delivery stays
+ * dead — so the next reader meets a `true` that means *"reachable toward
+ * CrabCast"* and reads it as *"Butchr's channel works"*, which is precisely the
+ * inference that would flip {@link CrabCastRuntime.channelReach} to `'loaded'`
+ * and re-manufacture KAN-495's silent total loss: frames written, `delivered:
+ * true`, nothing arriving, every health field green.
+ *
+ * **THE ONLY ROUTE IS ARGV, AND IT IS THEIRS.** `configure_agent` carries no
+ * argv field, and `launcher` is a closed vocabulary — `shell`, `claude`,
+ * `anti-gravity`, refused by name with that enumeration when anything else is
+ * passed (measured on the wire, 2026-08-16). So there is nothing on Butchr's
+ * side to fix, and the request belongs to `epic/KAN-59`. Reported, not pressed
+ * for: [KAN-503](https://wroosbit.atlassian.net/browse/KAN-503).
  *
  * ## `refusable` / `chargeable` / `preemptable` — SUPERVISOR-NESS (KAN-492)
  *
@@ -1074,6 +1129,19 @@ export class CrabCastRuntime implements AgentRuntime {
    * pass argv, and this runtime using it — the first of the three re-openers
    * {@link setAgentSpawnedListener} already names and that
    * `verify-crabcast-channel-startup-disablement.mjs` already watches.
+   *
+   * ⚠ **WHAT WOULD NOT, however plausible it looks: sending their `"builtin"`
+   * sentinel (KAN-503).** That provisions CrabCast's `crabcast` MCP server and
+   * flips `channelEnabled` to `true` — and `channelEnabled` is *their* question,
+   * about the agent's reach toward *their* daemon, not about whether a
+   * `notifications/claude/channel` frame reaches a model. Measured end to end by
+   * `probe-channel-reaches-model.mjs`'s third arm: with their real builtin
+   * server present and no flag, the frame is emitted and the model never sees
+   * it. **So a `true` there must never be promoted to `'loaded'` here.** Doing
+   * so would restore KAN-495 exactly — frames written, `delivered: true`,
+   * nothing arriving — with the loud refusal below switched off on the strength
+   * of a field that was answering something else. See
+   * {@link buildConfigureAgentPayload} for the full measurement.
    *
    * ⚠ **This value makes the loss LOUD; it does not repair it.** With it, the
    * guardian poke reports `undelivered` and `overdue` goes true, the liveness
@@ -1234,6 +1302,45 @@ export class CrabCastRuntime implements AgentRuntime {
    * `verify-crabcast-channel-startup-disablement.mjs` watches, because they are
    * the premises above rather than the conclusion — the conclusion is prose and
    * prose cannot go red.
+   *
+   * ---------------------------------------------------------------------------
+   * KAN-503 ASKED WHICH OF THE THREE SURVIVE THE SENTINEL. MEASURED: ALL THREE.
+   * ---------------------------------------------------------------------------
+   *
+   * KAN-503 proposed sending the sentinel and warned, correctly, that doing so
+   * would flip reason 2's premise and that this script would rightly go red.
+   * **The sentinel is not being sent** — {@link buildConfigureAgentPayload} says
+   * why, and the short of it is that it does not deliver a channel — so nothing
+   * here moves. What follows is what the investigation established anyway,
+   * recorded because the next reader will ask the same question:
+   *
+   * **Reason 1 — HOLDS, and it is now observed as well as structural.** A
+   * throwaway agent really configured with `--mcp crabcast`, really activated,
+   * answering `channelEnabled: true`, ran `claude --permission-mode
+   * bypassPermissions <prompt>` with **no** `--dangerously-load-development-
+   * channels` on it (`ps` on the live pid), and **met no dev-channels dialog** —
+   * it reached its prompt and answered. That is an eighth cold start to set
+   * beside `task/KAN-278`'s two and `task/KAN-379`'s five, and the **first one
+   * with the sentinel**, which is the arm the inherited seven could not cover.
+   * The flag is composed only in `launchers.ts` and travels only as argv;
+   * `configure_agent` has no argv field and `launcher` is a closed vocabulary
+   * (`shell`, `claude`, `anti-gravity` — refused by name with that enumeration,
+   * measured on the wire). So there is no route in, sentinel or not.
+   *
+   * **Reason 2 — WOULD FALL, and only this one.** `channelEnabled` would answer
+   * `true`, so `daemon.ts`'s gate would stop returning at its first line. It is
+   * the weakest of the three and always was: it is a fact about a field's value
+   * rather than about what can reach the agent.
+   *
+   * **Reason 3 — HOLDS, untouched.** `activate_response` still publishes no
+   * spawn command line; the sentinel adds an MCP server, not an argv echo.
+   *
+   * ⚠ **So reason 1 alone is sufficient and is the one carrying the ruling** —
+   * which is what the KAN-393 docblock already said, and is why sending the
+   * sentinel would have made this script red without making the fleet any less
+   * safe. A red there would have been correct **and** uninformative: it watches
+   * a premise of *dialog supervision*, and the sentinel's real defect is about
+   * *frame delivery*, which no assertion in that file is pointed at.
    *
    * **`pressPaneKey` remains absent and that is now a fact about a capability we
    * do not need on this path, not an open gate.** `press_pane_key` answers
