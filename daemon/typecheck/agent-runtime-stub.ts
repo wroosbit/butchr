@@ -55,6 +55,19 @@ class StubRuntime implements AgentRuntime {
   // is what the fixture is for.
   readonly runtimeName = 'crabcast' as const;
 
+  // KAN-495. A new runtime must state whether its agents can receive a channel
+  // frame at all, and `'unknown'` is the answer a fixture is entitled to: it
+  // routes exactly as the daemon routed before KAN-495 and claims nothing.
+  //
+  // **This member being REQUIRED is the fix, and this line is where the cost of
+  // it lands** — which is what this fixture is for. Adding it to `AgentRuntime`
+  // broke the seam typecheck until it was written here, and that is the property
+  // the ticket bought: KAN-495 was a runtime that could not carry the
+  // dev-channels flag, said nothing about it, and had every instrument report
+  // its frames delivered. An optional field would have let the next runtime
+  // repeat that in silence.
+  readonly channelReach = 'unknown' as const;
+
   setSessionEndedListener(_listener: (event: SessionEndedEvent) => void): void {}
 
   // KAN-246. A runtime that spawns no pane of its own simply never fires this,

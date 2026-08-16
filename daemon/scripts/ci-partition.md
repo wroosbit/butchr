@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 105 |
+| `yes` | 106 |
 | `partial` | 13 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **143** |
+| **total** | **144** |
 
-**118 of 143** run on every pull request.
+**119 of 144** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -71,6 +71,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-atlassian-proxy-write-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-board-reconciler-guard` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-brief-location` | yes | §1 and §2 read `daemon/src/*.ts` as text; §3 and §4 import the built daemon modules and call them over values this script constructs. It needs no peer, no herdr, no PTY, no credential and no network, and it writes nothing. The `--static-only` flag below is for a human running this against a build that just failed, not for CI, which builds first. |
+| `verify-channel-capability-refusal` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Its sockets are unix sockets it creates under os.tmpdir(), and the one piece of shared state it touches — the channel kill switch under BUTCHR_DIR — it reads, overwrites and restores in a `finally`, which the CI runner sandboxes per child anyway. |
 | `verify-channel-emission-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-launch-flag` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-liveness` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

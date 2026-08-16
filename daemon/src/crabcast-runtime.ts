@@ -1035,6 +1035,55 @@ export class CrabCastRuntime implements AgentRuntime {
   /** See {@link AgentRuntime.runtimeName}. */
   public readonly runtimeName = 'crabcast' as const;
 
+  /**
+   * See {@link AgentRuntime.channelReach}. `'not-loaded'`, and it is structural
+   * rather than observed (KAN-495).
+   *
+   * **The same premise `setAgentSpawnedListener` already reasons from, carried
+   * one step further.** That docblock establishes that
+   * `--dangerously-load-development-channels` *cannot reach an agent on this
+   * path*: it is composed only in `launchers.ts` and travels only as argv, and
+   * **`configure_agent` has no argv field** — {@link provision} sends `path`,
+   * `priority`, `launcher`, `prompt` and `mcpServers`, and there is no member of
+   * that frame through which a flag could travel. This file imports nothing from
+   * `launchers.js`, so it has no route in even by accident.
+   *
+   * ⚠ **KAN-393 drew one conclusion from that premise and stopped one short of
+   * the other, and the missing one cost the fleet its supervision.** The
+   * conclusion drawn was *the dev-channels DIALOG cannot be raised here, so
+   * channel-startup supervision has nothing to do* — correct, and it is why that
+   * gate was rightly not a cutover blocker. The conclusion not drawn is that the
+   * dialog is absent **because the feature is off**: with no flag, this client
+   * discards `notifications/claude/channel` in silence. So from 05:46:21Z on
+   * 2026-08-16 the daemon went on resolving these agents, writing frames to
+   * their live connections and reporting `delivered: true`, and not one reached
+   * a model — guardian pokes, the liveness probe, Jira-poll notices and
+   * agent-to-agent steers alike — for about 75 minutes, with every health field
+   * green. A human noticed by watching a clock.
+   *
+   * ⚠ **This does NOT say CrabCast has no channel.** It says CrabCast's agents
+   * cannot receive **Butchr's** channel, which is a different fact from
+   * `channelEnabled` on an `activate_response` — that field is about CrabCast's
+   * own `{"crabcast": "builtin"}` server, which {@link provision} deliberately
+   * does not send. The two happen to agree today and they are not the same
+   * question, so this is derived from the argv argument above and never read off
+   * that field. Reading one for the other is how a fact with two sources gets a
+   * wrong copy.
+   *
+   * **What would change this to `'loaded'`:** `configure_agent` growing a way to
+   * pass argv, and this runtime using it — the first of the three re-openers
+   * {@link setAgentSpawnedListener} already names and that
+   * `verify-crabcast-channel-startup-disablement.mjs` already watches.
+   *
+   * ⚠ **This value makes the loss LOUD; it does not repair it.** With it, the
+   * guardian poke reports `undelivered` and `overdue` goes true, the liveness
+   * probe is refused rather than recorded as a non-answer, and an inter-agent
+   * steer takes the composer and actually arrives. What none of that does is
+   * give this fleet a working channel — **scheduled supervision stays down
+   * until KAN-496 lands**, and it now says so instead of reading green.
+   */
+  public readonly channelReach = 'not-loaded' as const;
+
   private readonly link: CrabCastLink;
   private readonly log: (message: string) => void;
   private readonly censusIntervalMs: number;

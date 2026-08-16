@@ -307,10 +307,69 @@ export function unrenderableMetaEntries(meta: unknown): string[] {
     );
 }
 
+/**
+ * Whether this agent's CLIENT can render a channel frame at all (KAN-495).
+ *
+ * ---------------------------------------------------------------------------
+ * THE FACT THIS NAMES, AND WHY NOTHING ELSE ALREADY NAMED IT
+ * ---------------------------------------------------------------------------
+ *
+ * Everything else in this module is about the DAEMON's half of the loop: is
+ * emission on, is a connection registered, did the self-check pass, will the
+ * meta parse. All four can be green while the frame still dies, because there
+ * is a fifth condition none of them touches — **Claude Code discards
+ * `notifications/claude/channel` unless it was started with
+ * `--dangerously-load-development-channels server:<name>` for that server.**
+ *
+ * That flag is composed in exactly one place, `launchers.ts`
+ * `developmentChannelFlags()`, and it reaches an agent **only as argv**.
+ *
+ * **Measured, both directions, on one machine in one minute** —
+ * `probe-channel-reaches-model.mjs`, claude-code 2.1.233, identical fixture MCP
+ * server, identical prompt, both in a pty, differing in that argv alone:
+ *
+ * | arm | fixture emitted the frame | model printed the assembled token |
+ * | --- | --- | --- |
+ * | with the flag | yes | **yes** — `TOKEN=K495WR7T2` |
+ * | without it | yes | **no** — the model answered `NOCHANNEL` |
+ *
+ * The token's halves are never adjacent in the frame, so the `with` arm's
+ * answer is an assembly rather than a copy. That arm is the positive control:
+ * without it the `without` arm's silence would be a claim about the probe.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY IT IS A THIRD STATE AND NOT A BOOLEAN
+ * ---------------------------------------------------------------------------
+ *
+ * ⚠ **`'unknown'` IS NOT `'not-loaded'`, and collapsing them would be a fleet
+ * outage.** The daemon knows this fact structurally for a runtime whose spawn
+ * shape cannot carry argv, and does **not** know it per-agent for one whose
+ * spawn shape can — there, the flag depends on the kill switch as it stood at
+ * spawn time, and agents outlive switch flips. A boolean forces that second
+ * case to answer `false` and takes every herdr-spawned agent off the channel
+ * for a fact nobody established. This is the same three-valued discipline
+ * `AgentSpawn.channelEnabled` records for a neighbouring question, and the same
+ * reason: *"`null` is not `false`."*
+ *
+ * `'unknown'` therefore routes **exactly as this module routed before KAN-495**.
+ * Nothing about an unmeasured agent's traffic changes.
+ */
+export type ChannelReach =
+  /** The spawn carried the flag: this client renders channel frames. */
+  | 'loaded'
+  /**
+   * The spawn CANNOT have carried it, established from the spawn's shape rather
+   * than observed on one agent. A frame written here is written to be dropped.
+   */
+  | 'not-loaded'
+  /** Nothing here established it either way. Routes as before; claims nothing. */
+  | 'unknown';
+
 /** Why an addressed frame did not go out. Every one of these is sender-visible. */
 export type ChannelRefusal =
   | 'channel-disabled'
   | 'selfcheck-failed'
+  | 'channel-not-loaded'
   | 'no-connection'
   | 'registration-lost'
   | 'socket-closed'
@@ -395,6 +454,16 @@ export function carrierFor(opts: {
   registered: boolean;
   /** Whether the durable registry expects this agent to be running. */
   managed: boolean;
+  /**
+   * Whether this agent's client can render a frame at all (KAN-495).
+   *
+   * **Optional, and its absence is `'unknown'`, which routes exactly as this
+   * function routed before.** Same shape and same reason as `selfCheck` and
+   * `managed` on {@link routeChannelMessage}: a harness or an older caller
+   * wired without it keeps the behaviour it had rather than acquiring a
+   * refusal nobody wired a reader for.
+   */
+  reach?: ChannelReach;
   /** For the `channel-disabled` sentence only. */
   switchPath?: string;
 }): CarrierVerdict {
@@ -415,6 +484,40 @@ export function carrierFor(opts: {
       detail:
         'this agent failed its startup channel self-check and is degraded to the composer; ' +
         'butchr_list_agents carries the outcome and the client version on its row'
+    };
+  }
+
+  // THE CLIENT CANNOT RENDER IT, SO NOTHING IS WRITTEN (KAN-495).
+  //
+  // BEFORE `registered`, and that placement is the entire fix: a live
+  // registration was exactly what made this answer `channel` for five hours
+  // while every frame was discarded on arrival. The connection is real, the
+  // socket accepts the bytes, and the client throws them away — so a
+  // registration is necessary and has never been sufficient.
+  //
+  // AFTER `degraded`, so an agent that is both reads as degraded. Deliberately
+  // the same ordering argument this function already makes for that branch:
+  // report the cause somebody can act on. A degraded agent has a self-check
+  // verdict a reader can go and look at; this branch is about how it was
+  // spawned, which nothing restarts short of restarting it.
+  //
+  // COMPOSER, not `unregistered`. The recipient is running and reachable — it
+  // is reachable *by typing at it*, which is what the composer does and what
+  // the fleet used before channels existed. Refusing outright would leave the
+  // agent addressable by nothing at all, which is worse than the interrupt and
+  // is not what the absence of a flag means. `unregistered` stays reserved for
+  // its own condition: no connection where the registry expects one.
+  if (opts.reach === 'not-loaded') {
+    return {
+      transport: 'composer',
+      refusal: 'channel-not-loaded',
+      detail:
+        'this agent was spawned by a runtime that cannot put ' +
+        '--dangerously-load-development-channels on its client\'s command line, so its client ' +
+        'discards notifications/claude/channel in silence — the frame would be written, ' +
+        'reported delivered, and never reach a model (KAN-495, measured both directions by ' +
+        'daemon/scripts/probe-channel-reaches-model.mjs). Nothing is written; the composer is ' +
+        'the carrier that actually reaches it'
     };
   }
 
@@ -523,8 +626,20 @@ export function routeChannelMessage(opts: {
    * shape and same reason as `selfCheck` above.
    */
   managed?: (address: AgentAddress) => boolean;
+  /**
+   * Whether this agent's client can render a frame at all (KAN-495).
+   *
+   * A thunk rather than a value because the runtime is chosen once and read
+   * per send, exactly like the kill switch: a caller that captured this at
+   * construction would answer for whichever runtime was in service when the
+   * daemon booted, and a cutover is precisely when that is wrong.
+   *
+   * **Optional, and its absence is `'unknown'`, which routes as before.** Same
+   * contract as `selfCheck` and `managed` above.
+   */
+  reach?: () => ChannelReach;
 }): ChannelRouteOutcome {
-  const { registry, address, content, meta, selfCheck, managed } = opts;
+  const { registry, address, content, meta, selfCheck, managed, reach } = opts;
 
   // REFUSED RATHER THAN WRITTEN, AND BEFORE ANYTHING ELSE IS READ (KAN-319).
   //
@@ -595,6 +710,7 @@ export function routeChannelMessage(opts: {
     degraded,
     registered: target !== undefined,
     managed: managed?.(address) ?? false,
+    reach: reach?.() ?? 'unknown',
     switchPath: CHANNEL_SWITCH_PATH
   });
 
