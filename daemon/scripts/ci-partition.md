@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 104 |
-| `partial` | 12 |
+| `yes` | 105 |
+| `partial` | 13 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **141** |
+| **total** | **143** |
 
-**116 of 141** run on every pull request.
+**118 of 143** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -119,6 +119,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-list-agents-answer-is-bounded` | yes | reads a captured census fixture and imports the built budget module in process; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-list-agents-survives-restart` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-message-provenance` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-mjs-stub-arity-matches-seam` | yes | reads `daemon/src/agent-runtime.ts` and the `.mjs` files as TEXT; no build, no socket, no peer, no credential, no network. Unaffected by a failed build, so its verdict is about what you wrote rather than what last compiled. |
 | `verify-notifications-never-type` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-off-button-honesty` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-operative-rules-are-carried` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -165,6 +166,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-priority-roundtrip` | partial | §1–§4 read `daemon/src/*.ts` as TEXT and §5 imports `daemon/dist`, and all five assert in full on a runner. §6 and §7 need a LIVE CrabCast daemon on this machine's socket, which CI has not got, so they announce themselves SKIPPED there. They are not mocked and there is no fallback: the whole value of §6 is that the echo is CrabCast's, so a reproduction of it would prove nothing. The skip is reachable ONLY when the socket is absent — a socket that is present and refuses FAILS instead. (KAN-482) |
 | `verify-crabcast-session-restore` | partial | sections 1-4 assert in CI. They stand up their own Unix socket and their own agent registry under os.tmpdir(), and need no peer, no herdr, no PTY, no credential and no network. Section 5 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-standing` | partial | sections 1-5 assert in CI. They import the built daemon modules and run over frames this script constructs and two committed captures, and need no peer, no herdr, no PTY, no credential and no network. Section 6 reads a live CrabCast socket and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
+| `verify-crabcast-supervisor-exemption` | partial | §1–§4 read `daemon/src/*.ts` as TEXT and §5 imports `daemon/dist`, and all five assert in full on a runner. §6–§8 need a LIVE CrabCast daemon on this machine's socket, which CI has not got, so they announce themselves SKIPPED there. They are not mocked: the whole value of §6 is that the echo is CrabCast's and of §7 that the refusal is CrabCast's gate, so a reproduction would prove nothing. The skip is reachable ONLY when the socket is absent — a socket that is present and refuses FAILS instead. |
 | `verify-jira-nudge-coalescing` | partial | the coalescing assertions run in CI. The CONTROL leg needs an `--unfixed` build to show the defect it prevents, and AC3d needs `--live`; both are skipped without them and both are named in the run output. |
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |

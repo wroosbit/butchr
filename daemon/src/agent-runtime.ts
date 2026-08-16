@@ -267,6 +267,37 @@ export interface AgentRuntime {
    * this seam, from the same registry lookup — so the runtime has nothing to do
    * with the number. Under CrabCast the decision is made by a *different
    * daemon*, so the value has to be told to it.
+   *
+   * ## `supervisor` crosses the seam for the same reason, and is also REQUIRED
+   *
+   * **Whether this workspace type hands work out rather than doing it** — the
+   * answer `isSupervisorType` in `registry.ts` gives, which is aggregated from
+   * the `supervisor` flag each integration declares on its own types. It is the
+   * fifth value dropped at `provision()` (KAN-492), and it is dropped the same
+   * way the other four were: the payload simply had no field for it, so nothing
+   * could be missing.
+   *
+   * **What it cost, measured on the cutover of 2026-08-16.** Butchr's own
+   * capacity model has exempted supervisors from its cap since KAN-41 — see
+   * `capacity.ts`'s header for the argument, and `router.ts`'s gate, where
+   * `isSupervisorType` passes them unconditionally. None of that reaches
+   * CrabCast, whose gate is a *different daemon's* and cannot infer it:
+   * workspace types are Butchr's vocabulary, not theirs. So the fleet drained by
+   * attempt #6 — `epic/kan-59`, `epic/kan-39`, `story/kan-419`, `epic/kan-203`,
+   * `story/kan-117`, **five supervisors and no task agents** — was charged five
+   * slots against a cap of three, and two of the five were refused `at capacity`
+   * on the way back. Butchr believed those agents were free and told the daemon
+   * doing the rationing that they cost a slot each.
+   *
+   * **Required rather than optional, for the reason directly above.** An
+   * optional `supervisor?: boolean` defaults to `undefined`, which reads as
+   * *not a supervisor*, which is the defect — re-created silently the first time
+   * a call site forgot, and on exactly the population that has no task agent to
+   * make the shortfall visible. Omission is a compile error instead.
+   *
+   * **`HerdrBridge` ignores this one too**, and for the identical reason: under
+   * herdr the exemption is applied in `router.ts`'s `capacityGate`, above this
+   * seam, off the same predicate this parameter carries.
    */
   spawnSession(
     type: string,
@@ -274,6 +305,7 @@ export interface AgentRuntime {
     url: string | undefined,
     promptContent: string,
     priority: number,
+    supervisor: boolean,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers,
     resume?: ResumeCause

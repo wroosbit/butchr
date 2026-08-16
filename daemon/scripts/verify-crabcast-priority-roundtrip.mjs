@@ -172,8 +172,16 @@ check(
   literalPriorities.join(', ') || '(none)'
 );
 
+// KAN-492 inserted `supervisor` between `priority` and `defaultAgent` here. The
+// assertion still pins the WHOLE argument list rather than just `priority`,
+// which is what makes it catch a positional slip — but it now has to be updated
+// whenever the seam grows, and that is the intended cost rather than an
+// annoyance: a pattern loose enough to survive an insertion would not have
+// noticed `priority` moving either.
 check(
-  /this\.provision\(session, promptContent, priority, defaultAgent, mcpServers\)/.test(runtimeCode),
+  /this\.provision\(session, promptContent, priority, supervisor, defaultAgent, mcpServers\)/.test(
+    runtimeCode
+  ),
   'spawnSession hands the priority it was given to provision()',
   '(searched the call in spawnSession)'
 );
@@ -237,7 +245,9 @@ check(
     .join('\n')
 );
 check(
-  /promptContent: string, priority: number, defaultAgent\?: string/.test(herdrCode),
+  /promptContent: string, priority: number, supervisor: boolean, defaultAgent\?: string/.test(
+    herdrCode
+  ),
   'and that one occurrence is the signature',
   '(searched herdr.ts)'
 );

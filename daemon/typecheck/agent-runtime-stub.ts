@@ -76,12 +76,21 @@ class StubRuntime implements AgentRuntime {
   // have let the next implementation reintroduce it in silence. Here the
   // omission does not compile — this fixture went red on exactly that, before
   // the parameter was added below.
+  //
+  // KAN-492 added `_supervisor` the same way and for the same reason, and this
+  // fixture proved the claim rather than restating it: leaving the stub alone
+  // did not fail as a missing parameter but as `Type 'boolean' is not
+  // assignable to type 'string'` — the required parameter shifted `defaultAgent`
+  // along and the compiler caught it at the shift. Worth knowing before reading
+  // that error as unrelated: a third runtime that ignores supervisor-ness is
+  // told about it here, whichever way the message is worded.
   spawnSession(
     _type: string,
     _key: string,
     _url: string | undefined,
     _promptContent: string,
     _priority: number,
+    _supervisor: boolean,
     _defaultAgent?: string,
     _mcpServers?: McpServerDefinitions,
     _resume?: ResumeCause

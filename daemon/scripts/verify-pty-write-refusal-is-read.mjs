@@ -331,7 +331,7 @@ const runtime = new CrabCastRuntime({
 });
 await sleep(400);
 
-const session = runtime.spawnSession('task', 'KAN-459-probe', undefined, 'kan-459 pty refusal', 1, 'shell');
+const session = runtime.spawnSession('task', 'KAN-459-probe', undefined, 'kan-459 pty refusal', 1, false, 'shell');
 for (let i = 0; i < 60 && session.status === 'initializing'; i++) await sleep(50);
 if (!session.sessionId || session.status === 'initializing') {
   console.error(`setup: the fake never brought a session up (status ${session.status}).`);

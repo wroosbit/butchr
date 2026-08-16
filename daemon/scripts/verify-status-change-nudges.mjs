@@ -862,8 +862,12 @@ if (LIVE) {
   const workspaces = path.join(os.homedir(), '.local', 'share', 'butchr', 'workspaces');
   try {
     console.log('\n  starting two real agents…\n');
-    bridge.spawnSession(SUP.type, SUP.key, undefined, INERT, 1, 'claude', {});
-    bridge.spawnSession(CHILD.type, CHILD.key, undefined, INERT, 1, 'claude', {});
+    // The 6th argument is `supervisor` (KAN-492). It is a literal `false` here
+    // even for SUP, which is a story: `HerdrBridge` is documented to ignore the
+    // value, this probe drives `HerdrBridge`, and passing the real predicate
+    // would make this script's fixture depend on a registry it never registers.
+    bridge.spawnSession(SUP.type, SUP.key, undefined, INERT, 1, false, 'claude', {});
+    bridge.spawnSession(CHILD.type, CHILD.key, undefined, INERT, 1, false, 'claude', {});
 
     // The durable record, exactly as the router writes it on an activation by a
     // supervisor — section 1 proves that write path against the real handler;

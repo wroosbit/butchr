@@ -392,7 +392,7 @@ await sleep(400);
 const spawned = [];
 async function spawnWith(key, verdict) {
   nextVerdict = verdict;
-  const session = runtime.spawnSession('task', key, undefined, 'kan-294 verdict probe', 1, 'shell');
+  const session = runtime.spawnSession('task', key, undefined, 'kan-294 verdict probe', 1, false, 'shell');
   spawned.push(session);
   for (let i = 0; i < 60 && session.status === 'initializing'; i++) await sleep(50);
   return session;

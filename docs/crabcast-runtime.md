@@ -253,9 +253,11 @@ behaviour of an empty table.
 
 **`url` is the decisive half, and it settles the question rather than arguing
 it.** `url` is a *Butchr* fact — the Jira ticket URL, passed **into**
-`spawnSession` — and `provision()` sends `configure_agent` exactly four fields
-plus MCP servers: `path`, `priority`, `launcher`, `prompt`. **`url` is never sent
-to CrabCast at all.** So no read of CrabCast can return it, under any signature,
+`spawnSession` — and `provision()` sends `configure_agent` exactly seven fields
+plus MCP servers: `path`, `priority`, `refusable`, `chargeable`, `preemptable`,
+`launcher`, `prompt`. (Four until KAN-492 added the three capacity gate flags;
+the count is stated so that a reader who finds it stale knows to check the
+builder rather than trust it.) **`url` is never sent to CrabCast at all.** So no read of CrabCast can return it, under any signature,
 ever. A restarted daemon cannot recover `url` for an agent it did not itself
 start by awaiting anything, because the fact was never on their side to await.
 

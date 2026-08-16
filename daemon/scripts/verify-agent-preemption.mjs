@@ -180,7 +180,14 @@ function stubHerdr(running, { statuses = {}, sessions = [] } = {}) {
     // preemption. That is exactly what happened, and it is the same "nothing
     // could have told us" the comment below records: this is a `.mjs` stub, so
     // no compiler sees it.
-    spawnSession: (type, key, url, prompt, priority, defaultAgent, mcpServers, resume) => {
+    // ⚠ AND IT HAS NOW HAPPENED A SECOND TIME, by the same mechanism this
+    // comment predicted: KAN-492 added a required `supervisor` 6th at the seam,
+    // this stub kept eight parameters, `resume` was read off `mcpServers`, and
+    // section 7 went red in CI for a reason with nothing to do with preemption.
+    // The note above was right and was not enough — a warning in the file that
+    // gets shifted cannot be read by the person editing a different file. When
+    // you add to the seam, grep every `.mjs` for `spawnSession:`.
+    spawnSession: (type, key, url, promptContent, priority, supervisor, defaultAgent, mcpServers, resume) => {
       const workDir = path.join(WORKSPACES, type, key.toLowerCase());
       fs.mkdirSync(workDir, { recursive: true });
       const session = {
