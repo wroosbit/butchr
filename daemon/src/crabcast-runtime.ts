@@ -1128,6 +1128,13 @@ export function paneObservationFrom(res: Record<string, any>, workDir: string): 
   const interrupts = num(res.interrupts);
   const submits = num(res.submits);
   const delivered = res.delivered === true;
+  // ⚠ `inComposer` is NESTED under `evidence`, not top-level. Measured off the
+  // wire on 2026-08-16 by `probe-composer-paste-collapse.mjs --stage-b`; a
+  // top-level read finds nothing, and reading that absence as a fact about the
+  // pane is this ticket's own defect in miniature. It is diagnostic only —
+  // nothing below branches on it.
+  const evidence = (res.evidence ?? {}) as Record<string, any>;
+  const inComposer = typeof evidence.inComposer === 'boolean' ? evidence.inComposer : null;
 
   // The pane was demonstrably reached if anything at all was pressed at it, or
   // if the send was delivered — a delivery is not possible without a pane.
@@ -1144,7 +1151,7 @@ export function paneObservationFrom(res: Record<string, any>, workDir: string): 
       detail:
         `CrabCast reported ${interrupts ?? '?'} interrupt(s) and ${submits ?? '?'} submit(s) at the pane ` +
         `for ${workDir}${verdict ? ` (verdict: ${verdict})` : ''}` +
-        (typeof res.inComposer === 'boolean' ? `, inComposer: ${res.inComposer}` : '')
+        (inComposer === null ? '' : `, evidence.inComposer: ${inComposer}`)
     };
   }
 

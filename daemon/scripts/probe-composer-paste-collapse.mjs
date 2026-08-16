@@ -119,7 +119,8 @@ import pty from 'node-pty';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const verbose = process.argv.includes('--verbose');
-const wantStageB = process.argv.includes('--stage-b');
+const stageBOnly = process.argv.includes('--stage-b-only');
+const wantStageB = process.argv.includes('--stage-b') || stageBOnly;
 
 /** Unguessable, letters-only, per run — a rendered pane mangles anything else. */
 const RUN = Math.random().toString(36).slice(2, 8).toUpperCase().replace(/[^A-Z]/g, 'K');
@@ -195,8 +196,9 @@ const GRID_COLS = 120;
  * marker. The filler is letters and spaces only, so nothing in it can be
  * mistaken for the client's own collapse marker.
  */
-function buildPayload(marker, chars, newlines) {
+function buildPayload(marker, chars, newlines, tailMarker) {
   const head = `${marker} `;
+  if (tailMarker) chars = Math.max(chars - tailMarker.length - 1, 20);
   const bodyLen = Math.max(chars - head.length, 10);
   // Filler first, then newlines distributed through it, so length is held while
   // the newline count moves.
@@ -213,7 +215,7 @@ function buildPayload(marker, chars, newlines) {
     }
     body = parts.join('\n');
   }
-  return head + body;
+  return head + body + (tailMarker ? ` ${tailMarker}` : '');
 }
 
 /** Bracketed paste — what a terminal sends when text is pasted into it. */
@@ -848,27 +850,52 @@ async function stageB() {
     { name: 'MULTI-LINE (12 newlines)', newlines: 12, chars: 300 },
     { name: 'SINGLE-LINE (0 newlines)', newlines: 0, chars: 300 }
   ]) {
+    // ⚠ TWO MARKERS, HEAD AND TAIL, AND THE TAIL ONE IS WHY.
+    //
+    // The first run of this stage looked only for a leading marker and reported
+    // *"the pane shows neither the marker nor a collapse block — this arm may
+    // genuinely not have arrived."* That was FALSE, and the reply's own
+    // `evidence.tail` disproved it: the composer was holding the payload,
+    // wrapped across seven visible rows, with the START of it scrolled out of
+    // the visible window. A composer shows a WINDOW, so a marker at the head of
+    // a long payload is exactly the part that will not be there.
     const marker = `KANB${RUN}N${arm.newlines}`;
-    const message = buildPayload(marker, arm.chars, arm.newlines);
+    const endMarker = `ZEND${RUN}N${arm.newlines}`;
+    const message = buildPayload(marker, arm.chars, arm.newlines, endMarker);
 
     const reply = await link.request({ action: 'send_to_agent', path: workDir, message });
     await sleep(2500);
     const tail = await link.request({ action: 'tail_agent', path: workDir, lines: 40 }).catch(() => null);
     const tailText = typeof tail?.text === 'string' ? strip(tail.text) : '';
+    const squashed = squash(tailText);
+    // CrabCast's own tail, taken at the moment of the send — the reply carries
+    // it, so it is read rather than re-derived from a later poll.
+    const evidenceTail = squash(String(reply?.evidence?.tail ?? ''));
+
+    const sawHead = squashed.includes(marker) || evidenceTail.includes(marker);
+    const sawEnd = squashed.includes(endMarker) || evidenceTail.includes(endMarker);
+    const collapsed = COLLAPSE_RE.test(squashed) || COLLAPSE_RE.test(evidenceTail);
+    // A composer holding wrapped filler is the pane having been changed just as
+    // much as a collapse block is.
+    const sawFiller = /loremipsumdolorsitamet/i.test(evidenceTail) || /loremipsumdolorsitamet/i.test(squashed);
 
     console.log(`\n--- ARM ${arm.name} ---`);
-    console.log(`marker              : ${marker}`);
+    console.log(`markers             : head=${marker} end=${endMarker}`);
     console.log(`WIRE REPLY (verbatim): ${JSON.stringify(reply, null, 2)}`);
-    console.log(`pane shows marker   : ${tailText.includes(marker)}`);
-    console.log(`pane shows collapse : ${COLLAPSE_RE.test(tailText)}`);
+    console.log(`pane shows head mark: ${sawHead}`);
+    console.log(`pane shows end mark : ${sawEnd}`);
+    console.log(`pane shows collapse : ${collapsed}`);
+    console.log(`pane holds payload  : ${sawFiller}   <- "was the pane changed?"`);
     console.log(`pane tail           : ${JSON.stringify(tailText.trim().slice(-300))}`);
 
     arms.push({
       ...arm,
       marker,
+      endMarker,
       reply,
-      paneLiteral: tailText.includes(marker),
-      paneCollapsed: COLLAPSE_RE.test(tailText)
+      paneLiteral: sawHead || sawEnd,
+      paneCollapsed: collapsed,
+      paneChanged: sawHead || sawEnd || collapsed || sawFiller
     });
   }
 
@@ -878,15 +905,33 @@ async function stageB() {
   const failing = arms.find((a) => a.newlines > 0);
   const fields = failing ? Object.keys(failing.reply ?? {}) : [];
   note('keys on the failing reply', fields.join(', ') || '(none)');
-  for (const f of ['success', 'delivered', 'verdict', 'interrupts', 'submits', 'inComposer', 'evidence']) {
+  for (const f of ['success', 'delivered', 'verdict', 'interrupts', 'submits']) {
     note(`  ${f}`, f in (failing?.reply ?? {}) ? JSON.stringify(failing.reply[f]) : '(absent)');
   }
+  // ⚠ `inComposer` is NOT a top-level key — it is nested under `evidence`.
+  // Measured, and worth stating: code reading `res.inComposer` finds nothing
+  // and would read that absence as a fact about the pane if it were not
+  // careful.
+  note('  inComposer (top level)', 'inComposer' in (failing?.reply ?? {}) ? 'present' : '(absent)');
+  note('  evidence.inComposer', JSON.stringify(failing?.reply?.evidence?.inComposer ?? '(absent)'));
+  note('  evidence.landedAfter', JSON.stringify(failing?.reply?.evidence?.landedAfter ?? '(absent)'));
 
   check(
-    'the failing arm was typed onto the pane — so a refusal claiming otherwise is false',
-    failing?.paneCollapsed === true || failing?.paneLiteral === true,
-    'the pane shows neither the marker nor a collapse block: this arm may genuinely not have ' +
-      'arrived, which would be a different defect from the one KAN-498 describes'
+    'the counters the fix reads are present on the FAILING reply',
+    typeof failing?.reply?.interrupts === 'number' && typeof failing?.reply?.submits === 'number',
+    'if these are absent the fix degrades to `not-measured` — honest, but it is the whole signal'
+  );
+  check(
+    '⚠ the failing reply is shaped `success: false`, so reading the counters on that branch too ' +
+      'was necessary',
+    failing?.reply?.success === false,
+    'if it were `success: true` with `delivered: false`, the other branch would have carried it'
+  );
+  check(
+    'the failing arm CHANGED THE PANE — so a refusal claiming otherwise is false',
+    failing?.paneChanged === true,
+    'the pane holds no trace of the payload: this arm may genuinely not have arrived, which ' +
+      'would be a different defect from the one KAN-498 describes'
   );
 
   try {
@@ -899,6 +944,25 @@ async function stageB() {
 }
 
 // ── run ─────────────────────────────────────────────────────────────────────
+
+if (stageBOnly) {
+  const b = await stageB();
+  rule('SUMMARY');
+  console.log('Stage B only — Stages A, C and D did not run, so nothing here says what the');
+  console.log('CLIENT does. Run without --stage-b-only for that.');
+  // ⚠ A STAGE THAT DID NOT RUN EXITS 2, NOT 0. The header promises that and an
+  // earlier cut did not honour it: CrabCast refused the activation for capacity
+  // — it holds its own cap, measured at 3 and unrelated to Butchr's — and the
+  // probe printed "this is NOT a verdict" and then exited 0 anyway. A caller
+  // reading the exit code would have recorded a pass for a stage that never
+  // happened, which is this epic's own defect wearing a probe's clothes.
+  if (!b?.ran) {
+    console.log('\n⚠ Stage B DID NOT RUN. Exit 2 — this is not a pass and not a failure.');
+    process.exit(2);
+  }
+  console.log(`\nfailures: ${failures}`);
+  process.exit(failures ? 1 : 0);
+}
 
 const a = await stageA();
 const c = a.controlHeld ? await stageC() : null;
