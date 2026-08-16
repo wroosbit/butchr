@@ -959,6 +959,22 @@ export type ConfigureAgentPayload = {
  * `--gate-exempt` as the shorthand for the same three, which is their own
  * statement that these travel together.
  *
+ * **THE LIMIT OF THAT, because "not reachable" would otherwise claim more than
+ * the mechanism covers.** It is a fact about this builder, which is the only
+ * producer of a `ConfigureAgentPayload` in `daemon/src` — nothing else
+ * constructs one, so nothing else can name an incoherent trio. It is NOT a fact
+ * the type system enforces: `ConfigureAgentPayload` declares three independent
+ * booleans, so a future author who hand-writes a payload rather than calling
+ * this can still spell `{chargeable: false, preemptable: true}` and compile.
+ * Typing the three as a union of the two coherent shapes would close that, and
+ * was not done here: the payload must stay assignable to `Record<string,
+ * unknown>` for `CrabCastLink.request`, which is why it is a type alias and not
+ * an interface, and a union puts that implicit index signature at risk for a
+ * defect no call site can currently reach. **What catches it meanwhile is
+ * CrabCast**, which refuses the combination on the wire in as many words —
+ * belt and braces, in that order, with the braces on their side rather than
+ * ours. If a second producer is ever added here, close it with the type.
+ *
  * **Why `preemptable` follows from `chargeable`, and is not a separate policy
  * decision.** Preemption's bargain is that standing an agent down frees the
  * slot the incoming one takes. An uncharged agent holds no slot, so standing it
