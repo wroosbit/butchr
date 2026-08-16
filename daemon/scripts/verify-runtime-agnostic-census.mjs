@@ -534,9 +534,8 @@ section('5. THE AUDIT — the runtime-sensitive sentences carry no hardcoded nam
   const converted = [
     ['router.ts', 'Nothing to re-attach to: ${this.herdrBridge.runtimeName} has no live agent'],
     ['router.ts', '${this.herdrBridge.runtimeName} refused the send:'],
-    ['router.ts', '${this.herdrBridge.runtimeName} could not reach a pane for'],
     ['router.ts', "${this.herdrBridge.runtimeName} accepted the keystrokes for the recipient's pane"],
-    ['router.ts', '${this.herdrBridge.runtimeName} resolved a live pane for this address'],
+    ['router.ts', "${this.herdrBridge.runtimeName} typed the keystrokes onto the recipient's pane"],
     ['nudge.ts', '${herdrBridge.runtimeName} refused the send'],
     ['nudge.ts', '${asked} has no agent by that name'],
     ['reconcile.ts', '${herdrBridge.runtimeName} did not become reachable within'],
@@ -544,6 +543,46 @@ section('5. THE AUDIT — the runtime-sensitive sentences carry no hardcoded nam
   ];
   for (const [file, needle] of converted) {
     check(src(file).includes(needle), `${file}: names the runtime — ${needle.slice(0, 52)}…`);
+  }
+
+  // ── KAN-498 MOVED TWO OF THESE SENTENCES, SO THE ASSERTION MOVES WITH THEM ──
+  //
+  // Two entries left the list above and it is worth saying exactly why, because
+  // "the fixture was edited until the proof passed" is the failure this comment
+  // exists to rule out.
+  //
+  // `${runtimeName} could not reach a pane for …` and `… resolved a live pane
+  // for this address` were C2's basis, composed in `router.ts` from
+  // `result.success`. C2 is no longer derived there at all: KAN-498 established
+  // that a delivery verdict is not evidence about whether a session exists, so
+  // C2 and its basis now come from the runtime's own `PaneObservation`.
+  // Requiring those two literals in `router.ts` would require re-introducing
+  // the collapsed derivation this ticket removed — the fixture would be
+  // enforcing the defect.
+  //
+  // ⚠ **The INVARIANT is untouched and is therefore re-asserted where the
+  // sentences now live.** A sentence that names the runtime must still derive
+  // the name. `HerdrBridge` and `CrabCastRuntime` each compose a `pane.detail`
+  // that reaches an agent as C2's and C3's basis, and each must ask for its own
+  // name rather than typing it — which is the same rule one file down, and is
+  // the check that replaces the two above rather than a weakening of them.
+  const paneDetailDerives = [
+    ['herdr.ts', '${this.runtimeName} sent C-c, the text and Enter to pane'],
+    ['crabcast-runtime.ts', '${runtimeName} reported ${interrupts ?? \'?\'} interrupt(s)'],
+    ['crabcast-runtime.ts', '${runtimeName} reported no interrupts and no submits for']
+  ];
+  for (const [file, needle] of paneDetailDerives) {
+    check(
+      src(file).includes(needle),
+      `${file}: the pane detail derives the runtime name — ${needle.slice(0, 46)}…`
+    );
+  }
+  // And the literal each of those replaced must not come back.
+  for (const [file, needle] of [
+    ['herdr.ts', '`herdr sent C-c'],
+    ['crabcast-runtime.ts', '`CrabCast reported ']
+  ]) {
+    check(!src(file).includes(needle), `${file}: the literal is gone — "${needle}"`);
   }
 
   // And the pre-fix literals must be gone from those same sentences.

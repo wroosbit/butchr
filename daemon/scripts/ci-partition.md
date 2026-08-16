@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 106 |
+| `yes` | 107 |
 | `partial` | 13 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **144** |
+| **total** | **145** |
 
-**119 of 144** run on every pull request.
+**120 of 145** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -140,6 +140,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-same-key-other-type` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-selfcheck-rechecks-replaced-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. §4 opens a Unix socket inside its own scratch directory. |
 | `verify-selfcheck-verdict-outlives-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-send-claims-not-collapsed` | yes | it imports the built daemon modules and drives the real MessageRouter in-process. No terminal, no socket, no network, no `claude`. |
 | `verify-staleness-check` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
 | `verify-staleness-over-socket` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
 | `verify-standdown-survives-degraded-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

@@ -98,8 +98,112 @@
  * and it is the one that actually holds for a new call site.
  */
 
+import type { PaneObservation } from './agent-runtime.js';
+
 /** How a message was carried. Named in every response; never chosen by a sender. */
 export type Transport = 'channel' | 'composer';
+
+/**
+ * THE ONLY ROUTE FROM A PANE OBSERVATION TO C2, AND IT TAKES NOTHING ELSE
+ * (KAN-498).
+ *
+ * C2 — *a live session exists for this recipient* — used to be spelled
+ * `result.success === true` at `router.ts`'s composer call site, which is to
+ * say it was **the delivery verdict wearing C2's name**. That is how a refusal
+ * for a pane the daemon had just typed into came back asserting no session
+ * existed.
+ *
+ * This function's whole job is its signature. It accepts a
+ * {@link PaneObservation} and nothing else, so the old spelling no longer
+ * type-checks: `boolean` is not assignable to a tagged union, and the compiler
+ * refuses it at the call site rather than a reviewer refusing it at the diff.
+ * That is the mutation the red drive uses — see
+ * `verify-send-claims-not-collapsed.mjs`.
+ *
+ * ⚠ **`no` and `not-measured` map to different things and must keep doing so.**
+ * `no` is a measurement and becomes `false`; `not-measured` is silence and
+ * becomes `'not-measured'`, which `sealClaims` renders as `null` with a `why`.
+ * Collapsing them would put this module's own three-valued doctrine back into
+ * the boolean it exists to escape.
+ */
+export function claimSessionPresent(pane: PaneObservation): Observation {
+  switch (pane.reached) {
+    case 'typed':
+      return true;
+    case 'no':
+      return false;
+    case 'not-measured':
+      return 'not-measured';
+  }
+}
+
+/**
+ * C3 from the same observation. A pane that was typed into and **submitted**
+ * put the text in the transcript; one that was typed into and not submitted
+ * demonstrably did not, and that is a measurement rather than silence — the
+ * text is sitting in the composer where anyone can read it.
+ *
+ * Every other arm is silence: nothing that failed to reach a pane can say
+ * anything about a transcript.
+ */
+export function claimEnteredTranscript(pane: PaneObservation): Observation {
+  return pane.reached === 'typed' ? pane.submitted : 'not-measured';
+}
+
+/**
+ * THE COMPOSER'S CLAIM BLOCK, WHICH COMPUTES C2 AND C3 ITSELF AND WILL NOT
+ * ACCEPT THEM (KAN-498).
+ *
+ * ## Why this exists rather than a rule about how to call `sealClaims`
+ *
+ * The first cut of this fix exported {@link claimSessionPresent} and asked the
+ * router to use it. **It was driven red and it did not hold.** `sealClaims`
+ * takes `Record<ClaimName, Observation>` and `Observation` includes `boolean`,
+ * so putting the old `sessionPresent: result.success === true` straight back
+ * compiled cleanly — the helper was available, not required, and a type that
+ * merely offers the right answer prevents nothing. Recorded because the
+ * mutation is the only reason it was found: a helper that is *used* looks
+ * identical, in a diff, to one that is *enforced*.
+ *
+ * So the composer path does not get to name C2 or C3 at all. There is no
+ * parameter for them. The only thing the caller supplies about the pane is the
+ * {@link PaneObservation} itself, and a `boolean` is not assignable to that —
+ * which is the compile error the red drive now actually gets.
+ *
+ * ## What the caller still owns
+ *
+ * C1 and its basis, because "the transport accepted the bytes" has a legitimate
+ * non-pane source: a runtime can accept a send without this code seeing a pane.
+ * C4 is silence on this carrier and is not a parameter either.
+ */
+export function sealComposerClaims(args: {
+  /** The one input from which C2 and C3 are derived. Never a boolean. */
+  pane: PaneObservation;
+  transportAccepted: Observation;
+  transportAcceptedBasis: string;
+  /** Overrides C3's basis where the caller has better words than the default. */
+  enteredTranscriptBasis?: string;
+}): ClaimBlock {
+  const { pane } = args;
+  return sealClaims(
+    'composer',
+    {
+      transportAccepted: args.transportAccepted,
+      sessionPresent: claimSessionPresent(pane),
+      enteredTranscript: claimEnteredTranscript(pane),
+      modelRead: 'not-measured'
+    },
+    {
+      transportAccepted: args.transportAcceptedBasis,
+      sessionPresent: pane.detail,
+      enteredTranscript:
+        args.enteredTranscriptBasis ??
+        'nothing here read the pane. `butchr_tail_agent` is what shows whether the Enter took; ' +
+          'the Enter can be lost and strand the text at the composer (nudge.ts, KAN-79)',
+      modelRead: ''
+    }
+  );
+}
 
 /** The four claims of design §2, in the spelling a response uses. */
 export type ClaimName =

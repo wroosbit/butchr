@@ -16,7 +16,7 @@
  *
  * This is not a CrabCast client and must not grow into one (KAN-223 scope).
  */
-import type { AgentRuntime, AgentSpawn } from '../src/agent-runtime.js';
+import type { AgentRuntime, AgentSpawn, SendToAgentResult } from '../src/agent-runtime.js';
 import type {
   AgentPresence,
   CensusReading,
@@ -200,12 +200,17 @@ class StubRuntime implements AgentRuntime {
   // smaller `sendToAgent`.
   pressPaneKey(_key: string, _type: string | undefined, _keyName: string): void {}
 
-  async sendToAgent(
-    _key: string,
-    _message: string,
-    _type?: string
-  ): Promise<{ success: boolean; error?: string }> {
-    return { success: false, error: 'stub' };
+  // KAN-498. `pane` is REQUIRED, and this stub is one of the places that says
+  // so: a runtime cannot answer with a bare delivery boolean and leave the
+  // router to derive "a live session exists" from it. A stub knows nothing
+  // about any pane, so it says `not-measured` — which is the honest arm and
+  // deliberately not `no`.
+  async sendToAgent(_key: string, _message: string, _type?: string): Promise<SendToAgentResult> {
+    return {
+      success: false,
+      error: 'stub',
+      pane: { reached: 'not-measured', detail: 'this stub never reaches a pane' }
+    };
   }
 
   writePty(_sessionId: string | undefined, _data: string): boolean {
