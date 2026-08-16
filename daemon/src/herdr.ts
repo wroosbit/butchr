@@ -1016,6 +1016,29 @@ export class HerdrBridge implements AgentRuntime {
   /** See {@link AgentRuntime.runtimeName}. */
   public readonly runtimeName = 'herdr' as const;
 
+  /**
+   * See {@link AgentRuntime.channelReach}. `'unknown'`, and that is the honest
+   * answer rather than a gap left for somebody (KAN-495).
+   *
+   * **This runtime's spawns CAN carry the flag** — `launchers.ts`
+   * `claudeCommand()` composes it onto both arms of the `||`, from
+   * `developmentChannelFlags()`, which reads the kill switch. So `'not-loaded'`
+   * would be wrong here and `'loaded'` would be a lie.
+   *
+   * ⚠ **What is missing is a PER-AGENT record, and the reason is worth
+   * carrying.** The launch decision is taken once, at spawn; the emission
+   * decision is taken per message. An agent spawned while the switch was off
+   * has no flag and keeps none for its whole life, while the daemon will
+   * happily resolve it and write frames its client discards — launchers.ts has
+   * said so in prose since KAN-246 and nothing has ever been able to answer it
+   * for a particular agent. `AgentSpawn.channelEnabled` is exactly that fact
+   * and it crosses `setAgentSpawnedListener` already; what does not exist is
+   * anywhere that keeps it. That is **KAN-497**, and until it lands this member
+   * must stay `'unknown'` — guessing `'not-loaded'` here would take a working
+   * fleet off channels for a fact nobody established.
+   */
+  public readonly channelReach = 'unknown' as const;
+
   private sessions: Map<string, HerdrSession> = new Map();
 
   /** Set by the daemon so a dying PTY can be announced to connected clients. */

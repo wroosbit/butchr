@@ -290,6 +290,28 @@ promptSourceKeeper.start();
 // cannot disagree. In the default case nothing here opens a CrabCast socket.
 const { runtime: herdrBridge, report: agentRuntimeReport } = createAgentRuntime({ log });
 
+/**
+ * Whether the runtime in service can put a channel frame in front of a model
+ * (KAN-495).
+ *
+ * ONE READER, consulted by every route, for the reason channel.ts gives about
+ * the kill switch and KAN-145 gives about everything: a fact with two
+ * implementations is a fact with a wrong copy, and the copy nobody exercises is
+ * the wrong one. A thunk rather than a captured value so it is read per send —
+ * the runtime is chosen once at boot and a cutover is exactly when a value
+ * captured then is wrong.
+ *
+ * **What it is asserting at each route, said once here rather than five times.**
+ * A live registration is necessary and has never been sufficient: a client
+ * started without `--dangerously-load-development-channels` accepts the frame
+ * and discards it, so `resolve` answering with a connection is exactly what
+ * every instrument read as delivered while the fleet went unsupervised. Every
+ * `routeChannelMessage` call site below passes this, and the listing carrier
+ * asks it too — KAN-274 made those one function precisely so a row cannot
+ * report a carrier the next send will not take.
+ */
+const channelReach = () => herdrBridge.channelReach;
+
 // The one piece of state that outlives the machine. Everything else here —
 // the session map, herdr's panes, the extension's view — dies in a power cut,
 // which is why a reboot used to destroy the fleet with nothing to say about it.
@@ -482,6 +504,7 @@ const channelLiveness = new ChannelLivenessProbe({
     send: (address, content) => {
       const outcome = routeChannelMessage({
         registry: agentConnections,
+        reach: channelReach,
         address,
         content,
         // A STRING, and the quotes are load-bearing (KAN-319). Meta entries
@@ -596,6 +619,7 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
       // reply shape, which KAN-244's proofs read field by field.
       const outcome = routeChannelMessage({
         registry: agentConnections,
+        reach: channelReach,
         address,
         content: msg.content,
         meta: msg.meta,
@@ -1054,6 +1078,7 @@ const server = net.createServer((socket) => {
       channelRoute: (address, content, meta) =>
         routeChannelMessage({
           registry: agentConnections,
+          reach: channelReach,
           address,
           content,
           meta,
@@ -1082,6 +1107,10 @@ const server = net.createServer((socket) => {
           degraded: channelSelfChecks.degraded(address, conn?.id ?? null),
           registered: conn !== undefined,
           managed: isManagedAgent(address),
+          // KAN-495, and the row must ask it because the route does: KAN-274
+          // made these one function precisely so a listing cannot report a
+          // carrier the next send will not take.
+          reach: channelReach(),
           switchPath: CHANNEL_SWITCH_PATH
         });
       },
@@ -1279,6 +1308,7 @@ const pendingNotifications = new PendingNotifications({ log });
 const notificationRoute = (address: { type: string; key: string }, content: string) =>
   routeChannelMessage({
     registry: agentConnections,
+    reach: channelReach,
     address,
     content,
     meta: {
@@ -1384,6 +1414,7 @@ const guardianPoker = new GuardianPoker({
     send: (address, content) => {
       const outcome = routeChannelMessage({
         registry: agentConnections,
+        reach: channelReach,
         address,
         content,
         meta: {

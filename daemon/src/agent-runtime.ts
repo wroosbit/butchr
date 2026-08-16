@@ -1,3 +1,4 @@
+import type { ChannelReach } from './channel.js';
 import type { McpServerDefinitions } from './integrations/integration.js';
 import type { BriefLocation, ResumeCause } from './resume.js';
 import type {
@@ -197,6 +198,40 @@ export interface AgentRuntime {
    * function"* — applied one level down.
    */
   readonly runtimeName: RuntimeMode;
+
+  /**
+   * Whether agents this runtime spawns can receive a channel frame at all
+   * (KAN-495).
+   *
+   * **A property of the SPAWN SHAPE, not of any one agent.** Claude Code
+   * discards `notifications/claude/channel` unless it was started with
+   * `--dangerously-load-development-channels server:<name>`, and that flag is
+   * composed in one place — `launchers.ts` `developmentChannelFlags()` — and
+   * reaches an agent **only as argv**. So the question *"can this runtime's
+   * agents hear us?"* is answerable from whether its spawn has an argv at all,
+   * which is a fact about the runtime rather than an observation of a pane.
+   *
+   * ⚠ **REQUIRED, and deliberately not defaulted.** A runtime added later that
+   * forgets this is a **compile error**, which is the only thing that would
+   * have caught KAN-495 at the keyboard: the cutover of 2026-08-16 moved the
+   * fleet onto a runtime whose spawns structurally cannot carry the flag, every
+   * frame was written to a client that discarded it, and **every instrument
+   * read green** — `delivered: true`, `consecutiveUndelivered: 0`, no daemon
+   * errors — for about 75 minutes of unsupervised fleet. Nothing was wrong with
+   * any of those instruments; each answered its own question correctly. The gap
+   * was between them, and no field owned it. This member is that field.
+   *
+   * ⚠ **Answer `'unknown'` unless you actually know.** It is the honest answer
+   * for a runtime whose spawns *can* carry the flag, because whether a
+   * particular agent got one depends on the kill switch as it stood when that
+   * agent started, and agents outlive switch flips. `'unknown'` routes exactly
+   * as this daemon routed before KAN-495 and claims nothing. Answering
+   * `'not-loaded'` on a guess takes a working fleet off channels.
+   *
+   * @see ChannelReach for the measurement, both directions, that establishes
+   *   the flag is what decides delivery.
+   */
+  readonly channelReach: ChannelReach;
 
   // -- lifecycle ------------------------------------------------------------
 
