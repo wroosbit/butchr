@@ -423,6 +423,61 @@ export interface AgentRuntime {
    * herdr the exemption is applied in `router.ts`'s `capacityGate`, above this
    * seam, off the same predicate this parameter carries.
    */
+  /**
+   * `override` — **the caller's decision to start past a capacity gate, carried
+   * to whichever gate is actually going to refuse** (KAN-507).
+   *
+   * ## Why this parameter has to exist
+   *
+   * `override` was honoured entirely in `router.ts`'s `capacityGate` and went no
+   * further, which was complete under herdr: Butchr's gate was the only gate,
+   * so overriding it was overriding everything. **Under CrabCast it is the
+   * wrong gate.** CrabCast runs its own, on its own arithmetic, and it is the
+   * one that decides — so an activation could clear Butchr's gate and be refused
+   * downstream by a gate the override never reached.
+   *
+   * Worse, the two disagree hard enough that Butchr's gate is not even consulted
+   * in the failing case. Measured 2026-08-16, same minute, same machine:
+   *
+   * ```
+   * Butchr    cap 12  running 3  headroom 4  atCapacity FALSE   (bound by memory)
+   * CrabCast  cap  3  running 3  headroom 0  AT CAPACITY        (bound by cpu)
+   * ```
+   *
+   * `capacityGate` returns `pass()` on `!capacity.atCapacity` **before it ever
+   * looks at `override`**, so on this runtime the flag was not dropped in
+   * transit — it was never read. `epic/KAN-39` filed the refusal as
+   * *"`override: true` does not cross the seam"* after four attempts produced a
+   * byte-identical refusal with and without it, and that reading is exactly
+   * right about the outcome.
+   *
+   * ## Why passing it is safe, and how the field name was established
+   *
+   * `crabcast activate --help` publishes `--override` (*"start it even at
+   * capacity — recorded with the figures it bypassed"*) on the command whose
+   * socket action is `activate_agent`. The wire spelling is not inferred from
+   * that and not read out of their source (invariant 10): **this repository's
+   * own live probes already send it** — `verify-crabcast-reconnect-live.mjs`
+   * and `probe-kan416-write-fidelity.mjs` both call
+   * `{ action: 'activate_agent', path, override: true }` against a real peer and
+   * treat a refusal *"even with override"* as a setup failure, which is a
+   * standing assertion that the field is read.
+   *
+   * ## `preempt` is deliberately NOT carried, and that is not an oversight
+   *
+   * CrabCast publishes `--preempt` beside `--override`, and it stays on their
+   * side of the seam unused. Butchr implements preemption **above** this
+   * interface: `capacityGate` picks the victim by Butchr's own priority model,
+   * stands it down through `deactivate_by_key`, and writes a `PreemptionRecord`
+   * that `list_agents` later reports as work owed. Delegating the same verb
+   * downwards would let CrabCast choose a victim by *their* ordering and destroy
+   * an agent Butchr's registry would go on expecting — two preemption
+   * mechanisms racing over one fleet. One destructive verb, one owner.
+   *
+   * **`HerdrBridge` ignores this parameter**, and correctly: under herdr the
+   * override has already been applied by the time the spawn happens, by the gate
+   * directly above it.
+   */
   spawnSession(
     type: string,
     key: string,
@@ -432,7 +487,8 @@ export interface AgentRuntime {
     supervisor: boolean,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers,
-    resume?: ResumeCause
+    resume?: ResumeCause,
+    override?: boolean
   ): HerdrSession;
 
   /**

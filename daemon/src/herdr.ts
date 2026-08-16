@@ -1151,8 +1151,17 @@ export class HerdrBridge implements AgentRuntime {
   // supervisor activation unconditionally; this runtime rationing nothing has
   // nothing to apply it to. Under CrabCast the rationing belongs to another
   // daemon, which is why the value has to cross this seam at all.
+  //
+  // `override` is the third of exactly this species (KAN-507), and it is the one
+  // whose absence had teeth. Under herdr the override is applied by
+  // `capacityGate` immediately above this call — the gate it overrides IS
+  // Butchr's — so by the time a spawn happens there is nothing left to override
+  // and this runtime correctly ignores it. Under CrabCast the gate that refuses
+  // belongs to the other daemon, so the flag has to travel or it does nothing at
+  // all; it went nowhere until KAN-507, and four activations were refused
+  // holding a flag that had never left the process.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, priority: number, supervisor: boolean, defaultAgent?: string, mcpServers?: WorkspaceMcpServers, resume?: ResumeCause): HerdrSession {
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, priority: number, supervisor: boolean, defaultAgent?: string, mcpServers?: WorkspaceMcpServers, resume?: ResumeCause, override?: boolean): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
     // routers dedupe by (key, type), but the MCP server and the sidepanel's
     // re-attach path can both ask to activate the same agent at once. A second

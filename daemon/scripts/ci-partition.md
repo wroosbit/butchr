@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 107 |
+| `yes` | 108 |
 | `partial` | 13 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **145** |
+| **total** | **146** |
 
-**120 of 145** run on every pull request.
+**121 of 146** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -143,6 +143,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-send-claims-not-collapsed` | yes | it imports the built daemon modules and drives the real MessageRouter in-process. No terminal, no socket, no network, no `claude`. |
 | `verify-staleness-check` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
 | `verify-staleness-over-socket` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
+| `verify-standdown-and-override-cross-the-seam` | yes | imports the built daemon modules and asserts against them in process. Sections 3 and 4 stand up a fake CrabCast on a unix socket in a temp dir; no live daemon, no real peer, no herdr, no credential, no terminal. |
 | `verify-standdown-survives-degraded-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-startup-admission` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-startup-dialog-discrimination` | yes | imports the built daemon modules and drives the real `superviseChannelStartup` on a virtual clock. No live daemon, no herdr, no terminal, no credential. |

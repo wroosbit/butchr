@@ -210,8 +210,13 @@ if (check(Boolean(builder), 'buildConfigureAgentPayload is exported and findable
   );
 }
 
+// KAN-507 appended `override` to this call. As with the sibling assertion in
+// `verify-crabcast-priority-roundtrip.mjs`, the whole argument list is pinned so
+// that a POSITIONAL slip is caught, which means a correct change to the seam
+// turns this red and the pattern is updated to match. The argument went on the
+// end, so `supervisor` did not move — which this line is what establishes.
 check(
-  /this\.provision\(session, promptContent, priority, supervisor, defaultAgent, mcpServers\)/.test(
+  /this\.provision\(session, promptContent, priority, supervisor, defaultAgent, mcpServers, override\)/.test(
     runtimeCode
   ),
   'spawnSession hands the verdict it was given to provision()',
