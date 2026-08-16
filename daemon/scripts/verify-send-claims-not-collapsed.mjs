@@ -187,9 +187,9 @@ if (typeof paneObservationFrom !== 'function') {
 }
 
 const paneDelivered =
-  typeof paneObservationFrom === 'function' ? paneObservationFrom(ARM_DELIVERED.reply, '/tmp/x') : null;
+  typeof paneObservationFrom === 'function' ? paneObservationFrom(ARM_DELIVERED.reply, '/tmp/x', 'crabcast') : null;
 const paneWithheld =
-  typeof paneObservationFrom === 'function' ? paneObservationFrom(ARM_WITHHELD.reply, '/tmp/x') : null;
+  typeof paneObservationFrom === 'function' ? paneObservationFrom(ARM_WITHHELD.reply, '/tmp/x', 'crabcast') : null;
 
 if (paneWithheld) {
 
@@ -217,7 +217,7 @@ check('the delivered arm reports a submit', paneDelivered.submitted === true);
 // ⚠ ABSENCE IS SILENCE. If CrabCast stops sending the counters, this must
 // degrade to `not-measured` and never to a `false` — a `false` here is the
 // KAN-498 defect arriving through the back door.
-const paneNoCounters = paneObservationFrom({ success: true, delivered: false, verdict: 'x' }, '/tmp/x');
+const paneNoCounters = paneObservationFrom({ success: true, delivered: false, verdict: 'x' }, '/tmp/x', 'crabcast');
 row('no counters at all -> reached', paneNoCounters.reached);
 check(
   'a reply carrying NO counters degrades to `not-measured`, never to `no`',
@@ -236,7 +236,8 @@ check(
 // one shape and leave it live under the other — so both are asserted here.
 const paneSuccessFalse = paneObservationFrom(
   { success: false, error: CRABCAST_WITHHELD_ERROR, interrupts: 1, submits: 0 },
-  '/tmp/x'
+  '/tmp/x',
+  'crabcast'
 );
 row('success:false shape -> reached', paneSuccessFalse.reached);
 row('success:false shape -> submitted', String(paneSuccessFalse.submitted));

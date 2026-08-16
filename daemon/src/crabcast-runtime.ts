@@ -1123,7 +1123,13 @@ export interface CrabCastRuntimeOptions {
  * true whether or not the submit was ever attempted, which is precisely the
  * case a delivery verdict cannot express.
  */
-export function paneObservationFrom(res: Record<string, any>, workDir: string): PaneObservation {
+export function paneObservationFrom(
+  res: Record<string, any>,
+  workDir: string,
+  // KAN-475: the name is DERIVED and passed in, never typed into the sentence.
+  // These strings reach an agent as C2's and C3's basis.
+  runtimeName: string
+): PaneObservation {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const interrupts = num(res.interrupts);
   const submits = num(res.submits);
@@ -1149,7 +1155,7 @@ export function paneObservationFrom(res: Record<string, any>, workDir: string): 
       // the counter is absent. Otherwise the counter, otherwise silence.
       submitted: submits === null ? (delivered ? true : 'not-measured') : submits > 0,
       detail:
-        `CrabCast reported ${interrupts ?? '?'} interrupt(s) and ${submits ?? '?'} submit(s) at the pane ` +
+        `${runtimeName} reported ${interrupts ?? '?'} interrupt(s) and ${submits ?? '?'} submit(s) at the pane ` +
         `for ${workDir}${verdict ? ` (verdict: ${verdict})` : ''}` +
         (inComposer === null ? '' : `, evidence.inComposer: ${inComposer}`)
     };
@@ -1164,7 +1170,7 @@ export function paneObservationFrom(res: Record<string, any>, workDir: string): 
   return {
     reached: 'not-measured',
     detail:
-      `CrabCast reported no interrupts and no submits for ${workDir}` +
+      `${runtimeName} reported no interrupts and no submits for ${workDir}` +
       `${typeof res.verdict === 'string' ? ` (verdict: ${res.verdict})` : ''}, which does not ` +
       'distinguish a pane that is absent from one that was not ready to be typed at'
   };
@@ -2305,7 +2311,7 @@ export class CrabCastRuntime implements AgentRuntime {
         return {
           success: false,
           error: String(res.error ?? 'send_to_agent answered success: false'),
-          pane: paneObservationFrom(res, session.workDir)
+          pane: paneObservationFrom(res, session.workDir, this.runtimeName)
         };
       }
 
@@ -2328,7 +2334,7 @@ export class CrabCastRuntime implements AgentRuntime {
         error: delivered
           ? undefined
           : String(res.error ?? `CrabCast verdict: ${String(res.verdict ?? 'not delivered')}`),
-        pane: paneObservationFrom(res, session.workDir)
+        pane: paneObservationFrom(res, session.workDir, this.runtimeName)
       };
     } catch (err) {
       return {

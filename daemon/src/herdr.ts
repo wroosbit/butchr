@@ -2515,9 +2515,12 @@ export class HerdrBridge implements AgentRuntime {
           // here reads the pane back; `deliverToAgent` is what does.
           interrupted: true,
           submitted: 'not-measured',
+          // KAN-475: the name is DERIVED, not typed. This sentence reaches an
+          // agent as C2's basis, and a literal here is the same defect that
+          // ticket converted in `router.ts` — one file down.
           detail:
-            `herdr sent C-c, the text and Enter to pane ${paneId}; nothing here read the pane ` +
-            'back, so whether the Enter took is unmeasured'
+            `${this.runtimeName} sent C-c, the text and Enter to pane ${paneId}; nothing here ` +
+            'read the pane back, so whether the Enter took is unmeasured'
         }
       };
     } catch (e: any) {
