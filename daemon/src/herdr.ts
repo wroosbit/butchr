@@ -8,7 +8,12 @@ import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers
 import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
-import type { AgentRuntime, AgentSpawn, WorkspaceMcpServers } from './agent-runtime.js';
+import type {
+  AgentRuntime,
+  AgentSpawn,
+  SendToAgentResult,
+  WorkspaceMcpServers
+} from './agent-runtime.js';
 import {
   RESUME_ENV,
   ResumeCause,
@@ -2470,12 +2475,23 @@ export class HerdrBridge implements AgentRuntime {
    * recipient; the tool description in `mcp.ts` says so to the agents that call
    * it, and this comment says so to whoever reaches for this method next.
    */
-  public async sendToAgent(key: string, message: string, type?: string): Promise<{ success: boolean; error?: string }> {
+  public async sendToAgent(key: string, message: string, type?: string): Promise<SendToAgentResult> {
+    let interruptSent = false;
     try {
       const agentName = this.agentNameForAddress(key, type);
       const paneId = this.runHerdr(['agent', 'get', agentName])?.result?.agent?.pane_id;
       if (typeof paneId !== 'string' || !paneId) {
-        throw new Error(`Agent '${agentName}' has no pane to send to`);
+        // A pane was LOOKED FOR and was not there, so this is the one branch
+        // here entitled to `no` rather than `not-measured` (KAN-498): the
+        // registry was asked and it answered.
+        return {
+          success: false,
+          error: `Agent '${agentName}' has no pane to send to`,
+          pane: {
+            reached: 'no',
+            detail: `herdr's agent record for '${agentName}' carries no pane_id, so there is no pane`
+          }
+        };
       }
 
       // Exactly one Ctrl+C. One cancels the recipient's turn — its in-flight
@@ -2483,15 +2499,50 @@ export class HerdrBridge implements AgentRuntime {
       // Claude Code quits, and would kill the very agent we are trying to talk
       // to, which is the cost of getting this wrong.
       this.runHerdr(['pane', 'send-keys', paneId, 'C-c']);
+      interruptSent = true;
       await delay(INTERRUPT_SETTLE_MS);
       this.runHerdr(['pane', 'send-text', paneId, message]);
       this.runHerdr(['pane', 'send-keys', paneId, 'Enter']);
 
-      return { success: true };
+      return {
+        success: true,
+        pane: {
+          reached: 'typed',
+          // This runtime drives the pane itself, so it knows the Ctrl+C was
+          // issued. What it does NOT know is whether the client accepted the
+          // Enter — a lost Enter strands the text at the composer (nudge.ts,
+          // KAN-79) — so `submitted` is silence rather than a claim. Nothing
+          // here reads the pane back; `deliverToAgent` is what does.
+          interrupted: true,
+          submitted: 'not-measured',
+          detail:
+            `herdr sent C-c, the text and Enter to pane ${paneId}; nothing here read the pane ` +
+            'back, so whether the Enter took is unmeasured'
+        }
+      };
     } catch (e: any) {
       const error = e?.message ?? String(e);
       console.error(`[HerdrBridge] Failed to send message to agent for key '${key}':`, error);
-      return { success: false, error };
+      return {
+        success: false,
+        error,
+        pane: interruptSent
+          ? {
+              // The Ctrl+C had already gone in before this threw, so the pane is
+              // real and its composer has been cleared. Answering `no` here
+              // would be KAN-498's defect in miniature.
+              reached: 'typed',
+              interrupted: true,
+              submitted: 'not-measured',
+              detail:
+                'the interrupt reached the pane before the send failed, so the pane exists and its ' +
+                `composer was cleared: ${error}`
+            }
+          : {
+              reached: 'not-measured',
+              detail: `the send failed before any key reached a pane: ${error}`
+            }
+      };
     }
   }
 

@@ -173,6 +173,95 @@ export interface AgentSpawn {
  */
 export type RuntimeMode = 'herdr' | 'crabcast';
 
+/**
+ * WHAT THE RUNTIME ESTABLISHED ABOUT THE RECIPIENT'S PANE — a fact deliberately
+ * separate from whether the message was delivered (KAN-498).
+ *
+ * ## The defect this type exists to make unrepresentable
+ *
+ * `sendToAgent` used to answer `{ success, error }` and nothing else, so
+ * `router.ts` had one boolean from which to derive two independent claims:
+ *
+ * ```ts
+ * transportAccepted: result.success === true,
+ * sessionPresent:    result.success === true,   // <- C2, from a DELIVERY verdict
+ * ```
+ *
+ * KAN-498 measured what that costs. A 12-line steer at `epic/KAN-39` was typed
+ * onto a live pane, collapsed by the client into `[Pasted text #1 +12 lines]`,
+ * and failed CrabCast's echo-check — which searches the pane for the literal
+ * text it typed. The send came back `delivered: false`, so `success` was
+ * `false`, so **C2 said no live session exists for a pane the daemon had just
+ * typed into.** A caller reading `C2: false` concludes the agent is gone.
+ *
+ * ⚠ **A delivery verdict is not evidence about whether a session exists.** They
+ * fail independently: a pane can be alive and refuse the submit, which is
+ * exactly the case above and the ordinary case for every multi-line steer this
+ * fleet sends.
+ *
+ * ## Why a type and not an assertion
+ *
+ * An assertion that C2 must not come from `success` is one a later author
+ * deletes and the build still passes. This is the other half of `prompts/task.md`'s
+ * rule — *prefer the type to the assertion where the choice exists* — because
+ * the invariant here is about **what the code is able to say**. `PaneObservation`
+ * is not a boolean and is not assignable from one, so
+ * `sessionPresent: result.success` is a **compile error** rather than a review
+ * catch. {@link claimSessionPresent} in `message-claims.ts` is the only route
+ * from this type to C2, and it takes nothing else.
+ *
+ * ## The three arms, and why `not-measured` is not `no`
+ *
+ * `'no'` is a measurement — the runtime looked for a pane and there was none.
+ * `'not-measured'` is silence — nothing here established it either way. Merging
+ * them is the same defect one level down: a caller that reads silence as a
+ * negative concludes the agent is gone and stops trying to reach it. A runtime
+ * that cannot tell says `not-measured` and is right to.
+ */
+export type PaneObservation =
+  | {
+      /** A live pane was resolved and the keystrokes were typed into it. */
+      reached: 'typed';
+      /**
+       * The Ctrl+C landed, so whatever the composer held before this send is
+       * **gone**. KAN-498's step 4: the recipient's `yes all on is right, go
+       * ahead` was destroyed by a send that then reported nothing had changed.
+       * That is the part with a cost, so it is a field rather than prose.
+       *
+       * `'not-measured'` where the runtime types but does not count — silence,
+       * never a `false`, for the reason in this type's last paragraph.
+       */
+      interrupted: boolean | 'not-measured';
+      /**
+       * Enter was pressed and the text left the composer. `false` means it is
+       * still sitting there — which is C3 **measured**, not C3 unknown, and is
+       * the difference between *"resend it"* and *"go and clear their
+       * composer"*.
+       */
+      submitted: boolean | 'not-measured';
+      detail: string;
+    }
+  | { reached: 'no'; detail: string }
+  | { reached: 'not-measured'; detail: string };
+
+/**
+ * What {@link AgentRuntime.sendToAgent} answers.
+ *
+ * `pane` is **required**, so a runtime cannot quietly omit it and leave the
+ * router with one boolean again — which is how this defect got in. A runtime
+ * that genuinely does not know says so with the `not-measured` arm.
+ */
+export interface SendToAgentResult {
+  /**
+   * Whether the send was **delivered**. This is the delivery verdict and
+   * nothing more; it is not evidence about the pane, which is what `pane` is
+   * for.
+   */
+  success: boolean;
+  error?: string;
+  pane: PaneObservation;
+}
+
 export interface AgentRuntime {
   // -- identity -------------------------------------------------------------
 
@@ -547,15 +636,16 @@ export interface AgentRuntime {
   pressPaneKey(key: string, type: string | undefined, keyName: string): void;
 
   /**
-   * Types a message into an agent's terminal. Resolves to whether the
-   * keystrokes were *typed*, which is not the same as delivered — see the
-   * note above `sendToAgent`'s caller in `nudge.ts`.
+   * Types a message into an agent's terminal.
+   *
+   * `success` is the **delivery** verdict. What happened at the pane is
+   * {@link SendToAgentResult.pane}, and the two are separate because they fail
+   * independently: a live pane that collapses a multi-line paste refuses the
+   * submit, so the send is not delivered and the pane is very much there
+   * (KAN-498). See {@link PaneObservation} for what that cost before the two
+   * were split.
    */
-  sendToAgent(
-    key: string,
-    message: string,
-    type?: string
-  ): Promise<{ success: boolean; error?: string }>;
+  sendToAgent(key: string, message: string, type?: string): Promise<SendToAgentResult>;
 
   // -- pty: the exception, see KAN-224 --------------------------------------
 

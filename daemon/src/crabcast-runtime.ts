@@ -1,6 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import type { AgentRuntime, AgentSpawn, WorkspaceMcpServers } from './agent-runtime.js';
+import type {
+  AgentRuntime,
+  AgentSpawn,
+  PaneObservation,
+  SendToAgentResult,
+  WorkspaceMcpServers
+} from './agent-runtime.js';
 import {
   CRABCAST_CONTRACT_VERSION,
   CrabCastLink,
@@ -1084,6 +1090,77 @@ export interface CrabCastRuntimeOptions {
   /** How often the census is refreshed while connected. */
   censusIntervalMs?: number;
   log?: (message: string) => void;
+}
+
+/**
+ * Read CrabCast's `send_to_agent` reply for what it says about the PANE, as
+ * opposed to what it says about the delivery (KAN-498).
+ *
+ * ## What is read, and what is emphatically not
+ *
+ * Only fields CrabCast puts on the wire, and only as counters. Their reply
+ * carries `interrupts` and `submits` — both observed on this board, in
+ * `verify-crabcast-second-activation-resumes.mjs`'s recorded reply
+ * (`interrupts: 1, submits: 0`) and quoted back inside their own refusal text
+ * in KAN-498 (*"Enter was not pressed (submits: 0)"*). Reading their SOURCE is
+ * invariant 10 and permanent; reading their wire reply is an outside
+ * observation and is what this does.
+ *
+ * ## ⚠ ABSENCE IS SILENCE, NEVER A NEGATIVE
+ *
+ * Every branch that cannot establish a fact answers `not-measured` rather than
+ * `false`. That is this codebase's own three-valued doctrine (`message-claims.ts`),
+ * and here it is load-bearing in a specific way: if CrabCast drops or renames a
+ * counter tomorrow, this degrades to *"nobody looked"*, which is true and
+ * costs a caller one tail. The alternative — defaulting to `false` — would
+ * reinstate exactly the defect this ticket is about, and it would do it
+ * silently, on a schedule nobody controls.
+ *
+ * ⚠ **`interrupts > 0` is the load-bearing signal, and it is not a proxy for
+ * delivery.** A composer send opens with a Ctrl+C. If that Ctrl+C landed, then
+ * a pane was resolved, a live client was typed at, and — the part with a cost —
+ * whatever the recipient's composer held is **gone**. All three of those are
+ * true whether or not the submit was ever attempted, which is precisely the
+ * case a delivery verdict cannot express.
+ */
+export function paneObservationFrom(res: Record<string, any>, workDir: string): PaneObservation {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const interrupts = num(res.interrupts);
+  const submits = num(res.submits);
+  const delivered = res.delivered === true;
+
+  // The pane was demonstrably reached if anything at all was pressed at it, or
+  // if the send was delivered — a delivery is not possible without a pane.
+  const touched = (interrupts !== null && interrupts > 0) || (submits !== null && submits > 0) || delivered;
+
+  if (touched) {
+    const verdict = typeof res.verdict === 'string' ? res.verdict : null;
+    return {
+      reached: 'typed',
+      interrupted: interrupts === null ? (delivered ? 'not-measured' : 'not-measured') : interrupts > 0,
+      // A delivery IS a submit, so `delivered: true` establishes it even where
+      // the counter is absent. Otherwise the counter, otherwise silence.
+      submitted: submits === null ? (delivered ? true : 'not-measured') : submits > 0,
+      detail:
+        `CrabCast reported ${interrupts ?? '?'} interrupt(s) and ${submits ?? '?'} submit(s) at the pane ` +
+        `for ${workDir}${verdict ? ` (verdict: ${verdict})` : ''}` +
+        (typeof res.inComposer === 'boolean' ? `, inComposer: ${res.inComposer}` : '')
+    };
+  }
+
+  // Nothing was pressed and nothing was delivered. That is consistent with a
+  // pane that is not there — and also with a session still booting, which is
+  // NOT the same thing and is a state this board has already met
+  // (`verify-crabcast-second-activation-resumes.mjs`: a send into a booting
+  // session answered `interrupts: 1, submits: 0` with the startup screen up).
+  // So: silence.
+  return {
+    reached: 'not-measured',
+    detail:
+      `CrabCast reported no interrupts and no submits for ${workDir}` +
+      `${typeof res.verdict === 'string' ? ` (verdict: ${res.verdict})` : ''}, which does not ` +
+      'distinguish a pane that is absent from one that was not ready to be typed at'
+  };
 }
 
 export class CrabCastRuntime implements AgentRuntime {
@@ -2178,13 +2255,22 @@ export class CrabCastRuntime implements AgentRuntime {
     );
   }
 
-  async sendToAgent(
-    key: string,
-    message: string,
-    type?: string
-  ): Promise<{ success: boolean; error?: string }> {
+  async sendToAgent(key: string, message: string, type?: string): Promise<SendToAgentResult> {
     const addressed = this.addressedSession(key, type);
-    if (addressed.outcome !== 'one') return { success: false, error: addressed.error };
+    if (addressed.outcome !== 'one') {
+      return {
+        success: false,
+        error: addressed.error,
+        // Nothing was addressed, so nothing looked at a pane. `not-measured`
+        // rather than `no`: this says the address did not resolve, which is not
+        // the same fact as the agent being gone.
+        pane: {
+          reached: 'not-measured',
+          detail: `the address ${type ?? '*'}/${key} did not resolve to exactly one session, so no ` +
+            'pane was reached for or against'
+        }
+      };
+    }
     const session = addressed.session;
     try {
       const res = await this.link.request({
@@ -2192,21 +2278,60 @@ export class CrabCastRuntime implements AgentRuntime {
         path: session.workDir,
         message
       });
+      // ⚠ THE PANE IS READ ON BOTH BRANCHES, AND THAT IS DELIBERATE.
+      //
+      // It is not settled which shape CrabCast uses for a withheld submit:
+      // `success: true, delivered: false` (the shape recorded in
+      // `verify-crabcast-second-activation-resumes.mjs`) or `success: false`
+      // with the refusal prose in `error` (which is how KAN-498's agent came to
+      // see that prose at all — the old code only surfaced `res.error` on the
+      // `success !== true` branch). ⚠ **Reading the counters on only one branch
+      // would fix the defect under one shape and leave it under the other**,
+      // and the two are indistinguishable from this side without measuring.
+      // `paneObservationFrom` degrades to `not-measured` when the counters are
+      // absent, so reading it on both branches is free where they are not
+      // there and correct where they are.
+      //
+      // `probe-composer-paste-collapse.mjs --stage-b` is what settles which
+      // shape actually arrives; this code does not need the answer.
       if (res.success !== true) {
-        return { success: false, error: String(res.error ?? 'send_to_agent answered success: false') };
+        return {
+          success: false,
+          error: String(res.error ?? 'send_to_agent answered success: false'),
+          pane: paneObservationFrom(res, session.workDir)
+        };
       }
-      // CrabCast answers richer than this interface can carry: `delivered`,
-      // `verdict`, `interrupts`, `submits` and an `evidence` block. The
-      // interface takes a boolean, and the honest mapping is their `delivered`
-      // rather than the bare `success` — `success` says the call worked,
-      // `delivered` says the keystrokes landed, and this method's contract is
-      // about the typing.
+
+      // CrabCast answers richer than a boolean, and KAN-498 is the bill for
+      // having thrown the rest away. Their reply carries `delivered`, `verdict`,
+      // `interrupts`, `submits`, `inComposer` and an `evidence` block; this used
+      // to keep `delivered` and drop the others, which left `router.ts` deriving
+      // BOTH "the bytes were accepted" and "a live session exists" from that one
+      // value. A 12-line steer that was typed onto a live pane and then failed
+      // their echo-check came back asserting no session existed.
+      //
+      // `delivered` is still the delivery verdict and still what `success`
+      // carries. What is new is that the pane facts travel beside it instead of
+      // being reconstructed from it.
       const delivered = res.delivered === true;
-      return delivered
-        ? { success: true }
-        : { success: false, error: `CrabCast verdict: ${String(res.verdict ?? 'not delivered')}` };
+      return {
+        success: delivered,
+        // Their own words first where they gave any — the router keeps them as
+        // `runtimeError` and will not repeat the false halves in Butchr's voice.
+        error: delivered
+          ? undefined
+          : String(res.error ?? `CrabCast verdict: ${String(res.verdict ?? 'not delivered')}`),
+        pane: paneObservationFrom(res, session.workDir)
+      };
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        pane: {
+          reached: 'not-measured',
+          detail: 'the send_to_agent request did not complete, so nothing here read a pane'
+        }
+      };
     }
   }
 

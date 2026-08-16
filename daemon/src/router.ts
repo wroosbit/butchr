@@ -55,7 +55,7 @@ import type { PendingReport } from './notify.js';
 import type { GuardianState } from './guardian.js';
 import { boardPageFor } from './board-page.js';
 import type { PrWatchHealth } from './pr-watch.js';
-import { licenceFor, sealClaims } from './message-claims.js';
+import { licenceFor, sealClaims, sealComposerClaims } from './message-claims.js';
 import {
   operationByTool,
   ProxyCaller,
@@ -3175,30 +3175,50 @@ export class MessageRouter {
         // old `success: true` was read as delivery — KAN-150's defect 1 — and
         // the fix is not a better verb, it is the admission that nothing here
         // looked.
-        const claims = sealClaims(
-          'composer',
-          {
-            transportAccepted: result.success === true,
-            sessionPresent: result.success === true,
-            enteredTranscript: 'not-measured',
-            modelRead: 'not-measured'
-          },
-          {
-            // KAN-475: the runtime names itself. These four sentences are
-            // evidence a reader acts on, and under CrabCast they used to
-            // credit or blame herdr for a send herdr never saw.
-            transportAccepted: result.success
+        // C2 AND C3 NOW COME FROM THE PANE, NOT FROM THE DELIVERY VERDICT
+        // (KAN-498).
+        //
+        // Both used to read `result.success === true`, which is the delivery
+        // verdict wearing two other claims' names. A 12-line steer typed onto a
+        // live pane, collapsed by the client into `[Pasted text #1 +12 lines]`
+        // and failed by CrabCast's echo-check, came back `success: false` — so
+        // this call site asserted **no live session exists** about a pane the
+        // daemon had just typed into, and a caller reading `C2: false`
+        // concludes the agent is gone.
+        //
+        // `claimSessionPresent` takes a `PaneObservation` and nothing else, so
+        // the old spelling is a compile error rather than a thing review has to
+        // catch. See `agent-runtime.ts` for why that is a type and not an
+        // assertion.
+        const pane = result.pane;
+        const typed = pane.reached === 'typed';
+        const claims = sealComposerClaims({
+          // The ONLY pane input. C2 and C3 are computed from it inside
+          // `sealComposerClaims`, which has no parameter for either — so the
+          // old `sessionPresent: result.success === true` has nowhere to go,
+          // and `pane: result.success === true` does not type-check.
+          pane,
+          // C1 is about the BYTES, and on this path they landed: the text is on
+          // the recipient's pane whether or not the submit was allowed.
+          // Deriving C1 from the delivery verdict called a completed typing a
+          // refusal.
+          transportAccepted: typed ? true : result.success === true,
+          // KAN-475: the runtime names itself. This is evidence a reader acts
+          // on, and under CrabCast it used to credit or blame herdr for a send
+          // herdr never saw.
+          transportAcceptedBasis: typed
+            ? `${this.herdrBridge.runtimeName} typed the keystrokes onto the recipient's pane. ${pane.detail}`
+            : result.success
               ? `${this.herdrBridge.runtimeName} accepted the keystrokes for the recipient's pane`
               : `${this.herdrBridge.runtimeName} refused the send: ${result.error ?? 'no reason given'}`,
-            sessionPresent: result.success
-              ? `${this.herdrBridge.runtimeName} resolved a live pane for this address and typed into it`
-              : `${this.herdrBridge.runtimeName} could not reach a pane for ${address.type}/${address.key}`,
-            enteredTranscript:
-              'nothing here read the pane. `butchr_tail_agent` is what shows whether the Enter took; ' +
-              'the Enter can be lost and strand the text at the composer (nudge.ts, KAN-79)',
-            modelRead: ''
-          }
-        );
+          enteredTranscriptBasis:
+            typed && pane.submitted === false
+              ? `the submit was withheld, so the text did NOT enter the transcript — it is sitting ` +
+                `on the recipient's composer. ${pane.detail}`
+              : typed && pane.submitted === true
+                ? `the submit went through. ${pane.detail}`
+                : undefined
+        });
         respond({
           action: 'send_to_agent_response',
           ...result,
@@ -3209,10 +3229,68 @@ export class MessageRouter {
           intent: want,
           claims,
           licenses: licenceFor('composer', claims),
-          // The cost, stated as a fact rather than left in the tool description.
-          // A composer send opens with a Ctrl+C, so on this carrier the
-          // recipient's turn — and any tool call in it — is gone.
-          interrupted: result.success === true,
+          // The cost, stated as a fact rather than left in the tool
+          // description. A composer send opens with a Ctrl+C, so on this
+          // carrier the recipient's turn — and any tool call in it — is gone.
+          //
+          // ⚠ THIS TOO USED TO BE `result.success === true`, AND THAT IS THE
+          // FALSEHOOD WITH THE HIGHEST COST. On the withheld-submit path the
+          // Ctrl+C had already landed and cleared the composer, and the
+          // response said `interrupted: false` — so the sender was told it had
+          // taken nothing from the recipient at the exact moment it had
+          // destroyed their turn AND their composer contents (KAN-498, step 4:
+          // `yes all on is right, go ahead`, gone with no record anywhere).
+          interrupted: typed ? pane.interrupted === true : result.success === true,
+          // ⚠ THE RUNTIME'S OWN REFUSAL TEXT IS NOT PASSED THROUGH UNCORRECTED
+          // ON THIS PATH (KAN-498, AC3).
+          //
+          // `...result` carries the runtime's `error` verbatim, and on the
+          // withheld-submit path CrabCast's reads, in part: *"Nothing was
+          // changed on the pane. Sending again is safe and does the same
+          // thing."* Both sentences are false exactly here — the pane was
+          // changed, and sending again APPENDS a second paste block. Their
+          // wording is theirs and is reported under `runtimeError` rather than
+          // edited or dropped, because it is evidence and because the
+          // echo-check that produced it is theirs to fix (KAN-498 defect A,
+          // reported to them). What Butchr must not do is repeat a claim it can
+          // see is untrue, in Butchr's own voice, in the field callers read.
+          error:
+            typed && pane.submitted === false
+              ? `NOT SUBMITTED to ${address.type}/${address.key}: the message WAS typed onto the ` +
+                'pane and the Enter was withheld, so it is sitting on their composer unread. ' +
+                (pane.interrupted === true
+                  ? 'The interrupt cleared whatever their composer held before this send, and that ' +
+                    'content is gone. '
+                  : '') +
+                'Sending again APPENDS another block rather than repeating this one. ' +
+                'The withholding itself is correct — an Enter at a pane whose text could not be ' +
+                'verified still confirms whatever that pane has highlighted, which at a dialog is a ' +
+                'consent answer nobody gave. Read the pane with butchr_tail_agent; a comment on ' +
+                'their Jira ticket reaches them within a minute and costs no interrupt.'
+              : result.error,
+          /** The runtime's own words, kept verbatim as evidence. */
+          runtimeError: result.error,
+          // WHAT THE SENDER HAS TO DO ABOUT IT, where there is something to do.
+          // A refusal that leaves text on somebody's composer is not a no-op,
+          // and nothing else in this response says so in one place.
+          composerLeftHolding:
+            typed && pane.submitted === false
+              ? {
+                  text: tagged,
+                  priorContentCleared: pane.interrupted === true,
+                  advice:
+                    `The message was typed onto ${address.type}/${address.key}'s composer and NOT ` +
+                    'submitted, so it is sitting there unread and will be submitted by whatever the ' +
+                    'recipient types next. ' +
+                    (pane.interrupted === true
+                      ? 'Whatever their composer held before this send was cleared by the interrupt and ' +
+                        'is not recoverable. '
+                      : '') +
+                    'Sending again APPENDS a second block rather than replacing this one. Read the pane ' +
+                    'with butchr_tail_agent before you retry, and prefer a comment on their Jira ticket, ' +
+                    'which reaches them in a minute and costs no interrupt.'
+                }
+              : undefined,
           sender: tag,
           delivered: tagged
         });
