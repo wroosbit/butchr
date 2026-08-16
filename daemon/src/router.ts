@@ -1606,6 +1606,75 @@ export class MessageRouter {
     return null;
   }
 
+  /**
+   * What actually became of an agent a by-key stand-down could not close —
+   * **as three distinct values, so the wrong one cannot be spelled** (KAN-507).
+   *
+   * This exists because the fact it reports used to be a boolean, and a boolean
+   * had no room for the case that was actually happening. `goneAlready` meant
+   * *"the close failed and the runtime was reachable"*, and it was read as
+   * *"nothing was running"* — two claims a single `true` cannot tell apart.
+   *
+   * **The type is the fix, not the message.** `epic/KAN-203` cautioned on this
+   * ticket against repairing the wording alone, and it was right: rewording
+   * `alreadyGone` would leave a daemon that still could not distinguish an agent
+   * it had stopped from one it had merely failed to address. A discriminated
+   * union makes `still-running` a value the response must handle, so the honest
+   * branch cannot be dropped by a later author without a compile error.
+   *
+   * **The census is the authority here, and it is the same one the capacity gate
+   * and `list_agents` are built from** — `listHerdrAgentsChecked()`'s reading,
+   * joined on the Butchr agent name. That matters under CrabCast: their
+   * registry, not our session map, is what charges a slot, so it is the only
+   * thing that can answer *"is this workspace still costing the machine
+   * anything"*.
+   *
+   * Fails **closed**, exactly as {@link liveWorkspaceCheck} does: a census that
+   * could not be taken establishes nothing, so it yields `unverifiable` rather
+   * than either confident answer. Reporting an unreachable runtime as
+   * `already-gone` is how a stand-down of a live agent gets announced.
+   */
+  private standDownVerdict(
+    result: { success: boolean; error?: string },
+    closedType: string | undefined,
+    key: string
+  ):
+    | { outcome: 'closed' }
+    | { outcome: 'already-gone' }
+    | { outcome: 'still-running'; record: HerdrAgentRecord }
+    | { outcome: 'unverifiable'; reason: string } {
+    if (result.success) return { outcome: 'closed' };
+
+    // Without a type there is no agent name to join a census row on, and the
+    // registry had nothing to record either. Nothing may be concluded.
+    if (!closedType) {
+      return {
+        outcome: 'unverifiable',
+        reason:
+          'no workspace type could be resolved for this key, so no census row could be ' +
+          'joined and nothing was established about what is still running'
+      };
+    }
+
+    const census = this.herdrBridge.listHerdrAgentsChecked();
+    if (!census.reachable) {
+      return {
+        outcome: 'unverifiable',
+        reason:
+          'the agent runtime did not answer, so nothing could be established about whether ' +
+          'this agent is still running'
+      };
+    }
+
+    const agentName = agentNameFor(closedType, key);
+    const record = census.agents.find((a) => a.name === agentName);
+    // A row in the census is the runtime asserting this agent exists right now.
+    // That is the state the old boolean reported as "No agent was running."
+    if (record) return { outcome: 'still-running', record };
+
+    return { outcome: 'already-gone' };
+  }
+
   /** The staleness report, or undefined when this router has no install context. */
   private staleness(force = false): StalenessReport | undefined {
     if (!this.install) return undefined;
@@ -2230,13 +2299,39 @@ export class MessageRouter {
     );
     if (presence.present) return undefined;
 
-    console.error(
-      `[Router] Refusing to report ${agentName} activated: ${presence.error}`
-    );
+    // ⚠ THE CAUSE IS READ AFTER THE WAIT, BECAUSE IT DOES NOT EXIST BEFORE IT
+    // (KAN-507, finding 4).
+    //
+    // `spawnSession` returns synchronously under CrabCast — provisioning is a
+    // `void`-ed promise — so the caller's `if (session.spawnError)` check runs
+    // **before the round-trip that produces one has completed**, and reads
+    // `undefined` every time. The refusal lands in `spawnError` about a second
+    // later, while this method is still polling; by the time the poll gives up,
+    // the real cause has been sitting on the session for nine seconds and
+    // nothing looks at it again.
+    //
+    // What the caller got instead was the *symptom* this method is built to
+    // observe: `no pane named butchr-task-kan-506 in CrabCast's census`. That
+    // reads as a census or naming bug and sends the reader hunting a lookup
+    // defect. `epic/KAN-39` hit it four times over on 2026-08-16 — including
+    // once with `override: true` — and only found the actual reason, *"at
+    // capacity — 3 charged agents are already running against a cap of 3"*, by
+    // reading `daemon.log`, which no response pointed it at.
+    //
+    // **Upstream cause beats downstream symptom**, so it is preferred here. The
+    // census reading is kept alongside rather than discarded: it is still the
+    // evidence that the agent is genuinely not there, and dropping it would
+    // trade one half-true message for another.
+    const spawnError = this.herdrBridge.getSession(session.sessionId)?.spawnError ?? session.spawnError;
+    const complaint = spawnError
+      ? `${spawnError}\n\nThe census was then checked and agreed the agent is not there: ${presence.error}`
+      : presence.error;
+
+    console.error(`[Router] Refusing to report ${agentName} activated: ${complaint}`);
     if (presence.reason === 'absent') {
-      this.herdrBridge.abandonSession(session.sessionId, presence.error);
+      this.herdrBridge.abandonSession(session.sessionId, complaint);
     }
-    return presence.error;
+    return complaint;
   }
 
   private async handleActivate(data: any, respond: Respond) {
@@ -2367,7 +2462,13 @@ export class MessageRouter {
         isSupervisorType(config.type),
         data.defaultAgent,
         prepareWorkspaceMcpServers(mcpServers, { type: config.type, key }),
-        resume
+        resume,
+        // The SAME `data.override` the gate above was given, for the same reason
+        // `priority` is reused rather than re-derived (KAN-482): the two gates
+        // must not be able to disagree about what the caller asked for. Under
+        // CrabCast this is the one that reaches the gate that actually refuses —
+        // see `AgentRuntime.spawnSession` (KAN-507).
+        Boolean(data.override)
       );
       if (!session.spawnError) this.nudgeIfResumed(session, data.defaultAgent);
     }
@@ -2583,7 +2684,10 @@ export class MessageRouter {
         isSupervisorType(type),
         defaultAgent,
         prepareWorkspaceMcpServers(mcpServers, { type, key }),
-        resume
+        resume,
+        // As at the other call site: the same flag the gate above was given, so
+        // Butchr's gate and CrabCast's cannot disagree about it (KAN-507).
+        Boolean(data.override)
       );
 
       // Reconciliation nudges its own restores, in sequence and with the
@@ -2829,11 +2933,38 @@ export class MessageRouter {
     // conclude the agent is still owed a slot; the next boot would then be the
     // first anyone learns the intent was recorded all along.
     //
-    // Only when herdr *answered* though. An unreachable herdr also fails to
-    // close the pane, and calling that "already gone" would report an agent
-    // stood down while it is still running.
-    const goneAlready =
-      !result.success && Boolean(closedType) && this.herdrBridge.listHerdrAgentsChecked().reachable;
+    // ⚠ WHAT `closeAgentByKey` FAILING ACTUALLY MEANS, AND WHY REACHABILITY IS
+    // NOT ENOUGH TO PROMOTE IT TO "ALREADY GONE" (KAN-507).
+    //
+    // This condition used to be `!result.success && closedType && reachable`,
+    // and its reasoning was sound for `HerdrBridge`: that runtime resolves a
+    // stand-down through *herdr's own pane list*, so a failure there really was
+    // herdr saying "no such agent", and reachability was the qualifier that
+    // separated it from "nobody answered".
+    //
+    // **Under `CrabCastRuntime` the same failure means something else entirely.**
+    // Its `closeAgentByKey` resolves against `this.sessions` — the session map
+    // this daemon holds — and says so in its own refusal: *"no session this
+    // daemon started matches <type>/<key>"*. That map dies with the daemon while
+    // CrabCast's registry does not, so **every agent that outlived a daemon
+    // restart fails this lookup while running, charged, and visible in the
+    // census.** Reachability is then true (CrabCast answered fine), and the old
+    // condition promoted "I hold no session for it" to "No agent was running."
+    //
+    // Measured 2026-08-16 on `task/kan-420`: `crabcast status` reports `state:
+    // running` with `sessionless: true` in the same breath, pid 156100 alive at
+    // 546 MB, holding one of three CrabCast slots — while this response claimed
+    // it was already gone. The response contradicted itself inside one payload,
+    // because `reclaim` consults the census and this line did not: it carried
+    // `alreadyGone: true` beside `reclaim.reason: "an agent is still live in
+    // this workspace"`.
+    //
+    // So the census is consulted here too, and the two answers are separate
+    // values rather than one boolean — see {@link standDownVerdict}. A verdict
+    // of `still-running` cannot be spelled as `alreadyGone`, which is the state
+    // this ticket exists to make unrepresentable.
+    const verdict = this.standDownVerdict(result, closedType, key);
+    const goneAlready = verdict.outcome === 'already-gone';
 
     // The agent is gone — either herdr just closed it, or it was already dead
     // and herdr said so. Both are stand-downs with the teardown confirmed, and
@@ -2884,6 +3015,41 @@ export class MessageRouter {
               'nothing to activate this agent again.'
           }
         : {}),
+      // ⚠ THE HONEST FORM OF THE CLAIM THIS TICKET WAS FILED ABOUT (KAN-507).
+      //
+      // The stand-down INTENT is recorded — `rememberDeactivated` ran above and
+      // `expected()` will omit this agent — but the process was not stopped and
+      // the slot it holds was not freed. Saying so plainly is the whole fix:
+      // the caller asked for an agent to be gone, and it is not gone.
+      //
+      // `success: false`, because the caller's actual request did not happen.
+      // That is a deliberate reversal of the paragraph above it, and the two are
+      // not in tension: "already dead" is the request working, and "still
+      // running" is the request failing. Collapsing them is what made a live
+      // 546 MB process read as a completed stand-down.
+      //
+      // The route that DOES work is named rather than left to be discovered.
+      // `epic/KAN-203` found it by hand while the fleet was deadlocked; nobody
+      // should have to find it twice.
+      ...(verdict.outcome === 'still-running'
+        ? {
+            stillRunning: {
+              agentName: verdict.record.name,
+              herdrStatus: verdict.record.herdrStatus,
+              workDir: verdict.record.workDir,
+              standDownRecorded: true,
+              detail:
+                'The stand-down was RECORDED but the agent was NOT stopped: this daemon holds ' +
+                'no session for it, and the runtime census still reports it running. Under ' +
+                'CrabCast a slot stays charged until the agent actually stops, so this ' +
+                'workspace is still counted against the cap.',
+              stopItWith: verdict.record.workDir
+                ? `crabcast deactivate ${verdict.record.workDir}`
+                : 'crabcast deactivate <the agent\'s workspace path>'
+            }
+          }
+        : {}),
+      ...(verdict.outcome === 'unverifiable' ? { standDownUnverifiable: verdict.reason } : {}),
       ...(result.error && !goneAlready ? { error: result.error } : {})
     });
   }

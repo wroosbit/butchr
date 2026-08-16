@@ -106,7 +106,12 @@ class StubRuntime implements AgentRuntime {
     _supervisor: boolean,
     _defaultAgent?: string,
     _mcpServers?: McpServerDefinitions,
-    _resume?: ResumeCause
+    _resume?: ResumeCause,
+    // KAN-507. A third runtime is told about the caller's capacity override for
+    // the same reason it is told about `_supervisor`: whether there is anything
+    // to do with it depends on whether this runtime owns the gate that refuses,
+    // and only the implementation knows that.
+    _override?: boolean
   ): HerdrSession {
     return unimplemented();
   }

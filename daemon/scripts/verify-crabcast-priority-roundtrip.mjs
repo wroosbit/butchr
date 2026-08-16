@@ -178,8 +178,13 @@ check(
 // whenever the seam grows, and that is the intended cost rather than an
 // annoyance: a pattern loose enough to survive an insertion would not have
 // noticed `priority` moving either.
+//
+// KAN-507 appended `override` and paid exactly that cost: this assertion went
+// red on a change that was correct, which is the pattern working. The argument
+// was added at the END rather than inserted, so no existing position moved —
+// and this line is what establishes that rather than asserting it.
 check(
-  /this\.provision\(session, promptContent, priority, supervisor, defaultAgent, mcpServers\)/.test(
+  /this\.provision\(session, promptContent, priority, supervisor, defaultAgent, mcpServers, override\)/.test(
     runtimeCode
   ),
   'spawnSession hands the priority it was given to provision()',

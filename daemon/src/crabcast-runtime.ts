@@ -1531,7 +1531,8 @@ export class CrabCastRuntime implements AgentRuntime {
     supervisor: boolean,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers,
-    resume?: ResumeCause
+    resume?: ResumeCause,
+    override?: boolean
   ): HerdrSession {
     const existing = this.sessionForAddress(type, key);
     if (existing && existing.status !== 'terminated') {
@@ -1566,7 +1567,7 @@ export class CrabCastRuntime implements AgentRuntime {
     };
     this.sessions.set(sessionId, session);
 
-    void this.provision(session, promptContent, priority, supervisor, defaultAgent, mcpServers).catch((err) => {
+    void this.provision(session, promptContent, priority, supervisor, defaultAgent, mcpServers, override).catch((err) => {
       session.status = 'terminated';
       session.spawnError = err instanceof Error ? err.message : String(err);
       this.log(`spawn failed for ${agentNameFor(type, key)}: ${session.spawnError}`);
@@ -1581,7 +1582,8 @@ export class CrabCastRuntime implements AgentRuntime {
     priority: number,
     supervisor: boolean,
     defaultAgent?: string,
-    mcpServers?: WorkspaceMcpServers
+    mcpServers?: WorkspaceMcpServers,
+    override?: boolean
   ): Promise<void> {
     const configure = buildConfigureAgentPayload({
       session,
@@ -1688,7 +1690,19 @@ export class CrabCastRuntime implements AgentRuntime {
       );
     }
 
-    const activated = await this.link.request({ action: 'activate_agent', path: session.workDir });
+    // `override` crosses the seam here, and ONLY when the caller actually asked
+    // for it (KAN-507). The field is omitted rather than sent as `false`: an
+    // absent flag is what every activation before this change sent, so a peer
+    // that has never seen the key behaves exactly as it did, and the ordinary
+    // path is byte-identical to the one the contract was proved against.
+    //
+    // Why this is not `preempt` as well, and why the flag is not synthesised
+    // from Butchr's own gate verdict, are both on `AgentRuntime.spawnSession`.
+    const activated = await this.link.request({
+      action: 'activate_agent',
+      path: session.workDir,
+      ...(override ? { override: true } : {})
+    });
     if (activated.success !== true) {
       // A capacity refusal lands here, and it arrives with CrabCast's own
       // derivation attached. Carrying their text verbatim is deliberate: their
@@ -1749,12 +1763,21 @@ export class CrabCastRuntime implements AgentRuntime {
     // any path it has run before, unasked, so after the cutover that is the
     // whole fleet at the first daemon restart.
     //
-    // NOTHING IS ASKED FOR HERE, and that is the boundary this stays inside.
-    // `activate_agent` is sent exactly as it was — `{ action, path }` — and no
-    // resume key, documented or otherwise, is added. AC1 of KAN-396 established
-    // that Butchr cannot *ask* for a resume and `epic/KAN-39` refused re-opening
-    // it permanently. This reads an output they already publish and already
-    // send; it does not reach for an affordance they have closed.
+    // NO RESUME IS ASKED FOR HERE, and that is the boundary this stays inside.
+    // **No resume key, documented or otherwise, is added to `activate_agent`.**
+    // AC1 of KAN-396 established that Butchr cannot *ask* for a resume and
+    // `epic/KAN-39` refused re-opening it permanently. This reads an output they
+    // already publish and already send; it does not reach for an affordance they
+    // have closed.
+    //
+    // ⚠ This paragraph said *"`activate_agent` is sent exactly as it was —
+    // `{ action, path }`"* until KAN-507, and that clause is now false: the
+    // request carries `override: true` when the caller asked to start past a
+    // capacity gate. **The boundary it was describing is untouched** — the
+    // sentence was about *resume*, and an override is a published flag on
+    // `crabcast activate` rather than a closed affordance. It is narrowed here
+    // rather than deleted because a reader arriving at the payload needs to know
+    // which of the two rules the extra key does and does not test.
     session.resumedConversation = readResumedConversation(activated);
 
     session.status = 'active';
