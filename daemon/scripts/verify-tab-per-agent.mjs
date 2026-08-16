@@ -90,7 +90,7 @@ const REPORT_WIDTH = 'while true; do echo "COLS=$COLUMNS"; sleep 1; done';
 try {
   console.log('\n== spawn two agents ==');
   for (const key of KEYS.slice(0, 2)) {
-    bridge.spawnSession(TYPE, key, undefined, '', 1, 'shell');
+    bridge.spawnSession(TYPE, key, undefined, '', 1, false, 'shell');
     await sleep(2500);
   }
   for (const key of KEYS.slice(0, 2)) {
@@ -118,7 +118,7 @@ try {
   }
 
   console.log('\n== spawn a third; the first two must not narrow ==');
-  bridge.spawnSession(TYPE, KEYS[2], undefined, '', 1, 'shell');
+  bridge.spawnSession(TYPE, KEYS[2], undefined, '', 1, false, 'shell');
   await sleep(2500);
   await bridge.sendToAgent(KEYS[2], REPORT_WIDTH, TYPE);
   await sleep(3000);

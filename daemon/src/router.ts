@@ -2364,6 +2364,7 @@ export class MessageRouter {
         data.url,
         renderedPrompt,
         config.priority,
+        isSupervisorType(config.type),
         data.defaultAgent,
         prepareWorkspaceMcpServers(mcpServers, { type: config.type, key }),
         resume
@@ -2579,6 +2580,7 @@ export class MessageRouter {
         url,
         renderedPrompt,
         priority,
+        isSupervisorType(type),
         defaultAgent,
         prepareWorkspaceMcpServers(mcpServers, { type, key }),
         resume

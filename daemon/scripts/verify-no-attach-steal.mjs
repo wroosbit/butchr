@@ -41,7 +41,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The bridge writes a prompt file into the workspace; pass none so this
 // touches nothing but the attach itself.
 console.log('== first activate ==');
-const first = bridge.spawnSession(type, key, undefined, '', 1);
+const first = bridge.spawnSession(type, key, undefined, '', 1, false);
 await sleep(2000);
 
 let firstBytes = 0;
@@ -52,7 +52,7 @@ let firstBytes = 0;
 bridge.registerDataListener(first.sessionId, (e) => { firstBytes += e.data.length; });
 
 console.log('\n== second activate at the same agent (this is what used to steal it) ==');
-const second = bridge.spawnSession(type, key, undefined, '', 1);
+const second = bridge.spawnSession(type, key, undefined, '', 1, false);
 await sleep(3000);
 
 console.log('\n== result ==');

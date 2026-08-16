@@ -821,6 +821,13 @@ export interface ConfigureAgentInput {
    * Never a literal: see the payload builder for the defect that was.
    */
   priority: number;
+  /**
+   * Whether this agent's workspace type hands work out rather than doing it,
+   * from `isSupervisorType` (KAN-492). The three gate flags are derived from
+   * this ONE input — see the payload builder — so they cannot be set to
+   * disagree with each other.
+   */
+  supervisor: boolean;
   /** The rendered brief, handed over verbatim. CrabCast never reads the bytes. */
   promptContent: string;
   /** The launcher to resolve at spawn. `undefined` means Butchr's own default. */
@@ -842,6 +849,12 @@ export type ConfigureAgentPayload = {
   action: 'configure_agent';
   path: string;
   priority: number;
+  /** May CrabCast's capacity gate refuse this activation? (KAN-492) */
+  refusable: boolean;
+  /** Does this agent occupy one of CrabCast's charged slots? (KAN-492) */
+  chargeable: boolean;
+  /** May this agent be stood down to make room for another? (KAN-492) */
+  preemptable: boolean;
   launcher: string;
   prompt: string;
   mcpServers?: WorkspaceMcpServers;
@@ -911,6 +924,61 @@ export type ConfigureAgentPayload = {
  * `false` is now honest — it is CrabCast reporting a spawn that decided, where
  * before it was reporting a spawn whose MCP request it had discarded.
  *
+ * ## `refusable` / `chargeable` / `preemptable` — SUPERVISOR-NESS (KAN-492)
+ *
+ * The fifth value dropped at this seam, and the one that cost a fleet. Butchr
+ * has exempted supervisors from its own cap since KAN-41 and told CrabCast
+ * nothing, so the cutover of 2026-08-16 charged **five supervisors and zero
+ * task agents** against a cap of three and refused two of them on the way back.
+ * CrabCast could not have inferred it: `epic` and `story` are Butchr's
+ * vocabulary, and their gate sees a directory and a priority.
+ *
+ * **THE NAMES ARE THEIRS, READ OFF THEIR PUBLISHED SURFACE, NOT INVENTED HERE.**
+ * `crabcast configure --help` publishes `--refusable` (*"may the capacity gate
+ * refuse it"*), `--chargeable` (*"does it occupy a charged slot"*) and
+ * `--preemptable` (*"may it be stood down to make room"*), all defaulting true;
+ * `configure_response` echoes the same three names under `config`, and lists
+ * them by name in its own `changed`/`applied`/`outcomes` maps. That echo is what
+ * the proof reads back, because KAN-294 is the standing lesson here: a field
+ * CrabCast does not have is accepted with `success: true` and simply discarded.
+ *
+ * **All three are sent on every payload, never omitted for the default.** An
+ * omitted field is indistinguishable from a field the far side dropped, which
+ * is the exact reading KAN-294 could not make. Sending `true` explicitly for a
+ * task agent is also what gives the round-trip a positive control: a surface
+ * that ignored these fields would answer identically for both kinds of agent —
+ * and since their default is `true`, it would answer identically to a CORRECT
+ * task payload. Only two rows that DIFFER can tell that apart.
+ *
+ * **Derived from one boolean rather than passed as three.** A supervisor is
+ * exempt from the gate in all three senses or in none, and three independent
+ * fields make eight states of which six are incoherent — an agent that cannot
+ * be refused but can be preempted, say. `input.supervisor` is the only knob, so
+ * the incoherent states are not reachable rather than merely unused: this is
+ * the same move as the payload having a type at all. CrabCast publishes
+ * `--gate-exempt` as the shorthand for the same three, which is their own
+ * statement that these travel together.
+ *
+ * **Why `preemptable` follows from `chargeable`, and is not a separate policy
+ * decision.** Preemption's bargain is that standing an agent down frees the
+ * slot the incoming one takes. An uncharged agent holds no slot, so standing it
+ * down frees nothing and the bargain cannot be struck — it would be pure loss.
+ * Butchr's own gate reaches the same place by a different route: `selectVictim`
+ * is strictly-greater over epic 3 / story 2 / task 1, so a task activation
+ * outranks nothing and can never take a supervisor.
+ *
+ * **What the exemption does NOT do, checked on the wire rather than assumed.**
+ * It is not all-or-nothing and it does not make a supervisor free. CrabCast's
+ * own derivation, with one exempt agent running: *"3 charged agent(s), plus 1
+ * uncharged agent(s) — not counted against the cap, but 0.9 GiB is now held off
+ * the static memory ceiling for them (KAN-275); the live memory term needs no
+ * such reserve because MemAvailable has already had their memory taken out of
+ * it."* Their `memory allows` term fell 16 → 15 as that agent came up. So the
+ * exemption is from the **count** and the CPU divisor, while memory is still
+ * charged — which is precisely Butchr's own split (`capacity.ts`: supervisors
+ * are uncounted; `agent-cost.ts`: their memory was measured as comparable and
+ * is charged). One claim, the same on both sides of the seam.
+ *
  * ## Pure, and exported, so a proof can drive the real thing
  *
  * It touches no socket and no disk, so `verify-crabcast-priority-roundtrip.mjs`
@@ -920,10 +988,17 @@ export type ConfigureAgentPayload = {
  * repository keeps re-finding.
  */
 export function buildConfigureAgentPayload(input: ConfigureAgentInput): ConfigureAgentPayload {
+  // One input, three fields, so they cannot be made to disagree. See above for
+  // why a supervisor is exempt in all three senses and why the names are read
+  // off CrabCast's published surface rather than chosen here.
+  const chargeable = !input.supervisor;
   const payload: ConfigureAgentPayload = {
     action: 'configure_agent',
     path: input.session.workDir,
     priority: input.priority,
+    refusable: chargeable,
+    chargeable,
+    preemptable: chargeable,
     launcher: input.defaultAgent ?? 'claude',
     prompt: input.promptContent
   };
@@ -1191,6 +1266,7 @@ export class CrabCastRuntime implements AgentRuntime {
     url: string | undefined,
     promptContent: string,
     priority: number,
+    supervisor: boolean,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers,
     resume?: ResumeCause
@@ -1228,7 +1304,7 @@ export class CrabCastRuntime implements AgentRuntime {
     };
     this.sessions.set(sessionId, session);
 
-    void this.provision(session, promptContent, priority, defaultAgent, mcpServers).catch((err) => {
+    void this.provision(session, promptContent, priority, supervisor, defaultAgent, mcpServers).catch((err) => {
       session.status = 'terminated';
       session.spawnError = err instanceof Error ? err.message : String(err);
       this.log(`spawn failed for ${agentNameFor(type, key)}: ${session.spawnError}`);
@@ -1241,12 +1317,14 @@ export class CrabCastRuntime implements AgentRuntime {
     session: HerdrSession,
     promptContent: string,
     priority: number,
+    supervisor: boolean,
     defaultAgent?: string,
     mcpServers?: WorkspaceMcpServers
   ): Promise<void> {
     const configure = buildConfigureAgentPayload({
       session,
       priority,
+      supervisor,
       promptContent,
       defaultAgent,
       mcpServers

@@ -269,7 +269,7 @@ const prompt =
   'KANPROBEOK and then stop. Do not read any files, do not use any tools, and do ' +
   'not ask any questions.';
 
-const session = runtime.spawnSession(TYPE, KEY, 'https://wroosbit.atlassian.net/browse/KAN-397', prompt, 1, 'claude');
+const session = runtime.spawnSession(TYPE, KEY, 'https://wroosbit.atlassian.net/browse/KAN-397', prompt, 1, false, 'claude');
 
 check('spawnSession returned a session synchronously', !!session?.sessionId, JSON.stringify(session));
 check('Butchr created the workspace directory, because CrabCast will not', fs.existsSync(workDir));

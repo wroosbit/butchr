@@ -332,7 +332,7 @@ await section('2. adoption — a session re-forms for an agent CrabCast still ho
   {
     const { type, key } = OWNED[0];
     const held = runtime.getSessionByAddress(key, type);
-    const again = runtime.spawnSession(type, key, undefined, 'must not respawn', 1, 'shell');
+    const again = runtime.spawnSession(type, key, undefined, 'must not respawn', 1, false, 'shell');
     check(
       !!held && again.sessionId === held.sessionId && again.status === 'active',
       'an activate against an adopted agent REUSES it — it does not start it fresh',
@@ -588,7 +588,7 @@ await section('5. LIVE — a real CrabCast, a real restart, a real pty', async (
     return;
   }
 
-  const spawned = first.spawnSession(TYPE, KEY, URL, 'KAN-346 live restore probe.', 1, 'shell');
+  const spawned = first.spawnSession(TYPE, KEY, URL, 'KAN-346 live restore probe.', 1, false, 'shell');
   await until(() => spawned.status === 'active' || !!spawned.spawnError, 60_000);
   check(
     spawned.status === 'active',

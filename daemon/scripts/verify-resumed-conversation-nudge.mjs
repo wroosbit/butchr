@@ -504,7 +504,7 @@ async function spawnWith(key, resume) {
   nextResume = resume;
   const dir = workspaceDirFor('task', key);
   probeWorkspaces.push(dir);
-  const session = runtime.spawnSession('task', key, undefined, 'kan-432 resume probe', 1, 'shell');
+  const session = runtime.spawnSession('task', key, undefined, 'kan-432 resume probe', 1, false, 'shell');
   for (let i = 0; i < 80 && session.status === 'initializing'; i++) await sleep(50);
   return session;
 }

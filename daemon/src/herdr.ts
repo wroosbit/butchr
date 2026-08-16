@@ -1116,8 +1116,15 @@ export class HerdrBridge implements AgentRuntime {
   // rejected: the name is what makes the parameter list read the same on both
   // implementations, and an underscore would invite a future reader to think
   // herdr was handed something meaningless.
+  //
+  // `supervisor` is accepted and DELIBERATELY UNUSED for the same reason
+  // (KAN-492). Under herdr the exemption is applied by `router.ts`'s
+  // `capacityGate`, which consults `isSupervisorType` itself and passes a
+  // supervisor activation unconditionally; this runtime rationing nothing has
+  // nothing to apply it to. Under CrabCast the rationing belongs to another
+  // daemon, which is why the value has to cross this seam at all.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, priority: number, defaultAgent?: string, mcpServers?: WorkspaceMcpServers, resume?: ResumeCause): HerdrSession {
+  public spawnSession(type: string, key: string, url: string | undefined, promptContent: string, priority: number, supervisor: boolean, defaultAgent?: string, mcpServers?: WorkspaceMcpServers, resume?: ResumeCause): HerdrSession {
     // One attach per agent, enforced here rather than in each caller. The
     // routers dedupe by (key, type), but the MCP server and the sidepanel's
     // re-attach path can both ask to activate the same agent at once. A second

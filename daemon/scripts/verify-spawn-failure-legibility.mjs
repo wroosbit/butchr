@@ -147,7 +147,7 @@ tinyClient = spawn('script', ['-q', '-c', 'herdr agent attach anchor --takeover'
   { stdio: 'ignore', env: process.env });
 await sleep(3000);
 
-const geometrySession = bridge.spawnSession('k24proof', 'geometry', undefined, '', 1);
+const geometrySession = bridge.spawnSession('k24proof', 'geometry', undefined, '', 1, false);
 await sleep(500);
 report('geometry', geometrySession, /pane-geometry failure, not a resource failure/);
 
@@ -176,7 +176,7 @@ check(
 console.log(`   limit now: ${readFileSync(`/proc/${server.pid}/limits`, 'utf8')
   .split('\n').find(l => l.startsWith('Max open files')).trim()}`);
 
-const fdSession = bridge.spawnSession('k24proof', 'fdlimit', undefined, '', 1);
+const fdSession = bridge.spawnSession('k24proof', 'fdlimit', undefined, '', 1, false);
 await sleep(500);
 report('fdlimit', fdSession, /Resource pressure at the time/);
 

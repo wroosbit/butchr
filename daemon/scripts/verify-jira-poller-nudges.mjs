@@ -818,7 +818,7 @@ if (LIVE) {
     try {
       console.log('\n  starting three real agents…\n');
       for (const agent of AGENTS) {
-        bridge.spawnSession(agent.type, agent.key, undefined, INERT, 1, 'claude', {});
+        bridge.spawnSession(agent.type, agent.key, undefined, INERT, 1, false, 'claude', {});
       }
       const ready = await Promise.all(
         AGENTS.map((a) => waitForAgentReady(bridge, a.key, a.type))

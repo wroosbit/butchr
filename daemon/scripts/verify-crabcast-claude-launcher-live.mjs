@@ -529,6 +529,7 @@ const session = runtime.spawnSession(
   'https://wroosbit.atlassian.net/browse/KAN-379',
   prompt,
   1,
+  false,
   'claude',
   preparedMcpServers
 );

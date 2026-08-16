@@ -423,6 +423,7 @@ const session1 = runtime.spawnSession(
   'https://wroosbit.atlassian.net/browse/KAN-396',
   prompt,
   1,
+  false,
   'claude'
 );
 
