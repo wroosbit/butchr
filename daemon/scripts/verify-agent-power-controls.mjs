@@ -157,13 +157,22 @@ function stubHerdr(running, { statuses = {}, workDirs = {} } = {}) {
     },
     tailAgent: () => ({ success: true, text: 'bypass permissions on\n❯ ' }),
     sendToAgent: async () => ({ success: true }),
-    // `priority` is 5th since KAN-482 — see `AgentRuntime.spawnSession`. It is
-    // recorded on the spawn below rather than ignored, so a future assertion
-    // about what this daemon told the runtime has it to hand.
-    spawnSession: (type, key, url, prompt, priority, defaultAgent, mcpServers, resume) => {
+    // `priority` is 5th since KAN-482 and `supervisor` 6th since KAN-492 — see
+    // `AgentRuntime.spawnSession`. Both are recorded on the spawn below rather
+    // than ignored, so a future assertion about what this daemon told the
+    // runtime has them to hand.
+    //
+    // ⚠ A REQUIRED PARAMETER ADDED AT THE SEAM SILENTLY SHIFTS THIS STUB. It is
+    // a `.mjs`, so no compiler sees it: KAN-492's insertion moved `defaultAgent`
+    // along by one and this script went red in CI on a stand-down assertion that
+    // has nothing to do with the change. `verify-agent-preemption.mjs` carries
+    // the same trap and the same note, and it had already been hit once before
+    // this. If you are adding to the seam, grep the `.mjs` stubs for
+    // `spawnSession:` — the compiler will not find them for you.
+    spawnSession: (type, key, url, promptContent, priority, supervisor, defaultAgent, mcpServers, resume) => {
       const workDir = path.join(WORKSPACES, type, key.toLowerCase());
       fs.mkdirSync(workDir, { recursive: true });
-      bridge.spawns.push({ type, key, url, priority, defaultAgent, resume });
+      bridge.spawns.push({ type, key, url, priority, supervisor, defaultAgent, resume });
       alive.push(`butchr-${type}-${key.toLowerCase()}`);
       return {
         sessionId: `${type}-${key.toLowerCase()}-stub`,

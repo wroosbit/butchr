@@ -336,7 +336,29 @@ if (payload) {
   // A change-detector, and it is honest about being one: see the header. A key
   // nobody predicted is not necessarily a resume, and the only safe response is
   // a human re-reading the claim rather than a regex deciding for them.
-  const KNOWN = ['action', 'launcher', 'mcpServers', 'path', 'priority', 'prompt'];
+  // KAN-492 added `refusable`, `chargeable` and `preemptable`, and this is the
+  // review the trigger asked for rather than a list quietly extended. §1 of the
+  // document was re-read against the new payload: its claim is that activating
+  // under CrabCast starts an agent FRESH because Butchr sends nothing that could
+  // ask for a conversation back. All three new keys are CrabCast capacity gate
+  // flags — whether their gate may refuse the agent, whether it occupies a
+  // charged slot, whether it may be stood down. None of them names a
+  // conversation, a transcript or a directory's history, so none can carry a
+  // resume, and the fresh-start claim holds unchanged. The document's own
+  // enumeration of the payload was stale the moment this landed and was updated
+  // in the same commit — that sentence is at `docs/crabcast-cutover-sequence.md`
+  // in the resume table, and it now lists eight fields rather than five.
+  const KNOWN = [
+    'action',
+    'chargeable',
+    'launcher',
+    'mcpServers',
+    'path',
+    'preemptable',
+    'priority',
+    'prompt',
+    'refusable'
+  ];
   const unknown = payload.filter((k) => !KNOWN.includes(k));
   check(
     'the payload is the one the document was written against',

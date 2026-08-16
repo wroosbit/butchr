@@ -253,8 +253,29 @@ rule('§2  The configure_agent frame carries no argv');
 // wording is kept in the failure text because "the frame moved" is still the
 // most likely reason this goes red.
 
+// KAN-492 WIDENED BOTH CLOSED SETS BY THREE, deliberately and with the reason
+// recorded, because a closed set quietly widened is the same as no closed set.
+// `refusable`, `chargeable` and `preemptable` are CrabCast's published capacity
+// gate flags and carry supervisor-ness across the seam. They are safe for THIS
+// section's purpose, which is narrower than "the payload may not grow": it is
+// that nothing may reach `configure_agent` that turns a CrabCast CHANNEL on.
+// The channel is an MCP server entry — their `{"crabcast": "builtin"}` sentinel
+// — so the fields that could enable it are `mcpServers` and a command line, and
+// those are still guarded exactly as before. A capacity flag cannot spawn a
+// channel server. If a future addition is NOT of that kind, it does not belong
+// on these lists.
 const typeMatch = runtimeSrc.match(/export type ConfigureAgentPayload = \{([\s\S]*?)\n\};/);
-const ALLOWED = ['action', 'path', 'priority', 'launcher', 'prompt', 'mcpServers'];
+const ALLOWED = [
+  'action',
+  'path',
+  'priority',
+  'refusable',
+  'chargeable',
+  'preemptable',
+  'launcher',
+  'prompt',
+  'mcpServers'
+];
 if (check(Boolean(typeMatch), 'the ConfigureAgentPayload type declaration is findable')) {
   const declared = [...typeMatch[1].matchAll(/^\s{2}([A-Za-z_][A-Za-z0-9_]*)\??\s*:/gm)].map(
     (m) => m[1]
@@ -276,7 +297,16 @@ if (!check(Boolean(frameMatch), 'the configure_agent frame literal is findable i
 } else {
   const body = frameMatch[1];
   const keys = [...body.matchAll(/^\s{4}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map((m) => m[1]);
-  const LITERAL_ALLOWED = ['action', 'path', 'priority', 'launcher', 'prompt'];
+  const LITERAL_ALLOWED = [
+    'action',
+    'path',
+    'priority',
+    'refusable',
+    'chargeable',
+    'preemptable',
+    'launcher',
+    'prompt'
+  ];
   const unexpected = keys.filter((k) => !LITERAL_ALLOWED.includes(k));
   check(
     unexpected.length === 0,
