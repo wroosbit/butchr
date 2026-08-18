@@ -58,6 +58,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const SELF_PATH = fileURLToPath(import.meta.url);
 const daemonDir = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(daemonDir, '..');
 const verbose = process.argv.includes('--verbose');
@@ -161,6 +162,37 @@ check(
 rule('2. ProxyOperationReport.ownTicketOnly quotes the measured counts');
 
 const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+
+/**
+ * The alternation matching a count written as a numeral or as an English word.
+ *
+ * ## WHY THIS IS A FUNCTION AND NOT AN INLINE `?? <sentinel>`
+ *
+ * It was written inline as `${n}|${WORDS[n] ?? <sentinel>}` and reviewed on
+ * KAN-515, where two defects were measured in it — one cosmetic, one not:
+ *
+ *  1. The sentinel was a **raw NUL byte**, so `file` called this script
+ *     `data` and plain `grep` suppressed every match in it. A maintenance
+ *     sweep over `daemon/scripts` would have skipped it in silence, and the
+ *     reviewer found it only because their own review greps kept coming back
+ *     empty on a file they had just watched run.
+ *  2. **Far worse**: strip that byte — a formatter, an editor, a
+ *     `.gitattributes` normalisation — and the alternative becomes EMPTY.
+ *     An empty alternative matches at every position, so `(4|)` matches any
+ *     string at all, and four of this script's assertions become permanent
+ *     no-ops **while still reporting PASS**. For a script whose whole job is
+ *     to notice a recorded decision drifting, silently unfalsifiable is the
+ *     worst available failure.
+ *
+ * `filter(Boolean)` is the fix, and it is a type-shaped one rather than an
+ * assertion: with no defined word for `n` the alternation is simply the
+ * numeral, and **an empty alternative cannot be constructed here at all**.
+ * There is no sentinel left to strip. §7 exercises the property rather than
+ * trusting this paragraph.
+ */
+function numAlt(n) {
+  return [String(n), WORDS[n]].filter(Boolean).join('|');
+}
 const ownTicketBlock = /Whether this operation is restricted to the caller's own ticket\.([\s\S]{0,1600}?)\*\//.exec(
   proxySrc
 );
@@ -175,14 +207,14 @@ if (ownTicketBlock) {
   const block = ownTicketBlock[1];
   const total = writes.length;
   const expectations = [
-    [`the total (${total}) is quoted`, new RegExp(`\\b(${total}|${WORDS[total] ?? ' '})\\b`, 'i')],
+    [`the total (${total}) is quoted`, new RegExp(`\\b(${numAlt(total)})\\b`, 'i')],
     [
       `own-ticket (${counts['own-ticket']}) is quoted`,
-      new RegExp(`\\*?\\*?(${counts['own-ticket']}|${WORDS[counts['own-ticket']] ?? ' '})\\*?\\*?[^.]{0,40}own-ticket`, 'i')
+      new RegExp(`\\*?\\*?(${numAlt(counts['own-ticket'])})\\*?\\*?[^.]{0,40}own-ticket`, 'i')
     ],
     [
       `unscoped (${counts['unscoped']}) is quoted`,
-      new RegExp(`(${counts['unscoped']}|${WORDS[counts['unscoped']] ?? ' '})\\b[^.]{0,40}unscoped`, 'i')
+      new RegExp(`(${numAlt(counts['unscoped'])})\\b[^.]{0,40}unscoped`, 'i')
     ]
   ];
   for (const [label, re] of expectations) {
@@ -215,7 +247,7 @@ if (decisionSection) {
     const n = counts[k];
     check(
       `${k} count (${n}) agrees with the table`,
-      new RegExp(`(${n}|${WORDS[n] ?? ' '})\\b[^.]{0,60}\`?${k}\`?`, 'i').test(sec),
+      new RegExp(`(${numAlt(n)})\\b[^.]{0,60}\`?${k}\`?`, 'i').test(sec),
       `the document does not state ${n} for ${k}; the table holds ${JSON.stringify(counts)}`
     );
   }
@@ -336,11 +368,64 @@ if (policyBlock) {
   );
 }
 
+// ── 7. the count matcher can say NO — the property §2 and §3 rest on ───────
+//
+// **Every assertion in §2 and §3 is "this document quotes the right number",
+// and every one of them is worthless if the matcher cannot reject a wrong
+// one.** That is not hypothetical: KAN-515's reviewer found the matcher one
+// stripped byte away from exactly that. The sentinel in the old
+// `WORDS[n] ?? <sentinel>` idiom was a raw NUL, and removing it would have left
+// an EMPTY alternative — `(4|)` matches every string in existence — so four
+// checks would have gone permanently green while asserting nothing.
+//
+// `numAlt` makes that unconstructible. **This section is what stops the next
+// author reintroducing it by another route**: it drives the real matcher over
+// a document that is deliberately WRONG and requires a rejection. A matcher
+// that matches everything fails here, whatever made it do so.
+//
+// It supplies its own input — these are string literals, not the repository —
+// so it proves the matcher discriminates and proves NOTHING about the real
+// documents. §2 and §3 are what read those. The two are complementary and
+// neither covers the other.
+rule('7. self-test — the count matcher rejects a wrong document');
+
+{
+  const matches = (n, text, tail) => new RegExp(`(${numAlt(n)})\\b[^.]{0,40}${tail}`, 'i').test(text);
+
+  check(
+    'a document quoting the RIGHT count matches (positive control)',
+    matches(4, 'four are unscoped writes in the table', 'unscoped'),
+    'the matcher rejects a correct document — it is broken in the safe direction, but broken'
+  );
+  check(
+    'a document quoting a WRONG count is REJECTED',
+    !matches(4, 'the table says seven unscoped writes', 'unscoped'),
+    'THE MATCHER MATCHES ANYTHING. §2 and §3 are asserting nothing. Check numAlt for an empty alternative.'
+  );
+  check(
+    'the numeral alone still matches when no English word exists for n',
+    /^99$/.test(numAlt(99)) && new RegExp(`(${numAlt(99)})`).test('99 writes'),
+    `numAlt(99) produced ${JSON.stringify(numAlt(99))}; out-of-range counts must degrade to the numeral, never to an empty alternative`
+  );
+  check(
+    'numAlt never yields an empty alternative, for any count 0..40',
+    Array.from({ length: 41 }, (_, i) => numAlt(i)).every(
+      (a) => a.length > 0 && !a.startsWith('|') && !a.endsWith('|') && !a.includes('||')
+    ),
+    'some count produced an alternation with an empty branch — the KAN-515 defect is back'
+  );
+  check(
+    'this script is plain text — no control bytes that hide it from grep',
+    !/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(fs.readFileSync(SELF_PATH, 'utf8')),
+    'a raw control byte is present, so `file` reports `data` and plain grep silently skips this file'
+  );
+}
+
 console.log(
   `\n${
     failures
       ? `FAILED — ${failures} check(s). The tree's account of which writes a task agent may make no longer hangs together.`
-      : `OK — ${writes.length} writes measured, ${CROSS_TICKET_MANDATES.length} cross-ticket mandates still in the brief, and ${DOC_REL} §4 agrees with both.`
+      : `OK — ${writes.length} writes measured, ${CROSS_TICKET_MANDATES.length} cross-ticket mandates still in the brief, ${DOC_REL} §4 agrees with both, and the count matcher can still say no.`
   }\n`
 );
 
