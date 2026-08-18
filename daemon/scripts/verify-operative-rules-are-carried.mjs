@@ -1770,6 +1770,70 @@ const RULES = [
       ])
     ),
   },
+  {
+    // KAN-521. THE RULE IS UNCHANGED AND THE WORD IT TURNED ON WAS WRONG.
+    // `prompts/story.md` said *"one and only one agent staffs a given ticket —
+    // its parent"*, and never said which parent. Measured at `e7ac6bf`: of the
+    // 38 occurrences of `parent` in that file, every one but this clause meant
+    // the Jira `parent` field — including a section headed *the task's parent
+    // is your epic — and this is where agents give up*, written to make that
+    // meaning stick, and `:955`'s own *"its parent"*, ~400 lines below, meaning
+    // the Jira field again. So the natural reading resolved to the **epic**,
+    // which is the one agent that must not staff a story's task.
+    //
+    // WHAT MAKES IT INVENTORY-WORTHY RATHER THAN A TYPO. The paragraph was
+    // never wrong: the next clause — *you staff the tasks you filed* — is the
+    // correct rule, sitting in the same sentence. It was **correct under a
+    // reading it never stated**, and one gloss lost to a file-wide convention
+    // pushing the other way. `story/KAN-117` put the counter-case fairly and it
+    // is the reason this is nine patterns rather than one: a reader who
+    // finishes the sentence has the answer, so a length pass sees redundancy
+    // and takes the disambiguation out, and the file returns to the state that
+    // produced the misreading with nothing red.
+    //
+    // THE PATTERNS ARE CHOSEN SO THAT NO SINGLE ONE CARRIES TWO HALVES.
+    //   - `one and only one agent staffs` + `anti-race property is untouched` —
+    //     the property itself. This ticket was about naming which agent, never
+    //     about how many, and an edit that "simplifies" by dropping the count
+    //     is the regression this pins.
+    //   - `the agent that filed it` + `staffing follows whoever filed the
+    //     ticket` — the answer, twice, once in the rule sentence and once
+    //     portably. AC1: the reader gets it from `story.md` alone.
+    //   - `the word was already spoken for` + `never names that agent` — why
+    //     the fix is a removal rather than a definition. Defining `parent` in
+    //     place would leave the collision and add a gloss to lose.
+    //   - `KAN-518` + `staffs it` + `names the one agent that must not activate
+    //     it` — the worked example, and it is pinned in three pieces because
+    //     AC3 is the half most easily hollowed out: an example where the Jira
+    //     parent and the filer AGREE demonstrates nothing, and swapping in a
+    //     tidier one is the edit that looks like housekeeping.
+    //
+    // SCOPED TO `prompts/story.md` DELIBERATELY, AND THE CHECK IS RECORDED
+    // RATHER THAN ASSUMED: the anti-race clause exists in no other prompt —
+    // `grep -n "anti-race\|staffs\|global coordinator\|orphaned workspace"` over
+    // `prompts/{epic,task}.md` at `4d4933a` returns nothing — and neither file
+    // uses `parent` for anything but the Jira field. `prompts/epic.md:876` is
+    // the nearest thing and is not an instance: *"its story agent where it has
+    // one, and **you** for a task you parented directly to {{KEY}}"* is
+    // disambiguated by its own next sentence, which forbids the epic from
+    // closing a task hanging off one of its stories.
+    id: 'H-31',
+    title:
+      'who staffs a ticket is the agent that FILED it, never its Jira `parent` — the two diverge on every task a story files, and the worked example must be one where they do',
+    carriedBy: {
+      'prompts/story.md': [
+        /one and only one agent staffs/i,
+        /the agent that filed it/i,
+        /the word was already spoken for/i,
+        /staffing follows whoever filed the ticket/i,
+        /never names that agent/i,
+        /KAN-518/,
+        /staffs it/i,
+        /names the one agent that must not activate it/i,
+        /anti-race property is untouched/i,
+      ],
+    },
+  },
 ];
 
 /**

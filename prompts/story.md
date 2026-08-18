@@ -256,7 +256,7 @@ each task agent sees one, and does its side correctly.
 KAN-145 is the worked example. Two verify scripts asserted that the daemon
 carries `activatedBy` correctly — it does — by constructing registry records
 that already had the field in them. Neither exercised a real activation
-*producing* a parent. `activatedBy` was `null` for every agent in production, so
+*producing* an `activatedBy`. It was `null` for every agent in production, so
 the org chart could never render, and both scripts stayed green the whole time.
 Neither task was done badly. The decomposition left a hole, and no ticket owned
 it.
@@ -547,9 +547,32 @@ nowhere. Diagnose by tailing (no movement); recover by deactivating and
 re-activating — the conversation resumes — then re-send what was lost.
 
 The anti-race rule survives the change of owner: **one and only one agent staffs
-a given ticket — its parent**, not a global coordinator. You staff the tasks you
-filed and nothing else; two agents activating the same work races, and the loser
-leaves an orphaned workspace.
+a given ticket — the agent that filed it**, not a global coordinator. You staff
+the tasks you filed and nothing else; two agents activating the same work races,
+and the loser leaves an orphaned workspace.
+
+⚠ **That means the filer, and this clause deliberately no longer says *"its
+parent"* — the word was already spoken for.** It read *"its parent"* until
+2026-08-18, and everywhere else in this file *parent* is the Jira `parent`
+field: a whole section exists to make that stick — *the task's parent is your
+epic — and this is where agents give up* above — and *"its parent"* means the
+Jira field again under *announce a transition only where the board will not*
+below. **So the natural reading named your epic**, and the gloss in the next
+clause was correct and outgunned. The collision is removed rather than defined:
+**staffing follows whoever filed the ticket**, and for a task of yours the Jira
+`parent` field never names that agent.
+
+**The worked example diverges, because one where the two agree demonstrates
+nothing.** `KAN-518` is a Task whose `parent` is `KAN-59` — an Epic, since Jira
+allows a task no other kind — filed by `story/KAN-117` and `Blocks`-linked to
+`KAN-117`. **`story/KAN-117` staffs it; `epic/KAN-59` does not**, and reading
+`parent` there names the one agent that must not activate it. ⚠ **That
+divergence is structural, not anecdotal** — it holds for every task any story
+files, because Jira has nowhere else to put the parent, so there is no version
+of this rule under which the two readings can be relied on to agree (KAN-521).
+
+**The anti-race property is untouched**: exactly one agent per ticket, never
+two. What changed is which one the sentence names.
 
 *(If you are ever told not to activate them yourself, that is a change to this
 division of labour and belongs in this file — edit it, don't improvise.)*
@@ -1065,18 +1088,18 @@ somebody else's experiment — they are the ordinary case, unmeasured.
 **{{KEY}}'s status is an assertion about its tasks, so it must be re-derived,
 not just set once.** You transition the story at your own moments — claimed,
 decomposed, delivered — but its truth depends on tickets that move without you.
-Nothing re-derives a parent's status when a child moves backwards, so a status
-you set honestly can be made false by an event you never saw.
+Nothing re-derives {{KEY}}'s status when one of its tasks moves backwards, so a
+status you set honestly can be made false by an event you never saw.
 
 - **The story may not sit In Review while any of its tasks is To Do or In
   Progress.** If a child moves backwards — preempted, reopened, re-filed —
   move the story back to In Progress the same turn, and say why in a comment.
   Preemption is the common case: a preempted task is reset to To Do, which
-  silently invalidates the parent. In Review → In Progress is a meaningful
+  silently invalidates {{KEY}}. In Review → In Progress is a meaningful
   transition on {{KEY}}, which is your own ticket: post the comment and let the
   poller carry the pointer — see *Announce a transition only where the board will
   not* above.
-- **Filing a task is a status event for the parent.** A story that files new
+- **Filing a task is a status event for {{KEY}}.** A story that files new
   tasks after reaching In Review is not In Review any more.
 - **Re-derive whenever you touch a task at all** — the check is one query over
   your own tasks, and it is cheap.
