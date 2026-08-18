@@ -527,12 +527,13 @@ what it degrades to whenever there is nothing to measure — no agent trees,
 `/proc` unreadable, a sample that fails validation. Every capacity report
 labels each figure `seed`, `measured` (with the sample's window, tree count
 and timestamp), `restored` or `override`, so the derivation stays checkable by
-hand even though the divisor moves. Three environment variables override the
-derivation:
+hand even though the divisor moves. Four environment variables override the
+derivation — **`docs/env-knobs.md` is the full reference for every `BUTCHR_*`
+knob**, and these four are documented there as well as here:
 
 | variable | effect |
 | --- | --- |
-| `BUTCHR_MAX_AGENTS` | sets the cap outright, skipping the derivation |
+| `BUTCHR_MAX_AGENTS` | sets the `cap` outright, skipping the derivation **of the cap**. It does not settle how many agents run — the live headroom terms still bind independently, and it can only lower the number admitted, never raise it (KAN-534). |
 | `BUTCHR_AGENT_MEMORY_MB` | resident cost of one agent tree |
 | `BUTCHR_AGENT_CORES` | cores one active agent tree spends |
 | `BUTCHR_STALL_PERCENT` | the stall threshold (default 20); above 100 disables the term |
@@ -542,13 +543,16 @@ measurement beats the seed, and `BUTCHR_MAX_AGENTS` pins the cap before any of
 it. Overrides are per-dimension — setting `BUTCHR_AGENT_CORES` alone leaves
 the memory figure measured.
 
-**This fleet sets `BUTCHR_MAX_AGENTS=10`, and the machine-side backstop stays
-armed (KAN-508, 2026-08-18).** The human asked for *"a set 10, maybe
+**This fleet sets `BUTCHR_MAX_AGENTS`, and the machine-side backstop stays
+armed (KAN-508, 2026-08-18).** ⚠ The value moves, so read it rather than
+quoting this sentence: the live daemon's `/proc/<pid>/environ` said **6** on
+2026-08-18, where this paragraph had said 10 since it was written. The human
+asked for *"a set 10, maybe
 configurable"* rather than a computed number, and the override delivers it at
 zero code: `computeCapacity` **assigns** `cap = configuredCap` rather than
 `min`-ing it with the derived terms, so the derivation is skipped outright —
-capacity reports `cap: 10 … (set by BUTCHR_MAX_AGENTS, derivation skipped)` and
-`capBoundBy: "configured"`.
+capacity reports `cap: <the configured number> … (set by BUTCHR_MAX_AGENTS,
+derivation skipped)` and `capBoundBy: "configured"`.
 
 ⚠ **Concurrency is board-derived; refusal is still machine-derived, and the two
 are complements rather than competitors.** How many agents are *asked for* is

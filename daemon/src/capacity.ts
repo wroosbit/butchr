@@ -2006,13 +2006,29 @@ export interface EffectiveCeiling {
 /**
  * The effective ceiling — KAN-517.
  *
- * THE FINDING THIS ANSWERS: `cap` is not consulted at admission. The gate is
- * `if (!capacity.atCapacity)` and `atCapacity` is `headroom <= 0`, so setting
- * `BUTCHR_MAX_AGENTS=10` sets a number the gate never reads. Measured on the
- * human's 15.4 GiB machine on 2026-08-18, the memory term admitted about eight
- * while `cap` read 10 — so the configured number bound lower than configured,
- * and nothing said so. Two of the three surfaces a person actually reads
- * opened with `5/10`, which subtracts to five free slots when three were.
+ * THE FINDING THIS ANSWERS: a configured `cap` is a ceiling among ceilings, so
+ * it binds only when it is the smallest of them. Measured on the human's 15.4
+ * GiB machine on 2026-08-18, the memory term admitted about eight while `cap`
+ * read 10 — so the configured number bound lower than configured, and nothing
+ * said so. Two of the three surfaces a person actually reads opened with
+ * `5/10`, which subtracts to five free slots when three were.
+ *
+ * ⚠ THE MECHANISM ABOVE IS A CORRECTION, AND THE SENTENCE IT REPLACES IS WRONG
+ * (KAN-534). This paragraph read *"`cap` is not consulted at admission … a
+ * number the gate never reads"*, which is false and would mislead the next
+ * author into thinking `BUTCHR_MAX_AGENTS` is inert. `cap` **is** read at
+ * admission, through an unbroken chain: `cap` → `headroomByCap = max(0, cap −
+ * running)` → `headroom = min(headroomByCap, headroomByCpu, headroomByMemory)`
+ * → `atCapacity = headroom <= 0` → the gate. Measured by calling
+ * `computeCapacity` on a machine with CPU and memory to spare, so the count
+ * term was the only one that could bind: `cap=2, running=2` gave `headroom=0,
+ * atCapacity=true`, and `cap=9, running=2` gave `headroom=7,
+ * atCapacity=false`. Changing ONLY the cap flipped the gate, which it could not
+ * have done had the gate not read it. What is true — and what this function
+ * exists to report — is the other half: because `cap` is one term in a `min`,
+ * it can only ever LOWER the number admitted, never raise it. `cap=10` on a
+ * memory-starved machine measured `headroom=0, boundBy=memory`. The conclusion
+ * KAN-517 drew was right; only its mechanism was not. See `docs/env-knobs.md`.
  *
  * THIS IS A REPORT AND NOT A TERM, AND THAT IS ENFORCED BY WHERE IT LIVES
  *
