@@ -51,6 +51,60 @@
  * `channel-probe-server.mjs`.
  *
  * ---------------------------------------------------------------------------
+ * READING THE TWO OUTPUT LINES: THEY ARE NOT COMPLEMENTARY (KAN-505)
+ * ---------------------------------------------------------------------------
+ *
+ * Each arm reports two things about what the model printed — the joined token,
+ * and `NOCHANNEL`. ⚠ **ONLY THE FIRST IS RELIABLE, AND IN BOTH DIRECTIONS.**
+ * They are not two halves of one answer, and an arm can print BOTH.
+ *
+ * `epic/KAN-39` re-ran this probe at `8d2bb1b` and the **WITH-FLAG** arm — the
+ * arm that unambiguously received the frame — reported both:
+ *
+ *     model printed joined token    : true
+ *     model printed NOCHANNEL       : true
+ *
+ * The author's run of the same script at the same head, minutes earlier, showed
+ * the token `true` and no `NOCHANNEL` on that arm. Same script, same head,
+ * different machine-minute: this is model narration varying between runs, not a
+ * defect in either run and not a difference between the two machines.
+ *
+ * **The presumed mechanism, stated as presumed rather than established:** the
+ * model says the word while narrating its reasoning — *"…if no `<channel>` block
+ * is present I would print NOCHANNEL…"* — and a pane match cannot tell narration
+ * from an answer. Nothing below depends on that being the right mechanism; the
+ * asymmetry is what was measured, and it holds whatever produced it.
+ *
+ * ⚠ **SO DO NOT READ `NOCHANNEL: true` AS EVIDENCE OF NON-DELIVERY.** On the arm
+ * that demonstrably DID receive the frame, it read `true`. An agent debugging a
+ * suspected channel regression could take that line for a dropped frame while
+ * looking at an arm that worked. The token is what decides: its halves are never
+ * adjacent in the frame, so only assembly can produce it (above), which makes it
+ * sound as a positive AND as a negative. `NOCHANNEL` is corroboration at best.
+ *
+ * This is the repository's own *"an empty result is a claim about your search"*
+ * rule in a new costume. `NOCHANNEL` was deliberately designed as a POSITIVE
+ * statement of absence, so that an arm printing nothing could be told from an
+ * arm that looked and found nothing (see `ABSENT_MARKER` below) — and that design
+ * is sound. What it did not anticipate is that the pane carries the model's
+ * reasoning as well as its answer, so the marker is contaminated by narration.
+ *
+ * **WHAT WAS DECIDED ABOUT ITS PRESENTATION, AND WHY.** `saidAbsent` is still
+ * printed on EVERY arm, unconditionally, including when the token is also
+ * present. Printing it only when the token is absent was considered and
+ * REJECTED: the two appearing together is a real disagreement between this
+ * probe's own instruments, and a surface that suppresses one of them starts
+ * hiding exactly the observation this section exists to record — the next
+ * reader would have no way to discover the asymmetry from the output at all.
+ *
+ * What changed instead is additive, because a header cannot reach the reader
+ * most at risk: that reader is looking at OUTPUT pasted into a PR or a ticket,
+ * not at this file. So each of the two lines is now annotated inline with what
+ * it is worth, and when an arm reports both, it says on the spot that the token
+ * governs. Nothing is suppressed and no verdict changed — `saidAbsent` was never
+ * read by any verdict branch, and still is not.
+ *
+ * ---------------------------------------------------------------------------
  * WHY A PTY, WHICH IS NOT AN IMPLEMENTATION DETAIL
  * ---------------------------------------------------------------------------
  *
@@ -106,6 +160,14 @@ const ARM_TIMEOUT_MS = 150_000;
  * absence rather than an empty answer: an arm that printed nothing at all would
  * be indistinguishable from one that crashed, and this probe must be able to
  * tell "the model looked and there was nothing" from "the model never ran".
+ *
+ * ⚠ **THAT IS WHAT IT WAS FOR, NOT WHAT IT RELIABLY MEANS (KAN-505).** The pane
+ * carries the model's reasoning as well as its answer, so this word can appear
+ * because the model NARRATED it — measured on the WITH-FLAG arm at `8d2bb1b`,
+ * which printed the assembled token and this marker in the same run. Its
+ * presence is therefore corroboration at best and never evidence of
+ * non-delivery. The token decides, in both directions. See the header section
+ * "READING THE TWO OUTPUT LINES" before drawing anything from `saidAbsent`.
  */
 const ABSENT_MARKER = 'NOCHANNEL';
 
@@ -317,8 +379,25 @@ function runArm({ label, withFlag, halfA, halfB, extraServers }) {
       process.stdout.write(`startup dialogs answered      : ${dialogsAnswered}\n`);
       process.stdout.write(`server saw tools/call         : ${toolCalled}\n`);
       process.stdout.write(`server emitted channel frame  : ${emitted}\n`);
-      process.stdout.write(`model printed joined token    : ${sawToken}\n`);
-      process.stdout.write(`model printed ${ABSENT_MARKER}        : ${saidAbsent}\n`);
+      // ⚠ THE TWO LINES BELOW ARE NOT COMPLEMENTARY, AND BOTH CAN READ `true`
+      // (KAN-505). They are annotated here rather than only in the header
+      // because the reader most likely to misread them is looking at this
+      // output pasted into a PR or a ticket, not at this file.
+      process.stdout.write(
+        `model printed joined token    : ${sawToken}   [DECISIVE — the verdict reads this]\n`
+      );
+      process.stdout.write(
+        `model printed ${ABSENT_MARKER}       : ${saidAbsent}   ` +
+          `[corroboration only — NOT evidence of non-delivery; see header, KAN-505]\n`
+      );
+      if (sawToken && saidAbsent) {
+        process.stdout.write(
+          `  ⚠ BOTH ARE TRUE ON THIS ARM. ${ABSENT_MARKER} is narration here, not a result: the ` +
+            `model assembled\n` +
+            `    and printed the token, so THIS ARM RECEIVED THE FRAME. Do not read the marker as a\n` +
+            `    dropped frame. Observed on the WITH-FLAG arm at 8d2bb1b (KAN-505).\n`
+        );
+      }
       process.stdout.write(`pane tail: ${JSON.stringify(clean.trim().slice(-400))}\n`);
 
       resolve({ label, toolCalled, emitted, sawToken, saidAbsent, pane: clean });
