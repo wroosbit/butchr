@@ -71,6 +71,7 @@
 //
 //   node daemon/scripts/verify-adopted-pane-supervision.mjs --no-adopt-fire
 //   node daemon/scripts/verify-adopted-pane-supervision.mjs --drop-foreign-guard
+//   node daemon/scripts/verify-adopted-pane-supervision.mjs --drop-watcher-guard
 //   node daemon/scripts/verify-adopted-pane-supervision.mjs --reassert-fine
 //
 // `--no-adopt-fire` is THE DEFECT ITSELF, restored: it deletes the one call
@@ -90,7 +91,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
 const dist = path.join(daemonDir, 'dist');
 
-const MUTATIONS = ['--no-adopt-fire', '--drop-foreign-guard', '--reassert-fine'];
+const MUTATIONS = ['--no-adopt-fire', '--drop-foreign-guard', '--drop-watcher-guard', '--reassert-fine'];
 const mutation = process.argv.find((a) => MUTATIONS.includes(a)) ?? null;
 
 if (!fs.existsSync(path.join(dist, 'channel-startup.js'))) {
@@ -155,7 +156,24 @@ if (mutation === '--drop-foreign-guard') {
   );
 }
 
-const { superviseAdoptedStartup, MAX_DIALOG_ANSWERS } = await import(
+if (mutation === '--drop-watcher-guard') {
+  // Let a second watcher onto a pane that already has one. This is the hazard
+  // arming on adoption introduced, and section 5b is the only thing watching it.
+  //
+  // ⚠ IT MUST BE PATCHED BEFORE THE IMPORT BELOW, and the first version of this
+  // block was not — it sat 450 lines further down, next to the source-text
+  // mutation it reads like. The module was already loaded by then, so the patch
+  // landed on a file nothing would read again and the run came back GREEN. That
+  // is the whole reason a green under a mutation is counted as a failure here.
+  patchBuild(
+    'channel-startup.js',
+    /if \(inFlight\.has\(who\)\)\s*return null;/,
+    '/* KAN-538 guard dropped: a second watcher is allowed onto the same pane */',
+    '--drop-watcher-guard'
+  );
+}
+
+const { superviseAdoptedStartup, MAX_DIALOG_ANSWERS, oneWatcherPerAddress } = await import(
   `file://${path.join(distUnderTest, 'channel-startup.js')}`
 );
 
@@ -533,6 +551,72 @@ say('');
 
 // ───────────────────────────────────────────────────────────────────────────
 say('');
+say('== 5b. a pane adopted twice gets ONE watcher, not two ==');
+say('');
+{
+  // A HAZARD THIS TICKET CREATED, so it is proved here rather than assumed away.
+  // `adoptFromCensus` skips an address it already holds, so a second adoption
+  // means the session left the map and came back — measured 9 times over the
+  // 13-run window, EVERY ONE re-using the same sessionId, and one of them only
+  // 120.9s apart, which is inside the 180s deadline. Two watchers on one pane
+  // double the Enter cap and can land a keystroke at a prompt the other just
+  // cleared; an idle composer holds the client's suggestion, not the human's.
+  const guard = oneWatcherPerAddress();
+  const ADDR = { type: 'story', key: 'KAN-117' };
+
+  let release;
+  const held = new Promise((r) => {
+    release = r;
+  });
+  let starts = 0;
+  const runOnce = () => {
+    starts += 1;
+    return held;
+  };
+
+  const first = guard.start(ADDR, runOnce);
+  const second = guard.start(ADDR, runOnce);
+
+  check(first !== null, 'the first adoption starts a watcher');
+  check(second === null, 'the SECOND adoption starts none while the first is in flight');
+  check(starts === 1, 'the watcher body ran exactly once', `ran ${starts} time(s)`);
+  check(guard.size() === 1, 'exactly one watcher is in flight', `${guard.size()} in flight`);
+
+  // A DIFFERENT address is not blocked by it — the guard must not serialise the
+  // fleet, which at 76 adoptions per 13 runs would be its own outage.
+  const other = guard.start({ type: 'epic', key: 'KAN-59' }, runOnce);
+  check(other !== null, 'a DIFFERENT address is unaffected');
+  check(starts === 2, 'and its body did run', `ran ${starts} time(s)`);
+
+  release();
+  await first;
+  await other;
+
+  check(guard.size() === 0, 'the address is released when the watcher settles', `${guard.size()} left in flight`);
+  const third = guard.start(ADDR, runOnce);
+  check(third !== null, 'so a LATER adoption of the same address can be watched again');
+  check(starts === 3, 'and it really started', `ran ${starts} time(s)`);
+  release();
+  await third;
+
+  // A watcher that throws must not wedge the address closed forever.
+  const boom = oneWatcherPerAddress();
+  let threw = false;
+  try {
+    boom.start(ADDR, () => {
+      throw new Error('synchronous failure inside the watcher body');
+    });
+  } catch {
+    threw = true;
+  }
+  check(threw, 'a synchronous throw from the watcher body propagates');
+  check(
+    boom.size() === 0 && boom.start(ADDR, async () => {}) !== null,
+    'and it does NOT leave the address wedged closed for the life of the daemon'
+  );
+}
+
+say('');
 say('== 6. the reconcile line no longer asserts health it cannot know  [reads source as text] ==');
 say('');
 {
@@ -540,7 +624,7 @@ say('');
   // stays readable after a failed build because it read what you wrote.
   const daemonSrc = path.join(daemonDir, 'src', 'daemon.ts');
   let text = fs.readFileSync(daemonSrc, 'utf8');
-  if (mutation === '--reassert-fine') {
+if (mutation === '--reassert-fine') {
     const before = text;
     text = text.replace(
       /TWO DIFFERENT STATES LOOK EXACTLY LIKE THIS[\s\S]*?Do not read this as either\./,

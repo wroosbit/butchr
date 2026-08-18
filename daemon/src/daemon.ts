@@ -44,6 +44,7 @@ import {
 } from './channel.js';
 import {
   freshConnectionFrom,
+  oneWatcherPerAddress,
   superviseAdoptedStartup,
   superviseChannelStartup
 } from './channel-startup.js';
@@ -1098,9 +1099,18 @@ herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
 // different instrument: `superviseAdoptedStartup` reads the pane, and
 // `classifyStartupDialog` is the only thing that may say a key can be pressed.
 // A pane with no dialog of ours costs one tail and returns.
+// ONE WATCHER PER ADDRESS, because arming on adoption introduced a way to arm
+// two. A pane can be adopted twice — measured 9 times over the 13-run window,
+// every one re-using the SAME sessionId, one of them only 120.9s apart, which is
+// inside the watcher's own deadline. See `oneWatcherPerAddress` for what the
+// second one costs; the short version is a stray Enter at a pane that has just
+// reached its prompt, and an idle composer holds the client's suggestion.
+const adoptedWatchers = oneWatcherPerAddress();
+
 herdrBridge.setAgentAdoptedListener((session, adoptedAt) => {
   const address = { type: session.type, key: session.key };
-  void superviseAdoptedStartup({
+  const started = adoptedWatchers.start(address, () =>
+    superviseAdoptedStartup({
     address,
     adoptedAt,
     world: {
@@ -1122,7 +1132,22 @@ herdrBridge.setAgentAdoptedListener((session, adoptedAt) => {
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       log: (message) => log(message)
     }
-  }).catch((err) => {
+    })
+  );
+
+  if (started === null) {
+    // DECLINED, AND SAID SO. A silent decline is indistinguishable from a
+    // watcher that ran and found nothing, which is the confusion this whole
+    // ticket is about.
+    log(
+      `[AdoptedStartup] ${describeAddress(address)}: already being watched, so this adoption ` +
+      `starts no second watcher — two on one pane would double the Enter cap and can land a ` +
+      `keystroke at a prompt the other just cleared.`
+    );
+    return;
+  }
+
+  void started.catch((err) => {
     // `superviseAdoptedStartup` promises not to throw, and this is caught anyway
     // for the reason the spawn chain's `.catch` gives: an unhandled rejection
     // here would take the daemon down over a watcher.

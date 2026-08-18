@@ -840,3 +840,74 @@ export async function superviseAdoptedStartup(opts: {
   world.log(`[AdoptedStartup] ${who}: GIVING UP — ${detail}`);
   return done('no-prompt', false, detail);
 }
+
+/**
+ * One in-flight watcher per agent address, and a truthful answer about which.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS (KAN-538), AND IT IS A HAZARD THIS TICKET CREATED
+ * ---------------------------------------------------------------------------
+ *
+ * Arming a watcher on adoption introduced a way to arm TWO. `adoptFromCensus`
+ * skips an address it already holds a session for — so a second adoption means
+ * the first session left the map and came back, and **measured on this machine
+ * it comes back as the SAME pane**: 9 repeat adoptions across the 13-run window,
+ * every one of them re-using the identical `sessionId`, which is derived from
+ * the pane's own `createdAt`. **One of those gaps is 120.9 seconds**, which is
+ * inside {@link STARTUP_DEADLINE_MS}. So the second watcher starts while the
+ * first is still polling the same pane.
+ *
+ * **What two watchers on one pane cost is not a duplicated log line.** The cap
+ * is per-watcher, so the fleet's "four Enters and then stop" becomes eight — and
+ * the cap is not a rate limit, it is the point at which this daemon admits it no
+ * longer models the startup sequence and refuses to press keys blind. Worse, the
+ * two race: one clears the dialog and the other's Enter lands a moment later at
+ * a pane that is now **at its prompt**. An Enter at an idle Claude Code composer
+ * submits whatever is sitting in it, and what sits in an idle composer is the
+ * client's own suggestion rather than anything a human typed — `epic/KAN-59`'s
+ * read, verbatim, *"rotate the LaunchDarkly token now"*, the one action the human
+ * has reserved to themselves. That is a fleet-hazard, not an untidiness.
+ *
+ * **Keyed by address rather than by session id**, deliberately: the watcher reads
+ * the pane through `(key, type)`, so the address is what two watchers would
+ * actually collide on. A session id would let two watchers onto one pane
+ * whenever the id changed, which is the case this is least able to tolerate.
+ *
+ * The entry is released in a `finally`, so a watcher that throws — which
+ * {@link superviseAdoptedStartup} promises not to do, and which is caught at the
+ * call site anyway — cannot wedge an address closed for the life of the daemon.
+ */
+export function oneWatcherPerAddress(): {
+  /**
+   * Start `run` unless this address already has one in flight.
+   *
+   * Returns the promise when it started it and `null` when it declined, so a
+   * caller can log the decline rather than discovering it as silence.
+   */
+  start: (address: AgentAddress, run: () => Promise<unknown>) => Promise<unknown> | null;
+  /** How many are in flight. Diagnostic; nothing branches on it. */
+  size: () => number;
+} {
+  const inFlight = new Set<string>();
+  return {
+    start: (address, run) => {
+      const who = describeAddress(address);
+      if (inFlight.has(who)) return null;
+      inFlight.add(who);
+      // `run()` is invoked INSIDE the guard rather than before it, so there is
+      // no window in which a synchronous throw from `run` leaves the address
+      // marked busy with nothing running.
+      let started: Promise<unknown>;
+      try {
+        started = run();
+      } catch (e) {
+        inFlight.delete(who);
+        throw e;
+      }
+      return started.finally(() => {
+        inFlight.delete(who);
+      });
+    },
+    size: () => inFlight.size
+  };
+}
