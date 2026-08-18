@@ -57,6 +57,25 @@
 // reads, so the PR's paste and this script's output are figures of the same
 // machine and can be held against each other.
 //
+// THAT OBSERVATION WAS TAKEN, AND IT CAME BACK RED. `butchr_capacity` against
+// the running daemon (pre-change build, deployed at e7ac6bf) at
+// 2026-08-18T06:53:50Z:
+//
+//     cap 10   running 5   atCapacity TRUE   headroom 0   bound by cpu
+//     headroomByCap 5      cpu allows 0      memory allows 1
+//     summary: "5/10 task agents, room for 0 more (... bound by cpu)"
+//
+// So the installed daemon does gate on live headroom with the cap unread: it
+// was refusing every start while `cap` said 10 and the count term had five
+// slots. That is this section's claim, observed on the real thing rather than
+// computed — and the summary line is the ticket's complaint at its sharpest,
+// since `cap − running` reads 5 where the truth is 0.
+//
+// Thirty minutes earlier the SAME daemon at the SAME fleet size read
+// `headroom 3, bound by memory` (06:23:49Z). Same population, different term,
+// ceiling 8 then 5. Both correct when taken, which is the whole reason the
+// ceiling ships with `stability` attached rather than as a bare number.
+//
 // AND THIS SCRIPT IS ABOUT BUTCHR'S GATE ONLY. `epic/KAN-59` established on
 // KAN-517 that CrabCast carries an independent headroom gate — their KAN-504
 // activation was refused with `refused by crabcast-daemon: activate_agent
