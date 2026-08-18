@@ -1161,6 +1161,28 @@ export class HerdrBridge implements AgentRuntime {
   }
 
   /**
+   * Accepted and never fired, because this runtime has nothing to fire it for
+   * (KAN-538).
+   *
+   * `HerdrBridge` spawns every pane it serves — there is no census of somebody
+   * else's sessions to take one over from, and `HerdrSession.adopted` is set
+   * nowhere in this file. So the listener is stored rather than dropped only so
+   * that a reader who greps for it finds the reason here instead of an absence,
+   * and `daemon.ts` can install one listener without asking which runtime it
+   * has.
+   *
+   * ⚠ **This is a statement about this class, not a claim that adoption cannot
+   * happen** — under `CrabCastRuntime` it happens on every daemon start, which
+   * is the whole of KAN-538.
+   */
+  public setAgentAdoptedListener(
+    _listener: (session: HerdrSession, adoptedAt: number) => void
+  ): void {
+    // Intentionally not retained: nothing in this class adopts a session, so a
+    // stored reference would be a promise this runtime cannot keep.
+  }
+
+  /**
    * A session of ours that is currently attached to this agent's terminal.
    *
    * herdr allows exactly one terminal attach per terminal, so this is the

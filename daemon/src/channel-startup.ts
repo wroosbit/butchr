@@ -579,3 +579,365 @@ export function freshConnectionFrom(
     return { id: connection.id };
   };
 }
+
+/**
+ * Why supervision of an ADOPTED pane ended.
+ *
+ * A deliberately different vocabulary from {@link ChannelStartupOutcome}, and
+ * the difference is the whole point of the function below: that one ends in a
+ * claim about **reachability** — an addressed frame has a socket — and this one
+ * cannot make that claim about a pane this daemon did not start. See
+ * {@link superviseAdoptedStartup} for what it does and does not know.
+ */
+export type AdoptedStartupOutcome =
+  /** No dialog, and the pane is at a session prompt. Nothing was needed. */
+  | 'at-prompt'
+  /** Our dialog was live, we cleared it, and the pane reached a prompt. */
+  | 'dialog-answered'
+  /** Our dialog was live and was still there at the deadline. */
+  | 'dialog-unanswered'
+  /** A dialog only a human may answer. Nothing was pressed. */
+  | 'foreign-dialog'
+  /** The pane could not be read at all, so nothing here knows what is on it. */
+  | 'unreadable-pane'
+  /**
+   * Readable, and never at a prompt.
+   *
+   * Covers two situations that share a verdict and NOT a sentence: no dialog
+   * was ever seen, and a dialog was seen, cleared, and no prompt followed. The
+   * `detail` distinguishes them, because the second one has to say out loud that
+   * the keystroke worked — reporting it as `dialog-unanswered`, which this did
+   * until it was caught in review, sends an operator to press a key at a box
+   * that is no longer there.
+   */
+  | 'no-prompt';
+
+export interface AdoptedStartupResult {
+  outcome: AdoptedStartupOutcome;
+  /** True only where the pane was actually observed at a session prompt. */
+  atPrompt: boolean;
+  /** Enters herdr accepted. A send that threw is logged and not counted here. */
+  dialogsAnswered: number;
+  waitedMs: number;
+  /** One sentence for a human reading the log at 3am. */
+  detail: string;
+}
+
+/**
+ * What supervising an adopted pane needs from the world.
+ *
+ * **Derived from {@link ChannelStartupWorld} rather than declared beside it**,
+ * so the pane reader and the keystroke keep exactly one definition between the
+ * two supervisors. `freshConnection` is the one member removed, and its absence
+ * is the type-level statement of this function's limit: there is no spawn
+ * instant to date a connection against, so this cannot ask the question and
+ * cannot be edited into asking it.
+ */
+export type AdoptedStartupWorld = Omit<ChannelStartupWorld, 'freshConnection'>;
+
+/**
+ * Get an ADOPTED pane past a startup dialog nobody else is watching — or say
+ * that it is stuck on one.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS (KAN-538)
+ * ---------------------------------------------------------------------------
+ *
+ * {@link superviseChannelStartup} is armed by `AgentRuntime`'s spawn listener,
+ * and under CrabCast that listener fires from exactly one place: the tail of
+ * `provision()`. **`adoptFromCensus()` is the other way a live session enters
+ * that runtime's map, and it fired nothing** — so a pane CrabCast already had
+ * running when the daemon's census arrived was taken into the fleet with no
+ * watcher on it. If such a pane was sitting at the development-channels dialog,
+ * nothing would ever press the key, and nothing said so.
+ *
+ * **That is measured, on both columns, over the 13 daemon runs since the
+ * CrabCast spawn listener went live (2026-08-18T04:34:53Z):** the set of agents
+ * with a `[ChannelStartup] … watching` line equals the set with a
+ * `[CrabCastRuntime] activated` line **exactly**, in every run and in both
+ * directions — 0 watched-but-not-provisioned, 0 provisioned-but-not-watched —
+ * while **76 adopted-and-never-provisioned agent instances got no watcher at
+ * all.** `story/KAN-117` and `epic/KAN-59` sat at that dialog for 90 minutes on
+ * 2026-08-18 and both are in the adopted column.
+ *
+ * ⚠ **`restore` versus `provision` is NOT the distinction, and reading it that
+ * way is what refuted the first answer to this ticket.** A restore *sometimes*
+ * provisions — `epic/KAN-39` has both a `Restoring` line and a watcher — and
+ * sometimes does not, because a session adopted seconds earlier makes the
+ * reconciler take its `already running; leaving it alone` branch. `Restoring` is
+ * upstream of the branch that actually decides, so it separates nothing.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS KNOWS, AND THE ONE THING IT DELIBERATELY DOES NOT
+ * ---------------------------------------------------------------------------
+ *
+ * It reads the pane and it answers the pane. It makes **no claim about the
+ * channel**, and that is a limit rather than an omission: CrabCast publishes no
+ * spawn command line for a session it started before this daemon existed, so
+ * whether that pane carries Butchr's `--dangerously-load-development-channels`
+ * is a fact this process cannot obtain. `superviseChannelStartup` gates on
+ * `spawn.channelEnabled === true` for that reason and would be *lying* if it
+ * were handed a `true` here — the KAN-496 trap arriving by a new door.
+ *
+ * **So the flag is not consulted, and nothing is inferred from its absence.**
+ * The pane is asked instead, which answers a narrower question honestly: is the
+ * dialog that is *currently waiting for a key* the development-channels one?
+ * {@link classifyStartupDialog} is the only thing that may say yes, and it
+ * refuses a foreign or ambiguous frame — so a pane carrying no dialog of ours
+ * costs one tail and returns, and a workspace-trust box is refused here exactly
+ * as it is there.
+ *
+ * **WHO COVERS WHAT THIS DOES NOT.** Channel reachability for an adopted agent
+ * is not established here and is not established anywhere by this function's
+ * arrival: `runChannelSelfCheck` is chained onto the *spawn* watcher, so an
+ * adopted agent still has no startup verdict and reads as `unchecked`, which is
+ * a state the fleet already handles honestly. Reaching a prompt is what this
+ * buys, and reaching a prompt is what it claims.
+ */
+export async function superviseAdoptedStartup(opts: {
+  address: AgentAddress;
+  /** Epoch ms at which this daemon adopted the pane. NOT a spawn time. */
+  adoptedAt: number;
+  world: AdoptedStartupWorld;
+  deadlineMs?: number;
+}): Promise<AdoptedStartupResult> {
+  const { address, world } = opts;
+  const deadlineMs = opts.deadlineMs ?? STARTUP_DEADLINE_MS;
+  const who = describeAddress(address);
+  const startedAt = world.now();
+  const deadline = startedAt + deadlineMs;
+
+  let dialogsAnswered = 0;
+  let capReached = false;
+  let paneReads = 0;
+  let paneFailures = 0;
+  let dialogOnScreen = false;
+  let sawDialog = false;
+  let undelimitedLogged = false;
+
+  const done = (
+    outcome: AdoptedStartupOutcome,
+    atPrompt: boolean,
+    detail: string
+  ): AdoptedStartupResult => ({
+    outcome,
+    atPrompt,
+    dialogsAnswered,
+    waitedMs: world.now() - startedAt,
+    detail
+  });
+
+  world.log(
+    `[AdoptedStartup] ${who}: this daemon did not start this pane, so nothing has watched it ` +
+    `for a startup dialog — reading it to find out whether one is waiting`
+  );
+
+  // THE DEADLINE IS TESTED AT THE TOP, for the reason `superviseChannelStartup`
+  // gives at the same place: the dialog branch below `continue`s, so a bottom
+  // test is skipped on exactly the path that can loop forever.
+  while (world.now() < deadline) {
+    const pane = await world.readPane();
+    paneReads += 1;
+    const dialog = pane === null ? null : classifyStartupDialog(pane);
+
+    if (pane === null) {
+      paneFailures += 1;
+    } else if (dialog !== null && (dialog.kind === 'foreign' || dialog.kind === 'ambiguous')) {
+      const what =
+        dialog.kind === 'foreign'
+          ? `the ${dialog.dialog} dialog` +
+            (dialog.measured ? '' : ' (matched on unmeasured wording — see startup-dialog.ts)')
+          : `a frame carrying markers for ${dialog.dialogs.join(' and ')}`;
+      const detail =
+        `${what} is on the pane of an adopted agent, not the development-channels one, so ` +
+        `NOTHING WAS PRESSED and this agent will not reach its prompt until a human answers ` +
+        `it. ${dialogsAnswered} development-channels dialog(s) were answered before it appeared.`;
+      world.log(`[AdoptedStartup] ${who}: REFUSING TO ANSWER — ${detail}`);
+      return done('foreign-dialog', false, detail);
+    } else if (dialog !== null && dialog.kind === 'undelimited') {
+      dialogOnScreen = true;
+      sawDialog = true;
+      if (!undelimitedLogged) {
+        undelimitedLogged = true;
+        world.log(
+          `[AdoptedStartup] ${who}: the development-channels prose is on the pane but no ` +
+          `'Enter to confirm' line delimits it, so which dialog is live cannot be decided and ` +
+          `NOTHING WAS PRESSED. Ordinarily this is a dialog caught mid-paint and the next poll ` +
+          `clears it; if this run ends in 'dialog-unanswered', suspect a restyled confirm line.`
+        );
+      }
+    } else if (dialog !== null && dialog.kind === 'dev-channels') {
+      dialogOnScreen = true;
+      sawDialog = true;
+      if (dialogsAnswered >= MAX_DIALOG_ANSWERS) {
+        if (!capReached) {
+          capReached = true;
+          world.log(
+            `[AdoptedStartup] ${who}: ${MAX_DIALOG_ANSWERS} dialogs answered and another is on ` +
+            `screen — refusing to press Enter again at a startup sequence this no longer models`
+          );
+        }
+      } else {
+        world.log(
+          `[AdoptedStartup] ${who}: development-channels dialog #${dialogsAnswered + 1} on an ` +
+          `ADOPTED pane — answering with Enter, because nothing else is watching this one`
+        );
+        try {
+          world.pressEnter(dialog.confirmation);
+          dialogsAnswered += 1;
+        } catch (e: any) {
+          world.log(
+            `[AdoptedStartup] ${who}: could not send Enter to the pane, will retry: ` +
+            `${e?.message ?? String(e)}`
+          );
+        }
+        await world.sleep(DIALOG_SETTLE_MS);
+        continue;
+      }
+    } else {
+      dialogOnScreen = false;
+      // THE PROMPT IS THE WHOLE TERMINAL CONDITION HERE, and that is the
+      // difference from the spawn watcher rather than a weaker version of it.
+      // There, a prompt without a fresh connection is a session seconds from
+      // exiting; here there is no spawn to be fresh against, so the connection
+      // is not evidence this function is entitled to read. See the header.
+      if (SESSION_PROMPT_PATTERN.test(pane)) {
+        const waited = world.now() - startedAt;
+        const outcome: AdoptedStartupOutcome =
+          dialogsAnswered > 0 ? 'dialog-answered' : 'at-prompt';
+        const detail =
+          dialogsAnswered > 0
+            ? `an adopted pane was sitting at ${dialogsAnswered} development-channels ` +
+              `dialog(s) that nothing was watching; they were answered and it reached its ` +
+              `prompt ${waited}ms later. Without this it would have sat there indefinitely.`
+            : `the adopted pane was already at a session prompt, so no startup dialog was ` +
+              `waiting on it (checked ${paneReads} time(s) over ${waited}ms).`;
+        world.log(`[AdoptedStartup] ${who}: ${outcome} — ${detail}`);
+        return done(outcome, true, detail);
+      }
+    }
+
+    await world.sleep(POLL_MS);
+  }
+
+  const waited = world.now() - startedAt;
+
+  // ⚠ `dialogOnScreen` AND `sawDialog` ARE NOT THE SAME QUESTION, AND THIS
+  // BRANCH READ `dialogOnScreen || sawDialog` UNTIL IT WAS CAUGHT IN REVIEW.
+  //
+  // Under that wording, a dialog that WAS cleared and was followed by a client
+  // that never reached a prompt reported `dialog-unanswered` — which sends an
+  // operator to press a key at a box that is no longer on the screen, and buries
+  // the thing that actually happened. It is this ticket's own defect shape: a
+  // verdict claiming more than its mechanism covers, degrading toward the
+  // familiar answer.
+  //
+  // `dialogOnScreen` is the LAST SUCCESSFUL READ's verdict — a failed read
+  // leaves it alone deliberately, so an unreadable final frame does not erase
+  // the memory of a box that was there a moment ago. That is what makes it safe
+  // to branch on rather than the whole-run memory.
+  if (dialogOnScreen) {
+    const detail =
+      `a development-channels dialog was on an adopted pane and was still not cleared ` +
+      `${waited}ms later (${dialogsAnswered} answered` +
+      `${capReached ? `, cap of ${MAX_DIALOG_ANSWERS} reached` : ''}). THE AGENT HAS NOT ` +
+      `REACHED ITS PROMPT and will not on its own.`;
+    world.log(`[AdoptedStartup] ${who}: GIVING UP — ${detail}`);
+    logRevert(world.log, who);
+    return done('dialog-unanswered', false, detail);
+  }
+
+  if (paneFailures === paneReads) {
+    const detail =
+      `the pane of this adopted agent could not be read at all in ${paneReads} attempt(s) over ` +
+      `${waited}ms, so nothing here knows whether a dialog was raised. This reports which ` +
+      `question it could not answer, not an answer.`;
+    world.log(`[AdoptedStartup] ${who}: GIVING UP — ${detail}`);
+    return done('unreadable-pane', false, detail);
+  }
+
+  // A DIALOG THAT WAS CLEARED AND NO PROMPT BEHIND IT is its own sentence rather
+  // than the same one, because it sends a reader somewhere else entirely: the
+  // keystroke worked and the client is what did not arrive.
+  const detail = sawDialog
+    ? `a development-channels dialog on this adopted pane was cleared ` +
+      `(${dialogsAnswered} answered) and the pane still never reached a session prompt within ` +
+      `${waited}ms. THE KEYSTROKE IS NOT THE PROBLEM — the box is gone; a client that booted ` +
+      `and then exited looks exactly like this, so read the pane before pressing anything.`
+    : `the pane of this adopted agent was readable and never showed either a startup dialog or ` +
+      `a session prompt within ${waited}ms. It is not parked on a dialog this daemon can ` +
+      `answer; read the pane before assuming what it is doing.`;
+  world.log(`[AdoptedStartup] ${who}: GIVING UP — ${detail}`);
+  return done('no-prompt', false, detail);
+}
+
+/**
+ * One in-flight watcher per agent address, and a truthful answer about which.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS (KAN-538), AND IT IS A HAZARD THIS TICKET CREATED
+ * ---------------------------------------------------------------------------
+ *
+ * Arming a watcher on adoption introduced a way to arm TWO. `adoptFromCensus`
+ * skips an address it already holds a session for — so a second adoption means
+ * the first session left the map and came back, and **measured on this machine
+ * it comes back as the SAME pane**: 9 repeat adoptions across the 13-run window,
+ * every one of them re-using the identical `sessionId`, which is derived from
+ * the pane's own `createdAt`. **One of those gaps is 120.9 seconds**, which is
+ * inside {@link STARTUP_DEADLINE_MS}. So the second watcher starts while the
+ * first is still polling the same pane.
+ *
+ * **What two watchers on one pane cost is not a duplicated log line.** The cap
+ * is per-watcher, so the fleet's "four Enters and then stop" becomes eight — and
+ * the cap is not a rate limit, it is the point at which this daemon admits it no
+ * longer models the startup sequence and refuses to press keys blind. Worse, the
+ * two race: one clears the dialog and the other's Enter lands a moment later at
+ * a pane that is now **at its prompt**. An Enter at an idle Claude Code composer
+ * submits whatever is sitting in it, and what sits in an idle composer is the
+ * client's own suggestion rather than anything a human typed — `epic/KAN-59`'s
+ * read, verbatim, *"rotate the LaunchDarkly token now"*, the one action the human
+ * has reserved to themselves. That is a fleet-hazard, not an untidiness.
+ *
+ * **Keyed by address rather than by session id**, deliberately: the watcher reads
+ * the pane through `(key, type)`, so the address is what two watchers would
+ * actually collide on. A session id would let two watchers onto one pane
+ * whenever the id changed, which is the case this is least able to tolerate.
+ *
+ * The entry is released in a `finally`, so a watcher that throws — which
+ * {@link superviseAdoptedStartup} promises not to do, and which is caught at the
+ * call site anyway — cannot wedge an address closed for the life of the daemon.
+ */
+export function oneWatcherPerAddress(): {
+  /**
+   * Start `run` unless this address already has one in flight.
+   *
+   * Returns the promise when it started it and `null` when it declined, so a
+   * caller can log the decline rather than discovering it as silence.
+   */
+  start: (address: AgentAddress, run: () => Promise<unknown>) => Promise<unknown> | null;
+  /** How many are in flight. Diagnostic; nothing branches on it. */
+  size: () => number;
+} {
+  const inFlight = new Set<string>();
+  return {
+    start: (address, run) => {
+      const who = describeAddress(address);
+      if (inFlight.has(who)) return null;
+      inFlight.add(who);
+      // `run()` is invoked INSIDE the guard rather than before it, so there is
+      // no window in which a synchronous throw from `run` leaves the address
+      // marked busy with nothing running.
+      let started: Promise<unknown>;
+      try {
+        started = run();
+      } catch (e) {
+        inFlight.delete(who);
+        throw e;
+      }
+      return started.finally(() => {
+        inFlight.delete(who);
+      });
+    },
+    size: () => inFlight.size
+  };
+}

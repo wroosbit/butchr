@@ -384,6 +384,38 @@ export interface AgentRuntime {
   ): void;
 
   /**
+   * Register the callback fired once per pane this runtime **adopts** — takes
+   * into its session map without having started it. Called once, by `daemon.ts`.
+   *
+   * ## Why this is a second listener and not the one above (KAN-538)
+   *
+   * A spawn and an adoption are two different events carrying two different
+   * amounts of knowledge, and the gap between them is exactly the thing that
+   * left two supervisors parked at a dialog for 90 minutes on 2026-08-18.
+   *
+   * {@link setAgentSpawnedListener} fires from the tail of a provision, so its
+   * `AgentSpawn.channelEnabled` is *this daemon's own argv decision, taken
+   * moments earlier*. **An adoption has no such decision to report**: the pane
+   * was started by somebody else, and CrabCast publishes no spawn command line
+   * for it. Routing adoptions through the spawn listener would therefore
+   * require inventing a `channelEnabled` for them — `true` to get them watched,
+   * which is a claim this process cannot support, or `false`/`null` to stay
+   * honest, which is what the daemon's gate already reads as *do not watch*.
+   * Neither is available, so the event is its own event.
+   *
+   * **What the consumer does with it is read the pane rather than the verdict**
+   * — see `superviseAdoptedStartup` in channel-startup.ts, which answers a
+   * narrower question honestly instead of a wider one on a guess.
+   *
+   * A runtime that never adopts may leave this unfired; the daemon installs a
+   * listener and does not require it to be called. `HerdrBridge` is such a
+   * runtime and says so at its implementation.
+   */
+  setAgentAdoptedListener(
+    listener: (session: HerdrSession, adoptedAt: number) => void
+  ): void;
+
+  /**
    * `mcpServers` arrives {@link WorkspaceMcpServers prepared}, never raw — see
    * that type for why the transforms sit above this seam rather than inside
    * each implementation. An implementation writes what it is given and applies

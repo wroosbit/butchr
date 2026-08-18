@@ -1512,6 +1512,33 @@ export class CrabCastRuntime implements AgentRuntime {
   ) => void;
 
   /**
+   * The other half of the fleet, and until KAN-538 nobody was watching it.
+   *
+   * `setAgentSpawnedListener` above fires once per {@link provision}. This one
+   * fires once per {@link adoptFromCensus} — the only other way a live session
+   * enters `this.sessions` — so between them every pane this runtime serves is
+   * announced to `daemon.ts` exactly once, whoever started it.
+   *
+   * **Measured, both columns, over the 13 daemon runs since the spawn listener
+   * went live (2026-08-18T04:34:53Z):** watched ≡ provisioned exactly, in every
+   * run and both directions, while **76 adopted-and-never-provisioned agent
+   * instances had no watcher at all**. Two of them were supervisors that sat at
+   * an unanswered development-channels dialog for 90 minutes.
+   */
+  setAgentAdoptedListener(listener: (session: HerdrSession, adoptedAt: number) => void): void {
+    this.agentAdoptedListener = listener;
+    this.log(
+      'setAgentAdoptedListener: registered and LIVE (KAN-538). An adopted pane is one this ' +
+        'daemon did NOT start, so no argv decision of ours describes it and none is invented: ' +
+        'the consumer reads the pane rather than a channel verdict. It fires once per adoption, ' +
+        'which is what closes the gap that left story/KAN-117 and epic/KAN-59 parked at an ' +
+        'unwatched dialog for 90 minutes.'
+    );
+  }
+
+  private agentAdoptedListener?: (session: HerdrSession, adoptedAt: number) => void;
+
+  /**
    * CrabCast owns the brief file, and does not tell us where it put it
    * (KAN-400).
    *
@@ -3567,6 +3594,27 @@ export class CrabCastRuntime implements AgentRuntime {
           `(CrabCast session ${row.sessionId}, created ${row.createdAt}). This daemon did not ` +
           `start it; no url is claimed, because CrabCast has no field for one.`
       );
+      // ANNOUNCED, BECAUSE UNTIL KAN-538 THIS PATH ANNOUNCED NOTHING AND THAT
+      // IS WHAT PARKED TWO SUPERVISORS FOR 90 MINUTES.
+      //
+      // `provision` fires `agentSpawnedListener` at its tail and `daemon.ts`
+      // hangs channel-startup supervision off it. This method is the *other*
+      // way a live session gets into `this.sessions`, and it fired nothing — so
+      // a pane CrabCast already had running when our census arrived joined the
+      // fleet unwatched. If it was sitting at the development-channels dialog,
+      // nobody would ever press the key: the reconciler then reads it as
+      // `already running; leaving it alone`, which is true and is not health.
+      //
+      // ⚠ THE ADOPTION TIME IS NOT A SPAWN TIME, and the two listeners are
+      // separate so that it cannot be passed as one. `spawnedAt` dates a
+      // connection for `freshConnection`; this instant dates nothing — the pane
+      // predates it, by 4h45m in the KAN-538 incident. `superviseAdoptedStartup`
+      // takes it as `adoptedAt` and uses it only to measure how long IT has been
+      // looking, which is the one thing it is a true instant for.
+      //
+      // Fired AFTER the log line and after the maps are written, so a consumer
+      // that reads the pane synchronously finds a session it can address.
+      this.agentAdoptedListener?.(session, Date.now());
     }
   }
 
