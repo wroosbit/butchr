@@ -30,6 +30,9 @@
 //   4. not a term     — the admission path cannot consult the ceiling: it is
 //                       not a property of `Capacity` and the string does not
 //                       occur on the gate's path in router.ts
+//   4b. the seam     — the field the daemon publishes is the field the sidepanel
+//                       reads. The panel falls back to the old wording when it
+//                       is absent, so a rename is silent (KAN-145's shape)
 //   5. can it fail    — sections 1–3's ceiling battery re-run against a
 //                       ceiling function that returns the cap. If the battery
 //                       still passes, the battery proves nothing and this
@@ -115,8 +118,18 @@
 //   # OBSERVED 2026-08-18: §2's invariance goes `6, 6, 7, 7, 8` instead of a
 //   # flat line, and §1's by-hand memory check fails too. Exit 1.
 //   #
+//   # 4. drift the DTO-to-panel seam, which no mutation above touches and which
+//   #    would otherwise rot in silence — the panel falls back to the OLD
+//   #    wording when the field is missing, so a rename shows no error at all.
+//   #    In extension/src/components/ActivationRefusal.jsx, misspell one field:
+//   #      capacity.effectiveCeiling?.shortfal
+//   node scripts/verify-effective-ceiling.mjs
+//   # OBSERVED 2026-08-18: §4 fails naming both sides —
+//   #   "panel wants [shortfal, ceiling], daemon sends [ceiling, ..., shortfall, ...]"
+//   #   Exit 1. A single character is enough.
+//   #
 //   # then `git checkout src/capacity.ts && npm run build` and watch it green.
-//   # OBSERVED: restored, rebuilt, all 42 checks held again.
+//   # OBSERVED: restored, rebuilt, all 45 checks held again.
 //
 // Usage:
 //   cd daemon && npm run build && node scripts/verify-effective-ceiling.mjs
@@ -137,6 +150,7 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonRoot = path.resolve(scriptDir, '..');
+const repoRoot = path.resolve(daemonRoot, '..');
 
 let failures = 0;
 const fail = (section, message) => {
@@ -855,6 +869,54 @@ check(
   /export function effectiveCeilingOf\(/.test(capacitySrc),
   'the ceiling is computed by an exported function over a Capacity, not stored on one'
 );
+
+// THE SEAM, which is the one place this change could rot silently.
+//
+// The daemon publishes `effectiveCeiling` on the capacity DTO; the sidepanel
+// reads `capacity.effectiveCeiling.shortfall` to decide which wording to show,
+// and falls back to the OLD wording when it is absent. That fallback is
+// deliberate — an old daemon must not break a new panel — and it is exactly
+// what makes a rename invisible: drift the name on either side and the panel
+// quietly shows `N of M` again, which is the text this ticket was filed about.
+// Nothing else in the tree would go red.
+//
+// This is KAN-145's shape — two artifacts each correct, the hole between them
+// owned by nobody — so the seam gets its own assertion rather than a hope.
+const routerHasIt = /effectiveCeiling:\s*effectiveCeilingOf\(c\)/.test(routerSrc);
+const panelSrc = fs.readFileSync(
+  path.join(repoRoot, 'extension', 'src', 'components', 'ActivationRefusal.jsx'),
+  'utf8'
+);
+const panelReads = [...panelSrc.matchAll(/capacity\.effectiveCeiling[?]?\.(\w+)/g)].map((m) => m[1]);
+const published = Object.keys(effectiveCeilingOf(here));
+
+check('4', routerHasIt, 'the DTO publishes `effectiveCeiling` from the derivation function');
+check(
+  '4',
+  panelReads.length > 0,
+  `the sidepanel reads it (${panelReads.length} reference(s): ${[...new Set(panelReads)].join(', ')})`
+);
+check(
+  '4',
+  panelReads.every((k) => published.includes(k)),
+  `every field the sidepanel reads is one the daemon publishes — ` +
+  `panel wants [${[...new Set(panelReads)].join(', ')}], daemon sends [${published.join(', ')}]`
+);
+
+// WHAT THIS DOES NOT COVER, AND WHO DOES: the assertion above compares NAMES in
+// two source files. It cannot see the component actually render, so a panel
+// whose names line up and whose JSX is wrong would pass it. That leg was closed
+// by observation rather than by this script, because rendering needs vite and a
+// react-dom/server pass that this proof deliberately does not carry into CI:
+//
+//   cd daemon && node scripts/verify-agent-power-controls.mjs --dump /tmp/p
+//   cd extension && node scripts/render-agent-controls.mjs /tmp/p /tmp/out
+//
+// Run 2026-08-18 against a REAL daemon refusal payload, both branches:
+//   shortfall 0  ->  "3 of 3 task agents"                                (unchanged)
+//   shortfall 5  ->  "5 running, 5 reachable on this machine, 10 configured"
+// Pasted in the PR. If you change either side of this seam, re-run those two
+// commands — the check above will not tell you the markup broke.
 
 // ---------------------------------------------------------------------------
 // Section 5 — can the battery above actually fail?
