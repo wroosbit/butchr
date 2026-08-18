@@ -60,7 +60,29 @@ export function ActivationRefusal({ refusal, onOverride, onPreempt, onDismiss })
       {isCapacity && (
         <>
           <div className="capacity-figures">
-            <span><b>{capacity.running}</b> of <b>{capacity.cap}</b> task agents</span>
+            {/*
+              KAN-517: `N of M task agents` invites a subtraction the gate does
+              not honour. `cap` is not consulted at admission — the gate is
+              live headroom — so on a machine whose memory or CPU binds first,
+              M is a number that cannot be reached and M − N is a count of
+              slots that do not exist. Measured on the human's machine at a
+              configured cap of 10, the ceiling was about 8.
+
+              `shortfall` is 0 whenever the cap IS reachable, which is when the
+              old wording was right, so that case renders exactly as before.
+              Where it is not, the reachable figure leads and the configured
+              one is still shown — moved out of the fraction rather than
+              dropped, because a reader who set the cap needs to see what
+              became of it.
+            */}
+            {capacity.effectiveCeiling?.shortfall > 0 ? (
+              <span>
+                <b>{capacity.running}</b> running, <b>{capacity.effectiveCeiling.ceiling}</b> reachable
+                {' '}on this machine, <b>{capacity.cap}</b> configured
+              </span>
+            ) : (
+              <span><b>{capacity.running}</b> of <b>{capacity.cap}</b> task agents</span>
+            )}
             <span>room for <b>{capacity.headroom}</b></span>
             {/*
               Cores in use rather than the load average: this is the figure the
