@@ -136,6 +136,31 @@
 //   node daemon/scripts/verify-doc-constant-pins.mjs   # exit 1
 //   git checkout -- docs/crabcast-runtime.md
 //
+//   # KAN-536's arms, run on VERIFIED_CLIENT_VERSIONS when its row was added.
+//   # COMMIT FIRST: both arms are restored with `git checkout --`, which throws
+//   # away any uncommitted edit to the same file — it ate the new pin once.
+//
+//   # §2 and §4 across BOTH pinned documents at once: append a version
+//   perl -pi -e "s/\['2\.1\.224', '2\.1\.226'\];/['2.1.224', '2.1.226', '2.1.230'];/" daemon/src/channel-selfcheck.ts
+//   node daemon/scripts/verify-doc-constant-pins.mjs   # exit 1, 4 failures
+//   git checkout -- daemon/src/channel-selfcheck.ts
+//
+//   # §5 across both documents: delete both pins for it
+//   perl -0pi -e 's/<!-- constant-pin: VERIFIED_CLIENT_VERSIONS.*?-->\n\n//s' docs/channel-selfcheck.md
+//   perl -0pi -e 's/<!-- constant-pin: VERIFIED_CLIENT_VERSIONS.*?-->\n//s'   docs/SETUP.md
+//   node daemon/scripts/verify-doc-constant-pins.mjs   # exit 1, 3 failures
+//
+//   # …and the control that says the row is what caused it: with those same two
+//   # pins still deleted, take the VERIFIED_CLIENT_VERSIONS row back out of
+//   # GUARDED and re-run — exit 0, zero failures. A red that appears without a
+//   # green beside it under the one changed variable has not been attributed.
+//   git checkout -- docs/channel-selfcheck.md docs/SETUP.md
+//
+// A NOTE ON WHAT KIND OF PROOF THIS IS, because the fleet rule turns on it:
+// nothing here imports from `dist`. Every leg `readFileSync`s `docs/*.md` and
+// `daemon/src/*.ts` as text, so a failed build does not invalidate a verdict
+// from this script — it read what you wrote, not what was last compiled.
+//
 // Sections:
 //
 //   1. every pin is well-formed and resolves to a real declaration
@@ -176,6 +201,39 @@ const GUARDED = [
   { name: 'RUNTIME_ENV_VAR', src: 'daemon/src/runtime-switch.ts' },
   { name: 'BOARD_JQL', src: 'daemon/src/board-reconcile.ts' },
   { name: 'BOARD_CYCLE_MS', src: 'daemon/src/board-reconcile.ts' },
+  // KAN-536 added this one and DELIBERATELY LEFT `DEV_CHANNELS_FLAG` OUT. Both
+  // were pinned in `docs/SETUP.md` by KAN-532 and neither was guarded; this is
+  // the ticket that decided them, and it decided them apart. The argument turns
+  // on a property of §5 that is easy to assume the other way round, so it was
+  // measured rather than reasoned:
+  //
+  //   §5 FINDS A MENTION BY THE CONSTANT'S NAME OR ITS *CURRENT* FULL LITERAL
+  //   VALUE. So when a value moves, every document that mentioned it only by
+  //   that value STOPS BEING SEEN — §5 goes SILENT on it, not red. Coverage is
+  //   a statement about the tree now, never a tripwire for the move itself.
+  //
+  // `VERIFIED_CLIENT_VERSIONS` is in because that silence does not reach the
+  // document that matters. `docs/channel-selfcheck.md` names the constant, so
+  // it is NAME-detected and stays watched across a value change — and it is the
+  // page carrying the per-version table that IS the prose form of the list. The
+  // list grows by hand every time somebody measures a new client, which makes
+  // it the most movable constant of the pair, and until this row existed that
+  // table had nothing watching it at all.
+  //
+  // `DEV_CHANNELS_FLAG` is out. Measured on this tree (fences and markers
+  // stripped, exactly as §5 reads them): 9 documents mention it, 8 of them by
+  // the flag string alone. Rename the flag upstream — the one event guarding it
+  // is for — and §5 sees 1 of the 9. So a row here would not watch the eight
+  // stale pages through the rename; it would only require, today, that all
+  // eight carry a pin. What those eight pins would add is eight §2 legs hanging
+  // off ONE declaration, all firing on the same edit that already turns
+  // SETUP.md's existing pin red — pins are checked in §1–§4 whether or not the
+  // constant is in `GUARDED`, so that tripwire is already armed. Against that,
+  // each pin freezes a sentence of ordinary prose under §3. Eight copies of one
+  // signal, bought with eight editorial constraints, is the wrong trade, and
+  // eight readings that share an upstream cause are one reading regardless.
+  // The reasoning and its measurement are in `docs/doc-constant-drift.md`.
+  { name: 'VERIFIED_CLIENT_VERSIONS', src: 'daemon/src/channel-selfcheck.ts' },
 ];
 
 const DOCS_DIR = path.join(repoRoot, 'docs');

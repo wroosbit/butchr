@@ -3,6 +3,21 @@
      nothing here that can drift. The pinned sentences are in docs/crabcast-runtime.md. -->
 <!-- constant-pin-exempt: CRABCAST_PIN — same: named as an example of what is guarded,
      never quoted as a value. Its pinned sentence is in docs/crabcast-runtime.md. -->
+<!-- constant-pin-exempt: RUNTIME_ENV_VAR — named once, in the scope paragraph's record of
+     which ticket added which row to GUARDED. That paragraph states no value for it and
+     the page quotes none anywhere; its pinned sentences are in docs/env-knobs.md,
+     docs/crabcast-runtime.md and docs/crabcast-cutover-sequence.md. -->
+<!-- constant-pin-exempt: BOARD_JQL — same, and same paragraph: named as a row KAN-378
+     added, never quoted. Its pinned sentence is in docs/crabcast-cutover-sequence.md. -->
+<!-- constant-pin-exempt: BOARD_CYCLE_MS — same, and same paragraph: named as a row
+     KAN-378 added, never quoted. Its pinned sentence is in
+     docs/crabcast-cutover-sequence.md. -->
+<!-- constant-pin-exempt: VERIFIED_CLIENT_VERSIONS — named in the KAN-536 section below as
+     the subject of a guarding decision, never quoted as a value: this page states which
+     documents hold that list, not what is in it. The two places that do quote it are
+     docs/channel-selfcheck.md and docs/SETUP.md, and both are pinned. Disagree with this
+     if the audit below ever starts naming versions — then it needs a pin, not an
+     exemption. -->
 
 # Documents, constants, and the two ways they come apart
 
@@ -88,8 +103,13 @@ number the code actually holds.
 ### THE SCOPE, STATED BECAUSE A GUARD THAT READS WIDER THAN IT IS, IS THE DEFECT IT WAS BUILT TO PREVENT
 
 **Covered:** exactly the constants in `GUARDED` in
-`verify-doc-constant-pins.mjs` — today `CRABCAST_CONTRACT_VERSION` and
-`CRABCAST_PIN` — at the sentences their pins quote, in `docs/*.md`.
+`verify-doc-constant-pins.mjs` — at the sentences their pins quote, in
+`docs/*.md`. **Read the list out of that file rather than from here**: it was
+`CRABCAST_CONTRACT_VERSION` and `CRABCAST_PIN` when this page was written, KAN-378
+added `RUNTIME_ENV_VAR`, `BOARD_JQL` and `BOARD_CYCLE_MS`, and KAN-536 added
+`VERIFIED_CLIENT_VERSIONS`. This sentence enumerating them was itself stale for
+six days, which is the joke this page exists to stop being funny — so it now
+names the file instead of the set.
 
 **Not covered, and each of these is a real gap rather than a hedge:**
 
@@ -129,6 +149,96 @@ which is why this uses the same two-file shape.
 `CRABCAST_PIN` was the obvious second pair and is done. The third candidate is
 **not** a doc/constant pair at all but a prompt/constant pair, and it is F-1
 below.
+
+### KAN-536 — the channel pair, decided apart, and what the coverage leg is actually worth
+
+**KAN-532** pinned two constants in `docs/SETUP.md` §9 and deliberately guarded
+neither, leaving the decision to be made on its own ticket. That is this
+section. `VERIFIED_CLIENT_VERSIONS` is now in `GUARDED`; `DEV_CHANNELS_FLAG` is
+not, and **the two really are separate decisions** rather than one decision
+applied twice.
+
+#### The property that decides it, stated first because it is easy to assume backwards
+
+§5 finds a mention by the constant's **name** or by its **current full literal
+value**. Both halves are documented above; the consequence of the second is not,
+and it is the whole of this decision:
+
+> **When a value moves, every document that mentioned it only by that value
+> stops being seen.** §5 goes **silent** on those pages, not red. Coverage is a
+> statement about the tree as it stands, and never a tripwire for the move.
+
+Measured on this tree with §5's own rule — fences and markers stripped, the
+value swapped for a plausible successor:
+
+| constant | how it would move | docs §5 sees before | after | stop being watched |
+| --- | --- | --- | --- | --- |
+| `DEV_CHANNELS_FLAG` | upstream renames the flag | 9 | **1** | 8 |
+| `VERIFIED_CLIENT_VERSIONS` | a version is appended | 2 | **1** | 1 |
+
+The survivor in each row is the document that mentions the constant **by name**.
+That is the asymmetry the decision rests on.
+
+#### Why `VERIFIED_CLIENT_VERSIONS` is in
+
+`docs/channel-selfcheck.md` names the constant, so it is the survivor in its
+row — §5 keeps watching it straight through a value change. It is also the page
+that matters: it carries a table with **one row per entry**, which is the prose
+form of the list. And the list is the most movable constant of the pair, because
+it **grows by hand every time somebody measures a new client** — a local,
+routine, high-frequency edit, not an upstream event.
+
+Until this ticket that table had nothing watching it. Adding the row forced the
+pin that now sits above it, and the pinned sentence introduces the table, so
+appending a version turns §2 red until the sentence is corrected — at which
+point the row count and the sentence are back beside each other on screen.
+
+`docs/SETUP.md`'s mention is by value alone, so it is the page in that row that
+goes unwatched by §5 after a growth. It carries a pin, so §2 catches it anyway.
+That is the general shape: **§5 makes the pins exist; §2 catches the move.**
+
+#### Why `DEV_CHANNELS_FLAG` is out
+
+Nine documents quote the flag, eight of them by the flag string alone, and one
+row in `GUARDED` would demand nine pins-or-exemptions in a single change.
+
+An exemption is not available for those eight, and that is worth being plain
+about rather than treating as a budget question. The exemption marker says *this
+page names the constant without quoting its value* — and every one of these
+pages quotes it in full, because the value **is** a command-line flag and
+quoting it is the only way to write the sentence. Eight exemptions here would be
+eight signed statements that are false.
+
+So the honest options were nine pins or no row, and no row is the better one:
+
+- **On the event guarding it is for — an upstream rename — a row buys nothing
+  for the eight.** §5 sees 1 of 9 afterwards. They are not watched through the
+  rename; they are only required to be pinned before it.
+- **The tripwire is already armed without the row.** Pins are checked by §1–§4
+  whether or not the constant sits in `GUARDED`, so `docs/SETUP.md`'s existing
+  pin already goes red — §1 if the declaration disappears, §2 the moment it
+  changes — with the set exactly as it is today.
+- **Eight more pins would be eight §2 legs hanging off one declaration**, all
+  firing on the same edit as that one. They are not eight checks; they are one
+  check reported eight times, and the fleet has a standing rule about readings
+  that share an upstream cause.
+- **The cost is not nominal.** Each pin freezes a sentence of live prose under
+  §3, and these eight sit in the middle of pages that are actively rewritten.
+  The table above already records rewording as the case the guard is meant to
+  stay green on.
+
+**What that leaves genuinely uncovered, since nothing else says so:** if the
+flag is renamed, eight documents describe a flag that does not exist, and the
+red that fires will be `docs/SETUP.md`'s alone. It names the defect, not its
+extent — whoever fixes it has to go and look. **The mention sweep in this
+section is how they would find them**, and re-running it beats trusting it: it
+is a claim about this tree on 2026-08-18, in a page whose entire subject is that
+such claims expire.
+
+**Disagree here if the balance shifts.** Two things would change the answer: the
+eight pages coming to rest, so that §3 stops costing anything; or somebody
+teaching §5 to search for a **previous** value as well as the current one, which
+would turn the silent 8 into a red 8 and make the row worth having.
 
 ---
 
