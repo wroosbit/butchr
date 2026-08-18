@@ -1,0 +1,110 @@
+{
+  "capturedFrom": "atlassian_search_issues({ jql: 'project = KAN ORDER BY created DESC', maxResults: 2 })",
+  "capturedAgainst": "the fleet daemon at origin/main 795ae89, 2026-08-18, KAN-522",
+  "note": "The `body` below is Atlassian's /rest/api/3/search/jql page as captured, at this operation's DEFAULT fields (status,summary,issuetype,assignee). maxResults is 2 because 2 is what the live proxy can still show: at 30 the response budget replaced the whole `issues` array, which is the defect KAN-522 is about. The per-issue SHAPE here is real; a count large enough to clip is synthesised by the check from these rows, and cannot be observed any other way until this ticket lands.",
+  "scrubbed": "NOT byte-for-byte, and the difference is named rather than left to be assumed: the account id, the assignee's email address and the gravatar hash derived from it were replaced with same-shape placeholders before this was committed. Nothing else was touched, the substitutions are length-comparable so the size assertions in §0 still measure the real envelope, and the condenser drops all three anyway — `assignee` collapses to its displayName, so no placeholder reaches any assertion.",
+  "body": {
+    "issues": [
+      {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "10546",
+        "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/issue/10546",
+        "key": "KAN-529",
+        "fields": {
+          "summary": "\"every process this proof started is gone\" counts only the ones it tracked — the scratch daemon and 185 herdr-shim attaches outlived it, and pinned the live fleet at capacity",
+          "issuetype": {
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/issuetype/10007",
+            "id": "10007",
+            "description": "Tasks track small, distinct pieces of work.",
+            "iconUrl": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/2/universal_avatar/view/type/issuetype/avatar/10318?size=medium",
+            "name": "Task",
+            "subtask": false,
+            "avatarId": 10318,
+            "entityId": "f96f1bb4-4d83-42d8-a514-7e29fcf5d5d2",
+            "hierarchyLevel": 0
+          },
+          "assignee": {
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A00000000-0000-0000-0000-000000000000",
+            "accountId": "712020:00000000-0000-0000-0000-000000000000",
+            "emailAddress": "agent@example.invalid",
+            "avatarUrls": {
+              "48x48": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "24x24": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "16x16": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "32x32": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png"
+            },
+            "displayName": "Wroos Bit",
+            "active": true,
+            "timeZone": "America/Los_Angeles",
+            "accountType": "atlassian"
+          },
+          "status": {
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/status/10005",
+            "description": "This work item is being actively worked on at the moment by the assignee.",
+            "iconUrl": "https://wroosbit.atlassian.net/images/icons/statuses/generic.png",
+            "name": "In Progress",
+            "id": "10005",
+            "statusCategory": {
+              "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/statuscategory/4",
+              "id": 4,
+              "key": "indeterminate",
+              "colorName": "yellow",
+              "name": "In Progress"
+            }
+          }
+        }
+      },
+      {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "10545",
+        "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/issue/10545",
+        "key": "KAN-528",
+        "fields": {
+          "summary": "`crabcast list` is BROKEN on this fleet — the response exceeds the 1 MiB line limit, and the error says the wrong cause while asserting the failure it is reporting cannot happen",
+          "issuetype": {
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/issuetype/10007",
+            "id": "10007",
+            "description": "Tasks track small, distinct pieces of work.",
+            "iconUrl": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/2/universal_avatar/view/type/issuetype/avatar/10318?size=medium",
+            "name": "Task",
+            "subtask": false,
+            "avatarId": 10318,
+            "entityId": "f96f1bb4-4d83-42d8-a514-7e29fcf5d5d2",
+            "hierarchyLevel": 0
+          },
+          "assignee": {
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A00000000-0000-0000-0000-000000000000",
+            "accountId": "712020:00000000-0000-0000-0000-000000000000",
+            "emailAddress": "agent@example.invalid",
+            "avatarUrls": {
+              "48x48": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "24x24": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "16x16": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "32x32": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png"
+            },
+            "displayName": "Wroos Bit",
+            "active": true,
+            "timeZone": "America/Los_Angeles",
+            "accountType": "atlassian"
+          },
+          "status": {
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/status/10007",
+            "description": "",
+            "iconUrl": "https://wroosbit.atlassian.net/images/icons/statuses/generic.png",
+            "name": "Done",
+            "id": "10007",
+            "statusCategory": {
+              "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/statuscategory/3",
+              "id": 3,
+              "key": "done",
+              "colorName": "green",
+              "name": "Done"
+            }
+          }
+        }
+      }
+    ],
+    "nextPageToken": "CkljcmVhdGVkJmNyZWF0ZWQmT1JERVJfREVTQyNMb25nJk1UYzROekF6TnprNE1qRTBOdz09JVN0cmluZyZTMEZPJUludCZOVEk0EAIYs4r9poE0IiNwcm9qZWN0ID0gS0FOIE9SREVSIEJZIGNyZWF0ZWQgREVTQyoCW10=",
+    "isLast": false
+  }
+}

@@ -125,6 +125,13 @@ export function validFor(field) {
   // every argument, and the sweep then measured nothing for that operation while
   // reporting a well-formed failure about something else entirely.
   if (field === 'commentFormat') return 'text';
+  // KAN-522. A THIRD FORMAT FIELD WITH A THIRD DISJOINT VALUE SET, and it fell
+  // into the same hole the comment above describes — the fall-through `'x'` made
+  // `atlassian_search_issues` refuse every argument, so §5's positive control
+  // read 21 of 22 and the hostile sweep measured NOTHING for the operation while
+  // §4 reported a well-formed failure about product routing. Three fields, three
+  // value sets, three entries: the pattern is now the rule rather than a repeat.
+  if (field === 'issueFormat') return 'condensed';
   if (field === 'fields') return 'summary';
   if (field === 'transitionId') return '31';
   return 'x';

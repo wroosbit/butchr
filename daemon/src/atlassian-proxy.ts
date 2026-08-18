@@ -404,11 +404,11 @@ interface ProxyOperationBase {
    * Reshape what Atlassian returned before the agent sees it, or combine the
    * answers of a fan-out into one (KAN-292).
    *
-   * **Absent on all but three operations, and it should stay that way.** A proxy
+   * **Absent on all but four operations, and it should stay that way.** A proxy
    * that rewrites what the upstream said is a proxy whose output nobody can
    * check against the API's own documentation, and every transform is a place
    * for a field to go missing exactly as silently as KAN-183's dropped list
-   * item. The three that have one cannot avoid it:
+   * item. The four that have one cannot avoid it:
    *
    *  - `atlassian_search` has two responses and must return one thing.
    *  - `atlassian_get_accessible_resources` reads a bare `{cloudId}` and has to
@@ -430,8 +430,17 @@ interface ProxyOperationBase {
    *    for, and an empty list there is the claim that every node was understood.
    *    And `via.reshapedByDaemon` already says a transform ran at all.
    *
-   *    A fourth one should be argued for on the same terms, not by pointing at
-   *    this one.
+   *  - `atlassian_search_issues` (KAN-522) — THE FOURTH, and it was argued on
+   *    the terms this paragraph asked for rather than by pointing at the third.
+   *    The alternative was again **no response**, measured: a raw Jira issue row
+   *    costs ~2,600 characters on this operation's default fields and ~450 on
+   *    `fields=summary`, so the budget replaced the whole `issues` array — 30
+   *    issues found, none said — and `fields` is already at its narrowest useful
+   *    value when it does. It answers the same three fears the same three ways;
+   *    its own docblock is where.
+   *
+   *    A fifth one should be argued for on the same terms, not by pointing at
+   *    either.
    *
    * `context` carries the non-secret facts about the credential — never the
    * credential. See {@link ProxyTransformContext}.
@@ -1023,6 +1032,131 @@ function commentBodyFormat(
 }
 
 /**
+ * How a search result may be said (KAN-522).
+ *
+ * Same shape and same reasoning as {@link commentBodyFormat} one function up,
+ * and refused rather than defaulted for the same reason: `'condensed'` and
+ * `'raw'` differ in what the answer *is*, so a caller that typed `'RAW'` and
+ * silently got condensed rows would be reading identity strings believing it
+ * held Jira's objects.
+ */
+function searchIssueFormat(
+  args: Record<string, any>
+): { format: 'condensed' | 'raw' } | { error: string } {
+  const raw = args?.issueFormat;
+  if (raw === undefined || raw === null || raw === '') return { format: 'condensed' };
+  if (raw === 'condensed' || raw === 'raw') return { format: raw };
+  return {
+    error:
+      `issueFormat must be "condensed" or "raw"; got ${JSON.stringify(raw)}. ` +
+      '"condensed" (the default) keeps every issue and says less about each, which is what ' +
+      'makes an agent-sized search fit inside the response budget. "raw" returns ' +
+      "Atlassian's own objects, which on this endpoint cost roughly 2,600 characters an " +
+      'issue — so a raw search is given up whole, every issue of it, from about the fourth.'
+  };
+}
+
+/**
+ * The keys {@link condenseIssueValue} strips, named here so the answer can name
+ * them too.
+ *
+ * EVERY ONE OF THEM IS A HANDLE THIS PROXY CANNOT BE GIVEN BACK. `self` and
+ * `iconUrl` and the four `avatarUrls` are absolute REST and CDN URLs, and this
+ * proxy takes no path — an agent cannot fetch one, so carrying it is a false
+ * affordance in the KAN-501 sense as well as ~500 characters an issue. `expand`
+ * names Jira's expansion parameters, and this operation's `build` does not
+ * accept one. `avatarId` and `entityId` are internal ids with no operation on
+ * this server that takes them.
+ *
+ * NOTHING ELSE IS DROPPED. A key this list does not name survives condensing,
+ * so the renderer's default is to keep — which is why there is no counterpart
+ * to `bodyUnrenderedNodes` here. A shape it has no rule for comes back whole
+ * rather than coming back short.
+ */
+export const SEARCH_CONDENSED_AWAY: readonly string[] = [
+  'self',
+  'expand',
+  'iconUrl',
+  'avatarUrls',
+  'avatarId',
+  'entityId'
+];
+
+/**
+ * The keys that name a Jira reference object, in the order a reader wants them.
+ *
+ * `key` first because `KAN-39` identifies a parent better than its summary
+ * does; `name` next for `status`, `issuetype`, `priority` and `resolution`;
+ * `displayName` for a user; `value` for a custom field option.
+ */
+const IDENTITY_KEYS = ['key', 'name', 'displayName', 'value'] as const;
+
+function isAdfDoc(value: Record<string, unknown>): boolean {
+  return value.type === 'doc' && Array.isArray(value.content);
+}
+
+/**
+ * One Jira field value, reduced to what a reader steers by (KAN-522).
+ *
+ * THREE RULES, AND THE THIRD IS THE SAFE DEFAULT:
+ *
+ *  1. **An ADF document renders to text**, exactly as a comment body does one
+ *     operation over — `description` and `comment` are ADF, and ADF is roughly
+ *     five times the size of the prose in it.
+ *  2. **A reference object collapses to its identity.** Jira answers `status`,
+ *     `issuetype`, `assignee`, `priority`, `parent`, `project` and `resolution`
+ *     as objects carrying a `self` URL and half a kilobyte of icons; what a
+ *     caller reads off them is one string. The `self` key is what marks the
+ *     shape, so this fires on the reference objects Jira sends and not on a
+ *     custom field that happens to have a `name`.
+ *  3. **Anything else is walked, not dropped.** Arrays map, plain objects
+ *     recurse with {@link SEARCH_CONDENSED_AWAY} removed, scalars pass through.
+ *     `issuelinks` is the case that matters — no identity key at its top level,
+ *     so it is walked, and comes back as `{ type: 'Relates', outwardIssue:
+ *     'KAN-501' }`: the relation the merge-governance lookup reads, at 1/20th
+ *     the characters.
+ *
+ * WHAT COLLAPSING COSTS, SAID PLAINLY: `status.statusCategory` goes with the
+ * object it was nested in, as does a parent's summary and a user's account id.
+ * `issueFormat: 'raw'` returns all of it byte for byte.
+ */
+function condenseIssueValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(condenseIssueValue);
+  if (typeof value !== 'object' || value === null) return value;
+
+  const obj = value as Record<string, unknown>;
+  if (isAdfDoc(obj)) return adfToText(obj).text;
+
+  if (typeof obj.self === 'string') {
+    for (const identity of IDENTITY_KEYS) {
+      const candidate = obj[identity];
+      if (typeof candidate === 'string' && candidate.length > 0) return candidate;
+    }
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, member] of Object.entries(obj)) {
+    if (SEARCH_CONDENSED_AWAY.includes(key)) continue;
+    out[key] = condenseIssueValue(member);
+  }
+  return out;
+}
+
+/** One search hit: its key, and its requested fields condensed. */
+export function condenseSearchIssue(issue: unknown): Record<string, unknown> {
+  if (typeof issue !== 'object' || issue === null) return { key: null };
+  const row = issue as Record<string, unknown>;
+  const fields = row.fields;
+  return {
+    key: row.key ?? null,
+    fields:
+      typeof fields === 'object' && fields !== null && !Array.isArray(fields)
+        ? (condenseIssueValue(fields) as Record<string, unknown>)
+        : (fields ?? null)
+  };
+}
+
+/**
  * An Atlassian Resource Identifier, parsed into the two things that name a
  * resource — or the reason this one is not an ARI.
  *
@@ -1332,9 +1466,24 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     method: 'GET',
     pathShape: '/rest/api/3/search/jql?jql={jql}&fields={fields}&maxResults={maxResults}',
     description:
-      "Run a JQL search through the Butchr daemon's own credential. Returns Jira's raw " +
-      `response body. Bounded at ${PROXY_SEARCH_MAX_RESULTS} results — this is a proxy for ` +
-      'agent-sized questions, not a bulk export. A failure is loud, as above.',
+      "Run a JQL search through the Butchr daemon's own credential. ISSUE ROWS ARE " +
+      'CONDENSED BY DEFAULT (KAN-522): every issue this search found is returned, said as ' +
+      'its `key` and its requested `fields`, with Jira reference objects collapsed to the ' +
+      'one string a reader steers by — `status` to "In Progress", `assignee` to a display ' +
+      'name, `parent` to "KAN-39" — and absolute `self`/`iconUrl`/`avatarUrls` handles this ' +
+      'proxy cannot be given back dropped. Pass issueFormat: "raw" for Atlassian\'s own ' +
+      "objects. WHY: raw rows cost ~2,600 characters each on this endpoint's default " +
+      'fields and ~450 on `fields=summary`, against a 9,000-character response budget — so ' +
+      'a raw search of more than three issues was reduced to NONE of them, and the ceiling ' +
+      'was undocumented and found by bisection. READ `found` AND `isLast` BEFORE ' +
+      'TREATING A PAGE AS THE BOARD: this endpoint sends no `total` (`total: null` says so ' +
+      'rather than claiming zero), `isLast: false` means the board holds more than this ' +
+      'call returned, and the proxy takes no page token — narrow the JQL to see the rest. ' +
+      '`found` is how many this search found and is fixed before the response budget runs, ' +
+      'so `issues.length < found` is the one comparison that says the budget trimmed the ' +
+      'list; `completeness.clipped` then says by how many. ' +
+      `Bounded at ${PROXY_SEARCH_MAX_RESULTS} results — this is a proxy for agent-sized ` +
+      'questions, not a bulk export. A failure is loud, as above.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1347,6 +1496,14 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         maxResults: {
           type: 'number',
           description: `Optional. 1..${PROXY_SEARCH_MAX_RESULTS}; defaults to ${PROXY_SEARCH_MAX_RESULTS}.`
+        },
+        issueFormat: {
+          type: 'string',
+          enum: ['condensed', 'raw'],
+          description:
+            'Optional, default "condensed" — every issue, with less said about each. "raw" ' +
+            "returns Atlassian's own issue objects, which are large enough that a search of " +
+            'more than a few is given up whole by the response budget.'
         }
       },
       required: ['jql']
@@ -1359,6 +1516,11 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       }
       const fields = fieldList(args, 'status,summary,issuetype,assignee');
       if ('error' in fields) return fields;
+      // Refused here rather than defaulted in the transform, exactly as
+      // `commentFormat` is: the transform must act on the value `build` agreed
+      // to, and a mistyped format that silently condensed would be read as raw.
+      const format = searchIssueFormat(args);
+      if ('error' in format) return format;
 
       // A non-numeric or out-of-range maxResults is clamped rather than
       // refused: it is a nicety, not an instruction, and refusing a whole
@@ -1375,6 +1537,87 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         path:
           `/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}` +
           `&fields=${encodeURIComponent(fields.fields)}&maxResults=${maxResults}`
+      };
+    },
+    /**
+     * THE FOURTH TRANSFORM ON THIS SERVER (KAN-522), argued on the same terms
+     * the third was and not by pointing at it.
+     *
+     * THE ALTERNATIVE IS NOT AN UNTRANSFORMED RESPONSE. IT IS NO ISSUES,
+     * MEASURED. Against the fleet daemon on 2026-08-18, `project = KAN ORDER BY
+     * created DESC` with `fields=summary` and `maxResults=30` returned
+     * `issues: { omitted: 'for-budget', total: 30, chars: 13615 }` — thirty
+     * issues found, none of them said. On this operation's *default* fields the
+     * arithmetic is worse: one issue measured ~2,600 characters, of which ~120
+     * carry information, so the budget is spent before the fourth row. There is
+     * no narrower `fields` than the one field a search is for, and the ceiling
+     * was stated nowhere — `epic/KAN-203` found it by bisecting one call at a
+     * time and then correctly declined to file a ticket, because a search of six
+     * results is not evidence about a board of forty-seven. That is the standing
+     * search-before-filing rule degrading, which is what makes this worth a
+     * transform rather than a smaller `maxResults`.
+     *
+     * WHAT IT DOES IS THE `agents-summarise` RUNG, WHICH IS ALREADY THIS
+     * REPOSITORY'S ANSWER TO THIS QUESTION: keep every entry, say less about
+     * each. `CLIP_LADDER` has that rung above every section it can drop, for the
+     * reason this operation needs it — dropping entries is what makes a count
+     * wrong.
+     *
+     * THE THREE THINGS THE PARAGRAPH ON {@link ProxyOperationBase.transform} IS
+     * AFRAID OF, ANSWERED:
+     *
+     *  - **Atlassian's own object** is one argument away: `issueFormat: 'raw'`
+     *    returns the page byte for byte, and `build` refuses any third value.
+     *  - **What went missing is named in the answer**, not only here:
+     *    `condensedAway` carries {@link SEARCH_CONDENSED_AWAY} on every
+     *    condensed response, and every one of those keys is an absolute URL or
+     *    an internal id that no operation on this server accepts. A key that
+     *    list does not name is kept — the renderer's default is to keep, so a
+     *    shape it has no rule for comes back whole rather than short.
+     *  - **`via.reshapedByDaemon`** says a transform ran at all.
+     *
+     * AND THE ENVELOPE IS LIFTED TO THE TOP, for the reason KAN-501 lifted the
+     * comment one: `returned`, `total` and `isLast` are scalars beside `issues`
+     * rather than inside it, and {@link fitGenericResponse} descends one level
+     * and gives up objects and arrays while keeping scalars — so the three
+     * fields that say whether this page is the board are the ones a further clip
+     * cannot reach.
+     *
+     * `nextPageToken` IS DROPPED ON PURPOSE, and this is the one place that says
+     * so. Jira sends one; `build` above accepts no page token and constructs its
+     * own path, so there is no call on this server that takes it. It is ~200
+     * characters of recipe that cannot be typed, which is KAN-501's defect in
+     * field form rather than in a string. `isLast` is what survives, and it
+     * answers the question the token was being read for.
+     */
+    transform(bodies, _context, args) {
+      const raw = bodies[0];
+      if (!raw || typeof raw !== 'object') return raw;
+      const page = raw as Record<string, any>;
+      const format = searchIssueFormat(args);
+      // A refusal cannot reach here — `build` returned it — but the type says
+      // it can, and returning the raw page is the right answer if it ever does.
+      if ('error' in format || format.format === 'raw') return page;
+
+      const issues = Array.isArray(page.issues) ? page.issues : [];
+      return {
+        // `??` rather than `||` so a genuine `0` survives. `total` is `null` on
+        // this endpoint rather than absent: Jira's `/search/jql` does not send
+        // one, and an absent field would read as "this search had no total to
+        // report" — which is the same absence as "the clip took it".
+        total: page.total ?? null,
+        // `found` RATHER THAN `returned`, AND THE NAME IS THE POINT. It is how
+        // many issues this search found, fixed here before the response budget
+        // sees the answer — so `issues.length < found` is the whole check that
+        // a further clip trimmed the list, in one comparison and without
+        // reading anything else. That is `agentsTotal` versus `agents.length`
+        // from KAN-423, which is this repository's proven shape for the
+        // question; `returned` would have been a claim the clip could falsify.
+        found: issues.length,
+        isLast: page.isLast ?? null,
+        issueFormat: 'condensed',
+        condensedAway: SEARCH_CONDENSED_AWAY,
+        issues: issues.map(condenseSearchIssue)
       };
     }
   },
