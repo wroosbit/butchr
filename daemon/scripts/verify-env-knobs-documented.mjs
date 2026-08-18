@@ -248,18 +248,23 @@ try {
 
   const fixtureKeys = envKeysIn(tsFilesUnder(fixtureDir), fixtureDir);
 
-  ['BUTCHR_FIXTURE_DIRECT', 'BUTCHR_FIXTURE_LITERAL'].forEach((expected) => {
+  // KAN-535: these two loops were `.forEach(…)` rather than `for…of` to get a
+  // `});` at the end of each, which balanced `sweep-verify-exit-paths.mjs`'s
+  // opener/closer count and stopped it discarding this script's verdict exit
+  // below. That was a coincidence standing in for a fix — the sweep no longer
+  // counts, it masks, so the loops are written the way they read best.
+  for (const expected of ['BUTCHR_FIXTURE_DIRECT', 'BUTCHR_FIXTURE_LITERAL']) {
     if (fixtureKeys.has(expected)) ok(`${expected} detected in a file nothing lists`);
     else fail(`${expected} was read in the fixture and the detector did not find it.`);
-  });
+  }
 
-  ['BUTCHR_FIXTURE_IN_LINE_COMMENT', 'BUTCHR_FIXTURE_IN_BLOCK_COMMENT'].forEach((absent) => {
+  for (const absent of ['BUTCHR_FIXTURE_IN_LINE_COMMENT', 'BUTCHR_FIXTURE_IN_BLOCK_COMMENT']) {
     if (fixtureKeys.has(absent)) {
       fail(`${absent} appears only in a comment and the detector counted it as a read.`);
     } else {
       ok(`${absent} correctly not counted — comments are stripped`);
     }
-  });
+  }
 } finally {
   fs.rmSync(fixtureDir, { recursive: true, force: true });
 }
