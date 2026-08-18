@@ -19,6 +19,7 @@ import {
   CHANNEL_SELFCHECK_RESULT_ACTION
 } from './channel-selfcheck.js';
 import { operationByTool, operationsFor, ProxyMode } from './atlassian-proxy.js';
+import { genericRecovery } from './mcp-recovery.js';
 import { ldOperationByTool, ldOperationsFor, LdProxyMode } from './launchdarkly-proxy.js';
 import {
   fitListAgentsResponse,
@@ -1031,7 +1032,10 @@ function boundToBudget(name: string, result: ToolResult): ToolResult {
     };
   }
 
-  const fitted = fitGenericResponse(parsed, { tool: name });
+  const fitted = fitGenericResponse(parsed, {
+    tool: name,
+    recoveryFor: (path) => genericRecovery(name, path)
+  });
   // An answer already inside the budget goes back exactly as its tool wrote it.
   // The gate is a ceiling, not a reformatter: adding a `completeness` block to
   // every small answer on this server would churn two dozen tool contracts to

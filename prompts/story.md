@@ -1267,9 +1267,18 @@ So when a search of a long ticket's history comes back empty, **report the
 window you searched and its `total` alongside the finding** — that is this
 file's *empty result is a claim about your search* rule with the instrument
 named, and here the instrument hands you the numbers to name it with. Butchr's
-own proxy now carries `atlassian_get_issue_comments`, which pages the whole
-history by `startAt`; it is off by default, so **check whether it is enabled
-before you rely on it and do not assume the gap is closed for you**.
+own proxy carries `atlassian_get_issue_comments`, which pages the whole
+history by `startAt`. **It is off by default, and the first time it was
+switched on it returned nothing at all** (KAN-501): a comment arrives as ADF,
+ADF is roughly five times the size of the words in it, and the response budget
+replaced the entire body — paging envelope included — so `maxResults: 1`, the
+narrowest request it takes, came back with no comment and no `total` to page
+by. It now renders bodies to text, which is what makes a page fit, and keeps
+`total`, `startAt` and `maxResults` outside the clippable region. **Two things
+still hold: check it is enabled before you rely on it, and a single comment
+long enough to exceed the budget by itself still cannot be returned by it** —
+the answer says so in `noWayBack` rather than printing a recipe you cannot
+type.
 
 It is the same shape this file teaches for `butchr_send_to_agent`: **a success
 that reports the call was made, not that the thing happened.**

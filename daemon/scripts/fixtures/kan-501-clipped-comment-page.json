@@ -1,0 +1,341 @@
+{
+  "_provenance": [
+    "KAN-501. One page of Jira comments as the Atlassian proxy receives it, inside",
+    "the proxy envelope it is wrapped in.",
+    "",
+    "HOW IT WAS MADE, AND WHAT IS REAL IN IT. The envelope, the status and the `via`",
+    "block are quoted verbatim from a live call made on 2026-08-18 against the fleet",
+    "daemon at rung `confluence-write`:",
+    "",
+    "    atlassian_get_issue_comments({ issueKey: \"KAN-501\", maxResults: 1 })",
+    "    -> completeness.unclippedChars 11626, body.chars 10682, body omitted for budget",
+    "",
+    "THE COMMENT BODY IS THE REAL TEXT of KAN-501 comment 12769, converted to ADF by",
+    "this repository's own markdownToAdf. It is generated rather than captured FOR THE",
+    "REASON THIS TICKET EXISTS: the proxy clips the body it is asked for, so the ADF it",
+    "clips is the one payload no proxy call can hand back. The stand-in is CHECKED",
+    "rather than assumed — section 0 of verify-clip-recipes-are-executable.mjs asserts",
+    "that this object measures within 25% of the 10,682 characters the live call",
+    "reported for the same comment, so a converter change that made the fixture",
+    "unrepresentative goes red there rather than silently weakening every section",
+    "below it. Measured when written: 9,198 against 10,682, or 86%. The shortfall is",
+    "Jira's own ADF carrying marks and attrs this converter does not emit; it makes",
+    "the fixture SMALLER than the real thing, which is the conservative direction —",
+    "a defect that shows up on this fixture shows up on the real payload too.",
+    "",
+    "The author email is replaced with an invalid-domain placeholder. Nothing else is",
+    "altered."
+  ],
+  "_liveBodyChars": 10682,
+  "_liveUnclippedChars": 11626,
+  "action": "atlassian_proxy_call_response",
+  "success": true,
+  "status": 200,
+  "body": {
+    "startAt": 0,
+    "maxResults": 1,
+    "total": 4,
+    "comments": [
+      {
+        "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/issue/10512/comment/12769",
+        "id": "12769",
+        "author": {
+          "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A619ec5ec-2e92-492f-8979-91ccda318230",
+          "accountId": "712020:619ec5ec-2e92-492f-8979-91ccda318230",
+          "emailAddress": "wroosbit@example.invalid",
+          "displayName": "Wroos Bit",
+          "active": true,
+          "timeZone": "America/Los_Angeles",
+          "accountType": "atlassian"
+        },
+        "body": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Provenance, which sharpens this: the broken tool is the newest one, and it shipped with the brief change that tells agents to rely on it."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "task/KAN-420",
+                  "marks": [
+                    {
+                      "type": "code"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": ", 2026-08-16."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "atlassian_get_issue_comments",
+                  "marks": [
+                    {
+                      "type": "code"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " was added by "
+                },
+                {
+                  "type": "text",
+                  "text": "c9ce024",
+                  "marks": [
+                    {
+                      "type": "code"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " — \"KAN-471: the Jira comment read is a window, and its marker sits after the array that hides it (#207)\", 2026-08-15. Established by diffing the operation table: the proxy carried "
+                },
+                {
+                  "type": "text",
+                  "text": "31",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " operations before that commit and "
+                },
+                {
+                  "type": "text",
+                  "text": "32",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " after, and the one added is exactly this tool."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "That same commit is the last change to",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " "
+                },
+                {
+                  "type": "text",
+                  "text": "prompts/task.md",
+                  "marks": [
+                    {
+                      "type": "code"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": ", which is what tells every agent:"
+                }
+              ]
+            },
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Butchr's own proxy now carries "
+                    },
+                    {
+                      "type": "text",
+                      "text": "atlassian_get_issue_comments",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": ", which pages the whole history by "
+                    },
+                    {
+                      "type": "text",
+                      "text": "startAt",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "So the remedy and the instruction to use it shipped together, and neither was ever measured against a running daemon",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " — because the proxy had never been switched on anywhere. KAN-420's ladder walk is the first time any of these 32 operations ran against the fleet's daemon, and this tool failed the first time it was asked."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Note the shape rather than blaming the commit.",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " Nothing in KAN-471 is wrong in itself: the tool is correctly written, the pagination arguments are right, and against a raw Jira response it would do exactly what it says. The defect is the interaction with a response budget that lives in a different module and was not part of that change. "
+                },
+                {
+                  "type": "text",
+                  "text": "It is the gap between two correct things, which is the failure mode this epic keeps re-finding",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " — and it degraded toward looking finished, because the tool exists, is advertised, and returns "
+                },
+                {
+                  "type": "text",
+                  "text": "success: true, status: 200",
+                  "marks": [
+                    {
+                      "type": "code"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": "."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Incidental correction for the record:",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " KAN-420's own description states the surface as "
+                },
+                {
+                  "type": "text",
+                  "text": "31 operations — 21 reads, 10 writes",
+                  "marks": [
+                    {
+                      "type": "em"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": ". Measured off the running build it is "
+                },
+                {
+                  "type": "text",
+                  "text": "32 — 22 reads, 10 writes",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": ". The count was correct when taken on 2026-08-14 and drifted by this one commit."
+                }
+              ]
+            }
+          ]
+        },
+        "updateAuthor": {
+          "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A619ec5ec-2e92-492f-8979-91ccda318230",
+          "accountId": "712020:619ec5ec-2e92-492f-8979-91ccda318230",
+          "emailAddress": "wroosbit@example.invalid",
+          "displayName": "Wroos Bit",
+          "active": true,
+          "timeZone": "America/Los_Angeles",
+          "accountType": "atlassian"
+        },
+        "created": "2026-08-16T02:52:18.332-0700",
+        "updated": "2026-08-16T02:52:18.332-0700",
+        "jsdPublic": true
+      }
+    ]
+  },
+  "via": {
+    "tool": "atlassian_get_issue_comments",
+    "method": "GET",
+    "path": "/rest/api/3/issue/KAN-501/comment?startAt=0&maxResults=1&orderBy=created",
+    "products": [
+      "jira"
+    ],
+    "servedBy": "butchr-daemon"
+  }
+}

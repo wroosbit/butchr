@@ -1,4 +1,11 @@
-import { AdfConversionError, AdfDoc, AdfTarget, confluenceBody, markdownToAdf } from './adf.js';
+import {
+  AdfConversionError,
+  AdfDoc,
+  AdfTarget,
+  adfToText,
+  confluenceBody,
+  markdownToAdf
+} from './adf.js';
 import { JIRA_KEY } from './keys.js';
 
 /**
@@ -410,8 +417,15 @@ interface ProxyOperationBase {
    *
    * `context` carries the non-secret facts about the credential — never the
    * credential. See {@link ProxyTransformContext}.
+   *
+   * `args` is what the caller sent, the same object {@link build} was given.
+   * KAN-501 added it for the one operation whose reshaping is a caller's
+   * choice: `atlassian_get_issue_comments` renders comment bodies to text by
+   * default and to ADF on request, and `build` refuses any other value — so by
+   * the time a transform reads it, the field is one of two strings or absent.
+   * A transform that ignores it is unaffected, which is all but one of them.
    */
-  transform?(bodies: unknown[], context: ProxyTransformContext): unknown;
+  transform?(bodies: unknown[], context: ProxyTransformContext, args: Record<string, any>): unknown;
 }
 
 /**
@@ -906,6 +920,39 @@ function pageOffset(args: Record<string, any>, field = 'startAt'): number {
 }
 
 /**
+ * How a caller asked for comment bodies, or the reason that is not an answer
+ * (KAN-501).
+ *
+ * REFUSED RATHER THAN DEFAULTED, unlike every other optional argument in this
+ * file, and the difference is deliberate. `pageOffset` above defaults a
+ * mistyped offset to the first page because both readings are the same *kind*
+ * of answer — some comments, from somewhere in the history. Here the two values
+ * differ in what the answer *is*: `'adf'` returns a node tree, `'text'` returns
+ * prose. A caller that typed `'ADF'` and silently got text would be reading a
+ * rendered body believing it held the structure it asked for, and nothing in
+ * the response would say otherwise. That is this ticket's own defect wearing a
+ * different field name, so it goes back as an error.
+ *
+ * Called from both {@link ProxyOperationBase.build} and the operation's
+ * transform, which is why it is a function rather than a line: the value the
+ * transform acts on has to be the value `build` agreed to.
+ */
+function commentBodyFormat(
+  args: Record<string, any>
+): { format: 'text' | 'adf' } | { error: string } {
+  const raw = args?.bodyFormat;
+  if (raw === undefined || raw === null || raw === '') return { format: 'text' };
+  if (raw === 'text' || raw === 'adf') return { format: raw };
+  return {
+    error:
+      `bodyFormat must be "text" or "adf"; got ${JSON.stringify(raw)}. ` +
+      '"text" (the default) renders each comment to plain text, which is what makes a page ' +
+      'of a real ticket fit inside the response budget. "adf" returns Atlassian\'s raw ' +
+      'document, which on a long comment can exceed that budget on its own.'
+  };
+}
+
+/**
  * An Atlassian Resource Identifier, parsed into the two things that name a
  * resource — or the reason this one is not an ARI.
  *
@@ -1093,7 +1140,12 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       'so on a long ticket it returns the newest window and nothing reaches the rest. The ' +
       'response carries total, maxResults and startAt — read total before you treat a page ' +
       'as the whole history, and walk startAt until startAt + returned reaches it. A failure ' +
-      'is loud, as above.',
+      'is loud, as above. COMMENT BODIES ARE RENDERED TO TEXT BY DEFAULT (KAN-501): ADF is ' +
+      'roughly five times the size of the words in it, which put every real ticket over the ' +
+      'response budget and returned no comment body at all. Pass bodyFormat: "adf" for the ' +
+      'raw document when you need its structure, and expect a page of one on a long ticket. ' +
+      'A rendered body carries bodyUnrenderedNodes when the renderer met an ADF node type it ' +
+      'has no rule for — an empty list there is the claim that every node was understood.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1107,6 +1159,15 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         maxResults: {
           type: 'number',
           description: `Optional. 1..${PROXY_COMMENT_MAX_RESULTS}; defaults to ${PROXY_COMMENT_MAX_RESULTS}.`
+        },
+        bodyFormat: {
+          type: 'string',
+          enum: ['text', 'adf'],
+          description:
+            "Optional, default 'text'. 'text' renders each comment to Markdown-flavoured " +
+            "plain text, which is what the words cost rather than what the node tree costs. " +
+            "'adf' returns Atlassian's raw document — complete, and large enough that one " +
+            'comment can exceed the response budget on its own.'
         }
       },
       required: ['issueKey']
@@ -1114,12 +1175,79 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     build(args) {
       const key = issueKey(args);
       if ('error' in key) return key;
+      // Refused here rather than defaulted in the transform. A typo'd
+      // `bodyFormat: "txt"` that silently produced the default would be a
+      // caller believing it asked for something it did not get — which is this
+      // ticket's own defect, one field over: an instruction that appears to
+      // have been honoured.
+      const format = commentBodyFormat(args);
+      if ('error' in format) return format;
       return {
         path:
           `/rest/api/3/issue/${encodeURIComponent(key.key)}/comment` +
           `?startAt=${pageOffset(args)}` +
           `&maxResults=${listLimit(args, 'maxResults', PROXY_COMMENT_MAX_RESULTS)}` +
           `&orderBy=created`
+      };
+    },
+    /**
+     * KAN-501. Render the comment bodies, and keep the envelope in front.
+     *
+     * THE DEFECT THIS ENDS. Jira serves a comment as ADF, and ADF is about five
+     * times the size of the prose inside it — measured on this site 2026-08-18,
+     * KAN-501's own oldest comment is 1,930 characters of text inside a
+     * 10,682-character response, and KAN-39's is 15,397. The response budget is
+     * 9,000, so `maxResults: 1` — the narrowest request this schema permits —
+     * was over budget on every ticket whose history anybody would page. The
+     * budget replaced the whole body object, which took `total`, `startAt` and
+     * `maxResults` with it: `epic/KAN-203`, 2026-08-18, was told to walk
+     * `startAt` until it reached a `total` the same answer had just deleted.
+     *
+     * So this does two things and they are separate. It renders — which is what
+     * makes a page of comments fit at all. And it lifts the paging envelope to
+     * the top of the object it returns, beside `comments` rather than inside
+     * anything, so that the fields the description tells a caller to steer by
+     * are the last thing a further clip could reach.
+     *
+     * WHAT IS GIVEN UP, SAID PLAINLY, because a transform is where a field goes
+     * missing: the ADF node tree, and every comment property this does not
+     * name. `bodyFormat: 'adf'` returns Jira's own object untouched, which is
+     * the escape hatch for anybody who needs either.
+     */
+    transform(bodies, _context, args) {
+      const raw = bodies[0];
+      if (!raw || typeof raw !== 'object') return raw;
+      const page = raw as Record<string, any>;
+      const format = commentBodyFormat(args);
+      // A refusal cannot reach here — `build` returned it — but the type says
+      // it can, and reading the raw page is the right answer if it ever does.
+      if ('error' in format || format.format === 'adf') return page;
+
+      const comments = Array.isArray(page.comments) ? page.comments : [];
+      return {
+        // The envelope first and at the top level, for the reason in the
+        // docblock. `??` rather than `||` so that a genuine `0` survives.
+        total: page.total ?? null,
+        startAt: page.startAt ?? null,
+        maxResults: page.maxResults ?? null,
+        returned: comments.length,
+        bodyFormat: 'text',
+        comments: comments.map((c: any) => {
+          const rendered = adfToText(c?.body);
+          return {
+            id: c?.id ?? null,
+            author: c?.author?.displayName ?? null,
+            created: c?.created ?? null,
+            ...(c?.updated && c.updated !== c?.created ? { updated: c.updated } : {}),
+            body: rendered.text,
+            // Named on the comment it happened to, not only in a summary: a
+            // reader who meets `[adf:expand]` in the prose must be able to see,
+            // on that comment, that the renderer said so about it.
+            ...(rendered.unrendered.length > 0
+              ? { bodyUnrenderedNodes: rendered.unrendered }
+              : {})
+          };
+        })
       };
     }
   },
