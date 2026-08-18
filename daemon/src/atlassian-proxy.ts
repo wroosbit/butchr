@@ -2667,11 +2667,18 @@ export interface ProxyOperationReport {
    * Whether this operation is restricted to the caller's own ticket.
    *
    * **It stopped being "true for every write" in KAN-293, and that is the point
-   * of reporting it.** Five of the ten writes are own-ticket, one is
+   * of reporting it.** Of the ten writes, **four** are own-ticket, one is
    * own-project, one needs only one endpoint to be the caller's, and four are
    * unscoped. A reader who inferred the answer from the method would now be
-   * wrong four times out of ten, which is exactly why it was reported rather
+   * wrong six times out of ten, which is exactly why it was reported rather
    * than inferred in the first place.
+   *
+   * **The four numbers used to read "five … one … one … four", which sums to
+   * eleven for a table of ten** — a doc-constant drift of exactly the class
+   * `docs/doc-constant-drift.md` describes, sitting in a source docblock, which
+   * that page's guard explicitly does not reach. Counted rather than corrected
+   * by eye: `verify-task-agent-write-list.mjs` §1 derives all four figures from
+   * the table below and fails if this sentence stops matching them.
    */
   ownTicketOnly: boolean;
   /**
@@ -2944,10 +2951,36 @@ export interface ProxyCaller {
  * **An agent may write only to its own ticket.** The issue named in the call
  * must be the caller's own workspace key; a task agent for KAN-291 can move
  * KAN-291 and nothing else. That is the narrowest rule that leaves the tool
- * able to do the job it was added for — the brief every agent runs under tells
- * it to claim its ticket, move it to In Progress, and move it to In Review, all
- * three of them writes to its own key and none of them writes to anybody
- * else's.
+ * able to do most of the job it was added for — the brief every agent runs
+ * under tells it to claim its ticket, move it to In Progress, and move it to
+ * In Review, and all three of those are writes to its own key.
+ *
+ * ## IT DOES NOT COVER THE WHOLE BRIEF, AND THIS PARAGRAPH IS THE CORRECTION
+ *
+ * **This docblock claimed until KAN-515 that the brief's writes were own-ticket
+ * and that "none of them writes to anybody else's". That was false, and it was
+ * the load-bearing premise under three tickets.** `prompts/task.md` also tells
+ * every task agent, on the merge path of every task it will ever do, to *"post
+ * a short pointer comment on your approver's own ticket"* — a comment on an
+ * issue the caller does not own, which this function refuses `not-your-ticket`.
+ * The same brief contemplates two more: a comment on somebody else's ticket
+ * where the poller cannot announce a merge, and a transition of a ticket that
+ * is not the caller's.
+ *
+ * **The refusal is correct and is not the defect.** What was wrong was a
+ * sentence in this file asserting a coverage that had never been measured, and
+ * which read as settled precisely because it looked like it had been. Three
+ * tickets inherited it — KAN-293 stated it correctly about the *tools*, KAN-421
+ * measured the supervisor list off `prompts/story.md` and `prompts/epic.md`
+ * only, and KAN-513 scoped itself to configuration on the strength of both.
+ * Nobody was careless; the gap was between the tickets and no ticket owned it.
+ *
+ * **What follows from it is recorded once**, in `docs/atlassian-proxy.md` §4,
+ * and is deliberately not restated here: a second copy is how it drifts, and
+ * this file has just demonstrated what a drifted copy costs.
+ * `daemon/scripts/verify-task-agent-write-list.mjs` re-derives the list from
+ * this table and from `prompts/task.md` on every pull request, so the fourth
+ * ticket in the chain inherits a measurement rather than a sentence.
  *
  * Rejected, with reasons, because a mitigation dropped in silence is worse than
  * one dropped out loud:
