@@ -226,8 +226,24 @@ function stamp(at: Date): string {
  *     brief rendered one second ago can carry a superseded rule.
  *   - It gives the reader a COMMAND rather than an instruction to go and
  *     compare prose. An agent cannot eyeball two copies of a 40 KB brief and
- *     tell whether a governance clause moved; it can read one line of `git
- *     log`. Empty output is the whole answer.
+ *     tell whether a governance clause moved; it can compare two shas.
+ *   - ⚠ It compares the FILE and never walks HISTORY, and that is KAN-523
+ *     rather than a stylistic preference. Until 2026-08-18 this block emitted
+ *     `git log --oneline <sha>..origin/main -- <path>`, which is correct on a
+ *     full clone and gives a FALSE POSITIVE on a shallow one: a graft root has
+ *     its parents erased, so a range starting before it cannot be walked and
+ *     git reports every file in that tree as newly ADDED there. The shared
+ *     clone was grafted at `e7ac6bf` on 2026-08-17, and the check answered
+ *     `739 insertions` — the entire brief — for a blob whose sha was identical
+ *     at every point. It fails toward the ALARMING answer, so the cost lands on
+ *     the agent that is being careful: it is told every rule it operates under
+ *     has moved. `<rev>:<path>` resolves through the tree instead, so depth
+ *     cannot reach it.
+ *   - ⚠ And it must never answer when it cannot. A missing commit makes
+ *     `rev-parse` exit non-zero with `fatal:` rather than print a sha, which is
+ *     why the third outcome is spelled out in the block: a refusal that reads
+ *     as "nothing changed" would be the quiet failure this whole section exists
+ *     to prevent.
  *   - It names an ABSOLUTE path. The reader may be an agent working in another
  *     organisation's repository entirely — CrabCast's agents are briefed from
  *     these same four files, out of Butchr's checkout — and has no `prompts/`
@@ -267,13 +283,19 @@ export function renderProvenanceBlock(p: PromptProvenance): string {
     '',
     '  ```bash',
     `  git -C ${p.repoRoot} fetch origin`,
-    `  git -C ${p.repoRoot} log --oneline ${shortSha}..origin/main -- ${p.templatePath}`,
+    `  git -C ${p.repoRoot} rev-parse ${shortSha}:${p.templatePath} origin/main:${p.templatePath}`,
     '  ```',
     '',
-    `  **No output means this brief is current** and you need do nothing else. ` +
-      `**Any line is a rule that changed after you were briefed** — read what moved with ` +
-      `\`git -C ${p.repoRoot} diff ${shortSha}..origin/main -- ${p.templatePath}\`, ` +
-      `and follow what \`origin/main\` says rather than what is written above it.`
+    `  **Two identical shas mean this brief is current** and you need do nothing else. ` +
+      `**Two different shas mean a rule changed after you were briefed** — read what moved with ` +
+      `\`git -C ${p.repoRoot} diff ${shortSha}:${p.templatePath} origin/main:${p.templatePath}\`, ` +
+      `and follow what \`origin/main\` says rather than what is written above it.`,
+    '',
+    `  **And if it prints \`fatal:\` instead of two shas, it has told you it cannot answer** — ` +
+      `which is the third outcome and not a broken command. That clone does not have \`${shortSha}\`, ` +
+      `almost always because it is **shallow**: \`git -C ${p.repoRoot} rev-parse --is-shallow-repository\` ` +
+      `says so, and \`git -C ${p.repoRoot} fetch --unshallow origin\` repairs it. ` +
+      `**Do not read a refusal as "nothing changed."**`
   );
 
   // Stated because the alternative is implying a guarantee we have not got. The

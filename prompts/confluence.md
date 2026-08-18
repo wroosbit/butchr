@@ -395,6 +395,8 @@ If you are only reading, read from the cache directly and create nothing. If the
 work genuinely needs a change, make a worktree inside your workspace on a fresh
 branch, exactly as a task agent does.
 
+⚠ **Never add `--depth`, `--shallow-since` or `--single-branch` to that fetch, and that holds inside a worktree too.** `.git/shallow` is a repository-wide file shared by the clone and every worktree cut from it, so one depth-limited fetch grafts the cache for **every agent on the machine** — and a grafted clone cannot answer a history question, including the staleness check at the top of this brief (KAN-523). If it is already grafted (`git -C ~/code/<org>/<repo> rev-parse --is-shallow-repository` says `true`), repair it with `git -C ~/code/<org>/<repo> fetch --unshallow origin` and say so.
+
 ## 4. You have no ticket lifecycle, and that is correct
 
 A page has no assignee and no status, so there is nothing for the daemon to
