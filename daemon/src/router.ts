@@ -4170,7 +4170,10 @@ export class MessageRouter {
           // Every outcome here is a success — the loop above breaks on the
           // first failure and the `!outcome.ok` branch returned before this.
           outcomes.map(({ outcome: o }) => (o.ok ? o.body : undefined)),
-          { siteUrl: asText(credential.siteUrl), email: asText(credential.email) }
+          { siteUrl: asText(credential.siteUrl), email: asText(credential.email) },
+          // KAN-501: what the caller asked for, already refused by `build` if it
+          // was not one of the values the operation accepts.
+          args
         );
       } catch (err: any) {
         fail(

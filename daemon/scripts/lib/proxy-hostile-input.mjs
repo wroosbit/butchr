@@ -119,6 +119,12 @@ export function validFor(field) {
   if (field === 'jql') return 'project = KAN';
   if (field === 'query') return 'butchr';
   if (field === 'bodyFormat') return 'storage';
+  // KAN-501. A SECOND FORMAT FIELD WITH A DISJOINT VALUE SET, which is why it
+  // carries its own name rather than reusing `bodyFormat`: handing
+  // `atlassian_get_issue_comments` the Confluence value 'storage' made it refuse
+  // every argument, and the sweep then measured nothing for that operation while
+  // reporting a well-formed failure about something else entirely.
+  if (field === 'commentFormat') return 'text';
   if (field === 'fields') return 'summary';
   if (field === 'transitionId') return '31';
   return 'x';
@@ -134,6 +140,7 @@ function pickBenign(field, which) {
   if (/Id$/i.test(field)) return which ? '424242' : '163933';
   if (field === 'limit' || field === 'maxResults') return which ? 4 : 5;
   if (field === 'bodyFormat') return which ? 'view' : 'storage';
+  if (field === 'commentFormat') return which ? 'adf' : 'text';
   return which ? 'zzz' : 'aaa';
 }
 
