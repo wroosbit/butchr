@@ -11,9 +11,11 @@
 // figure computed entirely from supervisors — and `capByCpu` moved between 12
 // and 20 on unchanged hardware purely with what happened to be in the sample.
 //
-// CI-RUNNABLE: partial — the exclusion arithmetic asserts in CI. Section 5
-// needs a running fleet and is skipped without one — the header already said
-// so before this partition existed.
+// CI-RUNNABLE: partial — the exclusion arithmetic (1-4), the enablement
+// predicate (5b), the unmarked-tree discriminator (5c) and the falsifier (6)
+// all assert in CI. Section 5 reads the live fleet through /proc and is
+// skipped on a runner, which has no agent trees. KAN-537 is why its unmarked
+// arm no longer fails on a tree that holds no MCP server at all.
 //
 // It also catches the second half: supervisors exempt from the cap on *both*
 // dimensions, when they hold ~650 MB each and are 92% as heavy as a task agent
@@ -41,8 +43,49 @@
 // Section 6 is the falsifier: it re-runs sections 1–4 with the exclusion
 // removed — a predicate that calls nothing a supervisor, which is exactly the
 // pre-KAN-276 behaviour — and requires them to go red.
+//
+// WHAT SECTION 5 USED TO ASSERT, AND WHY IT WAS RED ON A CLEAN `main` (KAN-537)
+//
+// It required every live `claude` tree to carry the marker, and on 2026-08-18
+// that went red on a pristine `origin/main` worktree with no branch changes in
+// it at all. Three agents met it in one day — KAN-517 and KAN-532 each began by
+// suspecting their own work, and this ticket was filed when a third did. CI
+// could not see any of it: a runner has no agent trees, so the failing
+// condition cannot arise there and `verify-runnable-set` passed this script
+// correctly and uselessly. The cost was never the failure. It was that a real
+// red and a fleet-shaped red were the same exit code and the same text, so an
+// agent could only learn to discount both.
+//
+// The two unmarked trees were measured rather than guessed at, and the answer
+// is neither of the two the ticket proposed. They were not a marking defect and
+// they did not predate the marker: `story/kan-117` and `epic/kan-59` were both
+// parked at Claude Code's `--dangerously-load-development-channels`
+// confirmation dialog, 1h20m in, with **no child processes at all**. The marker
+// rides on the butchr MCP server's argv (launchers.ts) and no MCP server is
+// spawned until that dialog is answered — so neither tree held any process that
+// could have carried one. The old assertion was therefore unsatisfiable in
+// principle for the whole of every agent's bring-up, which is ~12s ordinarily
+// and unbounded when nobody answers the dialog.
+//
+// So section 5 now asserts the narrower property that is actually about
+// marking: **every live tree that HOLDS a butchr core MCP server carries the
+// marker on it.** A tree holding no such server is reported, counted, named and
+// aged — and is not a failure, because there is nothing in it that could have
+// been marked. `lib/unmarked-tree-diagnosis.mjs` is that split, and its header
+// carries the reasoning. This is a sharpening rather than a weakening: KAN-492's
+// property survives intact for every tree that can express it, and nothing here
+// changes what KAN-276 exempts or how the divisor is computed.
+//
+// Section 5c is that discriminator's red drive, and it exists because section 5
+// cannot be one. Section 5 is a reading of whatever fleet happens to be up: on
+// the fleet this was written against it found zero trees on the failing branch,
+// so its green says nothing about whether that branch can go red. 5c drives the
+// same `diagnose` over fixtures that put a tree on each branch deliberately, and
+// then breaks the server detection to show the failure disappearing — which is
+// what identifies the one change that would silently disarm section 5.
 
 import * as path from 'path';
+import * as fsLive from 'fs';
 import { fileURLToPath } from 'url';
 
 const distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
@@ -57,11 +100,20 @@ const { computeCapacity, describeCapacity, SUPERVISOR_MEMORY_BYTES, GIB } = awai
   path.join(distDir, 'capacity.js')
 );
 const { supervisorPredicate } = await import('./lib/supervisor-types.mjs');
+const { unmarkedTreeDiagnostic, isMarkingFailure, MARKING_FAILURE } = await import(
+  './lib/unmarked-tree-diagnosis.mjs'
+);
 
 const MIB = 1024 ** 2;
 const rule = (t) => console.log(`\n${'='.repeat(78)}\n${t}\n${'='.repeat(78)}`);
 
 const failures = [];
+// Findings about the fleet this ran on that are NOT failures of this proof, and
+// that CI structurally cannot produce (KAN-537). They are kept apart from
+// `failures` because conflating them is the defect this ticket was filed for —
+// and surfaced in the VERDICT rather than only where they were found, so a
+// clean PASS cannot quietly hide two agents parked at a startup dialog.
+const environmental = [];
 const verdict = (ok, yes, no) => {
   if (!ok) failures.push(no);
   console.log(`\n  ${ok ? '→ ' + yes : '→ FAILED — ' + no}`);
@@ -414,8 +466,40 @@ console.log(
 const liveGroups = groupByAgent(sampleProcesses());
 const liveTrees = [...liveGroups.entries()].map(([root, pids]) => ({
   root,
+  pids,
   ...classifyTree(pids, readCmdline)
 }));
+
+/**
+ * How long a tree's root has been alive, in seconds, or null.
+ *
+ * Printed beside every server-less tree because it is the reader's only handle
+ * on which world they are in: ~12s is bring-up, and 80 minutes is an agent that
+ * has been parked at a dialog since breakfast. The diagnostic itself will not
+ * name a cause (see its header); this is the number that lets a human do it.
+ */
+function treeAgeSeconds(pid) {
+  try {
+    const uptime = Number(fsLive.readFileSync('/proc/uptime', 'utf8').split(' ')[0]);
+    const stat = fsLive.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // Same parse as sampleProcesses(): split after the last ')', so field N of
+    // proc(5) is rest[N - 3]. starttime is field 22, in clock ticks since boot.
+    const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const startTicks = Number(rest[19]);
+    if (!Number.isFinite(uptime) || !Number.isFinite(startTicks)) return null;
+    return uptime - startTicks / CLK_TCK;
+  } catch {
+    return null;
+  }
+}
+
+const humanAge = (seconds) => {
+  if (seconds === null) return 'age unknown';
+  if (seconds < 90) return `${Math.round(seconds)}s old`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m old`;
+  return `${(seconds / 3600).toFixed(1)}h old`;
+};
+
 if (liveTrees.length === 0) {
   console.log(
     '  no claude trees on this machine — skipped.\n' +
@@ -423,6 +507,9 @@ if (liveTrees.length === 0) {
       '  evidenced by the live capacity reading and measure-agent-cost.mjs output in the PR.'
   );
 } else {
+  const live = await unmarkedTreeDiagnostic(distDir);
+  console.log(`  core MCP entrypoint this looks for: ...${live.entrypointTail}`);
+  console.log(`  workspaces root resolved to       : ${live.workspacesRoot}\n`);
   for (const t of liveTrees) {
     console.log(
       `  pid ${String(t.root).padStart(7)} → ` +
@@ -430,13 +517,63 @@ if (liveTrees.length === 0) {
         `${t.workspaceType && isSupervisor(t.workspaceType) ? '   held out of the divisor' : ''}`
     );
   }
-  const allMarked = liveTrees.every((t) => t.workspaceType !== null);
+
+  // The unmarked trees, split by whether the absence is ABOUT marking at all.
+  // A tree holding no butchr MCP server holds nothing that could carry a
+  // marker, so it is not evidence either way; a tree holding one and carrying
+  // no marker is the KAN-145 defect. See lib/unmarked-tree-diagnosis.mjs.
+  const diagnoses = liveTrees
+    .filter((t) => t.workspaceType === null)
+    .map((t) => live.diagnose(t));
+  const markingFailures = diagnoses.filter(isMarkingFailure);
+  const serverless = diagnoses.filter((d) => !isMarkingFailure(d));
+  const markedTrees = liveTrees.filter((t) => t.workspaceType !== null);
+
+  if (serverless.length > 0) {
+    console.log(
+      `\n  ENVIRONMENTAL — ${serverless.length} unmarked tree(s), none of which holds a butchr MCP\n` +
+        '  server. A tree with no server has no process that could carry the marker, so this\n' +
+        '  is a fact about bring-up and not about marking. It is NOT a failure of this proof,\n' +
+        '  and it is a state CI cannot reproduce: a runner has no agent trees at all.'
+    );
+    for (const d of serverless) {
+      const where =
+        d.workspace === null ? 'outside the workspaces root above' : `cwd names ${d.workspace}`;
+      const age = humanAge(treeAgeSeconds(d.root));
+      console.log(`    pid ${String(d.root).padStart(7)}  ${age}  ${where}`);
+      environmental.push(`pid ${d.root} (${where}) holds no butchr MCP server, ${age}`);
+    }
+    console.log(
+      '\n    An age of seconds is ordinary bring-up. An age of hours is an agent parked at a\n' +
+        '    startup dialog, or a server that started and exited — this proof will not choose\n' +
+        '    between those, because /proc cannot. Either belongs on its own ticket, not here.'
+    );
+  }
+
+  // What the assertion below actually ranged over. Stated because a fleet in
+  // which EVERY tree is server-less would leave it asserting over nothing while
+  // still printing a pass, which is a green that was never a claim about
+  // marking.
+  console.log(
+    `\n  the assertion below ranges over the ${markedTrees.length + markingFailures.length} tree(s) that hold a butchr MCP server; ` +
+      `${serverless.length} held none.`
+  );
+  if (markedTrees.length + markingFailures.length === 0) {
+    console.log(
+      '  That count is ZERO, so this section asserted nothing about marking on this run —\n' +
+        '  read it exactly as you would read the CI skip above, and not as a pass.'
+    );
+  }
+
   verdict(
-    allMarked,
-    `all ${liveTrees.length} live agent tree(s) carry the workspace marker, so the classification\n` +
-      '    the fixtures exercise is the classification the daemon gets from the real fleet.',
-    `${liveTrees.filter((t) => t.workspaceType === null).length} live tree(s) carry no marker — ` +
-      'they would be charged nowhere, and if that is every tree the divisor degrades to the seed.'
+    markingFailures.length === 0,
+    `every one of the ${markedTrees.length} live tree(s) holding a butchr MCP server carries the workspace\n` +
+      '    marker, so the classification the fixtures exercise is the classification the daemon\n' +
+      '    gets from the real fleet.',
+    `${markingFailures.length} live tree(s) hold a butchr MCP server and carry NO marker — ` +
+      `pid(s) ${markingFailures.map((d) => `${d.root} (server at ${d.serverPids.join(', ')})`).join('; ')}. ` +
+      'That is the KAN-145 defect: the stamp launchers.ts writes is not reaching the ' +
+      'process, so those trees are charged nowhere and the divisor degrades toward the seed.'
   );
 }
 
@@ -503,6 +640,127 @@ console.log(
   );
 }
 
+// ------------------- 5c. the discriminator, driven onto both branches ------
+rule('5c. THE DISCRIMINATOR — can section 5 tell a real defect from a bare fleet?');
+console.log(
+  'Section 5 above is a reading of whichever fleet happens to be up, so its green is not\n' +
+    'evidence that its red branch is reachable — on this fleet it found nothing on that\n' +
+    'branch at all. This drives the SAME `diagnose` over three fixture trees, one placed\n' +
+    'deliberately on each outcome, with /proc replaced by a table this section writes.\n' +
+    'It needs no fleet, so unlike section 5 it asserts in CI.\n'
+);
+{
+  const WS_ROOT = path.join(path.sep, 'fixture', 'workspaces');
+  const ENTRY = path.join('daemon', 'dist', 'mcp.js');
+  // Deliberately NOT the checkout this script is running from: an agent on this
+  // fleet is launched by the installed daemon, whose entrypoint path differs
+  // from the worktree's. A discriminator that matched the whole path would find
+  // nothing in production and say so as a clean pass.
+  const OTHER_CHECKOUT = path.join(path.sep, 'somewhere', 'else', ENTRY);
+
+  const FIXTURE_TREES = [
+    {
+      label: 'server present, marker absent',
+      tree: { root: 10, pids: [10, 11] },
+      argv: { 11: ['node', OTHER_CHECKOUT] },
+      cwd: { 10: path.join(WS_ROOT, 'task', 'kan-1') },
+      expect: MARKING_FAILURE,
+      expectWorkspace: 'task/kan-1',
+      why: 'the KAN-145 defect — launchers.ts stamped nothing onto a server that IS running'
+    },
+    {
+      label: 'no server, cwd is a workspace',
+      tree: { root: 20, pids: [20] },
+      argv: {},
+      cwd: { 20: path.join(WS_ROOT, 'story', 'kan-117') },
+      expect: 'no-server',
+      expectWorkspace: 'story/kan-117',
+      why: 'the 2026-08-18 fleet — parked before its MCP server was ever spawned'
+    },
+    {
+      label: 'no server, cwd is elsewhere',
+      tree: { root: 30, pids: [30, 31] },
+      argv: { 31: ['node', path.join(path.sep, 'home', 'someone', 'other-tool', 'mcp.js')] },
+      cwd: { 30: path.join(path.sep, 'home', 'someone', 'project') },
+      expect: 'no-server',
+      expectWorkspace: null,
+      why: "a human's own claude, or another tool — the case agent-cost.ts's header names"
+    }
+  ];
+
+  /** One diagnostic over the fixture table, with the entrypoint tail injected. */
+  const fixtureDiagnostic = (entrypointTail) => {
+    const argv = {};
+    const cwd = {};
+    for (const f of FIXTURE_TREES) {
+      Object.assign(argv, f.argv);
+      Object.assign(cwd, f.cwd);
+    }
+    return unmarkedTreeDiagnostic(distDir, {
+      entrypointTail,
+      workspacesRoot: WS_ROOT,
+      // No `?? []` / `?? null` shorthand: a fixture pid the table forgot must
+      // read as a hole in the fixture rather than as a silent empty argv, which
+      // is what would let a mis-keyed table pass as a clean sweep.
+      readArgv: (pid) => {
+        if (!Object.hasOwn(argv, pid)) return [];
+        return argv[pid];
+      },
+      readCwd: (pid) => {
+        if (!Object.hasOwn(cwd, pid)) return null;
+        return cwd[pid];
+      }
+    });
+  };
+
+  const armed = await fixtureDiagnostic(ENTRY);
+  console.log('  fixture tree                     finding           workspace      is a failure?');
+  const wrong = [];
+  for (const f of FIXTURE_TREES) {
+    const d = armed.diagnose(f.tree);
+    const ok = d.finding === f.expect && d.workspace === f.expectWorkspace;
+    if (!ok) {
+      wrong.push(
+        `${f.label}: expected ${f.expect}/${f.expectWorkspace}, got ${d.finding}/${d.workspace}`
+      );
+    }
+    console.log(
+      `  ${f.label.padEnd(32)} ${d.finding.padEnd(17)} ${String(d.workspace).padEnd(14)} ` +
+        `${isMarkingFailure(d) ? 'YES' : 'no'}${ok ? '' : '   <- UNEXPECTED'}`
+    );
+    console.log(`      ${f.why}`);
+  }
+  const armedFailures = FIXTURE_TREES.filter((f) => isMarkingFailure(armed.diagnose(f.tree)));
+
+  // The falsifier. Break the one thing the split rests on — finding the server
+  // — and the failing tree must stop being a failure. This is what says the red
+  // branch is reachable AND names the single change that would disarm section 5
+  // without changing a word of its output.
+  const blind = await fixtureDiagnostic(path.join('daemon', 'dist', 'not-the-server.js'));
+  const blindFailures = FIXTURE_TREES.filter((f) => isMarkingFailure(blind.diagnose(f.tree)));
+  console.log(
+    `\n  with the real entrypoint (...${ENTRY}) : ${armedFailures.length} failure(s)\n` +
+      `  with a tail that matches no process         : ${blindFailures.length} failure(s)\n` +
+      '\n  The second line is the disarmament, stated so it is not a surprise later: if the\n' +
+      '  core server is ever renamed or moved and this tail is not moved with it, section 5\n' +
+      '  reclassifies every real defect as ENVIRONMENTAL and goes green saying so.'
+  );
+
+  verdict(
+    wrong.length === 0 && armedFailures.length === 1 && blindFailures.length === 0,
+    'the discriminator puts each fixture on the branch it was built for, calls exactly the\n' +
+      '    server-holding unmarked tree a failure, and stops calling it one when server detection\n' +
+      '    is broken. So section 5 has a red branch the world can reach, and this is what reaches it.',
+    (wrong.length ? `misclassified: ${wrong.join('; ')}. ` : '') +
+      (armedFailures.length !== 1
+        ? `armed run reported ${armedFailures.length} failure(s) rather than exactly 1. `
+        : '') +
+      (blindFailures.length !== 0
+        ? `blind run still reported ${blindFailures.length} failure(s), so the verdict does not depend on finding the server. `
+        : '')
+  );
+}
+
 // ------------------------------------------------ 6. can this fail? --------
 rule('6. CAN THIS PROOF FAIL? — sections 1-4 with the exclusion removed');
 console.log(
@@ -565,5 +823,22 @@ if (failures.length === 0) {
 } else {
   console.log(`FAIL — ${failures.length} problem(s):\n`);
   failures.forEach((f, i) => console.log(`  ${i + 1}. ${f}\n`));
+}
+
+// Printed on BOTH paths and after the verdict, so it is the last thing a local
+// runner reads. It never changes the exit code: these are readings of a live
+// fleet, and a machine's fleet state is not a property of this branch (KAN-537).
+if (environmental.length > 0) {
+  console.log(
+    `\nENVIRONMENTAL — ${environmental.length} observation(s) about the fleet this ran on. NOT counted\n` +
+      'above and NOT reflected in the exit code:\n'
+  );
+  environmental.forEach((e, i) => console.log(`  ${i + 1}. ${e}`));
+  console.log(
+    '\n  These are the states CI cannot reproduce, and separating them is what KAN-537 asked\n' +
+      '  for: before it, a bare fleet and a broken marker were the same exit code and the same\n' +
+      '  text, so three agents in one day each spent time deciding whether they had broken\n' +
+      '  something. A tree parked for hours is still worth chasing — on its own ticket.'
+  );
 }
 process.exit(failures.length ? 1 : 0);
