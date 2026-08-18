@@ -57,12 +57,14 @@ import { boardPageFor } from './board-page.js';
 import type { PrWatchHealth } from './pr-watch.js';
 import { licenceFor, sealClaims, sealComposerClaims } from './message-claims.js';
 import {
+  beginBuildCoercions,
   operationByTool,
   ProxyCaller,
   proxyReport,
   refuseProxyCall,
   refuseWriteOutsideCaller,
-  selectedProxyMode
+  selectedProxyMode,
+  takeBuildCoercions
 } from './atlassian-proxy.js';
 // KAN-298. The same shape doing the same job for a second integration — and a
 // reader checking "does LaunchDarkly have a write policy too" should meet the
@@ -4044,7 +4046,13 @@ export class MessageRouter {
     // Non-null by construction: `refuseProxyCall` returns a refusal for every
     // tool it cannot find, so reaching here means it found this one.
     const operation = operationByTool(tool)!;
+    // KAN-502: what the markdown→ADF conversion had to change about the agent's
+    // content, collected across every body this operation converts. `build` is
+    // synchronous, so the reset and the read below cannot interleave with
+    // another request — see `beginBuildCoercions`.
+    beginBuildCoercions();
     const built = operation.build(args);
+    const coercions = takeBuildCoercions();
     if ('error' in built) {
       fail(built.error, { reason: 'bad-arguments' });
       return;
@@ -4143,6 +4151,10 @@ export class MessageRouter {
         action: 'atlassian_proxy_call_response',
         success: false,
         error: outcome.error,
+        // Reported on a refusal too. Nothing was written, so this is not a
+        // record of a change — it is what the daemon would have sent, which is
+        // exactly what somebody debugging a rejection needs to know.
+        ...(coercions.length ? { coercions } : {}),
         credentialFault: outcome.credentialFault,
         ...(outcome.status !== undefined ? { status: outcome.status } : {}),
         ...(outcome.diagnosis ? { diagnosis: outcome.diagnosis } : {}),
@@ -4191,6 +4203,12 @@ export class MessageRouter {
       action: 'atlassian_proxy_call_response',
       success: true,
       status: outcome.status,
+      // KAN-502: what the conversion changed about the content, when it changed
+      // anything. Present only when non-empty, so its absence means "nothing
+      // was altered" rather than "this daemon does not report alterations" —
+      // and an agent that wrote bold around a code span learns that the bold
+      // did not survive, at the time, rather than from the page a week later.
+      ...(coercions.length ? { coercions } : {}),
       // Named `body` rather than spread, so a Jira field called `success` or
       // `error` cannot overwrite this envelope's own verdict.
       body: responseBody,
