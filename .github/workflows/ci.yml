@@ -150,6 +150,17 @@ jobs:
       # tree. `--depth=1` rather than `fetch-depth: 0` on the checkout keeps
       # this to one extra object fetch instead of the whole history, which
       # matters for a check that runs on every PR.
+      #
+      # ⚠ DO NOT RUN THIS COMMAND ON THE DEV MACHINE — not in the shared clone
+      # at ~/code/<org>/<repo>, and NOT IN AN AGENT WORKTREE EITHER. A worktree's
+      # `.git` is a file pointing into the shared clone and `.git/shallow` is a
+      # repository-wide file, so `--depth=1` here grafts the clone for every
+      # agent on the machine. KAN-523: measured on a fixture, one such fetch in
+      # a worktree took the shared clone to 1 reachable commit; on the real one
+      # it made the brief's governance staleness check report the whole of
+      # `prompts/task.md` as changed when nothing had. It is safe HERE and only
+      # here, because a runner's checkout is a throwaway with no worktrees.
+      # To read the same baseline locally: `git fetch origin main`, no depth flag.
       - name: Fetch the baseline ref the vanished-id leg reads
         run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
 

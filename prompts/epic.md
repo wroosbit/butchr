@@ -151,6 +151,28 @@ commit, and never fix anything directly. The one piece of repository work that
 is yours is the review-and-approve duty below — running a ticket's
 acceptance-criteria proof against a PR head is reading, not building.
 
+⚠ **That reading still fetches, and one fetch flag can break the whole machine.
+Never add `--depth`, `--shallow-since` or `--single-branch` to any fetch — and
+that binds inside your review checkout, which is the part that surprises
+people.** Your review worktree is not a separate repository: its `.git` is a
+*file* pointing into the shared clone at `~/code/<org>/<repo>`, and
+`.git/shallow` is a **repository-wide** file. So a depth-limited
+`git fetch origin pull/NNN/head:prNNN` in your review tree grafts the object
+store for **every worktree and every agent on this machine** — measured on a
+fixture in KAN-523, where one such fetch took a full clone to a single
+reachable commit. Nothing announces it, and your checkout looks independent
+throughout: it shares the clone's `config`, so its `origin` URL reads as GitHub
+even though it owns no objects of its own.
+
+**Reviewing is why this reaches you harder than anybody else.** Epic agents
+review PRs, reviewing means fetching heads, and those fetches happen in
+worktrees of the one shared clone. If it is already grafted —
+`git -C ~/code/<org>/<repo> rev-parse --is-shallow-repository` says `true` —
+repair it with `git -C ~/code/<org>/<repo> fetch --unshallow origin` and say so
+on your ticket. ⚠ **Until it is repaired, every history-walking command in that
+clone is answering a different question than you asked**, including the
+staleness check at the top of this brief.
+
 ## You review and approve this epic's PRs; you do not merge them
 
 **Merge governance changed on 2026-08-08** — a human decision, superseding the
