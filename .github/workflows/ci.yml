@@ -103,6 +103,43 @@ jobs:
       - name: Sweep verify-* scripts for verdict-driven exits
         run: node daemon/scripts/sweep-verify-exit-paths.mjs --verbose
 
+      # KAN-531. A THIRD STEP IN THIS JOB RATHER THAN A NEW JOB, for KAN-527's
+      # reason and not for a new one: a new job is not a required check until
+      # somebody with admin edits the branch-protection list, which is not an
+      # agent's to do, so a guard that arrives as its own job arrives ungated.
+      # This one guards a defect that was invisible for exactly as long as
+      # nothing was looking — PR #232 added 81,309 lines of compiled daemon
+      # across two `daemon/dist-kan343-*` trees with all seven required checks
+      # green — so it goes where it gates on the day it lands.
+      #
+      # THE COST OF PUTTING IT HERE IS THE JOB NAME, and it is worth naming
+      # because `operative-rule-carriage` above records the opposite decision on
+      # the same trade. A red here reports as `verify-script-sweep`, which is
+      # about scripts and not about committed artefacts. The script prints its
+      # own name and the offending paths, and the step name says what it is, so
+      # the misdirection costs a reader one line. If somebody with admin later
+      # adds a dedicated required check, this belongs in its own job.
+      #
+      # IT IS ALSO A MEMBER OF THE RUNNABLE SET BELOW, deliberately — its header
+      # carries `CI-RUNNABLE: yes`, so `verify-runnable-set` discovers and runs
+      # it too. Belt and braces, in the pattern `ci-partition` already sets: the
+      # guard survives either wiring being removed, and its own §7 asserts both
+      # are present. What it gets from being HERE rather than only there is
+      # independence from the build — `verify-runnable-set` builds both packages
+      # first, so a broken build takes that copy down with it.
+      #
+      # WHY THIS IS SAFE TO REQUIRE — the same argument as the two steps above.
+      # It reads `git ls-files` and the bytes of the files it names, and builds
+      # its fixtures under `os.tmpdir()`. No build, no `npm install`, no daemon,
+      # no herdr, no PTY, no network, no Jira, no wall clock.
+      #
+      # Do not "soften" this step with `continue-on-error`, a path filter or an
+      # `|| true`. If it goes red, either build output is committed — remove it
+      # with `git rm -r --cached` — or a genuinely new source directory needs
+      # declaring in the script's own allowlist, with the reason.
+      - name: Refuse committed build output under daemon/ and extension/
+        run: node daemon/scripts/verify-no-build-output-is-committed.mjs --verbose
+
   # KAN-240: the sweep that keeps `prompts/*.md` honest — every operative rule
   # present where an agent will meet it, no reference dangling, and no *retired*
   # rule still being taught. It was the only guard on the prompts and it ran only
