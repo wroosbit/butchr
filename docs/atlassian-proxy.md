@@ -161,12 +161,104 @@ the second does not exist.
 
 ### 4. Does this retire the per-agent proxies?
 
-No. See **What this does NOT do** above — 60% of agent Atlassian traffic is
-writes, and this half proxies none of them. Two categories *do* disappear
-outright rather than move: `getAccessibleAtlassianResources` (198 calls) and
-`atlassianUserInfo` (94) are cloud-ID and identity lookups that exist only
-because each agent authenticates separately, and the daemon resolves its cloud
-ID once per transport and caches it. That is about 6% of all calls.
+**No — and as of KAN-515 that is a decision rather than a not-yet.** The answer
+below supersedes this section's original one, which was *"60% of agent Atlassian
+traffic is writes, and this half proxies none of them."* That was true of the
+read half and stopped being the reason the moment KAN-291 and KAN-293 landed the
+writes. Two categories *do* disappear outright rather than move:
+`getAccessibleAtlassianResources` (198 calls) and `atlassianUserInfo` (94) are
+cloud-ID and identity lookups that exist only because each agent authenticates
+separately, and the daemon resolves its cloud ID once per transport and caches
+it. That is about 6% of all calls.
+
+#### KAN-288's goal, answered
+
+> *"Evidence that `mcp-remote` can actually be retired — an agent operating with
+> `mcp__atlassian__*` absent, doing real ticket work."*
+
+**Answered `no`, for the whole fleet — supervisors and task agents alike.** Not
+because the surface is incomplete, and not because the proxy is unreliable. The
+proxy advertises **32 operations** against the official server's 31, a superset:
+`atlassian_get_issue_comments` has no counterpart there at all. Tool coverage is
+not the problem and has not been the problem since KAN-293.
+
+**The reason is a policy boundary, and it is the same one in both halves of the
+fleet: the agent briefs mandate writes to tickets the caller does not own, and
+`refuseWriteOutsideCaller` correctly refuses them.**
+
+- **Supervisors** — settled by KAN-421, which measured the list off
+  `prompts/story.md` and `prompts/epic.md` and chose candidate 4, *do not
+  widen*, on a structural argument nothing since has disturbed.
+- **Task agents** — settled by KAN-515, which is the ticket this section is
+  written from. KAN-421 never had `prompts/task.md` in scope, so the belief that
+  the task half was separately retirable survived three tickets without anyone
+  measuring it.
+
+**What `probe-atlassian-retirement.mjs` proves is undisturbed by this, and its
+own header said so first.** It stood up a real agent with no Atlassian MCP
+server and had it do real ticket work, and that remains true. Its stated limit —
+*"one agent, one model, one run, one ticket; it shows retirement is possible, not
+that every workflow on the board survives it"* — named this gap in general terms
+before KAN-515 measured a specific instance of it. A green run there is not
+evidence against the `no` here.
+
+#### The decision, and the two options not taken
+
+**Option taken: accept it.** Every agent keeps its own Atlassian MCP server. The
+proxy stays what KAN-421 concluded it was — the better instrument for the writes
+it is scoped for, and not a replacement for the session.
+
+**Not taken — change the governance instead of the scope.** The cross-ticket
+pointer comment could be removed from `prompts/task.md`, which would make the
+task half retirable. It is refused because that mandate is not incidental: it is
+the **zero-interrupt replacement for a nudge**, and the nudge was removed on
+measurement. `butchr_send_to_agent` begins with a Ctrl+C, and KAN-219 measured
+that an in-flight tool call is killed and does not resume. Deleting the comment
+route sends that traffic back to the composer. **That trades a measured
+fleet-wide regression for a configuration tidy-up**, which is the wrong way round
+— the governance exists for the fleet, not for the proxy's convenience.
+
+**Not taken — reopen KAN-421.** Its argument was structural and this finding adds
+a case to it rather than contradicting it. Reopening would re-litigate a settled
+decision to reach the same answer.
+
+**`WriteScope` is untouched, and widening it remains barred** on KAN-419,
+KAN-420, KAN-421, KAN-513 and KAN-515 alike, absent a first-hand human
+authorisation recorded at the time.
+
+#### The task-agent write list — the thing nobody had measured
+
+Every write `prompts/task.md` mandates, against the scope that governs it.
+**Derived from `PROXY_OPERATIONS` and from the brief on every pull request** by
+`daemon/scripts/verify-task-agent-write-list.mjs`, so this table cannot quietly
+become the fourth stale copy in the chain.
+
+| what the brief mandates | operation | scope | through the proxy? |
+| --- | --- | --- | --- |
+| claim the ticket — assign it to yourself | `atlassian_edit_issue` | `own-ticket` | **yes** |
+| move it to In Progress, then to In Review | `atlassian_transition_issue` | `own-ticket` | **yes** |
+| post progress, In Review and merged comments on your own ticket | `atlassian_add_comment` | `own-ticket` | **yes** |
+| file a follow-up ticket, parented to your own epic | `atlassian_create_issue` | `own-project` | **yes** |
+| link that follow-up `Relates` to your own ticket | `atlassian_create_issue_link` | `own-ticket-endpoint` | **yes** |
+| **post the merge pointer comment on your approver's ticket** | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| **comment on somebody else's ticket where the poller cannot announce** | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| **transition a ticket that is not your own** | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+
+**Five of the eight shapes are served and three are refused**, and the first
+refused row is the one that decides the question: it sits on the merge path of
+**every** task, so it is not an edge the fleet can route around.
+
+**The refusal text is itself load-bearing, which is the sharp end of this.** It
+reads, in part, *"use this agent's own Atlassian MCP tools, which are unaffected
+by this refusal."* Retiring the official server would turn a loud, actionable
+refusal into a dead end — at the exact moment a task agent has finished its work
+and is trying to hand off.
+
+**A note on the whole-fleet counts, because they are easy to misread off the
+table above.** Of the ten writes in `PROXY_OPERATIONS`, four are `own-ticket`,
+one is `own-ticket-endpoint`, one is `own-project` and four are `unscoped` — the
+Confluence writes, on the `confluence-write` rung only. The eight rows above are
+*brief mandates*, not operations, and two operations serve more than one row.
 
 ### 5. Blast radius, written down
 
