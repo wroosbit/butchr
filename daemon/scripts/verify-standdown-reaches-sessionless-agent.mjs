@@ -21,16 +21,25 @@
 // with four activations refused including the deploy of the fleet's own
 // messaging fix.
 //
-// CI-RUNNABLE: yes — every section stands up its own Unix socket under os.tmpdir() and answers its own frames; no peer, no herdr, no PTY, no credential, no network, and nothing is skipped, so a green is a green.
+// CI-RUNNABLE: yes — every section stands up its own Unix socket under os.tmpdir() and answers its own frames, and §7's first arm additionally reads daemon/src/board-reconcile.ts as text out of the checkout, which CI has; no peer, no herdr, no PTY, no credential, no network, and nothing is skipped, so a green is a green.
 //
 // ── WHICH SECTIONS READ WHAT, AND WHY THAT MATTERS BEFORE THE VERDICT ──────
 //
-// EVERY SECTION IMPORTS FROM `dist`. There is no static section in this file,
-// so after a FAILED BUILD this script tested the PREVIOUS build and both
-// outcomes mislead — a pass reads as "my mutation was not caught" and a fail
-// credits this script for what the compiler did. Confirm `npm run build` exited
-// 0, unpiped, before reading the verdict below. This is KAN-314's rule and this
-// script is squarely inside it rather than at its edge.
+// §1-§6 IMPORT FROM `dist` AND READ NOTHING ELSE. §7 IS A BLEND (KAN-516): its
+// FIRST arm reads `daemon/src/board-reconcile.ts` as TEXT, and its remaining
+// three import `dist` like every other section.
+//
+// So after a FAILED BUILD this script's exit code is a BLEND too — the
+// source-text arm tested the mutation you actually wrote, and every other check
+// in the file tested the PREVIOUS build. Both of those mislead on their own: a
+// pass reads as "my mutation was not caught" and a fail credits this script for
+// what the compiler did.
+//
+// ⚠ READ IT BY SECTION AND, IN §7, BY ARM — never by the exit code — unless you
+// have first confirmed `npm run build` exited 0, UNPIPED, because
+// `npm run build | tail` reports `tail`'s status and not the compiler's. This
+// is KAN-314's third case; this file was outside it until §7's arm 0 was added
+// and is squarely inside it now.
 //
 // ── WHAT SUPPLIES ITS OWN INPUT, AND WHO COVERS WHAT THAT LEAVES ───────────
 //
@@ -60,12 +69,36 @@
 //     fleet. Until one of those runs, "the slot is released" is uncovered by
 //     anything here, and §1 asserts the send rather than the release
 //     deliberately — naming what it proves is the whole of what a header owes.
+//   - §7 SUPPLIED ITS OWN BOARD TOO, AND ARM 0 IS WHY IT NO LONGER SUPPLIES ALL
+//     OF IT (KAN-516). The board rows §7 hands `computeBoardDiff` are written
+//     in this file, so the section proved the reconciler's LOGIC keeps an In
+//     Review agent and was structurally unable to see its INPUT change: mutating
+//     `BOARD_JQL` to `In Progress` alone — the exact work-destroying direction —
+//     left all five of §7's checks GREEN, measured by `epic/KAN-39` on PR #221.
+//     Arm 0 reads that constant off `daemon/src/board-reconcile.ts` as source
+//     text, so the safety property is now guarded by an assertion that KNOWS it
+//     is a safety property and says so when it breaks. `verify-doc-constant-pins`
+//     catches the same mutation and is a genuine defence, but it fires on the
+//     constant drifting from its sha256 pin in `docs/crabcast-cutover-sequence.md`
+//     — so an author changing the constant DELIBERATELY regenerates the pin, the
+//     ordinary and correct workflow, and at that moment nothing tells them what
+//     they have just done. That defence is real and INCIDENTAL; this one is not.
+//   - WHAT ARM 0 STILL DOES NOT COVER, AND NOBODY DOES: the two links between
+//     the constant and the rows. `BoardReconciler`'s constructor resolves
+//     `opts.jql ?? BOARD_JQL`, and `daemon.ts` constructs the production
+//     reconciler passing no `jql` — so production does read the constant, but
+//     NOTHING IN THIS FILE ASSERTS EITHER OF THOSE, and a caller that passed an
+//     override `jql` would satisfy every check here. Nor does anything assert
+//     that Jira answers that query with the rows it is claimed to. Covered by no
+//     script at the time of writing; named here rather than left to inference.
 //
-// ── DRIVING IT RED (four mutations, four independent mechanisms) ───────────
+// ── DRIVING IT RED (eight mutations, eight independent mechanisms) ─────────
 //
-// Each was applied, BUILT (exit 0, unpiped), and run on 2026-08-17. The counts
-// below are what was observed, not what was expected — §2's first form was
-// rewritten because this drive showed it passing under its own mutation.
+// Mutations 1-4 and §7's A and B were applied, BUILT (exit 0, unpiped), and run
+// on 2026-08-17; arm 0's C and D on 2026-08-18. The counts below are what was
+// observed, not what was expected — §2's first form was rewritten because this
+// drive showed it passing under its own mutation, and C's count was written down
+// as 2 before the drive measured 1.
 //
 //   1. THE FIX ITSELF. Delete the ambiguity check and the
 //      `closeAgentByWorkspace` call from `closeAgentByKey`, leaving the
@@ -105,6 +138,30 @@
 //      → 2 red on the discriminating arm (`toStop` is `[]`). ⚠ **Arm 1 stays
 //      GREEN**, which is precisely the failure `epic/KAN-39` named: without arm
 //      2, this section would have passed a reconciler that never stops anything.
+//
+// ── AND ARM 0'S TWO, ADDED BY KAN-516, DRIVEN 2026-08-18 ───────────────────
+//
+//   C. THE INPUT, NOT THE LOGIC. In `daemon/src/board-reconcile.ts` change
+//      `BOARD_JQL` from `status IN ("In Progress", "In Review")` to
+//      `status IN ("In Progress")` — mutation A's work-destroying direction,
+//      applied one link upstream of where A applies it. Built, exit 0, unpiped.
+//      → 1 red, in arm 0: *"BOARD_JQL admits ["In Progress"]"*.
+//      ⚠ **ALL FIVE CHECKS OF ARMS 1 AND 2 STAY GREEN**, and so does every
+//      other section — 29 PASS, 1 FAIL over the whole file. That is the whole of
+//      why arm 0 exists: this mutation is invisible to a section handed a board
+//      it wrote itself, and it is the mutation `epic/KAN-39` measured surviving
+//      §7 in review of PR #221. (`verify-doc-constant-pins` also goes red on it,
+//      2 failures, and that defence is genuine — but it fires on the pin, not on
+//      the property, so a deliberate change that regenerates the pin is silent
+//      there and is not silent here.)
+//   D. THE READING, NOT THE CODE. Rename the constant to `BOARD_JQL_RENAMED`
+//      throughout `board-reconcile.ts` — the compiling form, value untouched —
+//      so the extractor finds no declaration. Built, exit 0, unpiped.
+//      → 4 red, all four of arm 0, LED BY THE POSITIVE CONTROL; the two
+//      property checks report *"NOT REACHED"* rather than a finding about the
+//      constant. Arms 1 and 2 stay GREEN, correctly: the value did not move.
+//      Recorded because a static arm whose extractor quietly returns nothing is
+//      a check that goes green forever while appearing to guard something.
 //
 // ⚠ A FIFTH MUTATION WAS TRIED FIRST AND IS RECORDED BECAUSE IT DID NOT RUN.
 // Inserting `if (addressed.outcome !== 'one') return …` above the existing
@@ -534,8 +591,49 @@ await section(
 );
 
 // ── §7 ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The canonical declaration of `name` in `source`: the declaring line through
+ * the first line that closes the statement, or null when there is no such
+ * declaration. Same shape as `verify-doc-constant-pins.mjs`'s `declarationOf`
+ * and deliberately so — both need the whole STATEMENT rather than a line,
+ * because `BOARD_JQL` wraps onto a second one and a line-oriented read of it
+ * returns the assignment without the value.
+ *
+ * ⚠ Null, never an empty string. An extractor that answers "" for a constant it
+ * could not find makes every assertion downstream of it pass, which is the one
+ * failure a static arm cannot survive; §7 asserts on the null.
+ */
+function declarationOf(source, name) {
+  const lines = source.split('\n');
+  const opensAt = lines.findIndex((l) => new RegExp(`^\\s*export const ${name}\\b`).test(l));
+  if (opensAt === -1) return null;
+  for (let i = opensAt; i < lines.length && i < opensAt + 40; i++) {
+    if (/;\s*$/.test(lines[i])) return lines.slice(opensAt, i + 1).join('\n');
+  }
+  return null;
+}
+
+/**
+ * The status names a JQL declaration admits, or null when it carries no
+ * `status IN (...)` list at all.
+ *
+ * Null rather than `[]`, and the distinction carries weight: an empty array
+ * reads as "admits no status", which is indistinguishable from "this stopped
+ * being a status-filtered query", and the second is a change §7 must report as
+ * a failure of the READING rather than as a board that admits nothing.
+ */
+function statusesAdmittedBy(declaration) {
+  const list = /status\s+IN\s*\(([^)]*)\)/i.exec(declaration);
+  if (list === null) return null;
+  return list[1]
+    .split(',')
+    .map((entry) => entry.trim().replace(/^["']/, '').replace(/["']$/, ''))
+    .filter((entry) => entry.length > 0);
+}
+
 await section(
-  '§7  IMPORTS dist — THE SAFETY PROPERTY: an In Review ticket keeps its agent, and a Done one does not',
+  '§7  BLENDS source text AND dist — THE SAFETY PROPERTY: an In Review ticket keeps its agent, and a Done one does not',
   async () => {
     // ⚠ THIS SECTION IS THE ONE THAT MATTERS MOST, AND IT IS HERE BECAUSE OF
     // WHAT IT WOULD BE WITHOUT ITS SECOND ARM. `epic/KAN-39` asked for it by
@@ -548,12 +646,75 @@ await section(
     // agent whose work is unfinished. It is satisfied BY CONSTRUCTION rather
     // than by a special case — `BOARD_JQL` admits `In Progress` AND `In Review`,
     // so an In Review ticket is still DESIRED and never becomes a stand-down
-    // candidate. This asserts that construction holds, in the direction that
-    // would destroy work.
+    // candidate. Both halves of that are asserted here, in the direction that
+    // would destroy work: ARM 0 reads the constant itself off source and says
+    // the admission is there, and ARMS 1 AND 2 exercise the consequence through
+    // `dist`. Until KAN-516 only the second half was checked, and the first was
+    // a claim in a comment.
     //
     // It reproduces the judgement `epic/KAN-203` made by hand on 2026-08-16:
     // two agents at Done stood down, `task/kan-420` at In Review deliberately
     // left. The keys below are that incident's.
+
+    // ── ARM 0 — READS SOURCE TEXT, NOT `dist` (KAN-516) ───────────────────
+    //
+    // "By construction" names an input, and arms 1 and 2 do not read it. They
+    // are handed a board THIS FILE WROTE, so they prove the reconciler's logic
+    // keeps an In Review row and are structurally blind to `BOARD_JQL` ceasing
+    // to return one — measured: mutating the constant to `In Progress` alone
+    // left all five of their checks green.
+    //
+    // So this arm reads the production constant off `daemon/src/board-reconcile.ts`
+    // AS TEXT and asserts the property directly. It is a source-text assertion in
+    // a section that otherwise imports `dist`, which makes §7 a blend — see the
+    // header, and read this section by arm rather than by an exit code.
+    const boardReconcileSrc = path.join(repoRoot, 'daemon', 'src', 'board-reconcile.ts');
+    const declared = declarationOf(fs.readFileSync(boardReconcileSrc, 'utf8'), 'BOARD_JQL');
+    check(
+      declared !== null,
+      'THE POSITIVE CONTROL: `export const BOARD_JQL` is found in daemon/src/board-reconcile.ts',
+      `no such declaration in ${boardReconcileSrc}. Everything below this line is then a claim ` +
+        `about a constant that was never read, so this is a failure of THE READING and not a ` +
+        `finding about the code — repair the extractor before believing any verdict under it.`
+    );
+    const admits = declared === null ? null : statusesAdmittedBy(declared);
+    check(
+      admits !== null,
+      'and it filters on a `status IN (...)` list, which is the form the two checks below read',
+      declared === null
+        ? 'not reached — the declaration itself was not found, see the check above'
+        : `the declaration carries no \`status IN (...)\`:\n${declared}`
+    );
+    check(
+      admits !== null && admits.includes('In Review'),
+      '⚠ THE SAFETY PROPERTY, READ OFF PRODUCTION SOURCE: BOARD_JQL admits "In Review"',
+      // ⚠ Two different failures, told apart deliberately. A reading that did
+      // not happen is not a finding about the constant, and printing the safety
+      // paragraph under it would be this file's own subject — an artifact whose
+      // wording claims more than its mechanism covers.
+      admits === null
+        ? `NOT REACHED — BOARD_JQL was never read, see the checks above. This says nothing ` +
+          `whatever about what the constant admits; repair the reading first.`
+        : `BOARD_JQL admits ${JSON.stringify(admits)}. Dropping "In Review" makes an In Review ` +
+          `ticket ABSENT from the board, which makes every agent working one a stand-down ` +
+          `candidate: unfinished work stopped mid-flight. That is KAN-508's item 2 — nothing ` +
+          `may stand down an agent whose work is unfinished — and this check exists so that ` +
+          `breaking it is told to you AS a safety property, rather than as a digest that no ` +
+          `longer matches a document.`
+    );
+    check(
+      admits !== null && admits.includes('In Progress'),
+      'and "In Progress", so the property is about unfinished work of both kinds',
+      admits === null
+        ? 'NOT REACHED — BOARD_JQL was never read, see the checks above.'
+        : `BOARD_JQL admits ${JSON.stringify(admits)} — an In Progress ticket absent from the ` +
+          `board makes its agent a stand-down candidate by the same route`
+    );
+    if (verbose) {
+      console.log(`       BOARD_JQL admits: ${JSON.stringify(admits)}`);
+    }
+
+    // ── ARMS 1 AND 2 — IMPORT `dist` ──────────────────────────────────────
     const { computeBoardDiff } = await import(path.join(distDir, 'board-reconcile.js'));
 
     const board = [

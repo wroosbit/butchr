@@ -3,31 +3,23 @@ node_modules/
 
 # Build output
 dist/
-# EVERY VARIANT BUILD A `verify-` SCRIPT LEAVES BEHIND, BY GLOB (KAN-522).
+# Scratch build trees, as a GLOB rather than one pattern per ticket (KAN-516).
 #
-# This was four hand-maintained patterns — `dist-unfixed/` (the baseline
-# verify-mcp-runtime-validation.mjs compares against), `dist-guardless-*/` (the
-# guard-removed copy verify-board-reconciler-guard.mjs builds), and
-# `dist-kan342-red-*/` (verify-absence-is-not-intent.mjs's red drive) — and the
-# comment on the last one recorded that KAN-368 added it after `git add -A`
-# swept 58 of its files into a commit, the two before it existing "because that
-# had already happened twice."
+# This block used to enumerate them — `dist-unfixed/` for the baseline
+# verify-mcp-runtime-validation.mjs compares against, `dist-guardless-*/` for
+# the copy verify-board-reconciler-guard.mjs tears the fleet down with,
+# `dist-kan342-red-*/` for verify-absence-is-not-intent.mjs's red drive. Each
+# was added AFTER a `git add -A` had already swept that tree into a commit,
+# KAN-368's note recording 58 files on the third occasion.
 #
-# It has now happened twice more, on the same day, to two agents independently:
-# `dist-kan343-nohealth-*` and `dist-kan343-unscoped-*` reached #232 and #233 —
-# 130 files and 82,764 insertions on this branch — behind every required check
-# green, because nothing in the gate has an opinion about build output entering
-# the repository (filed as KAN-531; this glob is not that fix).
+# An enumeration requires every future red drive to remember to extend it, and
+# fails silently and hugely when one does not: KAN-516 committed 81,309 lines
+# across two `dist-kan343-*` trees, and every required check passed on them.
+# `dist-kan342-red-*` was listed; `dist-kan343-*` was not, because nobody had
+# got to it yet. The glob needs nobody to remember.
 #
-# FOUR OCCURRENCES IS THE ENUMERATION FAILING, NOT FOUR ACCIDENTS. A list that
-# must be extended by hand for every ticket that builds a variant is a list that
-# is wrong for exactly as long as it takes somebody to notice, and the noticing
-# has cost two PRs a review cycle. The glob cannot be behind.
-#
-# Control before landing it: `git ls-tree -r --name-only origin/main | grep -E
-# '(^|/)dist-'` returns nothing, so no tracked file becomes newly ignored — and
-# the same grep against this branch returns its 130, so the check can find them
-# when they are there.
+# Checked safe rather than assumed: `git ls-tree -r origin/main` matched no
+# tracked path against `(^|/)dist-`, so this newly ignores nothing.
 dist-*/
 
 # Logs
