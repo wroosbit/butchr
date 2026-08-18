@@ -133,8 +133,12 @@ export async function unmarkedTreeDiagnostic(distDir, overrides = {}) {
     path.join(distDir, 'workspace-dir.js')
   );
 
+  // Read defensively rather than with `?.`/`??`: every way this can come back
+  // empty has to reach the refusal below, and a shorthand that produces
+  // `undefined` for three different reasons cannot say which one happened.
   const core = coreMcpServerDefinitions()[CORE_MCP_SERVER];
-  const entrypoint = core === undefined ? null : core.args[0];
+  const args = core === undefined || core === null ? null : core.args;
+  const entrypoint = Array.isArray(args) && args.length > 0 ? args[0] : null;
   if (typeof entrypoint !== 'string' || entrypoint.length === 0) {
     // Refusing rather than falling back. A diagnostic that cannot find the
     // server it is looking for would call every tree `no-server`, which is the
