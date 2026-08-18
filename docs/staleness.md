@@ -272,4 +272,4 @@ afternoon, so each way that could happen is closed deliberately:
 * `node daemon/scripts/verify-staleness-over-socket.mjs` — starts a real daemon
   against a real stale checkout and shows the startup log, the socket response
   and the `list_agents` payload the banner reads.
-* [docs/SETUP.md](SETUP.md) §9 — the same ritual, in install order.
+* [docs/SETUP.md](SETUP.md) §10 — the same ritual, in install order.
