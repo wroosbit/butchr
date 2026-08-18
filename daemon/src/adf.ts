@@ -204,6 +204,193 @@ const COERCIONS: Record<string, { to: string; why: string }> = {
   }
 };
 
+/**
+ * Which marks may sit on the same text node as another, per product.
+ *
+ * ## THE SECOND HALF OF KAN-502, AND WHY IT IS KEYED BY PRODUCT
+ *
+ * A code span inside bold — `` **bold wrapping `inline_code` here.** `` — is
+ * ordinary house style in this project and appears dozens of times in
+ * `prompts/task.md` alone. It produces one text node carrying **both** `code`
+ * and `strong`, and Jira's ADF validator refuses that document:
+ *
+ * ```
+ * RED    "**bold wrapping `inline_code` here.**"   -> 400 INVALID_INPUT, nothing written
+ * GREEN  "**bold** and `inline_code` side by side" -> 201, comment 12767
+ * ```
+ *
+ * **Confluence stores the identical document, HTTP 201.** That was measured on
+ * the same day through the same daemon, and it is why this is a table keyed by
+ * {@link AdfTarget} rather than a rule: a fix that stripped the mark for both
+ * products would degrade every Confluence page to satisfy a constraint only
+ * Jira has. This is the same shape as {@link ALLOWED_CHILDREN} and was found
+ * the same way — by making the call.
+ *
+ * The entry reads *"on Jira, a `code` mark may keep only `link` for company"*.
+ * That is broader than the two combinations measured (`code+strong`,
+ * `code+em`), deliberately: Jira's schema excludes every mark but `link` from
+ * `code`, so narrowing this to the two spellings that happened to be observed
+ * would leave `code+strike` and `code+underline` to be rediscovered later as
+ * the same defect wearing a different costume.
+ *
+ * **`code` is what survives, and the decoration is what goes.** The code span
+ * is what the author *meant* — it says "this is an identifier" — while the bold
+ * is emphasis around it. Dropping the other way would keep the decoration and
+ * throw away the meaning. Either way no text moves: a mark is not content, so
+ * the completeness check in {@link markdownToAdf} is unaffected, and the change
+ * is reported as a coercion rather than made silently.
+ */
+const MARK_COMPANIONS: Record<AdfTarget, Record<string, readonly string[]>> = {
+  // Measured accepting `code+strong` and `code+em` at HTTP 201. Nothing is
+  // stripped for Confluence, and an empty table here is a finding rather than
+  // an omission.
+  confluence: {},
+  jira: {
+    code: ['link']
+  }
+};
+
+/**
+ * The mark combinations a product refuses, named the way an agent reading an
+ * error can act on.
+ *
+ * Exported because the same knowledge answers two questions in two files: this
+ * one uses it to *avoid* emitting a rejected document, and `jira.ts` uses it to
+ * explain a 400 that got past — see {@link jiraAdfViolations}. Written once so
+ * the two cannot drift.
+ */
+function conflictingMarks(target: AdfTarget, marks: AdfNode['marks']): string[] {
+  if (!marks || marks.length < 2) return [];
+  const companions = MARK_COMPANIONS[target];
+  const present = marks.map((mark) => mark.type);
+  const out: string[] = [];
+  for (const [owner, allowed] of Object.entries(companions)) {
+    if (!present.includes(owner)) continue;
+    for (const other of present) {
+      if (other === owner || allowed.includes(other)) continue;
+      out.push(`${owner}+${other}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Strip mark combinations `target` will not accept, recording each one.
+ *
+ * Runs over the finished document rather than at the point each mark is
+ * applied, and that placement is the argument: marks are added in four separate
+ * places — the emphasis loop, the link branch, the `listItem>heading` coercion
+ * which bolts `strong` onto whatever the heading already carried, and
+ * `blockquote>heading` doing the same. A rule enforced at each of them is a
+ * rule with four chances to be forgotten by the fifth. Here there is one gate
+ * and everything goes through it.
+ *
+ * It runs **before** the completeness check, so what that check measures is the
+ * document that will actually be sent.
+ */
+function normaliseMarks(node: AdfNode, target: AdfTarget): void {
+  const conflicts = conflictingMarks(target, node.marks);
+  if (conflicts.length && node.marks) {
+    const companions = MARK_COMPANIONS[target];
+    const owners = Object.keys(companions).filter((owner) =>
+      node.marks!.some((mark) => mark.type === owner)
+    );
+    const dropped = node.marks
+      .filter((mark) => !owners.includes(mark.type) && !owners.some((owner) => companions[owner].includes(mark.type)))
+      .map((mark) => mark.type);
+    node.marks = node.marks.filter((mark) => !dropped.includes(mark.type));
+    pendingCoercions.push(
+      `${dropped.join(' and ')} dropped from a code span: Jira's ADF validator rejects a text ` +
+        `node marked ${conflicts.join(' or ')} with a bare 400 INVALID_INPUT naming nothing ` +
+        '(KAN-502), unlike Confluence which stores it; the code span and its text are kept and ' +
+        'only the surrounding emphasis is lost'
+    );
+  }
+  for (const child of node.content ?? []) normaliseMarks(child, target);
+}
+
+/**
+ * Every construct in an ADF document that Jira is known to refuse, named.
+ *
+ * ## WHY THIS IS EXPORTED RATHER THAN PRIVATE
+ *
+ * `normaliseMarks` above means this converter no longer *emits* the mark
+ * combination, and {@link contain} means it no longer emits the nesting. Both
+ * are prevention, and prevention answers the question "did we send a bad
+ * document" only for the badness we already know about. When Jira answers 400
+ * INVALID_INPUT anyway — the code names no node, no mark and no field, and on
+ * the issue-creation endpoint it is not even accompanied by the code — the
+ * caller has a document and a verdict and nothing joining them.
+ *
+ * This joins them. `jira.ts` calls it on the body it just sent and appends
+ * whatever it finds to the refusal, so an agent reads *"the document contained
+ * X, which Jira refuses"* rather than `malformed (400)`. It returns an empty
+ * array when it recognises nothing, and **that is a real answer**: it means the
+ * document is clean by every rule this file knows, and the cause is something
+ * neither this converter nor this project has met yet — which is worth saying
+ * plainly rather than dressing up as a guess.
+ */
+export function jiraAdfViolations(payload: unknown): string[] {
+  const found: string[] = [];
+  const seen = new Set<unknown>();
+
+  // The whole REQUEST body is walked, not a document handed in already located,
+  // and that is deliberate: a comment carries its document at `body`, an edit
+  // at `fields.description`, a worklog at `comment`, and a create at
+  // `fields.description` beside a summary and a project. A caller that had to
+  // know which key held the document would need updating every time an
+  // operation was added, and the one it forgot would be the one that failed.
+  // So every object value is descended and an ADF node is recognised by shape.
+  const walk = (node: any, parent: string | null): void => {
+    if (!node || typeof node !== 'object') return;
+    // A payload is JSON and therefore acyclic; this guards against a caller
+    // that handed us something else, since a diagnostic that hangs is worse
+    // than one that says nothing.
+    if (seen.has(node)) return;
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child, parent);
+      return;
+    }
+
+    const type = typeof node.type === 'string' ? node.type : null;
+
+    if (type === 'text' && Array.isArray(node.marks)) {
+      for (const combination of conflictingMarks('jira', node.marks)) {
+        const quoted = typeof node.text === 'string' ? ` — ${JSON.stringify(node.text.slice(0, 40))}` : '';
+        found.push(
+          `a text node marked ${combination}${quoted}. Jira's ADF schema lets a code span carry ` +
+            'a link and nothing else, so a backticked identifier inside bold or italics is ' +
+            'refused; Confluence accepts the same node'
+        );
+      }
+    }
+
+    if (type && parent) {
+      const allowed = ALLOWED_CHILDREN.jira[parent];
+      // Named only where Confluence permits it, because that is the difference
+      // this diagnosis is competent to report. A nesting *neither* product
+      // allows is a converter bug rather than a product divergence, and
+      // `contain` refuses it before anything is sent.
+      if (allowed && !allowed.includes(type) && ALLOWED_CHILDREN.confluence[parent]?.includes(type)) {
+        found.push(`a ${type} inside a ${parent}, which Jira refuses and Confluence accepts`);
+      }
+    }
+
+    // `content` carries the ADF parentage; every other key is a container on
+    // the way to a document and passes `null` through, so a `description` key
+    // is never mistaken for a node type.
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'marks' || key === 'attrs') continue;
+      walk(value, key === 'content' ? type : null);
+    }
+  };
+
+  walk(payload, null);
+  return [...new Set(found)];
+}
+
 const text = (value: string, marks?: AdfNode['marks']): AdfNode =>
   marks && marks.length ? { type: 'text', text: value, marks } : { type: 'text', text: value };
 
@@ -279,7 +466,11 @@ export function inlineToAdf(source: string): AdfNode[] {
       continue;
     }
 
-    for (const [pattern, mark] of INLINE_MARKS) {
+    for (const { pattern, mark, wordBoundary } of INLINE_MARKS) {
+      // An underscore glued to the end of a word is part of the word, not an
+      // emphasis opener. See INLINE_MARKS for why this rule exists and what it
+      // cost before it did.
+      if (wordBoundary && i > 0 && WORD_CHAR.test(source[i - 1])) continue;
       const match = pattern.exec(rest);
       if (!match) continue;
       flush();
@@ -299,19 +490,55 @@ export function inlineToAdf(source: string): AdfNode[] {
   return out;
 }
 
+/** An alphanumeric, which is what "inside a word" means for {@link INLINE_MARKS}. */
+const WORD_CHAR = /[A-Za-z0-9]/;
+
 /**
  * Emphasis patterns, longest delimiter first.
  *
  * `**` must be tried before `*` or `**bold**` parses as an empty emphasis
  * followed by the word — the ordering is the whole correctness argument, so the
  * list is ordered rather than a map.
+ *
+ * ## `_` DOES NOT MARK INSIDE A WORD, AND THAT IS NOT A STYLE CHOICE (KAN-502)
+ *
+ * Underscore is an *identifier* character everywhere this fleet writes, and it
+ * was an emphasis delimiter here unconditionally until 2026-08-18. So
+ * `atlassian_update_confluence_page` in ordinary prose had its second and third
+ * underscores paired as emphasis, the run was consumed, and the identifier no
+ * longer appeared in the output text. The completeness check in
+ * {@link markdownToAdf} then did exactly its job and **refused the write**:
+ *
+ * ```
+ * AdfConversionError: The markdown→ADF conversion would have lost 1 token(s) from
+ * your content — "atlassian_update_confluence_page". NOTHING WAS WRITTEN.
+ * ```
+ *
+ * **The guard was never the bug.** Without it the identifier would have stored
+ * mangled and silently, which is the failure this whole file exists to prevent.
+ * The bug was here, one layer up, and its blast radius was every tool name this
+ * fleet has: `atlassian_get_issue`, `butchr_send_to_agent`, `butchr_list_agents`
+ * — every one of them snake_case with two or more underscores, and every one of
+ * them unwritable in prose. One underscore was safe only because it had no
+ * partner to pair with, which is why the defect read as context-dependent and
+ * was first diagnosed as something else entirely.
+ *
+ * `wordBoundary` is CommonMark's own intra-word rule, applied to the two `_`
+ * patterns and to neither `*` pattern: `*` is not an identifier character, and
+ * narrowing it would change how ordinary prose parses for no measured gain.
+ * Both ends are guarded, and they are guarded in different places because the
+ * scanner sees them differently — the **opener** by the character before it
+ * (checked at the call site in {@link inlineToAdf}, which is the only place
+ * that character is in scope), the **closer** by the negative lookahead in the
+ * pattern itself. Either one alone leaves the defect reachable from the other
+ * side: `_atlassian_update_` would still eat its own tail.
  */
-const INLINE_MARKS: readonly [RegExp, string][] = [
-  [/^\*\*([^*]+)\*\*/, 'strong'],
-  [/^__([^_]+)__/, 'strong'],
-  [/^~~([^~]+)~~/, 'strike'],
-  [/^\*([^*]+)\*/, 'em'],
-  [/^_([^_]+)_/, 'em']
+const INLINE_MARKS: readonly { pattern: RegExp; mark: string; wordBoundary: boolean }[] = [
+  { pattern: /^\*\*([^*]+)\*\*/, mark: 'strong', wordBoundary: false },
+  { pattern: /^__([^_]+)__(?![A-Za-z0-9])/, mark: 'strong', wordBoundary: true },
+  { pattern: /^~~([^~]+)~~/, mark: 'strike', wordBoundary: false },
+  { pattern: /^\*([^*]+)\*/, mark: 'em', wordBoundary: false },
+  { pattern: /^_([^_]+)_(?![A-Za-z0-9])/, mark: 'em', wordBoundary: true }
 ];
 
 /** How deep one level of list indentation is, in spaces. Two or four both work. */
@@ -704,6 +931,10 @@ export function markdownToAdf(markdown: string, target: AdfTarget = 'confluence'
       version: 1,
       content: blocks.length ? blocks : [paragraph([])]
     };
+
+    // Before the completeness check, never after: what that check measures has
+    // to be the document that will actually be sent. See `normaliseMarks`.
+    for (const block of doc.content) normaliseMarks(block, target);
 
     const produced = new Set(tokensOf(doc.content.map(plainText).join(' ')));
     const missing = [...new Set(contentTokens(markdown))].filter((token) => !produced.has(token));

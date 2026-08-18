@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 111 |
+| `yes` | 114 |
 | `partial` | 13 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **149** |
+| **total** | **152** |
 
-**124 of 149** run on every pull request.
+**127 of 152** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -55,6 +55,9 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-activate-requires-agent` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-activation-records-real-parentage` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-adf-conversion` | yes | imports the built converter and asserts against it in process; no live daemon, no herdr, no credential, no network, no terminal. |
+| `verify-adf-identifier-survives` | yes | imports the built converter and asserts against it in process; no live daemon, no herdr, no credential, no network, no terminal. |
+| `verify-adf-jira-mark-combinations` | yes | imports the built converter and asserts against it in process; no live daemon, no herdr, no credential, no network, no terminal. |
+| `verify-adf-refusal-names-the-construct` | yes | `explainProxyFailure` is a pure function from a status and a payload to a sentence, and it is called here directly; no live daemon, no herdr, no credential, no network, no terminal. |
 | `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Every section that ASSERTS derives from stated facts, so no verdict here moves with the load, the disk pressure or the free memory of the host. |
 | `verify-agent-connection-identity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-name-brands-have-one-home` | yes | reads `daemon/src/**/*.ts` as TEXT and asserts against it in process. No build, no `dist`, no live daemon, no herdr, no credential, no peer, no terminal, no network, and it writes nothing: the red-drive flags rewrite an in-memory copy of the source rather than the tree. |
