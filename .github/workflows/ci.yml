@@ -63,6 +63,25 @@ jobs:
   # `|| true`. Any of those turns the gate back into the reviewer's memory,
   # which is the failure this job exists to remove. If it goes red, the fix is
   # in the `verify-` script it names, not here.
+  #
+  # KAN-527 ADDED A SECOND STEP TO THIS JOB RATHER THAN A SECOND JOB, and the
+  # reason is the opposite of the one `operative-rule-carriage` records for
+  # splitting. That guard could afford its own job because somebody with admin
+  # was going to add it to branch protection; this one is a guard against a
+  # defect that is invisible by construction — a script `grep` cannot see — and a
+  # new job is NOT a required check until the protection list is edited, which is
+  # not an agent's to do. A guard that is merged and not required is the exact
+  # shape of the thing KAN-295 was filed about. So it goes where it gates on the
+  # day it lands.
+  #
+  # THE ORDER IS DELIBERATE AND THE SHORT-CIRCUIT FAILS IN THE RIGHT DIRECTION.
+  # The bytes step runs FIRST because it is a precondition for believing the
+  # second: `sweep-verify-exit-paths.mjs` reads every script with
+  # `readFileSync(f, 'utf8')`, which is exactly the NUL-tolerant path that let a
+  # non-text script through this required check in the first place. A tree whose
+  # bytes are in doubt makes its exit-path audit a claim about text nobody has
+  # established is the file. So a red here stops the run before a green is
+  # printed for a reading that could not be trusted anyway.
   verify-script-sweep:
     name: verify-script-sweep
     runs-on: ubuntu-latest
@@ -72,6 +91,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      # KAN-527. No dependency install here either — node builtins only, and it
+      # reads the files as BUFFERS rather than as utf8 strings, which is the
+      # whole of what makes it able to see what the step below cannot.
+      - name: Sweep scripts for control bytes and unfalsifiable fallbacks
+        run: node daemon/scripts/sweep-script-text-hazards.mjs --verbose
 
       # No dependency install: the sweep imports only node builtins (fs, path,
       # url). Keeping it dependency-free is what keeps it un-flaky.

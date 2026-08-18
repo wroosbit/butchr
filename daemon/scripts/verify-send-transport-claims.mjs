@@ -516,11 +516,24 @@ check(
     sendA.transportChosenBecause.includes(`${AGENT_A.type}/${AGENT_A.key}`),
   sendA.transportChosenBecause
 );
+// KAN-527. The needle was `sendA.connectionId ?? '<a raw NUL byte>'`, and the
+// sentinel is what that ticket is about: it made this whole file `data` to
+// `file(1)`, so no text tool would print a line of 800 lines of proof without
+// `-a` — AND it was one normalisation away from `?? ''`, which would have made
+// this assertion unfalsifiable, because `''` is a substring of every string in
+// existence.
+//
+// KAN-515's shape rather than an escaped byte: require the operand instead of
+// defaulting it, so THERE IS NO SENTINEL LEFT TO STRIP. Behaviour is unchanged
+// on both arms — a missing `connectionId` failed the old form too, since a basis
+// string does not contain a NUL — and the detail now says which half went.
 check(
   'C1 (bytes accepted) is asserted, and its basis names the connection',
   sendA.claims?.transportAccepted?.value === true &&
-    String(sendA.claims.transportAccepted.basis).includes(sendA.connectionId ?? ' '),
-  sendA.claims?.transportAccepted?.basis
+    typeof sendA.connectionId === 'string' &&
+    sendA.connectionId.length > 0 &&
+    String(sendA.claims.transportAccepted.basis).includes(sendA.connectionId),
+  `connectionId=${JSON.stringify(sendA.connectionId)} basis=${sendA.claims?.transportAccepted?.basis}`
 );
 check(
   'C2 (a live session exists) is asserted off the identity map',
