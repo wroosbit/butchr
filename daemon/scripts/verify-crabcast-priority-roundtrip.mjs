@@ -311,6 +311,11 @@ for (const rank of RANKS) {
     priority: resolved,
     promptContent: `KAN-482 priority round-trip probe (${rank.type}). Nothing is activated.`,
     defaultAgent: 'shell',
+    // KAN-496 made `channelArgv` a required input. `[]` is the kill-switch-off
+    // answer and keeps this payload byte-identical to the one this proof was
+    // written against; the dev-channels argv has its own round-trip proof in
+    // `verify-crabcast-channel-argv.mjs` and is not what this section measures.
+    channelArgv: [],
     mcpServers: undefined
   });
   console.log(

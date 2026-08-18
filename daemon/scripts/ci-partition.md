@@ -86,7 +86,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-confluence-workspaces` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cost-estimate-plausibility` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cpu-headroom-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
-| `verify-crabcast-channel-startup-disablement` | yes | reads `daemon/src/*.ts` and two docs as TEXT and asserts against them in process; no build, no live daemon, no herdr, no credential, no peer, no terminal, no CrabCast socket. |
+| `verify-crabcast-channel-startup-supervision` | yes | reads `daemon/src/*.ts` as TEXT and asserts against them in process; no build, no live daemon, no herdr, no credential, no peer, no terminal, no CrabCast socket. |
 | `verify-crabcast-reconnect-resync` | yes | stands up its own Unix socket and answers its own frames in process; no live daemon, no herdr, no PTY, no credential, no peer, no network. It writes nothing to disk outside os.tmpdir(). |
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

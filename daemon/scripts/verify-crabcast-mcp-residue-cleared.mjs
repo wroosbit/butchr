@@ -175,13 +175,22 @@ check(
   'and it clears BEFORE configure_agent is sent, not after',
   `clearWorkspaceMcpResidue at ${clearAt}, link.request(configure) at ${requestAt}`
 );
-// The guard three other scripts assert. Adding the fix must not re-open it.
-check(
-  !/import\s*(?:type\s*)?\{[^}]*\}\s*from\s*'\.\/launchers\.js'/.test(runtimeSrc),
-  "crabcast-runtime.ts still imports nothing from launchers.js (gate 3's guard, unnarrowed)",
-  runtimeSrc.split('\n').filter((l) => l.includes('launchers')).join('\n') ||
-    '(no line mentions launchers)'
-);
+// ⚠ THE launchers.js IMPORT BAN THAT STOOD HERE IS GONE (KAN-496), and it is
+// removed rather than narrowed BECAUSE IT WAS NEVER THIS SCRIPT'S PROPERTY.
+//
+// This file is about MCP residue: that Butchr's own entries are cleared out of
+// a workspace's `.mcp.json` before CrabCast is asked to write into it, and that
+// the clearing happens BEFORE the request. The import ban was gate 3's guard,
+// borrowed here as a neighbour's assertion — and the honest place for a
+// borrowed assertion to live is the script that owns it. It is now
+// `verify-workspace-mcp-preparation.mjs` §7, as an allow-list of imported
+// names, because CrabCast's `configure_agent` grew an argv member and this
+// runtime legitimately imports the flag composer to fill it.
+//
+// WHO COVERS WHAT, so nobody reads this deletion as coverage that vanished:
+// the MCP-shaping half is `verify-workspace-mcp-preparation.mjs` §7; the
+// dialog-supervision half that gate 3 was really about is
+// `verify-crabcast-channel-startup-supervision.mjs`.
 // One spelling of the filename, in the leaf module, used by both writers.
 check(
   /export const WORKSPACE_MCP_CONFIG = '\.mcp\.json'/.test(workspaceDirSrc),

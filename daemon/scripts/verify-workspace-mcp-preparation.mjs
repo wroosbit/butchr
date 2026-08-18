@@ -413,17 +413,51 @@ fs.rmSync(tmpDir, { recursive: true, force: true });
 // ───────────────────────────────────────────────────────────────────────────
 rule('§7  Neither runtime implementation applies a transform of its own');
 // ───────────────────────────────────────────────────────────────────────────
-// The property the seam buys. It is also what keeps §1 of gate 3's guard
-// (verify-crabcast-channel-startup-disablement.mjs) intact and UNNARROWED:
-// crabcast-runtime.ts still imports nothing from launchers.js.
-
+// The property the seam buys: neither runtime reshapes MCP server definitions
+// on its way to the wire.
+//
+// ⚠ THIS CHECK WAS NARROWED BY KAN-496, AND THE NARROWING IS THE HONEST MOVE
+// RATHER THAN A CONVENIENT ONE. It used to read "crabcast-runtime.ts imports
+// nothing from launchers.js", which was a PROXY for the real property and was
+// exact while the import count was zero. It is no longer zero: CrabCast's
+// `configure_agent` grew an argv member (contract 12, KAN-504) and this runtime
+// imports `developmentChannelArgv` to fill it — which is a channel flag and has
+// nothing to do with MCP assembly.
+//
+// So the check is now an ALLOW-LIST OF NAMES rather than a ban on the module. A
+// deny-list would be the thing that rots: it cannot see a name nobody has
+// thought of yet, and the names that would break this property — the MCP
+// assembly helpers — are exactly the ones a future author would reach for
+// innocently. Anything imported from `launchers.js` that is not on this list
+// goes red, including the MCP ones by construction.
+// Each name is here because somebody decided it, and the decision is one line:
+//   developmentChannelArgv — the dev-channels flag (KAN-496). A channel switch.
+//   AGENT_LAUNCHERS        — the launcher vocabulary, derived rather than copied
+//                            once gate 3's no-import premise retired (KAN-496).
+//   LauncherName           — the type of the above.
+// None of them shapes an MCP server definition, which is this section's property.
+const LAUNCHER_IMPORTS_ALLOWED = ['developmentChannelArgv', 'AGENT_LAUNCHERS', 'LauncherName'];
+// ALL import lines, not the first: `import {…}` and `import type {…}` from the
+// same module are two statements, and matching one would let the other carry
+// anything at all past this check.
+const launcherNames = [
+  ...runtimeSrc.matchAll(/import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*'\.\/launchers\.js'/g)
+]
+  .flatMap((m) => m[1].split(','))
+  .map((n) => n.replace(/^\s*type\s+/, '').trim())
+  .filter(Boolean);
 check(
-  !/import\s*(?:type\s*)?\{[^}]*\}\s*from\s*'\.\/launchers\.js'/.test(runtimeSrc),
-  'crabcast-runtime.ts imports nothing from launchers.js',
-  runtimeSrc
-    .split('\n')
-    .filter((l) => l.includes('launchers'))
-    .join('\n') || '(no line mentions launchers)'
+  launcherNames.every((n) => LAUNCHER_IMPORTS_ALLOWED.includes(n)),
+  `crabcast-runtime.ts imports only ${LAUNCHER_IMPORTS_ALLOWED.join(', ')} from launchers.js — nothing that shapes MCP`,
+  `imported: ${launcherNames.join(', ') || '(nothing)'}`
+);
+// AND THE POSITIVE CONTROL FOR THE LIST ITSELF: the MCP assembly helper really
+// is in that module, so the allow-list is excluding something reachable rather
+// than naming a hazard that does not exist.
+check(
+  typeof launchers.withWorkspaceIdentity === 'function',
+  'THE CONTROL: launchers.js really does export the MCP assembly this list excludes',
+  `withWorkspaceIdentity=${typeof launchers.withWorkspaceIdentity}`
 );
 const herdrCode = herdrSrc.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
 check(

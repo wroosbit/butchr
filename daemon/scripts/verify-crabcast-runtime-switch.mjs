@@ -384,13 +384,38 @@ check(
   JSON.stringify(reset)
 );
 
+// KAN-496 GAVE `pressPaneKey` A REAL IMPLEMENTATION, so what this asserts had
+// to change — and the interesting half is that it must still throw HERE.
+//
+// It used to refuse unconditionally, because CrabCast publishes no keystroke
+// verb. It still does not (`press_pane_key` answers `Unknown action`,
+// re-measured at contract 12), but the keystroke now goes through herdr, which
+// is CrabCast's pane substrate. `deadRuntime` has no sessions at all, so the
+// refusal it produces is the ADDRESS one — there is no workDir to find a pane
+// by — and that is what a runtime with nothing running must say.
+//
+// ⚠ The old message must NOT still be produced: an unconditional refusal would
+// mean the dev-channels dialog goes unanswered on every spawn, which is a fleet
+// that wedges at boot. So this checks the reason as well as the throw.
 let pressThrew = false;
+let pressReason = '';
 try {
   deadRuntime.pressPaneKey('kan-1', 'task', 'enter');
 } catch (err) {
-  pressThrew = /no CrabCast counterpart|press_pane_key/.test(String(err.message));
+  pressThrew = true;
+  pressReason = String(err.message);
 }
-check('pressPaneKey throws and names what is missing', pressThrew);
+check('pressPaneKey on a runtime with no sessions still throws', pressThrew, pressReason);
+check(
+  'and refuses on the ADDRESS, not on a missing capability (KAN-496)',
+  /no session for that address/.test(pressReason),
+  pressReason
+);
+check(
+  'so the old unconditional "no CrabCast counterpart" refusal is gone',
+  !/no CrabCast counterpart/.test(pressReason),
+  pressReason
+);
 
 deadRuntime.dispose();
 

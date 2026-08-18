@@ -180,7 +180,7 @@ try {
   // -------------------------------------------------------------------------
   process.stdout.write('\n§3 what each runtime declares\n');
   // -------------------------------------------------------------------------
-  const { CrabCastRuntime } = await import("../dist/crabcast-runtime.js");
+  const { CrabCastRuntime, buildConfigureAgentPayload } = await import("../dist/crabcast-runtime.js");
   const { HerdrBridge } = await import("../dist/herdr.js");
 
   // CONSTRUCTED, not read off the source as text. `channelReach` is a class
@@ -201,15 +201,65 @@ try {
   });
   const herdr = new HerdrBridge();
 
-  check("crabcast declares not-loaded (configure_agent has no argv field)",
-    crab.channelReach, "not-loaded");
+  // ⚠ KAN-496: `channelReach` IS NO LONGER A CONSTANT, and this section is
+  // rewritten around that rather than re-pinned to a new literal.
+  //
+  // AC2 asked for the value to move to `'loaded'` "as a consequence of the
+  // mechanism, not as an edit that outruns it". A check that asserted the new
+  // literal would be satisfied by exactly the edit AC2 forbids — which is the
+  // trap `epic/KAN-203` wrote into KAN-503 and `task/KAN-503` refused. So this
+  // drives the DERIVATION, both ways, through the seam the production path uses.
+  //
+  // ⚠ AND IT CANNOT READ THE PRODUCTION SWITCH TO DO IT. `channelEmissionEnabled()`
+  // reads a file under HOME; CI sandboxes HOME, so the real answer here is
+  // `not-loaded` on every CI run and `loaded` on a developer's machine with the
+  // switch on. An assertion against either would be a claim about the harness.
+  // `CrabCastRuntimeOptions.channelArgv` exists for this: one injected source
+  // that both `channelReach` and the `args` on the wire read.
+  const crabWith = new CrabCastRuntime({
+    link: inertLink, log: () => {}, censusIntervalMs: 24 * 60 * 60 * 1000,
+    channelArgv: () => ['--dangerously-load-development-channels=server:butchr']
+  });
+  const crabWithout = new CrabCastRuntime({
+    link: inertLink, log: () => {}, censusIntervalMs: 24 * 60 * 60 * 1000,
+    channelArgv: () => []
+  });
+
+  check("crabcast declares loaded when the spawn carries the flag",
+    crabWith.channelReach, "loaded");
+  check("crabcast declares not-loaded when it does not (the switch is off)",
+    crabWithout.channelReach, "not-loaded");
+
+  // THE DISCRIMINATING ARM. Both of the above would pass on a getter that
+  // ignored its input and happened to be right once; only a pair that DIFFERS
+  // shows the value is actually derived from the argv.
+  check("so the value is derived from the argv, not declared",
+    crabWith.channelReach !== crabWithout.channelReach, true);
+
+  // AND THE SAME ONE SOURCE REACHES THE WIRE. `channelReach` answering 'loaded'
+  // while `provision` sent no args is precisely KAN-495 with the alarm off, so
+  // the payload is built from the same injected function and compared.
+  const argv = ['--dangerously-load-development-channels=server:butchr'];
+  const payload = buildConfigureAgentPayload({
+    session: { workDir: '/tmp/kan496-inert' },
+    priority: 1, supervisor: false, promptContent: 'inert',
+    defaultAgent: 'claude', mcpServers: undefined, channelArgv: argv
+  });
+  check("and the argv that answers 'loaded' is the argv that goes on the wire",
+    JSON.stringify(payload.args), JSON.stringify(argv));
+  const payloadOff = buildConfigureAgentPayload({
+    session: { workDir: '/tmp/kan496-inert' },
+    priority: 1, supervisor: false, promptContent: 'inert',
+    defaultAgent: 'claude', mcpServers: undefined, channelArgv: []
+  });
+  check("and an empty argv OMITS the field rather than sending []",
+    Object.prototype.hasOwnProperty.call(payloadOff, 'args'), false);
+
   check("herdr declares unknown (its spawns CAN carry the flag; per-agent unrecorded)",
     herdr.channelReach, "unknown");
 
-  // The two must not be the same value, or this section would pass on a
-  // constant that ignored the runtime entirely.
-  check("the two runtimes give DIFFERENT answers", crab.channelReach !== herdr.channelReach, true);
-
+  crabWith.stop?.();
+  crabWithout.stop?.();
   crab.stop?.();
 
   // -------------------------------------------------------------------------
@@ -362,20 +412,28 @@ try {
   check('herdr flags BOTH arms of the || (a half-flagged line is the worse bug)',
     on.command.split(DEV_CHANNELS_FLAG).length - 1, 2);
 
-  // AND THE OTHER SIDE OF THE COMPARISON, which is structural rather than
-  // composed: CrabCast's provision frame has no argv member for a flag to
-  // travel in, so there is no equivalent call to make here. Asserted against
-  // the source rather than asserted in prose — this is one of the three
-  // re-openers crabcast-runtime.ts already names.
+  // AND THE OTHER SIDE OF THE COMPARISON. ⚠ THIS ASSERTION IS INVERTED SINCE
+  // KAN-496, and the inversion is the finding rather than an accommodation.
+  //
+  // It used to require that `crabcast-runtime.ts` import NOTHING from
+  // `launchers.js` — correct while `configure_agent` had no argv member, which
+  // made the absence structural. CrabCast added `args` at contract 12 (KAN-504),
+  // so the flag has a route in and this runtime takes it. An import is now the
+  // mechanism, and a file that had none would be a fleet with no channel again.
   const crabSrc = fs.readFileSync(new URL('../src/crabcast-runtime.ts', import.meta.url), 'utf8');
-  check('crabcast-runtime imports nothing from launchers (so the flag has no route in)',
-    /from '\.\/launchers\.js'/.test(crabSrc), false);
+  check('crabcast-runtime imports the flag composer (KAN-496: this IS the route in)',
+    /from '\.\/launchers\.js'/.test(crabSrc), true);
+  // And it imports the COMPOSER rather than composing a second copy. The whole
+  // argument for one call site is that a second spelling drifts, and under this
+  // runtime the copy that drifted would be the one nobody reads.
+  check('and composes no second copy of the flag literal',
+    crabSrc.includes('dangerously-load-development-channels=server:'), false);
 
   process.stdout.write(
-    '  VERDICT: the flag is on herdr\'s spawn and absent from CrabCast\'s, so KAN-495 IS\n' +
-    '  cutover-specific — a regression with a working baseline, not a latent defect the\n' +
-    '  cutover merely exposed. Had herdr also come back without the flag, this line\n' +
-    '  would have to say the opposite, loudly.\n'
+    '  VERDICT: the flag is now on BOTH runtimes\' spawns. KAN-495 was cutover-specific —\n' +
+    '  a regression with a working baseline — and KAN-496 closed it by giving CrabCast\'s\n' +
+    '  spawn the same argv herdr always had. Had herdr come back without the flag, or\n' +
+    '  CrabCast still without one, this line would have to say so, loudly.\n'
   );
 } finally {
   restoreSwitch();

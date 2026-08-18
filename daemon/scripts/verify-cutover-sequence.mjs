@@ -348,8 +348,18 @@ if (payload) {
   // enumeration of the payload was stale the moment this landed and was updated
   // in the same commit — that sentence is at `docs/crabcast-cutover-sequence.md`
   // in the resume table, and it now lists eight fields rather than five.
+  //
+  // KAN-496 ADDED `args`, AND IT IS SAFE FOR THIS SECTION'S NARROW PURPOSE.
+  // The claim being guarded is that nothing in the payload can resume a
+  // conversation. `args` carries extra argv for the launcher — in production,
+  // exactly the dev-channels flag from `launchers.ts` `developmentChannelArgv()`
+  // — and argv is read at process start, names no conversation, no transcript
+  // and no directory history. `claude --continue` would be a resume, and this
+  // file's neighbouring check is what refuses it: the resume guard reads the
+  // payload for resume-shaped values and is not widened here.
   const KNOWN = [
     'action',
+    'args',
     'chargeable',
     'launcher',
     'mcpServers',
