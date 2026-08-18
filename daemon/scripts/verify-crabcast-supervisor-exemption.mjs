@@ -104,9 +104,20 @@
 // of this script will take it back out — the next run makes new probes. Restore
 // the file, then clean the leak up by hand and confirm it went:
 //
-//   crabcast list --json | grep -o '"path":"[^"]*kan492-epic-[^"]*"'   # find it
-//   crabcast deactivate <path> && crabcast forget <path>
-//   crabcast capacity --json                                              # exempt back to baseline
+// ⚠ `crabcast list` IS NOT THE WAY TO FIND IT, measured here on 2026-08-18:
+// on this fleet it dies with `Line exceeded 1048576 characters`, in --json and
+// plain alike, so the obvious command answers nothing. The record is on disk,
+// and `agents.jsonl` is append-only — every past probe path is in it and only
+// one of them is live, so the state is what discriminates, not the grep:
+//
+//   for d in $(grep -o '/tmp/kan492-epic-[A-Za-z0-9]*' \
+//                ~/.local/share/crabcast/agents.jsonl | sort -u); do
+//     echo "$d -> $(crabcast status "$d" --json | grep -o '"state": *"[^"]*"' | head -1)"
+//   done          # expect exactly ONE `running`, the rest `unconfigured`
+//   crabcast deactivate <that path> && crabcast forget <that path>
+//   crabcast status <that path> --json     # its OWN command: expect success false
+//   crabcast status <a real agent's workDir> --json   # the control: expect true
+//   crabcast capacity --json               # `exemptAgents` back to the baseline
 
 import fs from 'fs';
 import os from 'os';
@@ -779,11 +790,17 @@ if (!link) {
         'cause read as two agreeing instruments.'
     );
   } else {
+    // ⚠ THIS LINE CLAIMS ONLY THAT THE COUNTER MOVES, and it is worded that way
+    // because the red drive showed why. An earlier draft interpolated
+    // `restored` and announced a RETURN — and in the run where the assertion
+    // above was RED it printed `5 is a RETURN` beside a leak, a PASS describing
+    // the state its own neighbour had just refuted. The return is the assertion
+    // above; the movement is this one. Neither may narrate the other's verdict.
     check(
       exemptWithProbe === exemptAsFound + 1,
-      `…and the control for it: the same counter was SEEN at ${exemptWithProbe} while this ` +
-        `proof's exempt agent was live, so ${restored.exemptAgents} is a RETURN and not a ` +
-        `counter that cannot move`,
+      `…and the control for it: the same counter was SEEN at ${exemptWithProbe}, one above ` +
+        `the ${exemptAsFound} baseline, while this proof's exempt agent was live — so the ` +
+        `comparison above is against a counter that CAN move`,
       JSON.stringify({ asFound: exemptAsFound, withOurProbeLive: exemptWithProbe })
     );
   }
