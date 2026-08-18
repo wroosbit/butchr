@@ -24,6 +24,15 @@ comment and send no nudge**. The tasks you close at merge are the opposite case 
 their agents have stopped, the poller cannot see them, and those you announce
 yourself. See *Announce a transition only where the board will not* below.
 
+⚠ **"Their agents have stopped" is now a matter of timing rather than of your
+own action (KAN-508).** You no longer stand a task's agent down by hand — setting
+`Done` does it, by way of the board reconciler, **on its cycle rather than in
+your motion**. So between your transition and the next reconcile the agent may
+still be up, and nothing on the ticket can tell you which side of that you are
+on. **The instruction is unchanged and the reason is stronger: announce those
+yourself, and put the substance in the comment**, which is durable and reaches
+an agent that has already gone as readily as one that has not.
+
 ## This brief is a snapshot, and it can be out of date
 
 **This file was rendered when you were activated, and nothing refreshes it while

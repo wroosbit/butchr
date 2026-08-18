@@ -86,6 +86,26 @@
 //      → 2 red, both in §5: a pane at a directory Butchr never owned is
 //      addressed by a stand-down. Everything else GREEN.
 //
+// ── AND §7'S TWO, WHICH ARE RUN AS A PAIR BECAUSE EITHER ALONE PROVES LITTLE ─
+//
+// §7 is the safety property — KAN-508's item 2 — and `epic/KAN-39` asked for it
+// in this shape: *"A test that only shows a Done ticket's agent being stopped
+// passes on a rule that stops everything."* So each arm is driven red by a
+// mutation the OTHER arm survives, which is what establishes that the section
+// discriminates rather than merely passes.
+//
+//   A. STOPS TOO MUCH. In `computeBoardDiff`, `continue` past any row whose
+//      `statusName` is `'In Review'`, so only In Progress is desired — the
+//      work-destroying regression this property exists to prevent.
+//      → 3 red: `KAN-420` becomes a stand-down candidate (`toStop` is
+//      `["KAN-420","KAN-504"]`). ⚠ **The discriminating arm stays GREEN.**
+//   B. STOPS NOTHING. Short-circuit the `running` loop to `unchanged`, so
+//      `toStop` is always empty — the opposite regression, and the one a
+//      one-armed test cannot see.
+//      → 2 red on the discriminating arm (`toStop` is `[]`). ⚠ **Arm 1 stays
+//      GREEN**, which is precisely the failure `epic/KAN-39` named: without arm
+//      2, this section would have passed a reconciler that never stops anything.
+//
 // ⚠ A FIFTH MUTATION WAS TRIED FIRST AND IS RECORDED BECAUSE IT DID NOT RUN.
 // Inserting `if (addressed.outcome !== 'one') return …` above the existing
 // branch narrowed the rest of the method to `never` and the build FAILED with
@@ -510,6 +530,90 @@ await section(
       'and the session route still addresses the peer by the session\'s own workDir',
       `peer received ${JSON.stringify(peer.sent)}`
     );
+  }
+);
+
+// ── §7 ─────────────────────────────────────────────────────────────────────
+await section(
+  '§7  IMPORTS dist — THE SAFETY PROPERTY: an In Review ticket keeps its agent, and a Done one does not',
+  async () => {
+    // ⚠ THIS SECTION IS THE ONE THAT MATTERS MOST, AND IT IS HERE BECAUSE OF
+    // WHAT IT WOULD BE WITHOUT ITS SECOND ARM. `epic/KAN-39` asked for it by
+    // name on KAN-508: *"A test that only shows a Done ticket's agent being
+    // stopped passes on a rule that stops everything."* That is exactly right —
+    // a one-armed test of a stand-down rule is satisfied by the most destructive
+    // rule there is, so the arms are run together and both are required.
+    //
+    // The property under test is KAN-508's item 2: nothing may stand down an
+    // agent whose work is unfinished. It is satisfied BY CONSTRUCTION rather
+    // than by a special case — `BOARD_JQL` admits `In Progress` AND `In Review`,
+    // so an In Review ticket is still DESIRED and never becomes a stand-down
+    // candidate. This asserts that construction holds, in the direction that
+    // would destroy work.
+    //
+    // It reproduces the judgement `epic/KAN-203` made by hand on 2026-08-16:
+    // two agents at Done stood down, `task/kan-420` at In Review deliberately
+    // left. The keys below are that incident's.
+    const { computeBoardDiff } = await import(path.join(distDir, 'board-reconcile.js'));
+
+    const board = [
+      // Staffed and unfinished — the agent MUST survive. This is the arm that
+      // fails on a rule that stops everything.
+      { key: 'KAN-420', statusName: 'In Review', issueTypeName: 'Task', assignee: 'acct-1' },
+      // Staffed and working — survives for the same reason, and is here so the
+      // section is not a claim about In Review alone.
+      { key: 'KAN-508', statusName: 'In Progress', issueTypeName: 'Task', assignee: 'acct-1' }
+      // KAN-504 is DELIBERATELY ABSENT. `BOARD_JQL` returns only In Progress /
+      // In Review rows, so a Done ticket is absent from the board rather than
+      // present with a Done status — modelling it as a row would be modelling a
+      // response Jira does not send.
+    ];
+
+    const running = [
+      { agentName: 'butchr-task-kan-420', type: 'task', key: 'KAN-420' },
+      { agentName: 'butchr-task-kan-508', type: 'task', key: 'KAN-508' },
+      { agentName: 'butchr-task-kan-504', type: 'task', key: 'KAN-504' } // its ticket is Done
+    ];
+
+    const diff = computeBoardDiff(board, running);
+    const stopping = diff.toStop.map((a) => a.key);
+    const desired = diff.desired.map((a) => a.key);
+
+    // ARM 1 — the work-destroying direction.
+    check(
+      !stopping.includes('KAN-420'),
+      '⚠ an In Review ticket with an assignee is NOT a stand-down candidate — its agent keeps running',
+      `toStop was ${JSON.stringify(stopping)} — this is the arm whose failure destroys work`
+    );
+    check(
+      desired.includes('KAN-420'),
+      'and it is positively DESIRED rather than merely spared, which is what makes it survive by construction',
+      `desired was ${JSON.stringify(desired)}`
+    );
+    check(
+      !stopping.includes('KAN-508'),
+      'an In Progress ticket with an assignee is not a stand-down candidate either',
+      `toStop was ${JSON.stringify(stopping)}`
+    );
+
+    // ARM 2 — the discriminating one. Without this the section passes on a rule
+    // that never stops anything, which is the mirror of the failure `epic/KAN-39`
+    // named and just as empty.
+    check(
+      stopping.includes('KAN-504'),
+      '⚠ DISCRIMINATING ARM: an agent whose ticket the board does NOT carry IS a stand-down candidate',
+      `toStop was ${JSON.stringify(stopping)} — without this, arm 1 would pass on a rule that ` +
+        `stops nothing at all, and the section would assert nothing`
+    );
+    check(
+      stopping.length === 1,
+      'exactly one of the three is a candidate — the rule is selective, not blanket and not inert',
+      `toStop was ${JSON.stringify(stopping)}`
+    );
+    if (verbose) {
+      console.log(`       desired: ${JSON.stringify(desired)}`);
+      console.log(`       toStop : ${JSON.stringify(stopping)}`);
+    }
   }
 );
 

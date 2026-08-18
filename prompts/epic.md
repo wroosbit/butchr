@@ -913,6 +913,20 @@ finished agents fill a cap of three. `butchr_deactivate_agent` remains yours for
 what the board cannot express — a wedged agent, one on the wrong branch — and
 that is now the exception rather than the routine.
 
+⚠ **One consequence for the announce rule above, because it is easy to miss:
+every `Done` you set is now "a transition paired with a deactivation", so it
+always falls in that rule's *No* branch.** That paragraph was written for the
+occasions you *chose* to deactivate, and it still reads like a deliberate act
+you perform — but the reconciler now performs it for you, on its own cycle, so
+the branch applies whether or not you were thinking about it. **Treat every
+`Done` as *No*: post the comment and do not rely on the poller reaching that
+agent.** ⚠ **And note the race, which the old wording did not have** — when you
+deactivated by hand you knew the agent was gone; now the gap between your
+transition and the next reconcile is a timing question nobody can answer from
+the ticket. That is a reason to put the substance in the comment, which is
+durable, rather than in anything that depends on the agent still being there to
+receive it.
+
 Keep statuses honest. If reality moved on — a PR merged, work was abandoned — and
 the ticket didn't, reconcile the ticket and say so in a comment.
 
