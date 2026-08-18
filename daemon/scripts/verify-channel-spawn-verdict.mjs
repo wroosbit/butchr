@@ -198,7 +198,7 @@ rule('1. the launcher — one call returns the command AND what it decided');
  * uses, and for the same reason: the fleet's real switch at
  * ~/.local/share/butchr/channel.json is never read and never written here.
  */
-function launchUnderSwitch(name, enabled) {
+function launchUnderSwitch(name, enabled, hasConversation = false) {
   const home = mkdtempSync(path.join(scratch, 'home-'));
   if (enabled !== null) {
     mkdirSync(path.join(home, '.local', 'share', 'butchr'), { recursive: true });
@@ -212,8 +212,15 @@ function launchUnderSwitch(name, enabled) {
     process.execPath,
     [
       '-e',
+      // KAN-533: `command()` takes a context now. `hasConversation` selects the
+      // arm that used to be the right-hand side of the `||`; the cold arm is
+      // chosen here because it is the one carrying the prompt, and because a
+      // bare `command()` throws rather than defaulting — which is deliberate,
+      // an arm chosen by omission is the guess `hasRestorableConversation()`
+      // exists to replace.
       `import(${JSON.stringify(mod)}).then((m) => ` +
-        `process.stdout.write(JSON.stringify(m.AGENT_LAUNCHERS[${JSON.stringify(name)}].command())))`
+        `process.stdout.write(JSON.stringify(m.AGENT_LAUNCHERS[${JSON.stringify(name)}]` +
+        `.command({ hasConversation: ${hasConversation} }))))`
     ],
     { encoding: 'utf8', env: { ...process.env, HOME: home } }
   );
@@ -248,6 +255,22 @@ for (const [label, got] of [['off', off], ['on', on], ['unset', unset]]) {
     got.channelEnabled === got.command.includes(FLAG),
     `switch ${label}: the verdict agrees with the command line it was returned WITH`,
     `channelEnabled=${got.channelEnabled}, command carries the flag=${got.command.includes(FLAG)}`
+  );
+}
+
+// THE VERDICT IS A PROPERTY OF THE SWITCH, NOT OF THE ARM (KAN-533). The `||`
+// put both arms on one command line, so one reading covered both; they are two
+// separate spawns now, and a build that read the switch per-arm could return
+// `true` for one and `false` for the other while every assertion above passed.
+// Asserted here rather than assumed because `launchers.ts` reads the switch off
+// disk inside `command()`, so it genuinely is read once per arm.
+for (const enabled of [true, false]) {
+  const resumed = launchUnderSwitch('claude', enabled, true);
+  const cold = launchUnderSwitch('claude', enabled, false);
+  check(
+    resumed.channelEnabled === cold.channelEnabled && resumed.channelEnabled === enabled,
+    `switch ${enabled}: both arms return the SAME verdict, and it is the switch's`,
+    `resumed=${resumed.channelEnabled}, cold=${cold.channelEnabled}`
   );
 }
 

@@ -58,40 +58,48 @@ changing node versions.
 
 **git.** Any version.
 
-**herdr — and you must pin it to the 0.6.x line.**
-
-> **This is the one prerequisite you cannot get from the obvious command.**
-> `https://herdr.dev/install.sh` installs the latest release, which is 0.7.5,
-> and **Butchr does not work with it.** herdr 0.7 redesigned `agent start`: it
-> attaches a named agent kind to an existing pane (`--kind`, `--pane`) instead
-> of creating one, and it dropped `--cwd`, `--tab`, `--no-focus` and the
-> trailing `-- <command>`. `daemon/src/herdr.ts` passes all of those, so on
-> 0.7.x **every** activation fails with `unknown option: --cwd`. Found by
-> following this document on a clean machine (KAN-33); porting the spawn path
-> to the new API is tracked separately.
-
-Install the pinned build directly:
+**herdr — 0.7 or newer**, which is what the obvious command gives you:
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fsSL -o ~/.local/bin/herdr \
-  https://github.com/herdrdev/herdr/releases/download/v0.6.4/herdr-linux-x86_64
-chmod +x ~/.local/bin/herdr
+curl -fsSL https://herdr.dev/install.sh | sh
 ```
 
 Then **open a new shell** — Ubuntu's `~/.profile` adds `~/.local/bin` to `PATH`
 only if the directory existed when the shell started, so in the session that
-just created it, `herdr` is not yet findable:
+just installed it, `herdr` is not yet findable:
 
 ```bash
-herdr --version   # herdr 0.6.4
+herdr --version   # herdr 0.8.0, or anything >= 0.7
 ```
 
 If it still is not found: `export PATH="$HOME/.local/bin:$PATH"`.
 
-Do **not** run `herdr update` — it will pull 0.7.x and break activation.
-`butchr-doctor` (step 7) fails on a wrong herdr line, and so does the daemon's
-startup log, so this cannot go wrong silently.
+`herdr update` is fine to run, and so is letting it update itself.
+
+> **This section used to say the opposite, and the reversal is worth one
+> paragraph** (KAN-533). Until 2026-08-18 this was *"the one prerequisite you
+> cannot get from the obvious command"*: herdr 0.7 redesigned `agent start` —
+> it attaches a named agent kind to an **existing** pane (`--kind`, `--pane`)
+> instead of creating one, dropping `--cwd`, `--tab`, `--no-focus` and the
+> trailing `-- <command>` — and `daemon/src/herdr.ts` passed all of those, so
+> every activation on 0.7.x died with `unknown option: --cwd`. This document
+> therefore told you to download a specific 0.6.4 binary by URL and never run
+> `herdr update`. **The spawn path is ported and that pin is gone.** A user who
+> installs herdr the way herdr tells them to now gets a Butchr that works, which
+> was the entire complaint (found on the KAN-33 clean-machine run).
+>
+> ⚠ **0.6.x is no longer supported**, and that is a deliberate drop rather than
+> an oversight. Butchr now starts agents with `agent start --kind/--pane`, which
+> 0.6 does not have; on a 0.6 build every activation fails with `unknown option:
+> --kind`. `butchr-doctor` (step 7) and the daemon's startup log both name the
+> version explicitly, so it cannot go wrong silently — and the message points at
+> the installer above rather than at a download URL.
+>
+> **Verified against 0.7.5 and 0.8.0.** Those two are API-identical for every
+> command Butchr issues; their bundled `herdr api schema --json` differ only in
+> definitions Butchr never touches. Above 0.8 the daemon logs *"newer than
+> verified"* — a note, not a refusal, because "we have not tried it" is not
+> evidence of a fault.
 
 **Chrome or Chromium.** The extension is Manifest V3 and is loaded unpacked;
 publishing to the Web Store is out of scope.

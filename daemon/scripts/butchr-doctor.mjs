@@ -94,31 +94,47 @@ const ago = (ms) => {
 
 // --- 2. herdr ------------------------------------------------------------
 
-// Kept in step with SUPPORTED_HERDR_MAJOR_MINOR in daemon/src/herdr-health.ts.
-// Not imported from it: this script must run against a clone that has not been
-// built, and dist/ is where that constant would have to come from.
-const SUPPORTED_HERDR = '0.6';
-const HERDR_PIN_URL =
-  'https://github.com/herdrdev/herdr/releases/download/v0.6.4/herdr-linux-x86_64';
+// Kept in step with MINIMUM_HERDR_MAJOR_MINOR / VERIFIED_HERDR_MAJOR_MINOR in
+// daemon/src/herdr-health.ts. Not imported from them: this script must run
+// against a clone that has not been built, and dist/ is where those constants
+// would have to come from.
+//
+// A FLOOR AND AN EVIDENCE MARKER, NEVER AN EQUALITY TEST (KAN-533). Doctor used
+// to fail on any line but one, so it went red on every herdr release until this
+// file was hand-edited — and it was red on 0.7.5 and 0.8.0 alike, which is how a
+// working install got reported as broken. Above VERIFIED_HERDR is a warning
+// because "we have not tried it" is what we know; it is not evidence of a fault.
+const MINIMUM_HERDR = [0, 7];
+const VERIFIED_HERDR = [0, 8];
+const HERDR_INSTALL = 'curl -fsSL https://herdr.dev/install.sh | sh';
+
+const fmt = ([maj, min]) => `${maj}.${min}`;
 
 const herdrVersion = tryExec('herdr', ['--version']);
 if (!herdrVersion) {
-  fail('herdr binary', `not on PATH. See docs/SETUP.md — and note that herdr.dev/install.sh installs the latest, which is not the ${SUPPORTED_HERDR}.x line Butchr needs.`);
+  fail('herdr binary', `not on PATH. Install it with the official installer:\n  ${HERDR_INSTALL}\nSee docs/SETUP.md.`);
 } else {
   const m = /(\d+)\.(\d+)/.exec(herdrVersion);
-  const line = m ? `${m[1]}.${m[2]}` : null;
-  if (line === SUPPORTED_HERDR) {
-    pass('herdr binary', herdrVersion);
-  } else if (line === null) {
+  const line = m ? [Number(m[1]), Number(m[2])] : null;
+  if (line === null) {
     warn('herdr binary', `${herdrVersion} — could not read a version number from that.`);
-  } else {
+  } else if (line[0] < MINIMUM_HERDR[0] || (line[0] === MINIMUM_HERDR[0] && line[1] < MINIMUM_HERDR[1])) {
     fail(
       'herdr binary',
-      `${herdrVersion}. Butchr's spawn path is written against the ${SUPPORTED_HERDR}.x line.\n` +
-      `herdr 0.7 redesigned 'agent start' (--kind/--pane, no --cwd), so activation fails\n` +
-      `with "unknown option: --cwd". Install the pinned build:\n` +
-      `  curl -fsSL -o ~/.local/bin/herdr ${HERDR_PIN_URL} && chmod +x ~/.local/bin/herdr`
+      `${herdrVersion}. Butchr starts agents with 'agent start --kind/--pane', which herdr\n` +
+      `gained in ${fmt(MINIMUM_HERDR)}, so on this build every activation fails with\n` +
+      `"unknown option: --kind". Upgrade with the official installer:\n` +
+      `  ${HERDR_INSTALL}`
     );
+  } else if (line[0] > VERIFIED_HERDR[0] || (line[0] === VERIFIED_HERDR[0] && line[1] > VERIFIED_HERDR[1])) {
+    warn(
+      'herdr binary',
+      `${herdrVersion} is newer than the ${fmt(VERIFIED_HERDR)}.x line Butchr has been verified against.\n` +
+      `It is expected to work and has not been tried. If activation fails, check whether\n` +
+      `'herdr agent start' still takes --kind/--pane.`
+    );
+  } else {
+    pass('herdr binary', herdrVersion);
   }
 }
 

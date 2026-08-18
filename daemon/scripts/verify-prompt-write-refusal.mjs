@@ -126,16 +126,27 @@ if (a === 'agent' && b === 'get') {
   process.stderr.write(JSON.stringify({ error: { code: 'not_found', message: \`no agent '\${args[2]}'\` } }));
   process.exit(1);
 }
+// KAN-533: herdr 0.7 — the pane exists first, \`--kind\` names the executable,
+// and only its arguments follow \`--\`.
+const flag = (name) => { const i = args.indexOf(name); return i === -1 ? '' : args[i + 1]; };
 if (a === 'agent' && b === 'start') {
   const sep = args.indexOf('--');
-  const cwdIdx = args.indexOf('--cwd');
   started.push({
     name: args[2],
-    cwd: cwdIdx === -1 ? '' : args[cwdIdx + 1],
-    command: sep === -1 ? [] : args.slice(sep + 1)
+    cwd: flag('--cwd'),
+    command: [flag('--kind'), ...(sep === -1 ? [] : args.slice(sep + 1))]
   });
   fs.writeFileSync(startedFile, JSON.stringify(started, null, 2));
-  out({ result: { agent: { name: args[2], pane_id: '9' } } });
+  out({ result: { agent: { name: args[2], pane_id: flag('--pane') } } });
+}
+// The \`shell\` route: herdr has no \`bash\` kind, so the pane is declared and
+// then named. This script activates as \`shell\`, so without these two answers
+// its agent never appears and a successful start reads as a refused one.
+if (a === 'pane' && b === 'report-agent') { out({ result: { type: 'ok' } }); }
+if (a === 'agent' && b === 'rename') {
+  started.push({ name: args[3], cwd: '', command: ['bash'] });
+  fs.writeFileSync(startedFile, JSON.stringify(started, null, 2));
+  out({ result: { agent: { name: args[3], pane_id: args[2] } } });
 }
 if (a === 'agent' && b === 'list') {
   out({ result: { agents: started.map((s) => ({ name: s.name, agent: 'claude', cwd: s.cwd, agent_status: 'working' })) } });
@@ -143,7 +154,11 @@ if (a === 'agent' && b === 'list') {
 if (a === 'agent' && b === 'attach') {
   setInterval(() => {}, 60000); // hold the terminal open, as a real attach would
 } else if (a === 'tab' && b === 'create') {
-  out({ result: { tab: { tab_id: '7' }, root_pane: { workspace_id: 'w1', terminal_id: 't1' } } });
+  // KAN-533: \`pane_id\` is REQUIRED of this fixture now. herdr 0.7's
+  // \`agent start --pane\` targets the root pane \`tab create\` returns, so a
+  // stub without one sends the daemon down its \"no usable pane\" refusal and
+  // every assertion below it becomes a claim about a failed activation.
+  out({ result: { tab: { tab_id: '7' }, root_pane: { pane_id: 'p1', workspace_id: 'w1', terminal_id: 't1' } } });
 } else if (a === 'pane' && b === 'list') {
   out({ result: { panes: [] } });
 } else {
@@ -161,8 +176,21 @@ const invocations = () => {
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 };
+/**
+ * Every recorded call that brought `name` up, by either of herdr 0.7's routes.
+ *
+ * ⚠ `agent start` alone misses the `shell` launcher entirely — it comes up as
+ * `pane report-agent` + `agent rename`, and `rename` carries the name at index
+ * 3 rather than 2. This script activates as `shell`, so a filter that looked
+ * only for `agent start` would count 0 starts for an activation that worked and
+ * report the refusal-under-test as leaking into the healthy path.
+ */
 const startsFor = (name) =>
-  invocations().filter((argv) => argv[0] === 'agent' && argv[1] === 'start' && argv[2] === name);
+  invocations().filter(
+    (argv) =>
+      argv[0] === 'agent' &&
+      ((argv[1] === 'start' && argv[2] === name) || (argv[1] === 'rename' && argv[3] === name))
+  );
 
 // ------------------------------------------------------------- the harness --
 //

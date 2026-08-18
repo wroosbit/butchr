@@ -6,7 +6,7 @@ import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers.js';
 import { McpServerDefinitions } from './integrations/integration.js';
-import type { AgentLauncher } from './launchers.js';
+import type { AgentLauncher, LaunchCommand } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
 import { runHerdrCli, type HerdrCliError } from './herdr-cli.js';
 import type {
@@ -391,6 +391,66 @@ const AGENT_NAME_TAKEN = 'agent_name_taken';
 const AGENT_NOT_FOUND = 'agent_not_found';
 const PANE_NOT_FOUND = 'pane_not_found';
 
+/**
+ * herdr's code for "there is no workspace to put this in".
+ *
+ * The state a freshly started `herdr server` is in before anything has opened a
+ * workspace — so it is the clean-machine path rather than an exotic one, and
+ * {@link createAgentPane} answers it by creating the workspace instead of
+ * failing the activation.
+ */
+const WORKSPACE_NOT_FOUND = 'workspace_not_found';
+
+/**
+ * herdr's code for "that pane is not an available shell".
+ *
+ * The answer `agent start` gives while the pane's login shell is still starting
+ * — see {@link startAgentWhenPaneIsReady}, which treats it as "not yet" and
+ * every other code as a real failure.
+ */
+const AGENT_PANE_BUSY = 'agent_pane_busy';
+
+/**
+ * How long a freshly created pane gets to reach its shell prompt.
+ *
+ * Measured at ~600ms on herdr 0.7.5 for a bash login shell; the budget is an
+ * order of magnitude above that because the cost of being wrong in the tight
+ * direction is a failed activation, and the cost of being wrong in the loose
+ * direction is only that a genuinely broken pane is diagnosed a few seconds
+ * later. It is a ceiling that is never reached, not a delay that is spent.
+ */
+const PANE_READY_BUDGET_MS = 10_000;
+
+/** Gap between `agent start` attempts while the pane is still coming up. */
+const PANE_READY_POLL_MS = 100;
+
+/**
+ * What `pane report-agent --source` is stamped with.
+ *
+ * herdr records who reported an agent's state so that two supervisors cannot
+ * silently overwrite each other's view of the same pane. Butchr is one
+ * reporter; naming it here rather than at the call site keeps the daemon's
+ * rows attributable in `agent list`.
+ */
+const HERDR_AGENT_SOURCE = 'butchr';
+
+/**
+ * How long `herdr agent start` may wait for the agent to become interactive.
+ *
+ * ⚠ **This is a real wait, and it is new** (KAN-533). Under 0.6.4 `agent start`
+ * returned once the pane existed, so the daemon learned nothing about whether
+ * the thing in it ever came up; under 0.7 the call blocks until the agent is
+ * detected and ready for input, and fails if it is not. Measured on 0.7.5, a
+ * cold `claude` in a trusted workspace answers in about 3s.
+ *
+ * Chosen below herdr's own 30s default because `initPty`'s caller is an MCP
+ * `activate` with roughly that much patience in total, and a spawn that eats
+ * the entire budget leaves nothing for the answer. A slow agent that trips this
+ * is reported as a spawn failure, which is the honest outcome — the alternative
+ * is the pre-0.7 behaviour of calling it a success and finding out later.
+ */
+const AGENT_START_TIMEOUT_MS = 20_000;
+
 /** Time the agent's TUI gets to redraw after the interrupt, before we type. */
 const INTERRUPT_SETTLE_MS = 100;
 
@@ -461,16 +521,23 @@ const EXIT_REASON_SCAN_CHARS = 2000;
 export type SessionEndReason = 'taken-over' | 'exited';
 
 /**
- * A tab opened for one agent to live in. The terminal id is carried alongside
- * the tab id because it is the only handle here that stays valid: herdr's tab
- * and pane ids are positions in lists that compact whenever anything earlier
- * closes, while a terminal id belongs to the terminal for as long as it runs.
+ * The pane one agent will live in, as `herdr tab create` just reported it.
+ *
+ * ⚠ **Consumed immediately and never stored** (KAN-533). herdr's pane and tab
+ * ids are positions in lists that compact whenever anything earlier closes, so
+ * one held across an unrelated agent's exit can silently name somebody else's
+ * pane. The old {@link AgentTab} carried a terminal id precisely because it had
+ * to survive a round trip — `agent start --tab` and then a `pane close` of the
+ * placeholder. 0.7's `agent start --pane` happens in the very next call, so
+ * there is no window to go stale in, and no stable handle is needed to close
+ * one: nothing is closed at all.
  */
-interface AgentTab {
-  tabId: string;
+interface AgentPane {
+  /** The pane the agent runs in — `tab create`'s own root pane, not a split of it. */
+  paneId: string;
   workspaceId: string;
-  /** The shell `herdr tab create` opens the tab on, which the agent replaces. */
-  placeholderTerminalId: string;
+  /** Diagnostic only; `workspace create` reports it in a different place. */
+  tabId?: string;
 }
 
 /** Told to the UI when a PTY dies, so a dead terminal never renders as a live one. */
@@ -1233,137 +1300,241 @@ export class HerdrBridge implements AgentRuntime {
   }
 
   /**
-   * Start `agentName` in a herdr tab of its own, running `argv`.
+   * Start `agentName` in a herdr tab of its own, bringing up `launch.argv`.
    *
-   * `herdr agent start` with no placement flags splits whatever pane is
-   * current, so every agent landed in the one tab the human happened to be on.
-   * Panes in a rendered tab are sized by the app's split layout, which divides
-   * the terminal between them — at seven agents each pane was about four
-   * columns wide and `agent read` came back one word per line, unreadable
-   * exactly when a large fleet is what you need to supervise.
+   * ## Why a tab per agent — unchanged by the port, and the reason it survives
+   *
+   * `herdr agent start` with no placement splits whatever pane is current, so
+   * every agent landed in the one tab the human happened to be on. Panes in a
+   * rendered tab are sized by the app's split layout, which divides the
+   * terminal between them — at seven agents each pane was about four columns
+   * wide and `agent read` came back one word per line, unreadable exactly when
+   * a large fleet is what you need to supervise.
    *
    * A tab is the unit that fixes this because the app only lays out the tab it
    * is *rendering*. An agent sitting in a background tab keeps whatever size
    * its last attach asked for — the 80x24 the `pty.spawn` in {@link initPty}
-   * requests — no matter how many other agents exist. That is the
-   * width-independence being bought here, and it is why this is a tab rather
-   * than a wider split.
+   * requests — no matter how many other agents exist.
    *
-   * herdr has no "start in a new tab" flag, so the tab is made first and the
-   * agent placed into it. `tab create` opens the tab on a placeholder shell and
-   * `agent start --tab` splits that, so the agent would get half a tab and
-   * twice the file descriptors; {@link closeTabPlaceholder} takes the
-   * placeholder back out again. What remains is one pane per agent, the same
-   * cost as before, and herdr closes the tab on its own once that last pane
-   * exits — so finished agents leave nothing behind.
+   * ## What herdr 0.7 changed, and why this got SIMPLER (KAN-533)
+   *
+   * Until 0.7, `agent start` *created* the pane: it took `--cwd`, `--tab`,
+   * `--no-focus` and a trailing `-- <argv>` run under `bash -c`. This method
+   * therefore made a tab, and then had to **undo half of it** — `tab create`
+   * opens the tab on a placeholder shell, `agent start --tab` split that
+   * placeholder, and a `closeTabPlaceholder` helper went back afterwards to
+   * take the spare pane out again. One pane per agent was the *result* of
+   * creating two and closing one.
+   *
+   * 0.7 inverts the call: `agent start <NAME> --kind <KIND> --pane <ID>`
+   * attaches a named agent kind to a pane **that already exists and is sitting
+   * at its shell prompt**. That is precisely what `tab create` hands back. So
+   * the placeholder is no longer something to dispose of — **it is the agent's
+   * pane**, and the whole placeholder dance, its pane-id-renumbering race and
+   * its terminal-id re-resolution went with it. Two herdr calls now, where
+   * there were four.
+   *
+   * ## The four options that were dropped, and where each went
+   *
+   * | dropped from `agent start` | replacement |
+   * | --- | --- |
+   * | `--cwd <dir>`   | `tab create --cwd <dir>` — this method already called it |
+   * | `--tab <id>`    | `--pane <root_pane.pane_id>` of that same tab |
+   * | `--no-focus`    | `tab create --no-focus` — already passed |
+   * | `-- env … bash -c "<cmd>"` | `tab create --env` for the environment, `--kind` for the executable, `-- <args>` for its arguments |
+   *
+   * ⚠ **There is no fallback placement any more, and that is deliberate.** The
+   * old code, when `tab create` failed, spawned into herdr's default placement
+   * — a cosmetic loss beat a broken activation. Under 0.7 that trade does not
+   * exist to make: `--pane` is *required*, so no pane means no agent, and a
+   * fallback here could only be a fallback to failing later and less clearly.
+   * A tab that cannot be created refuses the activation through the same
+   * `spawnError` channel everything else does.
    */
-  private startAgentInOwnTab(agentName: string, workDir: string, argv: string[]): void {
-    const start = (placement: string[]) => this.runHerdr([
-      'agent', 'start', agentName,
-      '--cwd', workDir,
-      ...placement,
-      // Spawning is a background event; the human is usually reading something
-      // else. herdr already defaults this way, but a default that flipped
-      // would yank the screen away on every activation, so it is stated.
-      '--no-focus',
-      '--',
-      ...argv
-    ]);
+  private startAgentInOwnTab(
+    agentName: string,
+    workDir: string,
+    launch: LaunchCommand,
+    env: Record<string, string>
+  ): void {
+    const pane = this.createAgentPane(agentName, workDir, env);
 
-    const tab = this.createAgentTab(agentName, workDir);
-    if (!tab) {
-      // No tab is a cosmetic loss; no agent is a broken activation. Spawn the
-      // agent the old way rather than fail over where it gets drawn.
-      start([]);
+    if (launch.kind) {
+      this.startAgentWhenPaneIsReady(agentName, pane, [
+        'agent', 'start', agentName,
+        '--kind', launch.kind,
+        '--pane', pane.paneId,
+        // Bounded because herdr's own default is 30s and an activation's MCP
+        // caller has about that much patience in total. What this buys over
+        // 0.6.4 is real: `agent start` now returns only once the agent is
+        // DETECTED AND READY FOR INPUT, where 0.6.4 returned as soon as the
+        // pane existed. An agent wedged on a startup dialog used to be
+        // reported as a successful spawn; now it is a spawn failure with
+        // herdr's own account of what it saw.
+        '--timeout', String(AGENT_START_TIMEOUT_MS),
+        // argv[0] is the executable, and herdr derives that from --kind. Only
+        // its arguments cross this boundary.
+        '--',
+        ...launch.argv.slice(1)
+      ]);
       return;
     }
 
-    try {
-      try {
-        start(['--tab', tab.tabId]);
-      } catch (e: any) {
-        // The name being taken means the agent exists already — the caller
-        // handles that, and retrying would start a second one.
-        if ((e as HerdrCliError)?.herdrCode === AGENT_NAME_TAKEN) throw e;
-
-        // Tab ids are positional and renumber whenever an earlier tab closes,
-        // so the id we were just handed can go stale between the two calls.
-        // Ours is always the newest and therefore the highest-numbered, so a
-        // renumber can only leave it dangling — herdr answers
-        // `agent_placement_not_found` and never resolves it to somebody else's
-        // tab. Falling back keeps the spawn working through that race.
-        console.error(
-          `[HerdrBridge] Could not place ${agentName} in tab ${tab.tabId} ` +
-          `(${e?.message ?? String(e)}); starting it in herdr's default placement instead`
-        );
-        start([]);
-      }
-    } finally {
-      // Also on the failure paths: an abandoned tab would otherwise sit there
-      // holding a shell nobody asked for.
-      this.closeTabPlaceholder(tab);
-    }
+    // ── The no-kind route ────────────────────────────────────────────────
+    // herdr starts agents by kind from a closed list, and `bash` is not on it
+    // (`--kind bash` -> `unsupported interactive agent kind`). It does not need
+    // to be: the pane is ALREADY running the shell we wanted, so there is
+    // nothing to start — only something to declare. `pane report-agent` is
+    // herdr's API for a supervisor saying what it put in a pane, and
+    // `agent rename` puts Butchr's name on it. Measured on 0.7.5: after these
+    // two, `agent get <name>`, `agent list` and `agent attach` all resolve it
+    // exactly as they resolve an `agent start`ed one.
+    //
+    // ⚠ THIS ASSERTS LIVENESS RATHER THAN OBSERVING IT, which is the one thing
+    // the two routes do not share. `agent start` refuses if the agent never
+    // becomes interactive; this cannot, because there is no detection manifest
+    // for a bare shell. That is correct HERE and would be wrong for a real
+    // agent — a bash prompt is up the moment the pane is, which is the whole
+    // of what `shell` promises. See LaunchCommand.kind.
+    this.runHerdr([
+      'pane', 'report-agent', pane.paneId,
+      '--source', HERDR_AGENT_SOURCE,
+      // The label herdr will report back as the record's `agent` field. It is
+      // argv[0] rather than a constant so that `agent list` names what is
+      // actually running in the pane.
+      '--agent', launch.argv[0],
+      '--state', 'idle'
+    ]);
+    this.runHerdr(['agent', 'rename', pane.paneId, agentName]);
   }
 
   /**
-   * Open a tab for an agent, labelled with the agent's name so the human can
-   * tell the fleet apart at a glance. Returns undefined rather than throwing —
-   * every caller can still spawn without one.
-   */
-  private createAgentTab(agentName: string, cwd: string): AgentTab | undefined {
-    try {
-      const result = this.runHerdr([
-        'tab', 'create', '--cwd', cwd, '--label', agentName, '--no-focus'
-      ])?.result;
-
-      const tabId = result?.tab?.tab_id;
-      const workspaceId = result?.root_pane?.workspace_id;
-      const placeholderTerminalId = result?.root_pane?.terminal_id;
-      if (typeof tabId !== 'string' || typeof workspaceId !== 'string' || typeof placeholderTerminalId !== 'string') {
-        throw new Error('herdr tab create returned no usable tab');
-      }
-
-      return { tabId, workspaceId, placeholderTerminalId };
-    } catch (e: any) {
-      console.error(
-        `[HerdrBridge] Could not create a tab for ${agentName} (${e?.message ?? String(e)}); ` +
-        `it will share whichever tab herdr picks`
-      );
-      return undefined;
-    }
-  }
-
-  /**
-   * Close the shell `tab create` opened the tab on, leaving the agent alone in
-   * it (or, when the agent went elsewhere, leaving an empty tab that herdr
-   * then closes itself).
+   * Run `agent start`, waiting out the pane's own start-up first.
    *
-   * The placeholder is found by terminal id, not by the pane id `tab create`
-   * reported. Pane ids are positions in a list that compacts every time any
-   * pane anywhere in the workspace closes — an agent finishing two tabs over
-   * silently renumbers everything after it — while terminal ids are stable for
-   * the life of the terminal. Re-resolving immediately before the close is
-   * what keeps this from closing some other agent's pane.
+   * ## The race, and why it is not a flake
+   *
+   * herdr 0.7's `agent start` requires its target pane to be **at an interactive
+   * shell prompt**, and `tab create` returns as soon as the pane *exists* — the
+   * shell inside it has not been exec'd yet, let alone reached a prompt. So the
+   * obvious two-call sequence, `tab create` then `agent start`, fails **every
+   * time** rather than intermittently:
+   *
+   * ```
+   * {"error":{"code":"agent_pane_busy",
+   *           "message":"agent target pane w1:p7 is not an available shell"}}
+   * ```
+   *
+   * ⚠ **It reproduces 3 times in 3 on a quiet machine**, so it is a missing step
+   * and not contention. Measured on herdr 0.7.5: the pane becomes an available
+   * shell after roughly 600ms — four refusals at 100ms apart, then it takes.
+   * That is a login shell sourcing a profile, which is why it is unhurried and
+   * why the budget below is generous rather than tight.
+   *
+   * ## Why retrying `agent start` rather than polling for readiness
+   *
+   * There is nothing to poll. `pane get` reports `agent_status`, `cwd` and a
+   * scroll position, and **none of them say whether a shell is up** — the field
+   * that would answer this does not exist. The alternatives were to wait for a
+   * prompt with `pane wait-output`, which needs a regex for a prompt the user
+   * owns and this daemon does not, or a fixed `sleep`, which is a guess that is
+   * simultaneously too short on a loaded machine and wasted on an idle one.
+   *
+   * **So the readiness test is herdr's own verdict.** `agent_pane_busy` is
+   * precisely the answer "not yet", and retrying on exactly that code — and
+   * rethrowing everything else untouched — means this waits on the real
+   * condition rather than on a proxy for it. A pane that never comes up fails
+   * with herdr's own message after {@link PANE_READY_BUDGET_MS} rather than
+   * hanging.
    */
-  private closeTabPlaceholder(tab: AgentTab): void {
+  private startAgentWhenPaneIsReady(agentName: string, pane: AgentPane, args: string[]): void {
+    const deadline = Date.now() + PANE_READY_BUDGET_MS;
+    let attempts = 0;
+
+    for (;;) {
+      attempts += 1;
+      try {
+        this.runHerdr(args);
+        if (attempts > 1) {
+          console.log(
+            `[HerdrBridge] Pane ${pane.paneId} was still starting up; ` +
+            `${agentName} took ${attempts} attempts over ${PANE_READY_POLL_MS * (attempts - 1)}ms`
+          );
+        }
+        return;
+      } catch (e: any) {
+        // Anything that is not "the shell is not up yet" is a real failure and
+        // is not retried — a name already taken, a pane that vanished, a herdr
+        // that is not answering. Retrying those would turn a clear refusal into
+        // a slow one.
+        if ((e as HerdrCliError)?.herdrCode !== AGENT_PANE_BUSY) throw e;
+        // Out of budget: rethrow herdr's own message rather than a synthesised
+        // one, so the daemon log carries what herdr actually said.
+        if (Date.now() >= deadline) throw e;
+        sleepSync(PANE_READY_POLL_MS);
+      }
+    }
+  }
+
+  /**
+   * Open a tab for an agent and hand back the pane the agent will run in.
+   *
+   * Labelled with the agent's name so the human can tell the fleet apart at a
+   * glance, and created with the workspace's environment already set —
+   * `tab create --env` (new in 0.7) is what replaced the `env KEY=VALUE …`
+   * prefix that used to ride in on `agent start`'s trailing argv.
+   *
+   * ⚠ **Throws rather than returning undefined, which is a reversal** (KAN-533).
+   * Before 0.7 a missing tab was survivable, so this returned `undefined` and
+   * the caller spawned into herdr's default placement. `agent start --pane` is
+   * mandatory now, so a pane is not a cosmetic nicety — it is the spawn's only
+   * possible target, and failing here with herdr's own message beats failing
+   * two calls later with `--pane undefined`.
+   */
+  private createAgentPane(agentName: string, cwd: string, env: Record<string, string>): AgentPane {
+    const create = (extra: string[]) => this.runHerdr([
+      'tab', 'create',
+      '--cwd', cwd,
+      '--label', agentName,
+      // Spawning is a background event; the human is usually reading something
+      // else. herdr already defaults this way, but a default that flipped would
+      // yank the screen away on every activation, so it is stated.
+      '--no-focus',
+      ...Object.entries(env).flatMap(([name, value]) => ['--env', `${name}=${value}`]),
+      ...extra
+    ])?.result;
+
+    let result;
     try {
-      const panes = this.runHerdr(['pane', 'list', '--workspace', tab.workspaceId])?.result?.panes;
-      const placeholder = Array.isArray(panes)
-        ? panes.find((pane: any) => pane?.terminal_id === tab.placeholderTerminalId)
-        : undefined;
-
-      // Already gone: the human closed it, or the tab never survived.
-      if (typeof placeholder?.pane_id !== 'string') return;
-
-      this.runHerdr(['pane', 'close', placeholder.pane_id]);
+      result = create([]);
     } catch (e: any) {
-      // A stranded placeholder costs one idle shell, which is not worth
-      // failing an otherwise good activation over.
-      console.error(
-        `[HerdrBridge] Could not close the placeholder pane in tab ${tab.tabId}: ` +
-        `${e?.message ?? String(e)}`
+      // A herdr server with no workspace open yet — the clean-machine case this
+      // ticket exists for, and the state a freshly started `herdr server` is
+      // actually in. `tab create` has nowhere to put a tab and says so; a
+      // workspace is the thing that has to exist first, and creating one also
+      // creates the tab and pane we were asking for.
+      if ((e as HerdrCliError)?.herdrCode !== WORKSPACE_NOT_FOUND) throw e;
+      console.log(
+        `[HerdrBridge] No herdr workspace open; creating one for ${agentName}`
+      );
+      result = this.runHerdr([
+        'workspace', 'create',
+        '--cwd', cwd,
+        '--label', agentName,
+        '--no-focus',
+        ...Object.entries(env).flatMap(([name, value]) => ['--env', `${name}=${value}`])
+      ])?.result;
+    }
+
+    const paneId = result?.root_pane?.pane_id;
+    const workspaceId = result?.root_pane?.workspace_id;
+    const tabId = result?.tab?.tab_id ?? result?.root_pane?.tab_id;
+    if (typeof paneId !== 'string' || typeof workspaceId !== 'string') {
+      throw new Error(
+        `herdr ${result?.type ?? 'tab create'} returned no usable pane for ${agentName}`
       );
     }
+
+    return { paneId, workspaceId, tabId: typeof tabId === 'string' ? tabId : undefined };
   }
 
   private initPty(session: HerdrSession, initialPrompt?: string, defaultAgent?: string, mcpServers?: WorkspaceMcpServers): void {
@@ -1624,13 +1795,42 @@ export class HerdrBridge implements AgentRuntime {
         // produced are one return value, so there is no edit to this file that
         // can supervise a channel decision the pane did not make.
         const spawnedAt = Date.now();
-        const { command, channelEnabled } = launcher.command(fallbackPrompt);
-        this.startAgentInOwnTab(agentName, session.workDir, [
-          'env',
-          `PATH=${process.env.PATH}`,
-          ...Object.entries(RESUME_ENV).map(([name, value]) => `${name}=${value}`),
-          'bash', '-c', command
-        ]);
+        const launch = launcher.command({
+          promptCommand: fallbackPrompt,
+          // ⚠ THE `||` USED TO ANSWER THIS AND NOW THIS DOES (KAN-533). herdr
+          // 0.7 runs the agent's executable directly, so there is no shell left
+          // to hold `claude --continue || claude '<prompt>'`. The daemon was
+          // already holding the answer: `resumedConversation` above is
+          // `hasRestorableConversation(workDir)`, read off local disk before
+          // anything was spawned. Re-read here rather than reused from that
+          // variable because it is only set on the `resume` path, while every
+          // spawn — cold start included — has to choose an arm.
+          //
+          // `HerdrBridge` cannot answer `'unknown'` (see `spawnSession`), which
+          // is what makes a boolean honest here rather than lossy.
+          hasConversation: hasRestorableConversation(session.workDir)
+        });
+        const { command, channelEnabled } = launch;
+        this.startAgentInOwnTab(agentName, session.workDir, launch, {
+          // The pane inherits the herdr *server's* environment, and that server
+          // is typically started at login with a thin PATH (no nvm). Passed as
+          // tab-level env — 0.7's `tab create --env`, which is what replaced the
+          // `env KEY=VALUE …` argv prefix `agent start` used to carry.
+          //
+          // ⚠ Measured on 0.7.5: the pane is an interactive shell, so its
+          // profile PREPENDS to whatever is set here rather than replacing it.
+          // Our value survives as the tail, which is what we need — this is
+          // additive, and it is no longer the only thing standing between the
+          // agent and a usable PATH.
+          PATH: process.env.PATH ?? '',
+          // RESUME_ENV rides along for the same reason it always did: it raises
+          // the two thresholds behind Claude Code's "Resume from summary /
+          // Resume full session" prompt, which otherwise appears whenever a
+          // resumed conversation is both over 70 minutes old and over 100k
+          // tokens — the exact shape of an agent that has been working all
+          // afternoon, and a hard stop for one with nobody at the keyboard.
+          ...RESUME_ENV
+        });
 
         // A pane we just started, and the only branch that reaches here. The
         // attach path below is deliberately excluded: an agent that already

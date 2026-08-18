@@ -214,20 +214,43 @@ export function isFdPressureHigh(p: FdUsage): boolean {
 }
 
 /**
- * The herdr line Butchr's spawn path is written against.
+ * The oldest herdr line Butchr's spawn path can drive.
  *
  * herdr 0.7.0 redesigned `agent start`: it no longer creates a pane, it
  * attaches a *named agent kind* to an existing one (`--kind`/`--pane`), and it
  * dropped `--cwd`, `--tab`, `--no-focus` and the trailing `-- <argv>` command.
- * `startAgentInOwnTab` in herdr.ts passes all of those, so on 0.7.x every
- * activation dies with `unknown option: --cwd` — found on the KAN-33
- * clean-machine run, where the current installer hands a new user 0.7.5.
+ * KAN-533 ported `startAgentInOwnTab` to that API, which is why this moved from
+ * `0.6` to `0.7` and **reversed direction: 0.6 is now the unsupported side.**
  *
- * Adapting the spawn path to the new API is real work in a contended file and
- * is tracked separately. What belongs here is that the incompatibility names
- * itself, rather than surfacing as a stray getopt error.
+ * ⚠ **A FLOOR, NOT A PIN — and the difference is the whole lesson of KAN-533.**
+ * This constant used to be compared for *equality*, so every herdr release was
+ * an alarm until somebody hand-edited this line. An enumeration that must be
+ * re-typed whenever the world moves fails toward a false alarm on the day it is
+ * stalest — and it did, inside this very ticket: KAN-533 was filed naming 0.7.5
+ * as "the latest", and by the time an agent picked it up the installer was
+ * handing out **0.8.0**. See {@link checkHerdrVersion} for the three-way answer
+ * that replaced the equality test.
  */
-export const SUPPORTED_HERDR_MAJOR_MINOR = '0.6';
+export const MINIMUM_HERDR_MAJOR_MINOR = '0.7';
+
+/**
+ * The newest herdr line this spawn path has actually been run against.
+ *
+ * ⚠ **An evidence marker, not a ceiling.** Nothing is refused for being above
+ * it; it decides only whether the version note reads *"verified"* or *"newer
+ * than anything this has been tried against"*. Raising it is a claim that
+ * somebody ran the spawn path against that release, and
+ * `daemon/scripts/verify-herdr-spawn-argv.mjs` is where that claim is checked.
+ *
+ * 0.7.5 and 0.8.0 were both measured for KAN-533 and are API-identical for every
+ * command Butchr issues. Their bundled schemas (`herdr api schema --json`)
+ * differ in exactly three definitions — `WorkspaceMoveBlockParams`,
+ * `IntegrationTarget`, `Subscription` — and Butchr uses none of them: it reaches
+ * herdr only through CLI subcommands, and names no socket-API type anywhere in
+ * `daemon/src`. That is a measurement rather than an inference; the grep and its
+ * positive control are in the KAN-533 PR body.
+ */
+export const VERIFIED_HERDR_MAJOR_MINOR = '0.8';
 
 /** `herdr --version` output → a comparable `[major, minor]`, or undefined. */
 export function parseHerdrVersion(versionOutput: string): [number, number] | undefined {
@@ -240,29 +263,49 @@ export function parseHerdrVersion(versionOutput: string): [number, number] | und
  * A warning when herdr is a line Butchr cannot drive, or undefined when it is
  * fine (or unreadable — an unknown version is not evidence of a problem, and
  * refusing to run on one would break every future release).
+ *
+ * ## Three answers, and the middle one is why this is not an equality test
+ *
+ * - **Below {@link MINIMUM_HERDR_MAJOR_MINOR}** — refused, and the message says
+ *   *what to do*. This is the branch the red drive exercises: the whole point of
+ *   naming the version is that the alternative symptom is a bare
+ *   `unknown option: --kind` from herdr's own getopt, which tells a user nothing.
+ * - **Between the floor and {@link VERIFIED_HERDR_MAJOR_MINOR}** — silent. This
+ *   is the supported range and it spans more than one release on purpose.
+ * - **Above the verified line** — a note, not an alarm. Butchr has no reason to
+ *   think a newer herdr broke it; it simply has not been tried. ⚠ **Saying
+ *   "unverified" where the old code said "this will fail" is the correction, not
+ *   a softening**: the old wording asserted breakage it had not observed, and on
+ *   0.8.0 — which works — it would have been flatly wrong.
  */
 export function checkHerdrVersion(versionOutput: string): string | undefined {
   const parsed = parseHerdrVersion(versionOutput);
   if (!parsed) return undefined;
 
   const [major, minor] = parsed;
-  const [wantMajor, wantMinor] = SUPPORTED_HERDR_MAJOR_MINOR.split('.').map(Number);
-  if (major === wantMajor && minor === wantMinor) return undefined;
+  const [minMajor, minMinor] = MINIMUM_HERDR_MAJOR_MINOR.split('.').map(Number);
+  const [verMajor, verMinor] = VERIFIED_HERDR_MAJOR_MINOR.split('.').map(Number);
 
   // `herdr --version` already prints "herdr 0.7.5", so the name is not
   // prepended — doing so produced "herdr herdr 0.7.5" in the daemon log.
-  if (major > wantMajor || (major === wantMajor && minor > wantMinor)) {
+  if (major < minMajor || (major === minMajor && minor < minMinor)) {
     return (
-      `${versionOutput.trim()} is newer than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr's spawn path ` +
-      `is written against. herdr 0.7 redesigned 'agent start' — it takes --kind/--pane and no longer ` +
-      `accepts --cwd — so every activation will fail with 'unknown option: --cwd'. Install ${SUPPORTED_HERDR_MAJOR_MINOR}.4: ` +
-      `see docs/SETUP.md, prerequisites.`
+      `${versionOutput.trim()} is older than the ${MINIMUM_HERDR_MAJOR_MINOR}.x line Butchr's spawn path ` +
+      `requires. Butchr starts agents with 'agent start --kind/--pane', which herdr gained in 0.7, so ` +
+      `every activation on this build will fail with 'unknown option: --kind'. Upgrade with the official ` +
+      `installer: curl -fsSL https://herdr.dev/install.sh | sh — see docs/SETUP.md, prerequisites.`
     );
   }
-  return (
-    `${versionOutput.trim()} is older than the ${SUPPORTED_HERDR_MAJOR_MINOR}.x line Butchr is written ` +
-    `against; agent spawning may not work. See docs/SETUP.md, prerequisites.`
-  );
+
+  if (major > verMajor || (major === verMajor && minor > verMinor)) {
+    return (
+      `${versionOutput.trim()} is newer than the ${VERIFIED_HERDR_MAJOR_MINOR}.x line Butchr's spawn path has ` +
+      `been verified against; it is expected to work and has not been tried. If activation fails, check ` +
+      `whether 'herdr agent start' still takes --kind/--pane and report it — see docs/SETUP.md, prerequisites.`
+    );
+  }
+
+  return undefined;
 }
 
 /**
@@ -275,6 +318,29 @@ export function checkHerdrVersion(versionOutput: string): string | undefined {
  */
 export function diagnoseSpawnFailure(herdrMessage: string): string {
   const notes: string[] = [];
+
+  // ⚠ THE VERSION FAILURE MUST NAME ITSELF, AND UPSTREAM'S MESSAGE DOES NOT
+  // (KAN-533, acceptance criterion 3). Butchr's spawn path speaks herdr 0.7's
+  // `agent start --kind/--pane` and `tab create --env`; run against 0.6.x, herdr
+  // answers with its own getopt error and nothing else. Measured on 0.6.4 with
+  // the ported daemon: `unknown option: --env`, from `tab create` — note that it
+  // is NOT `--kind`, because `tab create` is reached first, so a diagnosis that
+  // matched only the flag it expected would have missed the flag it got.
+  //
+  // Three words of upstream's, and the user is left holding a flag name with no
+  // way to know it is a version problem at all. The daemon's startup check
+  // (`checkHerdrVersion`) already warns, but a warning at startup is read once
+  // and a spawn failure is read at the moment it hurts.
+  if (/unknown option:\s*--(env|kind|pane|cwd|tab|no-focus)\b/i.test(herdrMessage)) {
+    notes.push(
+      'That is a herdr VERSION mismatch, not a bad argument. Butchr starts agents with ' +
+      "'agent start --kind/--pane' and 'tab create --env', which herdr gained in 0.7 — so an " +
+      'installed herdr older than that rejects the flags one at a time. Check with ' +
+      '`herdr --version`; if it is 0.6.x, upgrade with the official installer ' +
+      '(`curl -fsSL https://herdr.dev/install.sh | sh`) and restart the daemon. ' +
+      'See docs/SETUP.md, prerequisites.'
+    );
+  }
 
   // Traced on KAN-24: libghostty refuses to build a terminal with a zero
   // dimension, and herdr sizes a new pane by splitting the workspace layout.

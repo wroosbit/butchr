@@ -140,7 +140,15 @@ const [a, b] = args;
 // It is read off the PAYLOAD, not off the whole argv: the payload is wrapped in
 // \`env … bash -c <payload>\`, so every command contains the word bash and only
 // the last element says what will actually run in the pane.
-const runtimeFor = (payload) => (/^bash\\b/.test(payload ?? '') ? '' : 'claude');
+// KAN-533: the runtime behind a pane is herdr's \`--kind\`, not a payload string.
+// The rename route has no kind — it is the \`shell\` launcher, whose pane runs
+// bash — and '' is what herdr reports for a pane with no detected agent, which
+// is exactly what \`expectsRuntime\` is checked against.
+const runtimeFor = (kind) => (kind === 'claude' ? 'claude' : '');
+const panesFile = path.join(state, 'panes.json');
+const panes = fs.existsSync(panesFile) ? JSON.parse(fs.readFileSync(panesFile, 'utf8')) : {};
+const savePanes = () => fs.writeFileSync(panesFile, JSON.stringify(panes, null, 2));
+const flag = (name) => { const i = args.indexOf(name); return i === -1 ? '' : args[i + 1]; };
 
 if (a === 'agent' && b === 'get') {
   const found = started.find((s) => s.name === args[2]);
@@ -149,14 +157,27 @@ if (a === 'agent' && b === 'get') {
   process.exit(1);
 }
 if (a === 'agent' && b === 'start') {
-  const cwdIdx = args.indexOf('--cwd');
+  const paneId = flag('--pane');
   started.push({
     name: args[2],
-    cwd: cwdIdx === -1 ? '' : args[cwdIdx + 1],
-    runtime: runtimeFor(args[args.length - 1])
+    cwd: panes[paneId]?.cwd ?? '',
+    runtime: runtimeFor(flag('--kind'))
   });
   fs.writeFileSync(startedFile, JSON.stringify(started, null, 2));
-  out({ result: { agent: { name: args[2], pane_id: '9' } } });
+  out({ result: { agent: { name: args[2], pane_id: paneId } } });
+}
+// The no-kind route, which is the ONLY way \`shell\` comes up on herdr 0.7 —
+// there is no \`--kind bash\`. A fixture missing these two answers makes the
+// shell launcher look broken when it is the fixture that cannot see it.
+if (a === 'pane' && b === 'report-agent') {
+  panes[args[2]] = { ...(panes[args[2]] ?? {}), agent: flag('--agent') };
+  savePanes();
+  out({ result: { type: 'ok' } });
+}
+if (a === 'agent' && b === 'rename') {
+  started.push({ name: args[3], cwd: panes[args[2]]?.cwd ?? '', runtime: '' });
+  fs.writeFileSync(startedFile, JSON.stringify(started, null, 2));
+  out({ result: { agent: { name: args[3], pane_id: args[2] } } });
 }
 if (a === 'agent' && b === 'list') {
   out({
@@ -170,7 +191,14 @@ if (a === 'agent' && b === 'list') {
 if (a === 'agent' && b === 'attach') {
   setInterval(() => {}, 60000); // hold the terminal open, as a real attach would
 } else if (a === 'tab' && b === 'create') {
-  out({ result: { tab: { tab_id: '7' }, root_pane: { workspace_id: 'w1', terminal_id: 't1' } } });
+  // KAN-533: \`pane_id\` is REQUIRED of this fixture now. herdr 0.7's
+  // \`agent start --pane\` targets the root pane \`tab create\` returns, so a
+  // stub without one sends the daemon down its \"no usable pane\" refusal and
+  // every assertion below it becomes a claim about a failed activation.
+  const paneId = 'p' + (Object.keys(panes).length + 1);
+  panes[paneId] = { cwd: flag('--cwd') };
+  savePanes();
+  out({ result: { tab: { tab_id: '7' }, root_pane: { pane_id: paneId, workspace_id: 'w1', terminal_id: 't1' } } });
 } else if (a === 'pane' && b === 'list') {
   out({ result: { panes: [] } });
 } else {
@@ -198,9 +226,31 @@ const invocations = () => {
   }
   return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
 };
-const startsIn = (all) => all.filter((argv) => argv[0] === 'agent' && argv[1] === 'start');
-/** The launcher command herdr was told to run, out of an `agent start` argv. */
-const launcherCommandOf = (argv) => argv[argv.length - 1];
+/**
+ * Every call that brought an agent up — herdr 0.7 has two routes (KAN-533).
+ * `agent start` for a kind herdr knows, and `pane report-agent` + `agent rename`
+ * for one it does not, which is how `shell` comes up. Counting only the first
+ * would report `starts=0` for a `shell` activation that worked.
+ */
+const startsIn = (all) => all.filter(
+  (argv) => argv[0] === 'agent' && (argv[1] === 'start' || argv[1] === 'rename')
+);
+/**
+ * The agent name a recorded launch is about.
+ *
+ * ⚠ The index differs by route: `agent start <NAME> …` puts it at 2, while
+ * `agent rename <PANE> <NAME>` puts it at 3. Reading index 2 unconditionally
+ * finds a PANE ID where it expects a name, matches nothing, and reports a
+ * `shell` activation that worked as one that never started.
+ */
+const nameOf = (argv) => (argv[1] === 'rename' ? argv[3] : argv[2]);
+/** The launcher command herdr was told to run: the kind plus its arguments. */
+const launcherCommandOf = (argv) => {
+  if (argv[1] === 'rename') return 'bash';
+  const k = argv.indexOf('--kind');
+  const sep = argv.indexOf('--');
+  return [k === -1 ? '' : argv[k + 1], ...(sep === -1 ? [] : argv.slice(sep + 1))].join(' ');
+};
 
 // --------------------------------------------------------------- the daemon --
 
@@ -378,7 +428,7 @@ for (const [key, stored, expectStart] of [
   const agentName = agentNameFor(TYPE, key);
   const before = startsIn(invocations()).length;
   const answer = await activate(key, ...(stored ? [{ defaultAgent: stored }] : []));
-  const started = startsIn(invocations()).find((argv) => argv[2] === agentName);
+  const started = startsIn(invocations()).find((argv) => nameOf(argv) === agentName);
   const cmd = started ? launcherCommandOf(started) : null;
 
   console.log(
@@ -411,10 +461,10 @@ for (const [key, stored, expectStart] of [
 // The two that started must not have started the SAME thing — otherwise the
 // section above would pass with a launcher table that ignored its input.
 const shellCmd = launcherCommandOf(
-  startsIn(invocations()).find((argv) => argv[2] === agentNameFor(TYPE, 'KAN-395-SHELL'))
+  startsIn(invocations()).find((argv) => nameOf(argv) === agentNameFor(TYPE, 'KAN-395-SHELL'))
 );
 const absentCmd = launcherCommandOf(
-  startsIn(invocations()).find((argv) => argv[2] === agentNameFor(TYPE, 'KAN-395-ABSENT'))
+  startsIn(invocations()).find((argv) => nameOf(argv) === agentNameFor(TYPE, 'KAN-395-ABSENT'))
 );
 check(
   shellCmd.includes('bash') && !shellCmd.includes('claude'),

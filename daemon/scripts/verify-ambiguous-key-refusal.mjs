@@ -150,7 +150,11 @@ if (a === 'agent' && b === 'list') {
 if (a === 'agent' && b === 'attach') {
   setInterval(() => {}, 60000); // hold the terminal open, as a real attach would
 } else if (a === 'tab' && b === 'create') {
-  out({ result: { tab: { tab_id: '7' }, root_pane: { workspace_id: 'w1', terminal_id: 't1' } } });
+  // KAN-533: \`pane_id\` is REQUIRED of this fixture now. herdr 0.7's
+  // \`agent start --pane\` targets the root pane \`tab create\` returns, so a
+  // stub without one sends the daemon down its \"no usable pane\" refusal and
+  // every assertion below it becomes a claim about a failed activation.
+  out({ result: { tab: { tab_id: '7' }, root_pane: { pane_id: 'p1', workspace_id: 'w1', terminal_id: 't1' } } });
 } else if (a === 'pane' && b === 'list') {
   out({ result: { panes: [] } });
 } else if (a === 'pane' && b === 'capture') {
