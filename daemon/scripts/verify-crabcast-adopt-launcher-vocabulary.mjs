@@ -74,7 +74,7 @@
 //      everything else stays green, because nothing else reads `launchers.ts`.
 //   3. THE PREMISE. Add `import type { LauncherName } from './launchers.js';`
 //      to `crabcast-runtime.ts` — the edit §2 exists to refuse. §2 goes red
-//      here and `verify-crabcast-channel-startup-disablement.mjs` goes red
+//      here and `verify-crabcast-channel-startup-supervision.mjs` goes red
 //      independently, which is the correct division: that script OWNS the
 //      premise, this one records that this file's copy depends on it.
 //
@@ -167,19 +167,34 @@ console.log(`dist            : ${distDir}`);
 
 // ───────────────────────────────────────────────────────────────────────────
 await section(
-  "1. the copy has not drifted from `AGENT_LAUNCHERS`  [reads source as text]",
+  "1. the vocabulary adoption uses IS `AGENT_LAUNCHERS`  [reads source as text]",
   async () => {
-    // Both sides read as TEXT. Importing either would be the very thing §2
-    // refuses, and importing `launchers.ts` here would make this script the
-    // route the premise forbids rather than the check that it holds.
-    const listed = runtimeSrc.match(/const BUTCHR_LAUNCHERS = \[([^\]]*)\] as const;/);
+    // ⚠ KAN-496 REPLACED THE COPY WITH A DERIVATION, so there is no second list
+    // to compare against a first one. What is checked instead is that the
+    // derivation reaches the real table and produces the real names — a
+    // `Object.keys()` of the wrong object, or of an empty one, would satisfy §2's
+    // "no literal" check and silently make adoption refuse every row.
+    //
+    // Both sides still read as TEXT rather than importing. That is no longer
+    // about §2's retired premise; it is so this section keeps its verdict after
+    // a failed build, which is what a source-text proof is for.
     check(
-      !!listed,
-      'crabcast-runtime.ts declares BUTCHR_LAUNCHERS as a literal tuple',
-      'no `const BUTCHR_LAUNCHERS = [...] as const;` found — if it was renamed, rename it here too'
+      /const BUTCHR_LAUNCHERS = Object\.keys\(AGENT_LAUNCHERS\) as readonly LauncherName\[\];/.test(
+        runtimeSrc
+      ),
+      'crabcast-runtime.ts derives BUTCHR_LAUNCHERS from AGENT_LAUNCHERS itself',
+      (runtimeSrc.match(/const BUTCHR_LAUNCHERS =.*/) || ['(not found)'])[0]
     );
-    if (!listed) return;
-    const copy = [...listed[1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
+    // The derived list, read from the BUILT module — the only way to see what
+    // `Object.keys` actually produces. Guarded rather than assumed: a missing
+    // build is a setup failure here, not a verdict.
+    let copy = [];
+    try {
+      const mod = await import(path.join(distDir, 'crabcast-runtime.js'));
+      copy = (mod.BUTCHR_LAUNCHERS ?? []).slice().sort();
+    } catch {
+      copy = [];
+    }
 
     const table = launchersSrc.match(
       /export const AGENT_LAUNCHERS: Record<LauncherName, AgentLauncher> = \{([\s\S]*?)\n\};/
@@ -220,26 +235,47 @@ await section(
 
 // ───────────────────────────────────────────────────────────────────────────
 await section(
-  '2. the premise the copy rests on — crabcast-runtime.ts imports nothing from launchers.js  [reads source as text]',
+  '2. the copy is GONE — the vocabulary is imported, so it cannot drift  [reads source as text]',
   async () => {
-    // OWNERSHIP: `verify-crabcast-channel-startup-disablement.mjs` owns this
-    // premise — it is KAN-393's, and its consequences there are about channel
-    // startup supervision, not about launcher names. It is re-read here because
-    // it is the entire reason BUTCHR_LAUNCHERS is a copy: if the premise is ever
-    // deliberately retired, the copy should become an import in the same change,
-    // and this section is what puts that decision in front of whoever does it.
+    // ⚠ THIS SECTION IS INVERTED BY KAN-496, AND IT ASKED FOR THAT ITSELF.
+    //
+    // It used to assert that `crabcast-runtime.ts` imports nothing from
+    // `launchers.js` — the premise KAN-393's gate 3 ruling rested on, and the
+    // entire reason `BUTCHR_LAUNCHERS` was a hand-written copy. Its own comment
+    // said what to do when that day came: "if the premise is ever deliberately
+    // retired, the copy should become an import in the same change, and this
+    // section is what puts that decision in front of whoever does it."
+    //
+    // CrabCast's `configure_agent` grew an argv member (contract 12, KAN-504),
+    // the flag now travels through it, and gate 3 is re-derived on new premises
+    // by `verify-crabcast-channel-startup-supervision.mjs`. So the premise is
+    // retired deliberately, and the copy went with it in the same change.
+    //
+    // What this section now guards is the STRONGER property the copy could only
+    // approximate: the two vocabularies cannot disagree, because there is only
+    // one of them. §1's cross-check is retained as a positive control that the
+    // derivation actually produces the names — a `LauncherName[]` derived from
+    // an empty object would satisfy "no copy" and break everything.
     const launchersImport = /import\s*(?:type\s*)?\{[^}]*\}\s*from\s*'\.\/launchers\.js'/.test(
       runtimeSrc
     );
     check(
-      !launchersImport,
-      'no import from launchers.js, so the copy is still the right shape',
+      launchersImport,
+      'crabcast-runtime.ts imports from launchers.js (KAN-496 retired the no-import premise)',
       runtimeSrc
         .split('\n')
         .filter((l) => l.includes('launchers'))
-        .join('\n') ||
-        '(no line mentions launchers) — if the premise was retired on purpose, replace ' +
-          'BUTCHR_LAUNCHERS with `import type { LauncherName }` and delete §1'
+        .join('\n') || '(no line mentions launchers)'
+    );
+    check(
+      /const BUTCHR_LAUNCHERS = Object\.keys\(AGENT_LAUNCHERS\)/.test(runtimeSrc),
+      'and BUTCHR_LAUNCHERS is DERIVED from AGENT_LAUNCHERS, not re-listed beside it',
+      (runtimeSrc.match(/const BUTCHR_LAUNCHERS =.*/) || ['(not found)'])[0]
+    );
+    check(
+      !/const BUTCHR_LAUNCHERS = \[/.test(runtimeSrc),
+      'so no hand-written literal can drift from it',
+      (runtimeSrc.match(/const BUTCHR_LAUNCHERS =.*/) || [''])[0]
     );
     check(
       /function isButchrLauncher\(name: string \| null\): name is ButchrLauncher/.test(runtimeSrc),
@@ -530,9 +566,14 @@ await section(
       return;
     }
 
-    const vocabulary = [...runtimeSrc.matchAll(/const BUTCHR_LAUNCHERS = \[([^\]]*)\]/g)]
-      .flatMap((m) => [...m[1].matchAll(/'([^']+)'/g)])
-      .map((m) => m[1]);
+    // KAN-496: read from the BUILT module rather than scraped out of a source
+    // literal, because there is no literal any more — `BUTCHR_LAUNCHERS` is
+    // derived from `AGENT_LAUNCHERS`. This section already imports `dist`, so
+    // this is the same class of read it was already making, and it is the
+    // stronger one: it sees the value adoption will actually use.
+    const { BUTCHR_LAUNCHERS: vocabulary } = await import(
+      path.join(distDir, 'crabcast-runtime.js')
+    );
     for (const r of inTree) {
       const launcher = r.config?.launcher ?? null;
       check(

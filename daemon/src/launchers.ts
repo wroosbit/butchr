@@ -475,7 +475,39 @@ export const DEV_CHANNELS_FLAG = '--dangerously-load-development-channels';
 const CLAUDE_BASE_FLAGS = '--permission-mode bypassPermissions';
 
 /**
- * The channel flags for a spawn happening *now*, or `''` for none.
+ * The channel flags for a spawn happening *now*, as **argv**, or `[]` for none.
+ *
+ * ⚠ ONE ELEMENT, AND THE `=` IS LOAD-BEARING RATHER THAN COSMETIC (KAN-496)
+ *
+ * `--dangerously-load-development-channels` is **variadic**: Claude Code
+ * declares it `<servers...>`, so it consumes every following argument as a
+ * channel entry until something that parses as a flag stops it. Spelled as two
+ * elements — `['--dangerously-load-development-channels', 'server:butchr']` —
+ * it therefore eats whatever comes next, and what comes next depends on who
+ * assembles the command line.
+ *
+ * **This file gets away with the two-token form only by an accident of
+ * ordering.** {@link claudeCommand} puts `CLAUDE_BASE_FLAGS` immediately after,
+ * so `--permission-mode` terminates the list before the prompt is reached. A
+ * caller that puts the flag LAST — which is exactly what CrabCast's published
+ * ordering does, *its own flags, then yours, then the prompt* — hands the
+ * prompt to the flag. Measured 2026-08-17 on this machine, one variable, same
+ * directory, same prompt:
+ *
+ * | args sent to `configure_agent` | outcome |
+ * | --- | --- |
+ * | `['--dangerously-…-channels', 'server:butchr']` | `claude` exits 1 in ~600ms — *"entries must be tagged: say hi"* |
+ * | `['--dangerously-…-channels=server:butchr']` | starts; flag and prompt both intact on the live pid's argv |
+ *
+ * A same-minute control with no args at all started and reached its prompt, so
+ * the failure is the flag's spelling and not the harness.
+ *
+ * **So the `=` form is what makes the swallow unrepresentable rather than
+ * merely avoided.** There is no separate value element for the flag to be
+ * greedy about, and therefore no ordering — here, in CrabCast, or in a caller
+ * nobody has written yet — that can put an operand inside the channel list.
+ * That is the point: the two-token form is not wrong *here*, which is why it
+ * survived, and it is wrong everywhere else.
  *
  * ONE SWITCH, READ FRESH, AND IT IS KAN-244'S (KAN-246, T3 of KAN-150)
  *
@@ -501,8 +533,23 @@ const CLAUDE_BASE_FLAGS = '--permission-mode bypassPermissions';
  *
  * @see docs/channel-messaging-design.md §1.4
  */
+export function developmentChannelArgv(): string[] {
+  return channelEmissionEnabled() ? [`${DEV_CHANNELS_FLAG}=server:${CORE_MCP_SERVER}`] : [];
+}
+
+/**
+ * The same decision as {@link developmentChannelArgv}, joined for a shell
+ * command line. `''` for none.
+ *
+ * **Derived rather than composed a second time (KAN-496).** One decision, one
+ * spelling, two carriers: `claudeCommand` splices this into a string, and
+ * `crabcast-runtime.ts` sends the array to a peer that takes argv directly.
+ * Writing the flag out twice is exactly the *fact with two implementations*
+ * KAN-145 cost us, and here the copy that drifted would be the one nobody
+ * runs under the current runtime.
+ */
 export function developmentChannelFlags(): string {
-  return channelEmissionEnabled() ? `${DEV_CHANNELS_FLAG} server:${CORE_MCP_SERVER}` : '';
+  return developmentChannelArgv().join(' ');
 }
 
 /** Where the switch above lives, re-exported so callers need not know two modules. */

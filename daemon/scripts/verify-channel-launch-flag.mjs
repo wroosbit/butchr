@@ -80,7 +80,13 @@ const PRE_CHANNELS_COMMAND =
 
 const FLAG = '--dangerously-load-development-channels';
 const SERVER = 'butchr';
-const FLAG_WITH_SERVER = `${FLAG} server:${SERVER}`;
+// KAN-496: `--flag=value`, ONE argv token, not `--flag value`. The flag is
+// variadic (`<servers...>`), so spelled as two tokens it swallows whatever
+// follows it. Here it is followed by `--permission-mode`, which terminates the
+// list — which is exactly why the two-token form survived this long and why the
+// defect surfaced only when CrabCast placed caller argv before the prompt.
+// `launchers.ts` `developmentChannelArgv()` carries the measurement.
+const FLAG_WITH_SERVER = `${FLAG}=server:${SERVER}`;
 
 let failures = 0;
 const say = (s = '') => process.stdout.write(`${s}\n`);
@@ -233,7 +239,18 @@ say('');
 // `server:butchr` and not a probe server or a plugin: the capability KAN-244 put
 // on the core MCP server is the one the daemon writes addressed frames to, so a
 // flag naming anything else would load a channel nothing ever emits on.
-check(on.includes(`${FLAG} server:${SERVER}`), `the flag names \`server:${SERVER}\``);
+check(on.includes(`${FLAG}=server:${SERVER}`), `the flag names \`server:${SERVER}\``);
+
+// KAN-496. THE SPELLING IS THE ASSERTION, not a detail of it. A build that
+// reverted to `--flag value` would satisfy every other check in this file —
+// both arms carry it, the stripped command still matches, the server is still
+// named — and would hand the prompt to the flag on any caller that places argv
+// last. So the two-token form is refused by name.
+check(
+  !on.includes(`${FLAG} server:`),
+  'and is spelled `--flag=value`, one argv token, never `--flag value`',
+  on.includes(`${FLAG} server:`) ? on : ''
+);
 check(
   !on.includes('server:butchrprobe'),
   'and not the KAN-217 probe server, which no production build should ever name'

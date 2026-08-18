@@ -40,7 +40,7 @@
 // next reader. A bare `grep` for the cast text therefore counts documentation
 // as code and goes red when somebody improves a comment. So comments are
 // stripped first, then string literals, exactly as
-// `verify-crabcast-channel-startup-disablement.mjs` does for gate 3's §1;
+// `verify-crabcast-channel-startup-supervision.mjs` does for gate 3's §1;
 // strip order matters, so that an apostrophe inside a comment ("daemon.ts's")
 // cannot open a phantom string.
 //
@@ -250,7 +250,7 @@ if (moveCast) {
 // asserted here is the presence of a CAST IN CODE, so code is what is read.
 //
 // Strip order matters and is the same as
-// `verify-crabcast-channel-startup-disablement.mjs`: comments first, so that an
+// `verify-crabcast-channel-startup-supervision.mjs`: comments first, so that an
 // apostrophe inside one cannot open a phantom string. The difference is that
 // this one BLANKS rather than deletes — see below.
 /**

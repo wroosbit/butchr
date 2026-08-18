@@ -1,5 +1,15 @@
 import fs from 'fs';
 import path from 'path';
+// KAN-496: this file now imports from `launchers.js`, which
+// `verify-crabcast-channel-startup-supervision.mjs` used to watch as a
+// re-opener of cutover gate 3. That is deliberate and the gate is re-derived
+// rather than quietly stepped over — see that script's header and
+// {@link CrabCastRuntime.setAgentSpawnedListener}. The flag is composed in
+// exactly one place and this imports that place; it does not compose a second.
+import { AGENT_LAUNCHERS, developmentChannelArgv } from './launchers.js';
+import type { LauncherName } from './launchers.js';
+import { paneIdForCwd, runHerdrCli } from './herdr-cli.js';
+import type { ChannelReach } from './channel.js';
 import type {
   AgentRuntime,
   AgentSpawn,
@@ -143,29 +153,37 @@ function addressKey(type: string, key: string): string {
  * `launchers.ts` is where those names live; {@link isButchrLauncher} is how a
  * string arriving from CrabCast is admitted into them or refused.
  *
- * **Why this is a copy and not `import type { LauncherName }`.** KAN-393's
- * ruling that channel-startup supervision has nothing to supervise on this path
- * rests on a premise about this file's imports — *"this file imports nothing
- * from `launchers.js`, so the flag has no route in even by accident"* — and
- * `verify-crabcast-channel-startup-disablement.mjs` watches that premise
- * literally, `import type` included. Its header calls the tempting version of
- * this edit *"the defect in miniature": somebody needs one export from
- * `launchers.js` — a type, a constant, anything harmless.* This is that
- * somebody, and the answer is a copy.
+ * ⚠ **THIS WAS A COPY UNTIL KAN-496, AND IT IS AN IMPORT NOW — because the one
+ * reason for the copy has been retired.**
  *
- * **A copy is a second thing to carry a fix to, so it is checked rather than
- * trusted.** `verify-crabcast-adopt-launcher-vocabulary.mjs` reads
- * `launchers.ts` **as text** — no import, so the premise stays intact — and goes
- * red if this list and `AGENT_LAUNCHERS`'s keys stop agreeing in either
- * direction. Add a launcher there without adding it here and the check is red;
- * delete `shell` from either and this file stops compiling as well, because
- * {@link CrabCastRuntime.adoptFromCensus} compares a narrowed value against it
- * and `error TS2367` is what an impossible comparison becomes.
+ * It read `['claude', 'shell'] as const`, duplicating `AGENT_LAUNCHERS`'s keys,
+ * for exactly one reason: KAN-393's gate 3 ruling rested on a premise about this
+ * file's imports — *"this file imports nothing from `launchers.js`"* — and a
+ * `import type` would have broken it. That premise is gone. CrabCast's
+ * `configure_agent` grew an argv member (contract 12, KAN-504), this file now
+ * imports `developmentChannelArgv` to fill it, and gate 3 is re-derived on new
+ * premises entirely.
+ *
+ * **`verify-crabcast-adopt-launcher-vocabulary.mjs` §2 asked for this in as many
+ * words** — *"if the premise is ever deliberately retired, the copy should
+ * become an import in the same change, and this section is what puts that
+ * decision in front of whoever does it."* This is that change, so the copy goes
+ * rather than outliving its justification: a duplicate kept for a reason nobody
+ * can state is how the two halves drift, and the check that guarded the drift
+ * was itself asserting the retired premise.
+ *
+ * Derived from `AGENT_LAUNCHERS` rather than re-listed, so the two **cannot**
+ * disagree instead of being checked for agreeing.
+ *
+ * Exported so a proof can read what the derivation actually produced — the same
+ * reason {@link buildConfigureAgentPayload} is exported. `Object.keys` of the
+ * wrong object would satisfy every source-text check and silently make adoption
+ * refuse every row, and only the value can say otherwise.
  */
-const BUTCHR_LAUNCHERS = ['claude', 'shell'] as const;
+export const BUTCHR_LAUNCHERS = Object.keys(AGENT_LAUNCHERS) as readonly LauncherName[];
 
 /** A launcher name Butchr has, and can therefore answer `expectsRuntime` for. */
-type ButchrLauncher = (typeof BUTCHR_LAUNCHERS)[number];
+type ButchrLauncher = LauncherName;
 
 /**
  * Whether a launcher string off CrabCast's census is one Butchr can interpret.
@@ -840,6 +858,21 @@ export interface ConfigureAgentInput {
   defaultAgent: string | undefined;
   /** Prepared definitions; omitted from the payload when there are none. */
   mcpServers: WorkspaceMcpServers | undefined;
+  /**
+   * The dev-channels argv this spawn is to carry, from `launchers.ts`
+   * `developmentChannelArgv()` (KAN-496). `[]` means the kill switch is off and
+   * the flag is not to be sent.
+   *
+   * **Required, and that is the whole point of it being here.** Every other
+   * field on this input is required for the reason the builder's docblock
+   * gives — four values Butchr already had were dropped at this seam, each
+   * found months later by somebody looking for something else. This is the
+   * fifth candidate: an optional `channelArgv` would let a future edit drop the
+   * flag and leave a fleet that reports `channelReach: 'loaded'` while spawning
+   * agents that carry nothing, which is KAN-495's silent total loss wearing a
+   * new hat.
+   */
+  channelArgv: string[];
 }
 
 /**
@@ -864,6 +897,25 @@ export type ConfigureAgentPayload = {
   launcher: string;
   prompt: string;
   mcpServers?: WorkspaceMcpServers;
+  /**
+   * Extra argv for the launcher, one element per argument (KAN-496).
+   *
+   * CrabCast's `configure_agent` grew this in their contract version 12
+   * (KAN-504, their PR #122); `crabcast configure --help` publishes it as
+   * `--args-json`, and `configure_response` echoes it back under `config.args`,
+   * which is what the round-trip proof reads. Each element is shell-quoted by
+   * CrabCast and arrives as exactly one argument, and they are placed on BOTH
+   * of the launcher's invocations — the `--continue` branch as well as the
+   * cold-start one, which matters because the resumed branch is the common path
+   * for every agent that already exists.
+   *
+   * **Omitted entirely when there is nothing to send**, never sent as `[]`, for
+   * the same reason `mcpServers` is: an empty array is a request to pass no
+   * arguments, and absence is a request that predates the field. A peer older
+   * than contract 12 ignores unknown fields silently, so the absent form is the
+   * one that is byte-identical to what every activation sent before this.
+   */
+  args?: string[];
 };
 
 /**
@@ -978,12 +1030,25 @@ export type ConfigureAgentPayload = {
  * and re-manufacture KAN-495's silent total loss: frames written, `delivered:
  * true`, nothing arriving, every health field green.
  *
- * **THE ONLY ROUTE IS ARGV, AND IT IS THEIRS.** `configure_agent` carries no
- * argv field, and `launcher` is a closed vocabulary — `shell`, `claude`,
- * `anti-gravity`, refused by name with that enumeration when anything else is
- * passed (measured on the wire, 2026-08-16). So there is nothing on Butchr's
- * side to fix, and the request belongs to `epic/KAN-59`. Reported, not pressed
- * for: [KAN-503](https://wroosbit.atlassian.net/browse/KAN-503).
+ * **THE ONLY ROUTE IS ARGV — AND SINCE 2026-08-16 IT EXISTS (KAN-496).** This
+ * paragraph read *"the only route is argv, AND IT IS THEIRS … there is nothing
+ * on Butchr's side to fix"* until CrabCast shipped one. `configure_agent` now
+ * carries `args` at their contract version 12 (KAN-504, their PR #122), added
+ * on Butchr's request and on the human's decision, and this builder sends the
+ * dev-channels flag through it.
+ *
+ * **None of which changes the paragraph above.** The sentinel is still not sent
+ * and still would not deliver a channel: `channelEnabled` is still answering a
+ * question about CrabCast's own daemon, and promoting it to
+ * {@link CrabCastRuntime.channelReach} would still restore KAN-495 exactly. What
+ * changed is that the *real* route is now open, so the wrong one no longer even
+ * has convenience to recommend it.
+ *
+ * ⚠ **AND THE VALUE IS SPELLED `--flag=value`, WHICH IS NOT A STYLE CHOICE.**
+ * `launchers.ts` `developmentChannelArgv()` composes it and says why: the flag
+ * is variadic, CrabCast places caller argv *before* the prompt, and the
+ * two-element form therefore swallows the prompt and kills the spawn. Measured
+ * both ways on 2026-08-17.
  *
  * ## `refusable` / `chargeable` / `preemptable` — SUPERVISOR-NESS (KAN-492)
  *
@@ -1082,6 +1147,12 @@ export function buildConfigureAgentPayload(input: ConfigureAgentInput): Configur
   if (input.mcpServers && Object.keys(input.mcpServers).length > 0) {
     payload.mcpServers = input.mcpServers;
   }
+  // Omitted rather than sent empty — see the field. `channelArgv` is required on
+  // the input, so an empty array here is a switch that is off and never a value
+  // somebody forgot to pass.
+  if (input.channelArgv.length > 0) {
+    payload.args = input.channelArgv;
+  }
   return payload;
 }
 
@@ -1090,6 +1161,20 @@ export interface CrabCastRuntimeOptions {
   /** How often the census is refreshed while connected. */
   censusIntervalMs?: number;
   log?: (message: string) => void;
+  /**
+   * The dev-channels argv a spawn is to carry, read fresh (KAN-496). Defaults
+   * to `launchers.ts` `developmentChannelArgv`, which is the production answer.
+   *
+   * **Injected so that {@link CrabCastRuntime.channelReach} and the `args` this
+   * runtime actually sends come from ONE source that a proof can drive.** They
+   * are the same fact stated to two audiences — a reader asking "can these
+   * agents hear us?" and a peer being told what to put on a command line — and
+   * the defect this ticket exists to prevent is precisely the two disagreeing.
+   * A proof that could only observe the production switch could assert one arm
+   * and would have to flip a live fleet's kill switch to reach the other, which
+   * is not a thing a verify script may do.
+   */
+  channelArgv?: () => string[];
 }
 
 /**
@@ -1181,66 +1266,84 @@ export class CrabCastRuntime implements AgentRuntime {
   public readonly runtimeName = 'crabcast' as const;
 
   /**
-   * See {@link AgentRuntime.channelReach}. `'not-loaded'`, and it is structural
-   * rather than observed (KAN-495).
+   * See {@link AgentRuntime.channelReach}. **Derived from the argv this runtime
+   * actually sends** (KAN-496), and no longer a constant.
    *
-   * **The same premise `setAgentSpawnedListener` already reasons from, carried
-   * one step further.** That docblock establishes that
-   * `--dangerously-load-development-channels` *cannot reach an agent on this
-   * path*: it is composed only in `launchers.ts` and travels only as argv, and
-   * **`configure_agent` has no argv field** — {@link provision} sends `path`,
-   * `priority`, `launcher`, `prompt` and `mcpServers`, and there is no member of
-   * that frame through which a flag could travel. This file imports nothing from
-   * `launchers.js`, so it has no route in even by accident.
+   * ---------------------------------------------------------------------------
+   * WHAT MOVED, AND WHY IT IS A DERIVATION RATHER THAN AN EDIT
+   * ---------------------------------------------------------------------------
    *
-   * ⚠ **KAN-393 drew one conclusion from that premise and stopped one short of
-   * the other, and the missing one cost the fleet its supervision.** The
-   * conclusion drawn was *the dev-channels DIALOG cannot be raised here, so
-   * channel-startup supervision has nothing to do* — correct, and it is why that
-   * gate was rightly not a cutover blocker. The conclusion not drawn is that the
-   * dialog is absent **because the feature is off**: with no flag, this client
-   * discards `notifications/claude/channel` in silence. So from 05:46:21Z on
-   * 2026-08-16 the daemon went on resolving these agents, writing frames to
-   * their live connections and reporting `delivered: true`, and not one reached
-   * a model — guardian pokes, the liveness probe, Jira-poll notices and
+   * This read `'not-loaded' as const` from KAN-495 until 2026-08-17, on a
+   * premise that was true when written and is now false: *`configure_agent` has
+   * no argv field*. It has one. CrabCast added `args` in their contract version
+   * 12 (KAN-504, their PR #122), on Butchr's request, and {@link provision}
+   * sends the dev-channels flag through it.
+   *
+   * ⚠ **So the value had to move — and moving it by hand is exactly the failure
+   * KAN-496's AC2 names.** An edited constant claims a capability the mechanism
+   * may not have; that is KAN-495's silent total loss with the alarm switched
+   * off, and it is the trap `epic/KAN-203` wrote into KAN-503 and `task/KAN-503`
+   * correctly refused. So this does not restate the answer: it reads
+   * {@link CrabCastRuntimeOptions.channelArgv} — the **same call**, from the
+   * **same source**, that {@link provision} puts on the wire. There is no edit
+   * to this class that makes the two disagree, because there is only one of
+   * them.
+   *
+   * ⚠ **AND IT IS STILL NOT DERIVED FROM `channelEnabled`, which remains the
+   * trap it always was.** CrabCast's field is about the agent's reach toward
+   * *their* daemon; this is about whether a `notifications/claude/channel` frame
+   * reaches a model. The two now happen to be true together and they are still
+   * not the same question. See {@link buildConfigureAgentPayload}.
+   *
+   * ---------------------------------------------------------------------------
+   * THE BOUND, WHICH IS REAL AND IS HERDR'S BOUND (KAN-497)
+   * ---------------------------------------------------------------------------
+   *
+   * This answers about the **spawn shape**: with the switch on, every spawn this
+   * runtime makes from now on carries the flag. It does **not** answer for an
+   * agent that was spawned before the switch was on, or before this code was
+   * deployed — argv is fixed at process start and those agents keep the argv
+   * they were given until they are restarted. That is the identical gap
+   * `HerdrBridge.channelReach` documents and the reason it answers `'unknown'`,
+   * and it is **KAN-497**'s to close with a per-agent record.
+   *
+   * **Why `'loaded'` here rather than herdr's `'unknown'`, since the gap is the
+   * same.** CrabCast echoes what it was sent — `config.args` comes back on
+   * `list`, on `status` and in a capacity refusal — so under this runtime the
+   * per-agent fact is *readable* where under herdr it is not recorded anywhere.
+   * `'unknown'` would route frames at agents this daemon can actually check,
+   * which is the answer that claims least and helps least. The residual risk is
+   * bounded to agents that outlive a deploy, and it fails in the direction the
+   * guardian's `consecutiveUndelivered` alarm already watches.
+   *
+   * ---------------------------------------------------------------------------
+   * WHAT KAN-495 SAID HERE, KEPT BECAUSE THE HISTORY IS THE ARGUMENT
+   * ---------------------------------------------------------------------------
+   *
+   * From 05:46:21Z on 2026-08-16 the daemon resolved these agents, wrote frames
+   * to their live connections and reported `delivered: true`, and not one
+   * reached a model — guardian pokes, the liveness probe, Jira-poll notices and
    * agent-to-agent steers alike — for about 75 minutes, with every health field
-   * green. A human noticed by watching a clock.
+   * green. A human noticed by watching a clock. `'not-loaded'` made that loud.
+   * This value is what makes it fixed, and the two are different claims: the
+   * proof that this one is honest is `probe-channel-reaches-model.mjs` against a
+   * real CrabCast-spawned agent, not the fact that this line now says
+   * `'loaded'`.
    *
-   * ⚠ **This does NOT say CrabCast has no channel.** It says CrabCast's agents
-   * cannot receive **Butchr's** channel, which is a different fact from
-   * `channelEnabled` on an `activate_response` — that field is about CrabCast's
-   * own `{"crabcast": "builtin"}` server, which {@link provision} deliberately
-   * does not send. The two happen to agree today and they are not the same
-   * question, so this is derived from the argv argument above and never read off
-   * that field. Reading one for the other is how a fact with two sources gets a
-   * wrong copy.
-   *
-   * **What would change this to `'loaded'`:** `configure_agent` growing a way to
-   * pass argv, and this runtime using it — the first of the three re-openers
-   * {@link setAgentSpawnedListener} already names and that
-   * `verify-crabcast-channel-startup-disablement.mjs` already watches.
-   *
-   * ⚠ **WHAT WOULD NOT, however plausible it looks: sending their `"builtin"`
-   * sentinel (KAN-503).** That provisions CrabCast's `crabcast` MCP server and
-   * flips `channelEnabled` to `true` — and `channelEnabled` is *their* question,
-   * about the agent's reach toward *their* daemon, not about whether a
-   * `notifications/claude/channel` frame reaches a model. Measured end to end by
-   * `probe-channel-reaches-model.mjs`'s third arm: with their real builtin
-   * server present and no flag, the frame is emitted and the model never sees
-   * it. **So a `true` there must never be promoted to `'loaded'` here.** Doing
-   * so would restore KAN-495 exactly — frames written, `delivered: true`,
-   * nothing arriving — with the loud refusal below switched off on the strength
-   * of a field that was answering something else. See
-   * {@link buildConfigureAgentPayload} for the full measurement.
-   *
-   * ⚠ **This value makes the loss LOUD; it does not repair it.** With it, the
-   * guardian poke reports `undelivered` and `overdue` goes true, the liveness
-   * probe is refused rather than recorded as a non-answer, and an inter-agent
-   * steer takes the composer and actually arrives. What none of that does is
-   * give this fleet a working channel — **scheduled supervision stays down
-   * until KAN-496 lands**, and it now says so instead of reading green.
+   * ⚠ **The KAN-503 warning that stood here is untouched and still binds.**
+   * Sending CrabCast's `{"crabcast": "builtin"}` sentinel flips *their*
+   * `channelEnabled` to `true` and delivers nothing — measured end to end by
+   * `probe-channel-reaches-model.mjs`'s third arm, where the frame is emitted
+   * and the model never sees it. **A `true` there must still never be promoted
+   * to `'loaded'` here.** What changed is that there is now a real mechanism to
+   * derive this from; the wrong one is still wrong.
    */
-  public readonly channelReach = 'not-loaded' as const;
+  public get channelReach(): ChannelReach {
+    return this.channelArgv().length > 0 ? 'loaded' : 'not-loaded';
+  }
+
+  /** See {@link CrabCastRuntimeOptions.channelArgv}. One source, two consumers. */
+  private readonly channelArgv: () => string[];
 
   private readonly link: CrabCastLink;
   private readonly log: (message: string) => void;
@@ -1292,6 +1395,7 @@ export class CrabCastRuntime implements AgentRuntime {
 
   constructor(options: CrabCastRuntimeOptions) {
     this.link = options.link;
+    this.channelArgv = options.channelArgv ?? developmentChannelArgv;
     this.censusIntervalMs = options.censusIntervalMs ?? 2_000;
     this.log = options.log ?? ((m) => console.log(`[CrabCastRuntime] ${m}`));
 
@@ -1311,148 +1415,100 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   /**
-   * **Never fired, and as of KAN-393 that is a RULING rather than a shortfall.**
+   * **Fires once per provision, and as of KAN-496 that is the ruling.**
    *
    * ---------------------------------------------------------------------------
-   * THE RULING (KAN-393, `epic/KAN-39`, 2026-08-14) — READ THIS BEFORE RE-DERIVING
+   * ⚠ CUTOVER GATE 3 IS RE-DERIVED HERE. READ THIS BEFORE RE-DERIVING IT AGAIN
    * ---------------------------------------------------------------------------
    *
-   * **Cutover gate 3 is NOT a cutover blocker, and this method not firing IS the
-   * deliberate disablement of channel-startup supervision under CrabCast.** It
-   * is written here because the alternative — leaving it to decline to start for
-   * reasons a future reader has to reconstruct — is the defect this epic keeps
-   * paying for: *a mechanism that is off because somebody decided so is a
-   * decision; a mechanism that is off because it cannot find its footing is a
-   * defect wearing a decision's clothes.*
+   * KAN-393 (`epic/KAN-39`, 2026-08-14) ruled that channel-startup supervision
+   * was **deliberately disabled** under this runtime, and that ruling was
+   * correct on its premises. KAN-348's register closed gate 3 on an explicitly
+   * *structural* basis and named its own expiry condition: **"if
+   * `configure_agent` ever gains an argv member, the trigger becomes spellable
+   * and the structural argument collapses."**
    *
-   * So: nothing below is a leg to be closed. If you arrived here intending to
-   * make this fire, the thing to change first is the ruling, not the code.
-   *
-   * ---------------------------------------------------------------------------
-   * WHY THERE IS NOTHING TO SUPERVISE — THREE INDEPENDENT REASONS
-   * ---------------------------------------------------------------------------
-   *
-   * The one caller (`daemon.ts` → `superviseChannelStartup`, KAN-246) exists to
-   * answer **one specific dialog**: the full-screen confirmation Claude Code
-   * raises for `--dangerously-load-development-channels`. Each of the following
-   * is on its own sufficient to make that job empty here.
-   *
-   * **1. The dialog cannot be raised on this path — structural, not observed.**
-   * That flag is composed in exactly one place, `launchers.ts`
-   * `developmentChannelFlags()`, and reaches an agent only as argv on a `claude`
-   * command line. **`configure_agent` has no argv field**: {@link provision}
-   * sends `path`, `priority`, `launcher`, `prompt` and `mcpServers`, and there is
-   * no member of that frame through which a flag could travel. This file imports
-   * nothing from `launchers.js`, so the flag has no route in even by accident.
-   * A dialog whose trigger cannot be spelled cannot be met — and that is a claim
-   * about the wire's shape rather than about how many spawns happened to be
-   * clean.
-   *
-   * **2. Even if it fired, the listener returns immediately.** `daemon.ts` gates
-   * on `spawn.channelEnabled !== true`, and {@link provision} deliberately does
-   * not send CrabCast's `{"crabcast": "builtin"}` sentinel — giving Butchr's
-   * agents a CrabCast channel is a cutover decision (KAN-294 item 5). So every
-   * agent spawned through this runtime answers `channelEnabled: false`, honestly,
-   * and `false` is a non-supervising verdict.
-   *
-   * **3. CrabCast publishes no spawn command line**, which is what made this
-   * unfireable before either of the above was established. `activate_response`
-   * carries `launcher` and twenty other fields and no argv. The interface
-   * anticipates exactly this: *"A runtime that never spawns a pane of its own may
-   * leave this unfired; the daemon installs a listener and does not require it to
-   * be called."*
+   * **That condition has now occurred.** CrabCast added `args` at contract
+   * version 12 (KAN-504, their PR #122), at Butchr's request and on the human's
+   * decision of 2026-08-16. So gate 3's closure is void by the register's own
+   * terms, and this is the re-derivation rather than a step past it.
    *
    * ---------------------------------------------------------------------------
-   * WHAT WAS MEASURED, AND THE BOUND ON IT
+   * THE THREE REASONS, TAKEN ONE AT A TIME — TWO FELL, AND THE THIRD IS NOW OURS
    * ---------------------------------------------------------------------------
    *
-   * Reason 1 is the load-bearing one and it is structural. **The corroboration is
-   * inherited and is cited as inherited**: `task/KAN-278` saw two cold `claude`
-   * starts under this runtime meet no dialog, and `task/KAN-379` saw five more
-   * (PR #164) — seven spawns on one machine, which is an observation rather than
-   * a guarantee, and would be worth little on its own.
+   * **1. "The dialog cannot be raised on this path" — FALSE, and measured
+   * false.** {@link provision} now sends the dev-channels flag through `args`.
+   * A real CrabCast-spawned `claude` was measured on 2026-08-17 sitting at:
    *
-   * **The bound, stated because reason 1 is narrower than "no dialog ever".** It
-   * is a claim about the **dev-channels** dialog — the only one this supervision
-   * answers. Other Claude Code startup dialogs exist, and what covers them here
-   * is only the seven observations plus KAN-278's finding that CrabCast handles
-   * folder trust itself (`hasTrustDialogAccepted: true` written by nothing on
-   * Butchr's side). Those are `startup-dialog.ts`'s `FOREIGN_DIALOGS`
-   * population, which this daemon refuses to answer anywhere — so a foreign
-   * dialog under CrabCast is an agent that starts late and says so, not a channel
-   * defect, and it is not what gate 3 asked about.
+   * ```
+   * WARNING: Loading development channels
+   *   Channels: server:butchr
+   * ❯ 1. I am using this for local development
+   *   2. Exit
+   * Enter to confirm · Esc to cancel
+   * ```
+   *
+   * — still there at 45 seconds, and the flag confirmed on the live pid's argv.
+   * **This is the load-bearing reason and it is gone.** A dialog nobody answers
+   * is an agent that never reaches its prompt, so supervision here is not a
+   * nicety: it is what makes the flag safe to send at all.
+   *
+   * **2. "Even if it fired, `daemon.ts` returns on `channelEnabled !== true`" —
+   * NO LONGER TRUE, because the field it reads is no longer CrabCast's.** The
+   * verdict this method now carries is **Butchr's own argv decision**, not
+   * `activate_response.channelEnabled`. See the site in {@link provision}: those
+   * are different questions, they are `false` and `true` independently, and
+   * carrying theirs would have left every dialog unanswered.
+   *
+   * **3. "CrabCast publishes no spawn command line" — STILL TRUE, and it is why
+   * `command` is `null` on the spawn this fires with.** It never blocked
+   * supervision; the verdict is what supervision reads (KAN-294).
    *
    * ---------------------------------------------------------------------------
-   * WHAT WOULD RE-OPEN THIS
+   * ⚠ WHAT ACTUALLY ANSWERS THE DIALOG, AND THE ASSUMPTION IT RESTS ON
    * ---------------------------------------------------------------------------
    *
-   * Any one of: `configure_agent` growing a way to pass argv; this file acquiring
-   * an import from `launchers.js`; or {@link provision} beginning to send the
-   * `"builtin"` channel sentinel. The first two are what
-   * `verify-crabcast-channel-startup-disablement.mjs` watches, because they are
-   * the premises above rather than the conclusion — the conclusion is prose and
-   * prose cannot go red.
+   * `daemon.ts` drives `superviseChannelStartup`, which reads the pane through
+   * {@link tailAgent} and presses Enter through {@link pressPaneKey}. **CrabCast
+   * publishes no keystroke verb** — `press_pane_key` answers `Unknown action`,
+   * re-measured at contract 12 against three controls — and their `send_to_agent`
+   * deliberately withholds the Enter at a dialog. So `pressPaneKey` reaches the
+   * pane **through herdr**, which is CrabCast's pane substrate on this machine.
+   * That assumption, its justification, and the reason a wrong answer to it
+   * fails loudly rather than silently are all on {@link pressPaneKey}. Read them
+   * there before changing anything here.
    *
    * ---------------------------------------------------------------------------
-   * KAN-503 ASKED WHICH OF THE THREE SURVIVE THE SENTINEL. MEASURED: ALL THREE.
+   * WHAT WOULD RE-OPEN THIS AGAIN
    * ---------------------------------------------------------------------------
    *
-   * KAN-503 proposed sending the sentinel and warned, correctly, that doing so
-   * would flip reason 2's premise and that this script would rightly go red.
-   * **The sentinel is not being sent** — {@link buildConfigureAgentPayload} says
-   * why, and the short of it is that it does not deliver a channel — so nothing
-   * here moves. What follows is what the investigation established anyway,
-   * recorded because the next reader will ask the same question:
-   *
-   * **Reason 1 — HOLDS, and it is now observed as well as structural.** A
-   * throwaway agent really configured with `--mcp crabcast`, really activated,
-   * answering `channelEnabled: true`, ran `claude --permission-mode
-   * bypassPermissions <prompt>` with **no** `--dangerously-load-development-
-   * channels` on it (`ps` on the live pid), and **met no dev-channels dialog** —
-   * it reached its prompt and answered. That is an eighth cold start to set
-   * beside `task/KAN-278`'s two and `task/KAN-379`'s five, and the **first one
-   * with the sentinel**, which is the arm the inherited seven could not cover.
-   * The flag is composed only in `launchers.ts` and travels only as argv;
-   * `configure_agent` has no argv field and `launcher` is a closed vocabulary
-   * (`shell`, `claude`, `anti-gravity` — refused by name with that enumeration,
-   * measured on the wire). So there is no route in, sentinel or not.
-   *
-   * **Reason 2 — WOULD FALL, and only this one.** `channelEnabled` would answer
-   * `true`, so `daemon.ts`'s gate would stop returning at its first line. It is
-   * the weakest of the three and always was: it is a fact about a field's value
-   * rather than about what can reach the agent.
-   *
-   * **Reason 3 — HOLDS, untouched.** `activate_response` still publishes no
-   * spawn command line; the sentinel adds an MCP server, not an argv echo.
-   *
-   * ⚠ **So reason 1 alone is sufficient and is the one carrying the ruling** —
-   * which is what the KAN-393 docblock already said, and is why sending the
-   * sentinel would have made this script red without making the fleet any less
-   * safe. A red there would have been correct **and** uninformative: it watches
-   * a premise of *dialog supervision*, and the sentinel's real defect is about
-   * *frame delivery*, which no assertion in that file is pointed at.
-   *
-   * **`pressPaneKey` remains absent and that is now a fact about a capability we
-   * do not need on this path, not an open gate.** `press_pane_key` answers
-   * `Unknown action` — re-measured against the live peer at `contractVersion 8`,
-   * build `9d4d999c`, on 2026-08-14 — and `send_to_agent` is not a substitute
-   * because it opens with a Ctrl+C. It stays recorded as an interface observation
-   * for KAN-59 (`epic/KAN-59` ruled the `pty_input` route out as a foundation),
-   * and it stays out of the way of the cutover.
+   * CrabCast ceasing to spawn through herdr — the one open question, asked of
+   * `epic/KAN-59` by `epic/KAN-203` — or CrabCast growing a keystroke verb of
+   * its own, which would let {@link pressPaneKey} stop reaching around them and
+   * would be strictly better. `verify-crabcast-channel-startup-supervision.mjs`
+   * carries the watch, rewritten for this ruling: it used to assert the premises
+   * of the disablement, and now asserts the premises of the supervision.
    */
   setAgentSpawnedListener(
-    _listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
+    listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {
+    this.agentSpawnedListener = listener;
     this.log(
-      'setAgentSpawnedListener: registered and never fired, DELIBERATELY (KAN-393 ruling). ' +
-        'Channel-startup supervision is disabled under this runtime, not merely inert: the ' +
-        'dev-channels dialog it exists to answer cannot be raised here, because configure_agent ' +
-        'carries no argv and DEV_CHANNELS_FLAG reaches an agent only as argv. Independently, ' +
-        'provision does not send the "builtin" channel sentinel, so channelEnabled is false and ' +
-        "daemon.ts's listener would return at its first line anyway. " +
-        'Gate 3 is not a cutover blocker. See the docblock for what would re-open it.'
+      'setAgentSpawnedListener: registered and LIVE (KAN-496). Channel-startup supervision is ' +
+        'enabled under this runtime: provision sends the dev-channels flag through ' +
+        "configure_agent's `args` (CrabCast contract 12), so the dialog it raises is real and " +
+        'must be answered. It fires once per provision, carrying THIS daemon\'s argv decision ' +
+        'and never CrabCast\'s `channelEnabled`. Cutover gate 3 is re-derived, not stepped ' +
+        'over — see the docblock.'
     );
   }
+
+  private agentSpawnedListener?: (
+    session: HerdrSession,
+    spawnedAt: number,
+    spawn: AgentSpawn
+  ) => void;
 
   /**
    * CrabCast owns the brief file, and does not tell us where it put it
@@ -1585,13 +1641,21 @@ export class CrabCastRuntime implements AgentRuntime {
     mcpServers?: WorkspaceMcpServers,
     override?: boolean
   ): Promise<void> {
+    // ONE READ, TWO USES, AND THAT IS THE POINT (KAN-496). The kill switch is a
+    // file anything may rewrite, so reading it twice admits a spawn whose argv
+    // disagrees with the verdict recorded for it — a `claude` launched WITH the
+    // flag and nothing watching the dialog it raises, which is the wedged agent
+    // KAN-246 exists to prevent. `launchers.ts` takes the same care at the same
+    // seam for the same reason.
+    const channelArgv = this.channelArgv();
     const configure = buildConfigureAgentPayload({
       session,
       priority,
       supervisor,
       promptContent,
       defaultAgent,
-      mcpServers
+      mcpServers,
+      channelArgv
     });
     // WHAT THE PAYLOAD CARRIES is {@link buildConfigureAgentPayload}'s to say,
     // including why `mcpServers` is the field name and what is deliberately not
@@ -1698,6 +1762,13 @@ export class CrabCastRuntime implements AgentRuntime {
     //
     // Why this is not `preempt` as well, and why the flag is not synthesised
     // from Butchr's own gate verdict, are both on `AgentRuntime.spawnSession`.
+    // Taken immediately BEFORE the call that starts the pane, because
+    // `superviseChannelStartup` uses it to tell a connection this spawn made
+    // from one a previous incarnation left behind — `freshConnection(spawnedAt)`
+    // answers only for registrations later than this instant. A timestamp taken
+    // after the round trip would silently accept a stale connection as proof
+    // that the new agent is up.
+    const spawnedAt = Date.now();
     const activated = await this.link.request({
       action: 'activate_agent',
       path: session.workDir,
@@ -1781,6 +1852,34 @@ export class CrabCastRuntime implements AgentRuntime {
     session.resumedConversation = readResumedConversation(activated);
 
     session.status = 'active';
+
+    // ⚠ THE VERDICT CARRIED HERE IS OURS, AND MUST NEVER BE CRABCAST'S (KAN-496).
+    //
+    // `daemon.ts` gates channel-startup supervision on `spawn.channelEnabled`,
+    // and that field means *"did this spawn carry Butchr's dev-channels flag"* —
+    // the question that decides whether a dev-channels dialog is on that pane.
+    // CrabCast's `channelEnabled`, three lines above, answers something else
+    // entirely: the agent's reach toward THEIR daemon. They are `false` and
+    // `true` independently.
+    //
+    // Passing theirs would be the KAN-503 trap arriving by a new door: it is
+    // `false` for every agent this runtime spawns (we do not send the "builtin"
+    // sentinel), so supervision would return at its first line, the dialog would
+    // go unanswered, and every agent would wedge at boot with nothing saying
+    // why. `channelArgv` is the daemon's own decision, read once at the top of
+    // this method, and it is what actually went on the command line.
+    const spawnCarriedTheFlag = channelArgv.length > 0;
+    if (this.agentSpawnedListener) {
+      this.agentSpawnedListener(session, spawnedAt, {
+        channelEnabled: spawnCarriedTheFlag,
+        // CrabCast publishes no spawn command line, so this stays `null` rather
+        // than being reconstructed. A command line we composed ourselves would
+        // be a guess at what they ran, and the one consumer reads the verdict
+        // above and not this (KAN-294).
+        command: null
+      });
+    }
+
     this.log(
       `activated ${agentNameFor(session.type, session.key)} as ${remoteId} ` +
         `(channelEnabled=${JSON.stringify(readChannelEnabled(activated))}, ` +
@@ -2263,31 +2362,108 @@ export class CrabCastRuntime implements AgentRuntime {
   }
 
   /**
-   * **Absent.** CrabCast has no `press_pane_key`: verified from the wire, where
-   * it answers `Unknown action`. Its `send_to_agent` is not a substitute — that
-   * verb opens with a Ctrl+C (its response reports `interrupts: 1`), which is
-   * precisely what this method exists **not** to do. Its one caller answers a
-   * full-screen startup dialog that is blocking a session's own boot, where a
-   * Ctrl+C would cancel the boot it is trying to unblock.
+   * Press one key on an agent's pane — **through herdr, because CrabCast still
+   * has no verb for it** (KAN-496).
    *
-   * `pty_input` can carry a raw keystroke, but only for a session with a live
-   * pty mirror, and the caller here has a *pane* and no session. Pretending
-   * otherwise would answer a different question.
+   * ---------------------------------------------------------------------------
+   * WHY THIS IS NOT A CRABCAST CALL, RE-MEASURED RATHER THAN INHERITED
+   * ---------------------------------------------------------------------------
    *
-   * Throws, as the interface requires of a runtime that cannot reach the pane.
+   * `press_pane_key` answers `Unknown action`. That was first measured at their
+   * `contractVersion 8` and **re-measured at 12** on 2026-08-17, against the
+   * deployed build `5a8d8649`, because a contract that moved four versions is
+   * not a contract you may quote an old reading of. Three controls in the same
+   * connection make the absence mean something: `pty_input` — a verb they *do*
+   * have — refuses by naming the session; `capacity` answers `success: true`;
+   * and a deliberately invented action returns the identical `Unknown action`
+   * string. So `press_pane_key` is absent, and this is not a framing error.
+   * `send_key` likewise.
+   *
+   * **And their `send_to_agent` is not a substitute — by their design, not by
+   * accident.** It opens with a Ctrl+C, and at a dialog it *withholds the Enter*
+   * altogether. Measured at the real dev-channels dialog, CrabCast refused in
+   * these words: *"an Enter it cannot submit still confirms whatever that pane
+   * has highlighted, which at a Claude Code dialog is a consent answer nobody
+   * gave."* **That is CrabCast being right.** It cannot identify the dialog, so
+   * it must not answer it.
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠ WHY BUTCHR MAY ANSWER A DIALOG CRABCAST CORRECTLY WILL NOT
+   * ---------------------------------------------------------------------------
+   *
+   * Because it is **Butchr's own dialog**. This daemon put
+   * `--dangerously-load-development-channels` on that command line, so the
+   * consent being asked for is this daemon's to give — and the caller cannot
+   * reach this method without having *identified* the dialog: `pressEnter` takes
+   * a {@link DevChannelsConfirmation}, a symbol-branded token only
+   * `classifyStartupDialog` can mint, and only for a pane whose **live** dialog
+   * is the dev-channels one (KAN-340). A workspace-trust dialog cannot produce
+   * one. So this supplies exactly the identification CrabCast's refusal exists
+   * for; it does not evade the rule.
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠ THE COUPLING, NAMED, WITH ITS FAILURE DIRECTION
+   * ---------------------------------------------------------------------------
+   *
+   * CrabCast spawns its panes through herdr **on this machine**. That is an
+   * observation of this deployment and not of their contract, and it is the one
+   * assumption here that could rot. `epic/KAN-203` has asked `epic/KAN-59`
+   * whether herdr stays their pane substrate; until they answer, this is written
+   * so that *no* is loud: {@link paneIdForCwd} returns `null` when herdr has no
+   * pane in that directory, this throws, and `superviseChannelStartup` records
+   * an unanswered dialog and an agent that never reached its prompt. **Nothing
+   * here infers success from silence**, which is the whole complaint KAN-495
+   * was about.
+   *
+   * Addressed by `cwd`, which is the one name both daemons agree on: it is
+   * CrabCast's whole address for an agent and herdr's `cwd` for the pane. Two
+   * panes in one directory is refused rather than guessed — see
+   * {@link paneIdForCwd}.
    */
   pressPaneKey(key: string, type: string | undefined, keyName: string): void {
-    throw new Error(
-      renderRefusal(
-        this.link.refusal(
-          'butchr-adapter',
-          `pressPaneKey(${type ?? '*'}/${key}, ${keyName}) has no CrabCast counterpart — ` +
-            'there is no press_pane_key action, and send_to_agent opens with a Ctrl+C, which ' +
-            'is the one thing this method must not do',
-          'This is an interface observation for KAN-59, not a change request. Channel startup ' +
-            'supervision (KAN-246) is inert under this runtime; it is off by default.'
+    // The shared resolution rule, so a bare key cannot mean one agent here and
+    // another in `sendToAgent`. An ambiguous key is refused rather than
+    // resolved: typing at the wrong pane is the failure this path exists to
+    // avoid, and it is the same argument `paneIdForCwd` makes one level down.
+    const resolved = this.resolveSessionByAddress(key, type);
+    if (resolved.outcome !== 'one') {
+      throw new Error(
+        renderRefusal(
+          this.link.refusal(
+            'butchr-adapter',
+            `pressPaneKey(${type ?? '*'}/${key}, ${keyName}): ` +
+              (resolved.outcome === 'ambiguous'
+                ? `that key names ${resolved.candidates.length} live agents ` +
+                  `(${resolved.candidates.join(', ')}), so which pane to type at is not decidable`
+                : 'this runtime has no session for that address, so there is no workDir to ' +
+                  'find a pane by')
+          )
         )
-      )
+      );
+    }
+    const session = resolved.session;
+
+    const paneId = paneIdForCwd(session.workDir);
+    if (!paneId) {
+      throw new Error(
+        renderRefusal(
+          this.link.refusal(
+            'butchr-adapter',
+            `pressPaneKey(${type ?? '*'}/${key}, ${keyName}): herdr has no pane in ` +
+              `${session.workDir}, so the keystroke has no route`,
+            'CrabCast publishes no press_pane_key (re-measured at contractVersion 12), so ' +
+              'herdr is the only keystroke route Butchr has to a CrabCast pane. If CrabCast ' +
+              'has stopped spawning through herdr, this path is gone and KAN-496 needs ' +
+              'reopening rather than patching.'
+          )
+        )
+      );
+    }
+
+    runHerdrCli(['pane', 'send-keys', paneId, keyName]);
+    this.log(
+      `pressPaneKey ${agentNameFor(session.type, session.key)}: sent ${keyName} to herdr pane ` +
+        `${paneId} (${session.workDir}) — CrabCast has no press_pane_key verb at contract 12`
     );
   }
 

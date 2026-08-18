@@ -8,6 +8,7 @@ import { resolveLauncher, sleepSync, writeWorkspaceMcpConfig } from './launchers
 import { McpServerDefinitions } from './integrations/integration.js';
 import type { AgentLauncher } from './launchers.js';
 import { diagnoseSpawnFailure } from './herdr-health.js';
+import { runHerdrCli, type HerdrCliError } from './herdr-cli.js';
 import type {
   AgentRuntime,
   AgentSpawn,
@@ -306,7 +307,7 @@ export type HerdrAgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknow
 const HERDR_AGENT_STATUSES: HerdrAgentStatus[] = ['idle', 'working', 'blocked', 'done', 'unknown'];
 
 /** Ceiling on any single herdr CLI call, so a wedged herdr can't hang a caller. */
-export const HERDR_CLI_TIMEOUT_MS = 5000;
+export { HERDR_CLI_TIMEOUT_MS } from './herdr-cli.js';
 
 /**
  * How long {@link HerdrBridge.confirmAgentPresent} keeps asking before it
@@ -368,11 +369,6 @@ export type AgentPresence =
       waitedMs: number;
       checks: number;
     };
-
-/** An Error from {@link HerdrBridge.runHerdr}, carrying herdr's own error code. */
-interface HerdrCliError extends Error {
-  herdrCode?: string;
-}
 
 /**
  * herdr's code for "an agent by that name already exists". Starting an agent
@@ -2065,34 +2061,12 @@ export class HerdrBridge implements AgentRuntime {
    * on stderr for others, so both streams are worth reading before we fall
    * back to quoting a raw payload at the caller.
    */
+  // Delegated to `herdr-cli.ts` since KAN-496, unchanged in behaviour. The
+  // implementation moved because CrabCast's panes are herdr panes too, so
+  // `CrabCastRuntime.pressPaneKey` needs the same runner; the method stays here
+  // so that every existing call site reads exactly as it did.
   private runHerdr(args: string[]): any {
-    const result = spawnSync('herdr', args, {
-      encoding: 'utf8',
-      timeout: HERDR_CLI_TIMEOUT_MS
-    });
-
-    if (result.error) {
-      throw new Error(`herdr ${args.join(' ')} failed: ${result.error.message}`);
-    }
-
-    const stdout = (result.stdout ?? '').trim();
-    const stderr = (result.stderr ?? '').trim();
-    const json = parseJson(stdout);
-
-    const reported = json?.error ?? parseJson(stderr)?.error;
-    if (reported) {
-      const error: HerdrCliError =
-        new Error(reported.message ?? `herdr reported ${reported.code ?? 'an error'}`);
-      // herdr's machine-readable code, kept alongside the message so callers
-      // can distinguish kinds of failure without matching on prose.
-      if (typeof reported.code === 'string') error.herdrCode = reported.code;
-      throw error;
-    }
-    if (result.status !== 0) {
-      throw new Error(stderr || `herdr ${args.join(' ')} exited with code ${result.status}`);
-    }
-
-    return json;
+    return runHerdrCli(args);
   }
 
   /**
