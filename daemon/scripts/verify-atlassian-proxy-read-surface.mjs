@@ -569,20 +569,29 @@ check(
 );
 
 // ── 6. the transforms, and what they are allowed to touch ──────────────────
-rule('6. only three operations reshape a response, and none can reach a credential');
+rule('6. only four operations reshape a response, and none can reach a credential');
 
-// KAN-501 made this three. The list is spelled out rather than counted so that
-// adding a transform is a deliberate edit here as well as there — the point was
-// never the number, it is that each one is argued for. `ProxyOperationBase.transform`
-// carries the argument for the third.
+// KAN-501 made this three; KAN-522 makes it four. The list is spelled out rather
+// than counted so that adding a transform is a deliberate edit here as well as
+// there — the point was never the number, it is that each one is argued for.
+// `ProxyOperationBase.transform` carries the argument for the third and the
+// fourth, and each operation's own transform docblock carries its half.
+//
+// THE FOURTH IS `atlassian_search_issues`, and what makes it belong here rather
+// than merely be tolerated: its alternative was not an untransformed response
+// but NO ISSUES, measured — a raw row costs ~2,850 characters on that
+// operation's default fields against a 9,000-character budget, so the whole
+// `issues` array was replaced, and `fields` is already at its narrowest useful
+// value when that happens. Same argument as the third, made on the same terms.
 const withTransform = PROXY_OPERATIONS.filter((op) => op.transform).map((op) => op.tool);
 check(
-  'exactly three operations have a transform, and they are the three that cannot avoid one',
+  'exactly four operations have a transform, and they are the four that cannot avoid one',
   JSON.stringify(withTransform.sort()) ===
     JSON.stringify([
       'atlassian_get_accessible_resources',
       'atlassian_get_issue_comments',
-      'atlassian_search'
+      'atlassian_search',
+      'atlassian_search_issues'
     ]),
   JSON.stringify(withTransform)
 );
