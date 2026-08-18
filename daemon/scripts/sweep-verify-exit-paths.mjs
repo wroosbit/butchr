@@ -15,9 +15,13 @@
 //
 //   1. Pattern-matching for failing-exit spellings — clears a script whose
 //      `throw` or `assert` happens to match while it has no exit path at all.
-//   2. Enumerating exit paths — counts the `process.exit(0)` inside the fake
-//      herdr shim a script writes to disk, and counts "daemon/dist is missing"
-//      setup guards, as though either were a verdict.
+//   2. Enumerating exit paths — counts an exit written into a fixture a script
+//      puts on disk, or one merely described in a comment, and counts
+//      "daemon/dist is missing" setup guards, as though any were a verdict.
+//      Separating the script's own code from the text it contains is
+//      `lib/mask-non-code.mjs`, and it is an exact question rather than a
+//      heuristic one; KAN-535 has the three ways the counter that preceded it
+//      got the answer wrong.
 //   3. Reading each exit's *purpose* — separates a guard from a verdict, which
 //      is what this file automates: it asks whether an exit's value is derived
 //      from an accumulated verdict, not whether a non-zero exit exists.
@@ -36,6 +40,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { sweepTree } from './lib/sweep-sources.mjs';
+import { maskNonCode } from './lib/mask-non-code.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -125,18 +130,6 @@ function classify(entry, source) {
   return { verdict: false, why: 'literal exit — a setup guard or a usage error' };
 }
 
-/**
- * Exits written *into a file this script creates* — the fake `herdr` binaries
- * several scripts put on PATH. They belong to the shim, not to the script's own
- * control flow, and counting them is defect class 2 above.
- */
-function insideShim(source, lineNumber) {
-  const upTo = source.split('\n').slice(0, lineNumber).join('\n');
-  const opens = (upTo.match(/writeFileSync\(|`#!\/bin\/sh|cat <<'EOF'/g) ?? []).length;
-  const closes = (upTo.match(/EOF\n|\}\)\;/g) ?? []).length;
-  return opens > 0 && opens > closes;
-}
-
 const IS_VERIFY = (base) => base.startsWith('verify-') && base.endsWith('.mjs');
 
 const rows = [];
@@ -177,13 +170,28 @@ for (const dir of SCRIPT_DIRS) {
   for (const name of sweep.files) {
     const file = path.join(abs, name);
     const source = fs.readFileSync(file, 'utf8');
-    const paths = exitPaths(source).map((e) => ({
+    // KAN-535: every question below is about the script's own CODE, so ask it
+    // of the masked copy — comments, strings, template text and regex literals
+    // blanked, `${...}` interpolations left intact because they ARE code.
+    // Offsets and line numbers are preserved, so `e.line` still indexes the
+    // real file and the diagnostics below quote the real line.
+    const code = maskNonCode(source);
+    const sourceLines = source.split('\n');
+    const codeExits = exitPaths(code);
+    const inCode = new Set(codeExits.map((e) => `${e.line}:${e.kind}`));
+    const paths = codeExits.map((e) => ({
       ...e,
-      ...classify(e, source),
-      shim: insideShim(source, e.line)
+      ...classify(e, code),
+      text: (sourceLines[e.line - 1] ?? '').trim()
     }));
-    const verdicts = paths.filter((p) => p.verdict && !p.shim);
-    const guards = paths.filter((p) => !p.verdict && !p.shim);
+    // What the mask removed, kept only so `--verbose` can show its working.
+    // Keyed by line and kind, so two exits of the same kind on one line would
+    // report as one; that costs a diagnostic label and never a verdict.
+    const masked = exitPaths(source)
+      .filter((e) => !inCode.has(`${e.line}:${e.kind}`))
+      .map((e) => ({ ...e, text: (sourceLines[e.line - 1] ?? '').trim() }));
+    const verdicts = paths.filter((p) => p.verdict);
+    const guards = paths.filter((p) => !p.verdict);
     rows.push({
       rel: path.join(dir, name),
       name: name.replace(/\.mjs$/, ''),
@@ -191,7 +199,7 @@ for (const dir of SCRIPT_DIRS) {
       hasHeader: /WHAT FAILURE THIS WOULD CATCH/.test(source),
       verdicts,
       guards,
-      shims: paths.filter((p) => p.shim)
+      masked
     });
   }
 }
@@ -208,7 +216,7 @@ for (const r of rows) {
   if (verbose) {
     for (const v of r.verdicts) console.log(`      verdict  L${v.line}: ${v.text}   (${v.why})`);
     for (const g of r.guards) console.log(`      guard    L${g.line}: ${g.text}   (${g.why})`);
-    for (const s of r.shims) console.log(`      shim     L${s.line}: ${s.text}   (inside a written-out fake binary)`);
+    for (const s of r.masked) console.log(`      masked   L${s.line}: ${s.text}   (not code — a comment, a string, or text written out to disk)`);
   }
 }
 
