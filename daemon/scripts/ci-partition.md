@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 109 |
+| `yes` | 110 |
 | `partial` | 13 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **147** |
+| **total** | **148** |
 
-**122 of 147** run on every pull request.
+**123 of 148** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -152,6 +152,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-supervision-key-spelling` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-tail-asks-every-source` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-tail-async-awaited` | yes | imports the built daemon modules and reads `daemon/src` off the checkout; the only herdr is a shim this file writes onto PATH. No live daemon, no real herdr, no credential, no peer, no terminal, no network. |
+| `verify-task-agent-write-list` | yes | every section reads repository files as TEXT and asserts in process; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-working-agent-cost` | yes | every section drives pure exported functions over hand-built fixtures. No /proc, no herdr, no daemon, no fleet. That is deliberate and it is the same argument aggregateTrees carries: CI runs on a box with no agents on it, so a proof that could only measure a live fleet would assert nothing there and go green on an empty sample. |
 | `verify-workspace-deps-are-shared` | yes | reads files off the checkout and asserts on their contents; node builtins only. |
 | `verify-workspace-mcp-preparation` | yes | reads `daemon/src/*.ts` as TEXT and imports `daemon/dist/launchers.js` in process. No live daemon, no herdr, no CrabCast peer, no credential, no terminal. §6 writes one file, under `os.tmpdir()` and never into the repository tree. |
