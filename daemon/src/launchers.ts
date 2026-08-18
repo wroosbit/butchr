@@ -434,19 +434,6 @@ export function trustClaudeWorkspace(workDir: string, configPath?: string): Trus
 }
 
 /**
- * Wrap a string so bash sees exactly these bytes, newlines and all.
- *
- * The launcher command is handed to `bash -c`, and the prompt inside it is now
- * generated text (the degraded-resume framing) rather than a fixed literal, so
- * it must be quoted rather than interpolated. Single quotes disable every form
- * of bash expansion; the only character that needs work is a single quote
- * itself, which is closed, escaped and reopened.
- */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
  * The Claude Code flag that loads a channel server nobody has allowlisted.
  *
  * During the research preview `--channels` accepts only Anthropic-allowlisted
@@ -472,7 +459,7 @@ export const DEV_CHANNELS_FLAG = '--dangerously-load-development-channels';
  * `--permission-mode` backs up the settings file on the `--continue` path,
  * where a resumed session could otherwise carry a stale mode forward.
  */
-const CLAUDE_BASE_FLAGS = '--permission-mode bypassPermissions';
+const CLAUDE_BASE_FLAGS = ['--permission-mode', 'bypassPermissions'];
 
 /**
  * The channel flags for a spawn happening *now*, as **argv**, or `[]` for none.
@@ -537,52 +524,62 @@ export function developmentChannelArgv(): string[] {
   return channelEmissionEnabled() ? [`${DEV_CHANNELS_FLAG}=server:${CORE_MCP_SERVER}`] : [];
 }
 
-/**
- * The same decision as {@link developmentChannelArgv}, joined for a shell
- * command line. `''` for none.
- *
- * **Derived rather than composed a second time (KAN-496).** One decision, one
- * spelling, two carriers: `claudeCommand` splices this into a string, and
- * `crabcast-runtime.ts` sends the array to a peer that takes argv directly.
- * Writing the flag out twice is exactly the *fact with two implementations*
- * KAN-145 cost us, and here the copy that drifted would be the one nobody
- * runs under the current runtime.
- */
-export function developmentChannelFlags(): string {
-  return developmentChannelArgv().join(' ');
-}
-
 /** Where the switch above lives, re-exported so callers need not know two modules. */
 export { CHANNEL_SWITCH_PATH };
 
 /**
- * Build the `claude` launch command — the ONLY place it is built.
+ * Build the `claude` launch argv — the ONLY place it is built.
  *
- * THE `||` IS LOAD-BEARING AND MEASURED, AND THIS DOES NOT RESTRUCTURE IT.
- * `claude --continue` in a directory with no history exits 1 with "No
- * conversation found to continue", so the fallback is reached exactly when there
- * is nothing to restore — which is what makes it the right place to put the
- * degraded resume prompt. (`claude -p` would run one headless turn and exit,
- * leaving a dead pane, which is why this is an interactive session at all.)
+ * THE `||` IS GONE, AND WHAT REPLACED IT IS A DECISION THIS PROCESS ALREADY
+ * HAD (KAN-533). Until herdr 0.7 this returned a *shell compound* —
+ * `claude … --continue || claude … '<prompt>'` — because `herdr agent start`
+ * took a trailing `-- <argv>` and ran it under `bash -c`. 0.7 redesigned that
+ * call: the executable now comes from `--kind` and the trailing words are
+ * arguments to it, so there is no shell left to hold an `||`. See
+ * `startAgentInOwnTab` in herdr.ts.
  *
- * WHY A TEMPLATE AND NOT A SPLICE, WHICH IS THE OBVIOUS ALTERNATIVE (KAN-246).
+ * ⚠ **The `||` was never the only way to answer its question, and it was the
+ * worse one.** What it tested was whether `claude --continue` exits 1 — and
+ * `hasRestorableConversation()` reads the same fact off the same disk,
+ * synchronously, *before* anything is spawned. `herdr.ts` has been calling it
+ * on every resume since KAN-432 to decide which prompt to compose, so the
+ * daemon was already holding the answer while the shell was re-deriving it.
+ * `hasConversation` is that answer, passed in rather than rediscovered.
+ *
+ * **What genuinely changes, said rather than left to be found.** `||` fires on
+ * *any* non-zero exit, not only on "No conversation found to continue". A
+ * `claude --continue` that died of a corrupt transcript, a bad flag or an OOM
+ * therefore fell through to the cold-start arm and began a **fresh session that
+ * silently discarded the conversation it was asked to restore** — the failure
+ * looked like a successful start. Chosen here, that case has no second arm to
+ * fall into: the agent fails to reach its prompt, `agent start` reports it, and
+ * the activation says so. **A loud failure replaces a silent loss**, which is
+ * the trade this makes and the one thing a reviewer should push on if they
+ * disagree.
+ *
+ * WHY ONE `flags` ARRAY AND NOT TWO (KAN-246, and it survives the rewrite).
  * KAN-217's probe added the channels flag by string-replacing `claude
  * --permission-mode` in the shipped command, and that harness proved the hazard
  * on itself: an earlier version stamped only the first arm, so a fresh workspace
  * fell through the `||` into an arm with no flag and started a session with no
  * channel — a *half-flagged* command line, which is worse than an unflagged one
- * because it works on the resumed path and fails on the cold one. Composing both
- * arms from a single `flags` string makes that state unrepresentable rather than
- * merely tested against: there is no edit to this function that puts the flag on
- * one arm and not the other.
+ * because it works on the resumed path and fails on the cold one. There is now
+ * only ever ONE arm per spawn, so the half-flagged state is not merely
+ * unrepresentable, it has nowhere to live: `flags` is spliced once, above the
+ * branch, and both branches are suffixes of it.
  *
- * With `channelFlags` empty this returns the byte-identical string it returned
- * before channels existed, which is the claim `verify-channel-launch-flag.mjs`
- * asserts against a frozen literal.
+ * With `channelFlags` empty this yields the argv equivalent of the string it
+ * returned before channels existed, which is the claim
+ * `verify-channel-launch-flag.mjs` asserts against a frozen literal.
  */
-function claudeCommand(promptCommand: string, channelFlags: string): string {
-  const flags = channelFlags ? `${channelFlags} ${CLAUDE_BASE_FLAGS}` : CLAUDE_BASE_FLAGS;
-  return `claude ${flags} --continue || claude ${flags} ${shellQuote(promptCommand)}`;
+function claudeArgv(
+  promptCommand: string,
+  channelFlags: string[],
+  hasConversation: boolean
+): string[] {
+  const flags = [...channelFlags, ...CLAUDE_BASE_FLAGS];
+  // One splice, above the branch. Neither arm can be reached without it.
+  return ['claude', ...flags, ...(hasConversation ? ['--continue'] : [promptCommand])];
 }
 
 /**
@@ -622,16 +619,95 @@ function claudeCommand(promptCommand: string, channelFlags: string): string {
  * type from a runtime that did not — see {@link AgentSpawn}.
  */
 export interface LaunchCommand {
-  /** Shell command run inside the pane (via `bash -c`). */
+  /**
+   * The herdr agent kind for `agent start --kind`, or `null` where herdr has
+   * no kind for this launcher's executable.
+   *
+   * ⚠ **`null` selects a different spawn ROUTE; it does not mean "no agent"**
+   * (KAN-533). herdr 0.7 starts an agent by *kind*, from a closed list of 21 —
+   * measured, `--kind bash` and `--kind shell` are both refused with
+   * `unsupported interactive agent kind` — so `bash` cannot go through
+   * `agent start` at all. It does not have to: `pane report-agent` +
+   * `agent rename` register an existing pane under a name, which is the API
+   * herdr provides for a supervisor declaring what it put in a pane. Measured
+   * on 0.7.5: after both calls `agent get <name>` resolves, `agent list`
+   * carries the row, and `pane_id` is the pane. So a `null` kind still yields
+   * a fully addressable named agent — `attach`, `send-keys` and `get` all work
+   * — it is only *started* differently. {@link startAgentInOwnTab} is where
+   * the two routes are.
+   *
+   * **The one real difference is who detects readiness.** `agent start` waits
+   * for the agent to be interactive and refuses if it never is; the
+   * report-agent route asserts liveness rather than observing it, because a
+   * bash prompt is up as soon as the pane is. That is the correct shape for
+   * `shell` — its whole purpose is to hold a prompt — and the wrong shape for
+   * a real agent, which is why `claude` does not use it.
+   *
+   * A union rather than `string` for the reason {@link LauncherName} is one:
+   * a kind herdr does not have must be a compile error here, not a runtime
+   * `unsupported interactive agent kind` at the far end of an activation.
+   */
+  kind: HerdrAgentKind | null;
+  /**
+   * The pane's argv: `argv[0]` is the executable, the rest its arguments.
+   *
+   * ⚠ **Only `argv.slice(1)` reaches `agent start`** — herdr derives the
+   * executable from `kind` and appends the trailing words to it. `argv[0]` is
+   * carried anyway because it is what the `shell` route actually runs, and
+   * because a diagnostic that omitted the program name would be unreadable.
+   * Where `kind` is non-null, `argv[0]` is herdr's canonical executable for it,
+   * and `verify-herdr-spawn-argv.mjs` asserts the two agree — a mismatch would
+   * mean the daemon logging one command while herdr ran another.
+   */
+  argv: string[];
+  /** Diagnostic rendering of {@link argv}. Never executed; see `AgentSpawn.command`. */
   command: string;
   /** Whether this spawn was made channel-capable. See above; `null` is not `false`. */
   channelEnabled: boolean | null;
 }
 
+/**
+ * Every `--kind` this fleet asks herdr for.
+ *
+ * herdr 0.7/0.8 accept 21; Butchr launches one. Keeping it a union rather than
+ * `string` is the same enforcement {@link LauncherName} buys — see the note on
+ * {@link LaunchCommand.kind}.
+ */
+export type HerdrAgentKind = 'claude';
+
+/**
+ * What a launcher needs to know about the workspace it is about to compose a
+ * spawn for.
+ *
+ * A record rather than positional arguments because it grew a second field the
+ * moment the `||` left (KAN-533) and will grow a third: two booleans in a row
+ * at a call site is the shape that gets transposed silently.
+ */
+export interface LaunchContext {
+  /**
+   * What to say when there is no conversation to continue. Omitted, the
+   * ordinary cold-start sentence.
+   */
+  promptCommand?: string;
+  /**
+   * Whether a restorable conversation is on disk for this workspace, from
+   * `hasRestorableConversation()`.
+   *
+   * ⚠ **This decides `--continue` and it must be a MEASUREMENT, not a guess.**
+   * It replaces a shell `||` that tested the same thing by running `claude`
+   * and reading its exit code; see {@link claudeArgv}. A caller that passed
+   * `false` where a conversation exists would start a fresh session on top of
+   * live work — which is why {@link ResumedConversation}'s third state
+   * (`'unknown'`) is deliberately NOT accepted here. A runtime that cannot
+   * tell must find out before it calls this, not hand the uncertainty down.
+   */
+  hasConversation: boolean;
+}
+
 export interface AgentLauncher {
   /**
-   * Shell command run inside the herdr pane (via bash -c), plus the launcher's
-   * own record of what it decided while composing it.
+   * The argv to bring up in the herdr pane, the herdr kind that starts it, and
+   * the launcher's own record of what it decided while composing it.
    *
    * A function rather than a constant because the fallback prompt is no longer
    * always the same sentence: an agent being restored after a reboot whose
@@ -645,7 +721,7 @@ export interface AgentLauncher {
    * is the exact race herdr.ts composes this once to avoid — see
    * {@link LaunchCommand}.
    */
-  command: (promptCommand?: string) => LaunchCommand;
+  command: (context: LaunchContext) => LaunchCommand;
   /**
    * Optional pre-launch setup, e.g. CLI-specific MCP config. Throwing refuses
    * the activation: initPty answers with session.spawnError + terminated, the
@@ -744,10 +820,16 @@ export type LauncherName = 'claude' | 'shell';
 // the probe harness and nothing else.
 export const AGENT_LAUNCHERS: Record<LauncherName, AgentLauncher> = {
   shell: {
-    // `false`, not `null`: a bare bash prompt is a spawn that decided, and what
-    // it decided is that there is no channel here. `null` would claim nobody
-    // knows, which is untrue of a launcher whose whole command is `bash`.
-    command: () => ({ command: 'bash', channelEnabled: false })
+    // `kind: null` — herdr has no `bash` agent kind (measured: `--kind bash` is
+    // refused), so this comes up by the report-agent route rather than through
+    // `agent start`. It is still a named, attachable herdr agent afterwards;
+    // see LaunchCommand.kind for what that route does and does not buy.
+    //
+    // `channelEnabled: false`, not `null`: a bare bash prompt is a spawn that
+    // decided, and what it decided is that there is no channel here. `null`
+    // would claim nobody knows, which is untrue of a launcher whose whole
+    // argv is `bash`.
+    command: () => ({ kind: null, argv: ['bash'], command: 'bash', channelEnabled: false })
   },
   claude: {
     // Interactive session: resume if a conversation exists, else start one
@@ -771,14 +853,24 @@ export const AGENT_LAUNCHERS: Record<LauncherName, AgentLauncher> = {
     // — admits a window in which the two disagree, and the disagreement is
     // invisible: the pane runs one answer while the daemon supervises the other.
     // One call, one verdict, both returned together.
-    command: (promptCommand = PROMPT_CMD) => {
-      const channelFlags = developmentChannelFlags();
+    command: ({ promptCommand = PROMPT_CMD, hasConversation }) => {
+      // argv, not the joined string: `agent start -- <args>` takes the words
+      // separately, so joining here only to have herdr split it again would
+      // re-introduce the quoting bug the array form makes impossible. The
+      // prompt sentence contains spaces and an apostrophe; as one argv element
+      // it needs no quoting at all.
+      const channelFlags = developmentChannelArgv();
+      const argv = claudeArgv(promptCommand, channelFlags, hasConversation);
       return {
-        command: claudeCommand(promptCommand, channelFlags),
-        // Derived from the flags THIS command was built with, not from a second
+        kind: 'claude',
+        argv,
+        // Diagnostic only — nothing executes this. `AgentSpawn.command` and the
+        // daemon log are its whole audience.
+        command: argv.join(' '),
+        // Derived from the flags THIS argv was built with, not from a second
         // reading of the switch. With the switch off — the shipped state —
-        // `channelFlags` is `''` and this is `false`.
-        channelEnabled: channelFlags !== ''
+        // `channelFlags` is `[]` and this is `false`.
+        channelEnabled: channelFlags.length > 0
       };
     },
     setup: (workDir) => {

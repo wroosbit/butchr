@@ -96,24 +96,62 @@ if (a === 'agent' && b === 'get') {
   process.stderr.write(JSON.stringify({ error: { code: 'not_found', message: \`no agent '\${args[2]}'\` } }));
   process.exit(1);
 }
+// KAN-533: herdr 0.7. \`agent start\` attaches a KIND to an existing pane and
+// no longer creates one, so the cwd comes from the \`tab create\` that made the
+// pane — which is why panes are remembered here and looked up by id.
+const panesFile = path.join(state, 'panes.json');
+const panes = fs.existsSync(panesFile) ? JSON.parse(fs.readFileSync(panesFile, 'utf8')) : {};
+const savePanes = () => fs.writeFileSync(panesFile, JSON.stringify(panes, null, 2));
+const flag = (name) => { const i = args.indexOf(name); return i === -1 ? '' : args[i + 1]; };
+
 if (a === 'agent' && b === 'start') {
   const sep = args.indexOf('--');
-  const cwdIdx = args.indexOf('--cwd');
+  const paneId = flag('--pane');
   started.push({
     name: args[2],
-    cwd: cwdIdx === -1 ? '' : args[cwdIdx + 1],
-    command: sep === -1 ? [] : args.slice(sep + 1)
+    kind: flag('--kind'),
+    paneId,
+    cwd: panes[paneId]?.cwd ?? '',
+    // The executable is the KIND now; only its arguments follow \`--\`.
+    command: [flag('--kind'), ...(sep === -1 ? [] : args.slice(sep + 1))]
   });
   fs.writeFileSync(startedFile, JSON.stringify(started, null, 2));
-  out({ result: { agent: { name: args[2], pane_id: '9' } } });
+  out({ result: { agent: { name: args[2], kind: flag('--kind'), pane_id: paneId } } });
+}
+// The no-kind route: a pane herdr has no agent kind for is DECLARED rather than
+// started, then named. Two calls where the kind route has one, and the fixture
+// has to model both or \`shell\` looks like it never launched.
+if (a === 'pane' && b === 'report-agent') {
+  const paneId = args[2];
+  panes[paneId] = { ...(panes[paneId] ?? {}), agent: flag('--agent') };
+  savePanes();
+  out({ result: { type: 'ok' } });
+}
+if (a === 'agent' && b === 'rename') {
+  const paneId = args[2];
+  started.push({
+    name: args[3],
+    kind: null,
+    paneId,
+    cwd: panes[paneId]?.cwd ?? '',
+    command: [panes[paneId]?.agent ?? '']
+  });
+  fs.writeFileSync(startedFile, JSON.stringify(started, null, 2));
+  out({ result: { agent: { name: args[3], pane_id: paneId } } });
 }
 if (a === 'agent' && b === 'list') {
-  out({ result: { agents: started.map((s) => ({ name: s.name, agent: 'claude', cwd: s.cwd, agent_status: 'working' })) } });
+  out({ result: { agents: started.map((s) => ({ name: s.name, agent: s.kind ?? 'bash', cwd: s.cwd, agent_status: 'working' })) } });
 }
 if (a === 'agent' && b === 'attach') {
   setInterval(() => {}, 60000); // hold the terminal open, as a real attach would
 } else if (a === 'tab' && b === 'create') {
-  out({ result: { tab: { tab_id: '7' }, root_pane: { workspace_id: 'w1', terminal_id: 't1' } } });
+  // 0.7's \`tab create\` is where --cwd lives now, and its ROOT PANE is what
+  // \`agent start --pane\` targets. A fixture that omitted pane_id would send the
+  // daemon down its "no usable pane" refusal and prove nothing about launchers.
+  const paneId = 'p' + (Object.keys(panes).length + 1);
+  panes[paneId] = { cwd: flag('--cwd') };
+  savePanes();
+  out({ result: { tab: { tab_id: '7' }, root_pane: { pane_id: paneId, workspace_id: 'w1', terminal_id: 't1' } } });
 } else if (a === 'pane' && b === 'list') {
   out({ result: { panes: [] } });
 } else {
@@ -131,11 +169,44 @@ const invocations = () => {
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 };
-const startsIn = (calls) => calls.filter((argv) => argv[0] === 'agent' && argv[1] === 'start');
-/** The command a recorded `agent start` would have run inside the pane: the
- *  argv after `--` is `env PATH=... [RESUME_ENV...] bash -c <payload>`, so the
- *  payload — the launcher command itself — is the final element. */
-const launcherCommandOf = (startArgv) => startArgv[startArgv.length - 1];
+/**
+ * Every recorded call that BROUGHT AN AGENT UP, whichever of herdr 0.7's two
+ * routes it took (KAN-533).
+ *
+ * ⚠ `agent start` alone is no longer the whole answer, and filtering on it
+ * would make `shell` look like it never launched. herdr starts agents by kind
+ * from a closed list; `bash` is not on it, so the `shell` launcher declares its
+ * pane with `pane report-agent` and names it with `agent rename` instead. Both
+ * routes end with a named agent in a pane, which is what these sections are
+ * about, so both are collected here and told apart by `launcherCommandOf`.
+ */
+/** The agent name a recorded launch is about — index differs by route. */
+const nameOf = (argv) => (argv[1] === 'rename' ? argv[3] : argv[2]);
+const startsIn = (calls) => calls.filter(
+  (argv) =>
+    (argv[0] === 'agent' && argv[1] === 'start') ||
+    (argv[0] === 'agent' && argv[1] === 'rename')
+);
+/**
+ * The command a recorded launch would run inside the pane, as one string.
+ *
+ * For the kind route the executable is `--kind` and its arguments follow `--`;
+ * for the rename route the pane is already running what `pane report-agent`
+ * labelled it. Under 0.6 both of these were the single `bash -c <payload>`
+ * element at the end of the argv, which is why this used to be `argv.at(-1)`.
+ */
+const launcherCommandOf = (startArgv) => {
+  if (startArgv[1] === 'rename') {
+    // `agent rename <pane> <name>`: the pane holds whatever the report-agent
+    // call before it declared, and this fixture only ever declares `bash`.
+    return 'bash';
+  }
+  const kindIdx = startArgv.indexOf('--kind');
+  const sep = startArgv.indexOf('--');
+  const kind = kindIdx === -1 ? '' : startArgv[kindIdx + 1];
+  const rest = sep === -1 ? [] : startArgv.slice(sep + 1);
+  return [kind, ...rest].join(' ');
+};
 
 // ------------------------------------------------------------- the harness --
 
@@ -226,7 +297,7 @@ show('activate_by_key response:', omitted);
 
 const omittedStarts = startsIn(invocations());
 const omittedName = agentNameFor(TYPE, 'KAN-53-OMIT');
-const omittedStart = omittedStarts.find((argv) => argv[2] === omittedName);
+const omittedStart = omittedStarts.find((argv) => nameOf(argv) === omittedName);
 console.log(`\n   agent start invocations so far: ${omittedStarts.length}`);
 if (omittedStart) {
   console.log(`   the command herdr was told to run for ${omittedName}:`);
@@ -252,7 +323,7 @@ const zzz = await activate('KAN-53-ZZZ', { defaultAgent: 'zzz' });
 show('activate_by_key response:', zzz);
 
 const zzzName = agentNameFor(TYPE, 'KAN-53-ZZZ');
-const zzzStarts = startsIn(invocations()).filter((argv) => argv[2] === zzzName);
+const zzzStarts = startsIn(invocations()).filter((argv) => nameOf(argv) === zzzName);
 const zzzWorkspace = path.join(fakeHome, '.local', 'share', 'butchr', 'workspaces', TYPE, 'kan-53-zzz');
 const zzzPromptWritten = fs.existsSync(path.join(zzzWorkspace, '.butchr-prompt.md'));
 console.log(`\n   herdr invocations during the refusal: ${invocations().length - invocationsBeforeZzz}`);
@@ -290,7 +361,7 @@ rule("3. defaultAgent: 'shell' — explicit shell still works, and only explicit
 const shell = await activate('KAN-53-SHELL', { defaultAgent: 'shell' });
 show('activate_by_key response:', { success: shell?.success, verified: shell?.verified, sessionId: shell?.sessionId });
 
-const shellStart = startsIn(invocations()).find((argv) => argv[2] === agentNameFor(TYPE, 'KAN-53-SHELL'));
+const shellStart = startsIn(invocations()).find((argv) => nameOf(argv) === agentNameFor(TYPE, 'KAN-53-SHELL'));
 if (shellStart) {
   console.log(`\n   the command herdr was told to run: ${JSON.stringify(launcherCommandOf(shellStart))}`);
 }
@@ -306,10 +377,10 @@ rule('4. the audit — every command constructed while defaultAgent was absent o
 
 const allStarts = startsIn(invocations());
 for (const argv of allStarts) {
-  console.log(`   ${argv[2]}  →  ${JSON.stringify(launcherCommandOf(argv))}`);
+  console.log(`   ${nameOf(argv)}  →  ${JSON.stringify(launcherCommandOf(argv))}`);
 }
 const accidentalShells = allStarts.filter(
-  (argv) => launcherCommandOf(argv) === 'bash' && argv[2] !== agentNameFor(TYPE, 'KAN-53-SHELL')
+  (argv) => launcherCommandOf(argv) === 'bash' && nameOf(argv) !== agentNameFor(TYPE, 'KAN-53-SHELL')
 );
 verdict(
   accidentalShells.length === 0,
