@@ -1,7 +1,8 @@
 {
   "capturedFrom": "atlassian_search_issues({ jql: 'project = KAN ORDER BY created DESC', maxResults: 2 })",
   "capturedAgainst": "the fleet daemon at origin/main 795ae89, 2026-08-18, KAN-522",
-  "note": "The `body` below is Atlassian's /rest/api/3/search/jql page verbatim, at this operation's DEFAULT fields (status,summary,issuetype,assignee). maxResults is 2 because 2 is what the live proxy can still show: at 30 the response budget replaced the whole `issues` array, which is the defect KAN-522 is about. The per-issue SHAPE here is real; a count large enough to clip is synthesised by the check from these rows, and cannot be observed any other way until this ticket lands.",
+  "note": "The `body` below is Atlassian's /rest/api/3/search/jql page as captured, at this operation's DEFAULT fields (status,summary,issuetype,assignee). maxResults is 2 because 2 is what the live proxy can still show: at 30 the response budget replaced the whole `issues` array, which is the defect KAN-522 is about. The per-issue SHAPE here is real; a count large enough to clip is synthesised by the check from these rows, and cannot be observed any other way until this ticket lands.",
+  "scrubbed": "NOT byte-for-byte, and the difference is named rather than left to be assumed: the account id, the assignee's email address and the gravatar hash derived from it were replaced with same-shape placeholders before this was committed. Nothing else was touched, the substitutions are length-comparable so the size assertions in §0 still measure the real envelope, and the condenser drops all three anyway — `assignee` collapses to its displayName, so no placeholder reaches any assertion.",
   "body": {
     "issues": [
       {
@@ -23,14 +24,14 @@
             "hierarchyLevel": 0
           },
           "assignee": {
-            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A619ec5ec-2e92-492f-8979-91ccda318230",
-            "accountId": "712020:619ec5ec-2e92-492f-8979-91ccda318230",
-            "emailAddress": "wroosbit@gmail.com",
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A00000000-0000-0000-0000-000000000000",
+            "accountId": "712020:00000000-0000-0000-0000-000000000000",
+            "emailAddress": "agent@example.invalid",
             "avatarUrls": {
-              "48x48": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
-              "24x24": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
-              "16x16": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
-              "32x32": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png"
+              "48x48": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "24x24": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "16x16": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "32x32": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png"
             },
             "displayName": "Wroos Bit",
             "active": true,
@@ -72,14 +73,14 @@
             "hierarchyLevel": 0
           },
           "assignee": {
-            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A619ec5ec-2e92-492f-8979-91ccda318230",
-            "accountId": "712020:619ec5ec-2e92-492f-8979-91ccda318230",
-            "emailAddress": "wroosbit@gmail.com",
+            "self": "https://api.atlassian.com/ex/jira/c4c523ff-4beb-4418-9257-9f194fce3490/rest/api/3/user?accountId=712020%3A00000000-0000-0000-0000-000000000000",
+            "accountId": "712020:00000000-0000-0000-0000-000000000000",
+            "emailAddress": "agent@example.invalid",
             "avatarUrls": {
-              "48x48": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
-              "24x24": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
-              "16x16": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
-              "32x32": "https://secure.gravatar.com/avatar/058a32994d4f7851f3f2a6c03474005b?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png"
+              "48x48": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "24x24": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "16x16": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png",
+              "32x32": "https://secure.gravatar.com/avatar/00000000000000000000000000000000?d=https%3A%2F%2Favatar-management--avatars.us-west-2.prod.public.atl-paas.net%2Finitials%2FWB-5.png"
             },
             "displayName": "Wroos Bit",
             "active": true,
