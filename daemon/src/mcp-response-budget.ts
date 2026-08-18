@@ -87,7 +87,15 @@ export type ClipRecord = {
     | 'rows-summarised'
     | 'rows-addressed'
     | 'entries-omitted'
-    | 'section-omitted';
+    | 'section-omitted'
+    /**
+     * KAN-501. A field kept, with its large members given up and its small ones
+     * left where they were. The rung that exists because the paging envelope
+     * was collateral: `atlassian_get_issue_comments` put `total`, `startAt` and
+     * `maxResults` inside the one object `section-omitted` replaced, so a
+     * caller was told to page by a number the same answer had just deleted.
+     */
+    | 'members-omitted';
   /** How many entries came back. `null` where the field is not a list. */
   readonly returned: number | null;
   /** How many exist. `null` where the field is not a list. */
@@ -214,7 +222,22 @@ export const NEVER_CLIPPED: readonly string[] = [
   'censusUnreadableRecordsTotal',
   'censusUnreadableRecords',
   'missingAgents',
-  'preemptedAgents'
+  'preemptedAgents',
+  // KAN-501, and these are here BY DECISION rather than by luck. `task/KAN-420`
+  // observed that `butchr_atlassian_proxy_status` keeps `outcome` and `mode`
+  // through a clip only because they are small and this function drops
+  // largest-first — "the tool is degraded, not blind" — and asked that whoever
+  // fixed the clip keep that property deliberately. It is the field an operator
+  // is *instructed* to read to confirm a rung, so a future field ordering that
+  // happened to reach it would silence the one answer that check depends on.
+  'outcome',
+  'mode',
+  'available',
+  'whatAnEmptyToolListMeans',
+  // The proxy envelope's own verdict, for the same reason one field over: a
+  // reduced answer must not be able to lose the status it is an answer with.
+  'status',
+  'via'
 ];
 
 type AgentRow = Record<string, unknown>;
@@ -277,6 +300,48 @@ function callRecipe(tool: string, args: string): string {
 }
 
 /**
+ * How — or whether — a caller can get back what this answer gave up.
+ *
+ * KAN-501, AND THE SHAPE IS THE FIX. Until this type existed the recipe was a
+ * string built from the tool's *name*: `sectionStub` wrote
+ * `<tool>({ section: '<field>' })` for whatever tool it happened to be fitting.
+ * That is true of exactly one tool on this server — `butchr_list_agents`, which
+ * advertises a `section` parameter and honours it — and false of the other
+ * forty-odd, which do not have one. So every clipped Atlassian answer printed
+ * an instruction that could not be typed, and `epic/KAN-39` and `epic/KAN-203`
+ * each spent a real review following it in a circle.
+ *
+ * The defect was not that somebody wrote the wrong string. It was that the
+ * string was **derivable from the tool name alone**, so a caller with no
+ * recovery to offer could not say so — the only expressible answer was a recipe.
+ * This union makes "there is no way back" a thing the type can say, and
+ * {@link fitGenericResponse} the caller that says it. A false recipe is now
+ * something you have to construct on purpose rather than something you get by
+ * default.
+ *
+ * Preferring the type to the assertion, per the standing rule — with the
+ * assertion as well: `verify-clip-recipes-are-executable.mjs` checks every
+ * recipe this module can emit against the parameters its tool actually
+ * advertises.
+ */
+export type Recovery =
+  /** A call that returns the omitted field, executable exactly as printed. */
+  | { readonly kind: 'call'; readonly call: string }
+  /** There is none, and this says why in the answer rather than in a comment. */
+  | { readonly kind: 'none'; readonly why: string };
+
+/**
+ * The recovery `butchr_list_agents` can offer, which is a real one.
+ *
+ * Kept as a named function rather than inlined so the one place a `section`
+ * recipe is constructed is the one place that can be checked against the one
+ * schema that carries a `section` parameter.
+ */
+function sectionRecovery(tool: string, field: string): Recovery {
+  return { kind: 'call', call: callRecipe(tool, `{ section: '${field}' }`) };
+}
+
+/**
  * The stub a dropped section leaves behind.
  *
  * A stub rather than a deletion, because a deleted key and a key this daemon
@@ -285,14 +350,18 @@ function callRecipe(tool: string, args: string): string {
  * wired, precisely so it cannot be read as "the reconciler says nothing").
  * Deleting for budget would collide with that meaning. The stub keeps them
  * apart: `omitted: 'for-budget'` is a field that exists and was not sent.
+ *
+ * `readWith` and `noWayBack` are mutually exclusive by construction: the stub
+ * carries whichever arm {@link Recovery} is, and never both. A reader that finds
+ * no `readWith` is not looking at an oversight.
  */
-function sectionStub(field: string, value: unknown, tool: string): Record<string, unknown> {
+function sectionStub(field: string, value: unknown, recovery: Recovery): Record<string, unknown> {
   const total = Array.isArray(value) ? value.length : null;
   return {
     omitted: 'for-budget',
     ...(total === null ? {} : { total }),
     chars: sizeOf(value),
-    readWith: callRecipe(tool, `{ section: '${field}' }`)
+    ...(recovery.kind === 'call' ? { readWith: recovery.call } : { noWayBack: recovery.why })
   };
 }
 
@@ -403,7 +472,7 @@ export function fitListAgentsResponse(
       // the ladder has been walked twice by the re-fit backstop.
       if (isPlainObject(value) && value.omitted === 'for-budget') continue;
       takenBack.set(field, value);
-      working = { ...working, [field]: sectionStub(field, value, tool) };
+      working = { ...working, [field]: sectionStub(field, value, sectionRecovery(tool, field)) };
       clips.push({
         field,
         reduction: 'section-omitted',
@@ -615,7 +684,13 @@ function fitSection(
       readTheRest: 'not available over MCP; this section alone exceeds the response budget'
     };
     clips[0] = record;
-    working = { ...base, [section]: sectionStub(section, value, ctx.tool) };
+    working = {
+      ...base,
+      [section]: sectionStub(section, value, {
+        kind: 'none',
+        why: `this section alone exceeds the ${ctx.budgetChars}-character response budget, so no call on this server returns it whole`
+      })
+    };
     chars = sizeOf(
       withCompleteness(working, clippedVerdict(0, ctx.budgetChars, sizeOf(base), [record]))
     );
@@ -708,11 +783,22 @@ function clippedVerdict(
     // `undeliveredNotifications`, which answers who was never told. The
     // reasoning belongs in the tool description, which costs the answer nothing;
     // what belongs here is the verdict and the numbers.
+    // WHAT HAPPENED, DERIVED FROM WHAT HAPPENED (KAN-501). The no-loss branch
+    // used to read "every agent is named, with less said about some" for every
+    // tool on this server, because the only tool that could reach this code when
+    // it was written was the fleet census. It was then printed verbatim on Jira
+    // comment reads and on `butchr_atlassian_proxy_status` — responses with no
+    // agents in them at all. A sentence that is true of one caller and asserted
+    // for all of them is the same defect as a recipe built from a tool's name:
+    // both are a fact about one shape, generalised by the code that emits it.
+    // So the agent sentence is now conditioned on an agent rung having fired.
     detail:
       `NOT WHOLE: ${unclippedChars} chars reduced to fit ${budgetChars}. ` +
       (lost > 0
         ? `${lost} list entr(ies) are absent — \`clipped\` names the field and the call that returns them.`
-        : 'No entry was dropped; every agent is named, with less said about some.')
+        : clipped.some((c) => c.reduction === 'rows-summarised' || c.reduction === 'rows-addressed')
+          ? 'No entry was dropped; every agent is named, with less said about some.'
+          : 'No list entry was dropped; `clipped` names each field that was reduced and what, if anything, returns it.')
   };
 }
 
@@ -733,7 +819,23 @@ function clippedVerdict(
  */
 export function fitGenericResponse(
   response: unknown,
-  options: { budgetChars?: number; tool: string }
+  options: {
+    budgetChars?: number;
+    tool: string;
+    /**
+     * What this tool can offer a caller for a field it had to give up.
+     *
+     * KAN-501. Defaulted rather than required, and the default is `none` —
+     * which is the whole point. A tool that says nothing about its recovery
+     * gets an honest "there is none" instead of the invented `section` recipe
+     * this parameter replaced. Supplying a recipe is now the deliberate act;
+     * omitting one is safe.
+     *
+     * The path is dotted for a member — `body.comments` — so a tool that pages
+     * can name the call that returns the next page of exactly that list.
+     */
+    recoveryFor?: (path: string) => Recovery;
+  }
 ): Fitted {
   const budgetChars = Math.max(options.budgetChars ?? budgetFromEnv(), MIN_BUDGET_CHARS);
   const unclippedChars = sizeOf(response);
@@ -772,29 +874,155 @@ export function fitGenericResponse(
     };
   }
 
+  const recoveryFor =
+    options.recoveryFor ??
+    ((path: string): Recovery => ({
+      kind: 'none',
+      why:
+        `${options.tool} takes no parameter that returns "${path}" on its own. ` +
+        'Narrowing the request is the only lever, and on some calls there is no narrower one.'
+    }));
+
   const clips: ClipRecord[] = [];
   let working: Record<string, unknown> = { ...response };
-  const bySize = Object.keys(response)
-    .filter((k) => !NEVER_CLIPPED.includes(k))
-    .map((k) => [k, sizeOf((response as Record<string, unknown>)[k])] as const)
-    .sort((a, b) => b[1] - a[1]);
 
-  for (const [field] of bySize) {
+  /**
+   * What may be given up, smallest unit first.
+   *
+   * ONE LEVEL OF RECURSION, AND KAN-501 IS WHY. Giving up whole top-level
+   * fields is the only reduction that is safe on a shape this function knows
+   * nothing about — but on the shape it actually meets most, the proxy
+   * envelope, the whole answer lives in ONE field called `body`, so
+   * "largest-first" and "all of it" were the same move. The clip that took a
+   * ticket's comments took `total`, `startAt` and `maxResults` with them, and
+   * those are what the tool's own description tells a caller to page by:
+   * `epic/KAN-203` was told to walk `startAt` until it reached a `total` the
+   * same response had just deleted.
+   *
+   * So a plain object is descended into once and its members are the units.
+   * Scalars are not candidates at all — they are a few dozen characters each
+   * and they are the half a reader steers by. What this does NOT do is recurse
+   * further: two levels down, a field name stops being something a caller can
+   * act on, and the safety argument for dropping whole fields stops holding.
+   */
+  const candidates: Array<{ path: string; owner: string | null; key: string; size: number }> = [];
+  for (const field of Object.keys(response)) {
+    if (NEVER_CLIPPED.includes(field)) continue;
+    const value = (response as Record<string, unknown>)[field];
+    if (isPlainObject(value)) {
+      const members = Object.keys(value).filter(
+        (k) => isPlainObject(value[k]) || Array.isArray(value[k])
+      );
+      // WHAT DESCENDING IS FOR, AND THE CONDITION IS THE WHOLE OF IT: keeping
+      // the small members while the large ones go. An object with no small
+      // members has nothing to keep, so descending into it buys nothing — and
+      // costs something real, which is why this is a condition rather than a
+      // preference. Fragmenting a big object into many small candidates hides
+      // it from a largest-first ordering: measured while writing this ticket's
+      // proof, a 15,000-character `report` of 32 sub-objects was passed over
+      // and a 1,200-character `toolsAdvertised` list dropped in its place,
+      // because the report had no single candidate as large as the list. The
+      // reduction was correct and the field it chose was the wrong one.
+      const keepsSomething = Object.keys(value).some(
+        (k) => !isPlainObject(value[k]) && !Array.isArray(value[k])
+      );
+      if (members.length > 0 && keepsSomething) {
+        for (const member of members) {
+          candidates.push({
+            path: `${field}.${member}`,
+            owner: field,
+            key: member,
+            size: sizeOf(value[member])
+          });
+        }
+        continue;
+      }
+    }
+    candidates.push({ path: field, owner: null, key: field, size: sizeOf(value) });
+  }
+  candidates.sort((a, b) => b.size - a.size);
+
+  const stillOver = (): boolean => {
     const provisional =
       clips.length === 0
         ? completeVerdict(0, budgetChars)
         : clippedVerdict(0, budgetChars, unclippedChars, clips as [ClipRecord, ...ClipRecord[]]);
-    if (sizeOf(withCompleteness(working, provisional)) <= budgetChars) break;
-    const value = working[field];
-    working = { ...working, [field]: sectionStub(field, value, options.tool) };
+    return sizeOf(withCompleteness(working, provisional)) > budgetChars;
+  };
+
+  for (const candidate of candidates) {
+    if (!stillOver()) break;
+    const recovery = recoveryFor(candidate.path);
+
+    if (candidate.owner === null) {
+      const value = working[candidate.key];
+      working = { ...working, [candidate.key]: sectionStub(candidate.key, value, recovery) };
+    } else {
+      const owner = working[candidate.owner];
+      if (!isPlainObject(owner)) continue;
+      const value = owner[candidate.key];
+      working = {
+        ...working,
+        [candidate.owner]: {
+          ...owner,
+          [candidate.key]: sectionStub(candidate.key, value, recovery)
+        }
+      };
+    }
+
+    const raw = candidate.owner === null
+      ? (response as Record<string, unknown>)[candidate.key]
+      : ((response as Record<string, unknown>)[candidate.owner] as Record<string, unknown>)[candidate.key];
     clips.push({
-      field,
-      reduction: 'section-omitted',
-      returned: Array.isArray(value) ? 0 : null,
-      total: Array.isArray(value) ? value.length : null,
-      omitted: Array.isArray(value) ? value.length : null,
-      readTheRest: `not paginated on ${options.tool}; narrow the request instead`
+      field: candidate.path,
+      reduction: candidate.owner === null ? 'section-omitted' : 'members-omitted',
+      returned: Array.isArray(raw) ? 0 : null,
+      total: Array.isArray(raw) ? raw.length : null,
+      omitted: Array.isArray(raw) ? raw.length : null,
+      // NO LONGER A SENTENCE ABOUT PAGINATION THIS FUNCTION CANNOT KNOW. It
+      // used to read "not paginated on <tool>; narrow the request instead" for
+      // every tool — printed, among others, on `atlassian_get_issue_comments`,
+      // which is paginated, and to a caller already at `maxResults: 1`.
+      readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why
     });
+  }
+
+  // The backstop to the backstop: an object whose scalars alone will not fit.
+  // Reached only when member-level reduction has run out, and it is the old
+  // whole-field behaviour, unchanged except that its recipe is now honest.
+  if (stillOver()) {
+    const wholeFields = Object.keys(response)
+      .filter((k) => !NEVER_CLIPPED.includes(k))
+      .map((k) => [k, sizeOf((response as Record<string, unknown>)[k])] as const)
+      .sort((a, b) => b[1] - a[1]);
+    for (const [field] of wholeFields) {
+      if (!stillOver()) break;
+      const value = working[field];
+      if (isPlainObject(value) && value.omitted === 'for-budget') continue;
+      const recovery = recoveryFor(field);
+      working = { ...working, [field]: sectionStub(field, value, recovery) };
+      const raw = (response as Record<string, unknown>)[field];
+      const at = clips.findIndex((c) => c.field === field || c.field.startsWith(`${field}.`));
+      const record: ClipRecord = {
+        field,
+        reduction: 'section-omitted',
+        returned: Array.isArray(raw) ? 0 : null,
+        total: Array.isArray(raw) ? raw.length : null,
+        omitted: Array.isArray(raw) ? raw.length : null,
+        readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why
+      };
+      // The whole field subsumes any member record already taken from it — a
+      // reader wants the end state, not the route the fitter walked to it.
+      if (at === -1) clips.push(record);
+      else {
+        clips.splice(
+          0,
+          clips.length,
+          ...clips.filter((c) => c.field !== field && !c.field.startsWith(`${field}.`)),
+          record
+        );
+      }
+    }
   }
 
   const chars = sizeOf(

@@ -734,3 +734,240 @@ export function markdownToAdf(markdown: string, target: AdfTarget = 'confluence'
 export function confluenceBody(doc: AdfDoc): { representation: 'atlas_doc_format'; value: string } {
   return { representation: 'atlas_doc_format', value: JSON.stringify(doc) };
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// KAN-501: the other direction. ADF in, plain text out.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * What an ADF document says, as text, and what rendering it cost.
+ *
+ * `unrendered` is the half that matters and it is why this returns a record
+ * rather than a string. Every other converter in this file is written against
+ * a grammar it also *builds*, so it knows every node it can meet. This one is
+ * given documents Atlassian wrote, from a schema that grows without asking us
+ * — an `expand`, a `taskList`, a macro nobody here has seen. A renderer that
+ * met one of those and returned the text it could find would produce a clean,
+ * complete-looking paragraph with a section missing from the middle, which is
+ * KAN-183's dropped list item wearing this module's clothes.
+ *
+ * So an unrecognised node is **named in the output** — `[adf:expand]` — and
+ * named again here, where a caller can put the list in front of the reader.
+ * An empty `unrendered` is the claim that every node was understood.
+ */
+export interface AdfText {
+  text: string;
+  /** Node types met that this renderer has no rule for, deduplicated. */
+  unrendered: string[];
+}
+
+/** Text-level marks, in the order they wrap. */
+function applyMarks(text: string, marks: AdfNode['marks']): string {
+  if (!marks?.length) return text;
+  let out = text;
+  for (const mark of marks) {
+    switch (mark.type) {
+      case 'code':
+        out = `\`${out}\``;
+        break;
+      case 'strong':
+        out = `**${out}**`;
+        break;
+      case 'em':
+        out = `*${out}*`;
+        break;
+      case 'strike':
+        out = `~~${out}~~`;
+        break;
+      case 'link': {
+        const href = mark.attrs?.href;
+        out = typeof href === 'string' && href ? `[${out}](${href})` : out;
+        break;
+      }
+      // `underline`, `textColor`, `subsup` and anything newer carry no text of
+      // their own, so dropping the decoration loses nothing a reader needs.
+      // This is the one place silence is correct, and it is correct because
+      // the characters survive: a mark is a property of text that is present.
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Render one ADF document to text.
+ *
+ * WHAT THIS IS FOR (KAN-501). A Jira comment reaches an agent as ADF, and ADF
+ * is roughly five times the size of the words in it — measured on this site on
+ * 2026-08-18, KAN-501's own oldest comment is 1,930 characters of prose inside
+ * a 10,682-character response. The proxy's comment read was therefore over its
+ * response budget on every real ticket and returned **no comment body at all**,
+ * which made the one tool that reaches a long history the one tool that could
+ * not answer. The words are what an agent came for; the node tree is not.
+ *
+ * It is Markdown-flavoured rather than bare prose because the input is prose
+ * somebody wrote in Markdown, converted to ADF by {@link markdownToAdf} on the
+ * way in. Round-tripping it back to the notation it was written in is what
+ * makes a quoted heading still read as a heading.
+ */
+export function adfToText(doc: unknown): AdfText {
+  const unrendered = new Set<string>();
+
+  // AN INPUT THAT IS NOT A NODE IS NOT AN EMPTY DOCUMENT, and the two must not
+  // render the same. Walking a `null` body returns '' — which reads as a comment
+  // somebody left blank, with an empty `unrendered` still claiming every node
+  // was understood. That is a silent loss inside the function whose whole
+  // contract is that it does not have any, so it is named here instead.
+  if (!doc || typeof doc !== 'object' || typeof (doc as AdfNode).type !== 'string') {
+    return {
+      text: '',
+      unrendered: [`not-adf:${doc === null ? 'null' : typeof doc}`]
+    };
+  }
+
+  const renderInline = (nodes: AdfNode[] | undefined): string =>
+    (nodes ?? []).map((n) => renderNode(n, '')).join('');
+
+  function renderNode(node: AdfNode | undefined, indent: string): string {
+    if (!node || typeof node !== 'object') return '';
+    switch (node.type) {
+      case 'doc':
+        return (node.content ?? [])
+          .map((n) => renderNode(n, indent))
+          .filter((s) => s.length > 0)
+          .join('\n\n');
+
+      case 'text':
+        return applyMarks(node.text ?? '', node.marks);
+
+      case 'hardBreak':
+        return '\n';
+
+      case 'paragraph':
+        return renderInline(node.content);
+
+      case 'heading': {
+        const level = Number(node.attrs?.level ?? 1);
+        const hashes = '#'.repeat(Math.min(6, Math.max(1, Number.isFinite(level) ? level : 1)));
+        return `${hashes} ${renderInline(node.content)}`;
+      }
+
+      case 'blockquote':
+        return (node.content ?? [])
+          .map((n) => renderNode(n, indent))
+          .join('\n\n')
+          .split('\n')
+          .map((line) => `> ${line}`)
+          .join('\n');
+
+      case 'bulletList':
+      case 'orderedList': {
+        const ordered = node.type === 'orderedList';
+        const start = Number(node.attrs?.order ?? 1);
+        return (node.content ?? [])
+          .map((item, i) => {
+            const bullet = ordered ? `${(Number.isFinite(start) ? start : 1) + i}. ` : '- ';
+            const body = renderNode(item, `${indent}${' '.repeat(bullet.length)}`);
+            // The bullet replaces the first line's indent; continuation lines
+            // keep it, so a nested list stays nested when it is read back.
+            const [first, ...rest] = body.split('\n');
+            return [`${indent}${bullet}${first}`, ...rest].join('\n');
+          })
+          .join('\n');
+      }
+
+      case 'listItem':
+        return (node.content ?? [])
+          .map((n) => renderNode(n, indent))
+          .filter((s) => s.length > 0)
+          .join('\n');
+
+      case 'codeBlock': {
+        const lang = node.attrs?.language;
+        const fence = typeof lang === 'string' && lang ? `\`\`\`${lang}` : '```';
+        return `${fence}\n${renderInline(node.content)}\n\`\`\``;
+      }
+
+      case 'rule':
+        return '---';
+
+      case 'panel': {
+        const kind = node.attrs?.panelType;
+        const label = typeof kind === 'string' && kind ? kind.toUpperCase() : 'PANEL';
+        const body = (node.content ?? []).map((n) => renderNode(n, indent)).join('\n\n');
+        return `> [${label}] ${body.split('\n').join('\n> ')}`;
+      }
+
+      case 'table':
+        return (node.content ?? []).map((n) => renderNode(n, indent)).join('\n');
+
+      case 'tableRow':
+        return `| ${(node.content ?? []).map((n) => renderNode(n, '')).join(' | ')} |`;
+
+      case 'tableCell':
+      case 'tableHeader':
+        // Cell contents joined with a space rather than a newline: a newline
+        // inside a pipe row would break the row it is part of.
+        return (node.content ?? [])
+          .map((n) => renderNode(n, ''))
+          .filter((s) => s.length > 0)
+          .join(' ')
+          .replace(/\n+/g, ' ');
+
+      case 'mention': {
+        const t = node.attrs?.text;
+        return typeof t === 'string' && t ? t : '@unknown';
+      }
+
+      case 'emoji': {
+        const t = node.attrs?.text ?? node.attrs?.shortName;
+        return typeof t === 'string' ? t : '';
+      }
+
+      case 'date': {
+        const ts = node.attrs?.timestamp;
+        return typeof ts === 'string' ? ts : '';
+      }
+
+      case 'status': {
+        const t = node.attrs?.text;
+        return typeof t === 'string' && t ? `[${t}]` : '';
+      }
+
+      case 'inlineCard':
+      case 'blockCard':
+      case 'embedCard': {
+        const url = node.attrs?.url;
+        return typeof url === 'string' && url ? url : '';
+      }
+
+      case 'mediaSingle':
+      case 'mediaGroup':
+        return (node.content ?? []).map((n) => renderNode(n, indent)).join('\n');
+
+      case 'media': {
+        const alt = node.attrs?.alt;
+        const id = node.attrs?.id;
+        const name = typeof alt === 'string' && alt ? alt : typeof id === 'string' ? id : 'attachment';
+        return `[media: ${name}]`;
+      }
+
+      default: {
+        // NAMED, NEVER DROPPED — see {@link AdfText}. If the node carries
+        // children they are still rendered, so an unknown *container* costs its
+        // label and not its contents; an unknown *leaf* costs nothing but is
+        // still visible as having been there.
+        unrendered.add(node.type);
+        const inner = (node.content ?? [])
+          .map((n) => renderNode(n, indent))
+          .filter((s) => s.length > 0)
+          .join('\n');
+        return inner ? `[adf:${node.type}] ${inner}` : `[adf:${node.type}]`;
+      }
+    }
+  }
+
+  const text = renderNode(doc as AdfNode, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { text, unrendered: [...unrendered].sort() };
+}

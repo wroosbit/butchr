@@ -569,13 +569,21 @@ check(
 );
 
 // ── 6. the transforms, and what they are allowed to touch ──────────────────
-rule('6. only two operations reshape a response, and neither can reach a credential');
+rule('6. only three operations reshape a response, and none can reach a credential');
 
+// KAN-501 made this three. The list is spelled out rather than counted so that
+// adding a transform is a deliberate edit here as well as there — the point was
+// never the number, it is that each one is argued for. `ProxyOperationBase.transform`
+// carries the argument for the third.
 const withTransform = PROXY_OPERATIONS.filter((op) => op.transform).map((op) => op.tool);
 check(
-  'exactly two operations have a transform, and they are the two that cannot avoid one',
+  'exactly three operations have a transform, and they are the three that cannot avoid one',
   JSON.stringify(withTransform.sort()) ===
-    JSON.stringify(['atlassian_get_accessible_resources', 'atlassian_search']),
+    JSON.stringify([
+      'atlassian_get_accessible_resources',
+      'atlassian_get_issue_comments',
+      'atlassian_search'
+    ]),
   JSON.stringify(withTransform)
 );
 // A transform is given non-secret context and nothing else. Asserted against
@@ -598,7 +606,19 @@ const routerSrc = fs.readFileSync(path.join(scriptDir, '..', 'src', 'router.ts')
 // string | boolean` — so `this.jira.status()` is exactly the sort of value that
 // could grow a token-bearing field later without anything here objecting. What
 // is asserted is that the two fields are named individually at the call site.
-const transformCall = routerSrc.match(/operation\.transform\(([\s\S]{0,400}?)\);/)?.[1] ?? '';
+// The window was 400 characters and KAN-501 grew the call past it by adding a
+// third argument. A non-match yields '' — which fails all three assertions
+// below, each naming a credential problem that does not exist. THE CHECK WENT
+// RED FOR THE WRONG REASON, which is the failure this repository keeps finding
+// in other instruments and had here in its own. So the window is wider, and a
+// call site that cannot be located now says exactly that.
+const transformCall = routerSrc.match(/operation\.transform\(([\s\S]{0,900}?)\);/)?.[1] ?? '';
+check(
+  "the transform call site was located in router.ts at all — otherwise the checks below are about nothing",
+  transformCall.length > 0,
+  'no `operation.transform(...)` call matched; the assertions below would report a credential ' +
+    'leak that has not been measured'
+);
 check(
   'router.ts hands the transform only siteUrl and email, never the credential object',
   /siteUrl:\s*asText\(credential\.siteUrl\)/.test(transformCall) &&
