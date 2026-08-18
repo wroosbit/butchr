@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 118 |
+| `yes` | 119 |
 | `partial` | 14 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **157** |
+| **total** | **158** |
 
-**132 of 157** run on every pull request.
+**133 of 158** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -103,6 +103,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-doc-constant-pins` | yes | reads `docs/*.md` and `daemon/src/*.ts` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-effective-ceiling` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-env-knobs-documented` | yes | reads `daemon/src/**/*.ts` and `docs/env-knobs.md` off the checkout and matches regexes; node builtins only, no build, no daemon, no herdr, no credential, no network, no terminal, no wall clock. |
+| `verify-exit-path-classifier` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
 | `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
