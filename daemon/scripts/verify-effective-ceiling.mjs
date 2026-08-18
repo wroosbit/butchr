@@ -106,8 +106,17 @@
 //   # watching: it announces that it could not get a real red, falls back, and
 //   # the assertions STILL fail. That branch cannot manufacture a green.
 //   #
+//   # 3. break the projection claim SPECIFICALLY — neither mutation above
+//   #    touches it, and an assertion no mutation reaches is decorative.
+//   #    In src/capacity.ts's headroomByMemory, divide by
+//   #      (cost.residentBytes * 2)
+//   #    so the term stops dividing by the amount a start is charged.
+//   npm run build && node scripts/verify-effective-ceiling.mjs
+//   # OBSERVED 2026-08-18: §2's invariance goes `6, 6, 7, 7, 8` instead of a
+//   # flat line, and §1's by-hand memory check fails too. Exit 1.
+//   #
 //   # then `git checkout src/capacity.ts && npm run build` and watch it green.
-//   # OBSERVED: restored, rebuilt, every check held again.
+//   # OBSERVED: restored, rebuilt, all 42 checks held again.
 //
 // Usage:
 //   cd daemon && npm run build && node scripts/verify-effective-ceiling.mjs
@@ -465,17 +474,53 @@ check(
 // This is the mechanism behind the ticket's own observation — "two more agents
 // started and headroom did not move" — and it is why one of those two terms
 // deserves to be called a forecast and the other does not.
-console.log('  simulating starts against the same machine (each takes one agent of memory):\n');
-console.log('  started  available  ceilingByMemory  ceilingByCpu');
-const startCost = here.cost.residentBytes;
+// The fixture is deterministic and has real memory headroom, and BOTH of those
+// are required. The first run of this check used the live machine, and on a box
+// whose memory headroom had fallen to 1 it read `6, 6, 7, 8` and failed — the
+// claim looked wrong when what was wrong was the check. The reason is worth
+// keeping, because it sharpens the claim rather than excusing it:
+//
+//   `headroomByMemory` is `Math.max(0, floor((available − reserved) ÷ cost))`.
+//   While that term is ABOVE zero, taking one agent's memory out of the
+//   numerator takes exactly one off the quotient, so `running + headroomByMemory`
+//   is EXACTLY invariant — not approximately. Once it CLAMPS at zero, further
+//   starts cannot reduce it further, `running` keeps climbing, and the sum
+//   climbs with it.
+//
+// But a start past the ceiling is a start the gate REFUSES. So the clamped
+// region is not a counter-example to the claim; it is outside it. Simulating
+// into it was the mistake, and the fix is to simulate exactly the starts that
+// would be admitted — after which the assertion is `spread === 0`, which is
+// strictly stronger than the `<= 1` this replaced.
+const projectionMachine = {
+  cores: 16,
+  busyCores: 1,
+  busyWindowSeconds: 5,
+  load1: 1,
+  totalBytes: 16 * GIB,
+  availableBytes: 8 * GIB,
+  stall: QUIET_STALL
+};
+const projectionBase = computeCapacity(projectionMachine, 2, {
+  configuredCap: CONFIGURED_CAP,
+  supervisorsRunning: SUPERVISORS
+});
+const admissible = projectionBase.headroomByMemory;
+const startCost = projectionBase.cost.residentBytes;
+
+console.log(
+  `  simulating the ${admissible} start(s) the memory term would ADMIT, ` +
+  'each taking one agent of memory out of the numerator it divides:\n'
+);
+console.log('  started  available  running  headroomByMemory  ceilingByMemory  ceilingByCpu');
 const memoryCeilings = [];
 const cpuCeilings = [];
-for (let started = 0; started <= 3; started++) {
+for (let started = 0; started <= admissible; started++) {
   const shrunk = {
-    ...machine,
-    availableBytes: Math.max(0, machine.availableBytes - started * startCost)
+    ...projectionMachine,
+    availableBytes: Math.max(0, projectionMachine.availableBytes - started * startCost)
   };
-  const c = computeCapacity(shrunk, liveish + started, {
+  const c = computeCapacity(shrunk, 2 + started, {
     configuredCap: CONFIGURED_CAP,
     supervisorsRunning: SUPERVISORS
   });
@@ -485,34 +530,73 @@ for (let started = 0; started <= 3; started++) {
   cpuCeilings.push(byCpu);
   console.log(
     `  ${String(started).padStart(7)}  ${(shrunk.availableBytes / GIB).toFixed(2)} GiB  ` +
+    `${String(c.running).padStart(7)}  ${String(c.headroomByMemory).padStart(16)}  ` +
     `${String(byMemory).padStart(15)}  ${String(byCpu).padStart(12)}`
   );
 }
 console.log('');
 
-// Within one, not exactly equal: `headroomByMemory` floors, so a remainder can
-// carry the sum across an integer boundary. Claiming exact invariance would be
-// claiming more than the mechanism delivers, which is the defect this whole
-// ticket is about.
+check(
+  '2',
+  admissible >= 2,
+  `the fixture has real memory headroom to spend (${admissible} admissible start(s)), ` +
+  'so the invariance below is exercised rather than vacuous'
+);
+
 const memorySpread = Math.max(...memoryCeilings) - Math.min(...memoryCeilings);
 check(
   '2',
-  memorySpread <= 1,
-  `the memory-term ceiling holds as starts land (spread ${memorySpread} over ` +
-  `${memoryCeilings.length} simulated starts: ${memoryCeilings.join(', ')}) — ` +
-  'each start is charged to the term that set it'
+  memorySpread === 0,
+  `the memory-term ceiling is EXACTLY invariant across every admissible start ` +
+  `(${memoryCeilings.join(', ')}) — each start is charged to the term that set it, ` +
+  'so the figure forecasts where starts stop'
 );
 
-// And the other half of the same claim: the cpu term is charged nothing, so its
-// ceiling rises by one per start. That is what makes it a snapshot rather than
-// a forecast, and it is why `stability` exists.
-const cpuRises = cpuCeilings.every((v, i) => i === 0 || v >= cpuCeilings[i - 1]);
+// And the other half of the same claim, stated as NON-invariance rather than as
+// a rate. The first version of this check asserted "climbs one per start" and
+// failed on its own fixture at 28, 42, 56 — because a start moves the cpu term
+// by more than its own cost: `boundCoresByObservedCpu` lowers the DIVISOR as the
+// tree count rises against a constant `busyCores`, so the quotient jumps. The
+// rate is an artefact of the fixture; what is true of every fixture is that the
+// figure does not hold still, and that is the whole of what `drifts` claims.
+const cpuSpread = Math.max(...cpuCeilings) - Math.min(...cpuCeilings);
+const cpuNonDecreasing = cpuCeilings.every((v, i) => i === 0 || v >= cpuCeilings[i - 1]);
 check(
   '2',
-  cpuRises && cpuCeilings[cpuCeilings.length - 1] > cpuCeilings[0],
-  `the cpu-term ceiling climbs with population instead of holding ` +
-  `(${cpuCeilings.join(', ')}) — no start is charged to it, so it forecasts nothing`
+  cpuSpread > 0 && cpuNonDecreasing,
+  `the cpu-term ceiling does NOT hold across the same starts — it moves by ` +
+  `${cpuSpread} (${cpuCeilings.join(', ')}) where the memory term moved by ` +
+  `${memorySpread}. ` +
+  'No start is charged to it, so it forecasts nothing'
 );
+
+// One start PAST the ceiling, to show the boundary is understood rather than
+// avoided. The gate refuses this start, so the figure is outside the claim —
+// printed, not asserted on, and named so nobody reads the rise as a defect.
+const past = computeCapacity(
+  {
+    ...projectionMachine,
+    availableBytes: Math.max(0, projectionMachine.availableBytes - (admissible + 1) * startCost)
+  },
+  2 + admissible + 1,
+  { configuredCap: CONFIGURED_CAP, supervisorsRunning: SUPERVISORS }
+);
+console.log(
+  `  one start PAST the ceiling: running ${past.running}, headroomByMemory ` +
+  `${past.headroomByMemory} (clamped at 0), sum ${past.running + past.headroomByMemory} — ` +
+  'the term cannot go below zero, so the sum rises. That start is one the gate\n' +
+  '  refuses, which is why it is outside the invariance claim rather than a counter-example to it.'
+);
+console.log('');
+
+// The live machine's own figures, reported and NOT asserted on. Its memory
+// headroom is whatever the fleet has left it, which on a busy box is sometimes
+// nothing — and an assertion that cannot be exercised is worse than none.
+console.log(
+  `  for comparison, this machine right now: headroomByMemory ${here.headroomByMemory}, ` +
+  `ceiling ${ceilingHere.ceiling}, bound by ${ceilingHere.boundBy}`
+);
+console.log('');
 
 // ---------------------------------------------------------------------------
 // Section 3 — DRIVEN RED: the gate refuses while `cap` still reads 10
