@@ -79,6 +79,45 @@
 // epic, and §7 sees `exemptAgents` never move — the live fleet's exact condition
 // on 2026-08-16. Restore with `git checkout daemon/src/crabcast-runtime.ts` and
 // rebuild.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// RED DRIVE, §8's LEAK ASSERTION (KAN-510) — a SECOND drive, because the one
+// above cannot reach it. Every mutation above breaks the FLAGS, and §8 asks a
+// different question: did this proof leave one of its own exempt agents behind?
+// The only thing that can make that true is this proof failing to clean up, so
+// the mutation is in this file rather than in `daemon/src`.
+//
+//   sed -i 's/^  const toCleanUp = probes;$/  const toCleanUp = probes.filter((q) => !(q.supervisor \&\& q.activated));/' \
+//       daemon/scripts/verify-crabcast-supervisor-exemption.mjs
+//   grep -n 'probes.filter' daemon/scripts/verify-crabcast-supervisor-exemption.mjs  # ASSERT THE EDIT TOOK
+//   node daemon/scripts/verify-crabcast-supervisor-exemption.mjs                      # unpiped; expect exit 1
+//   git checkout daemon/scripts/verify-crabcast-supervisor-exemption.mjs
+//
+// Expected red: EXACTLY ONE new failure — `no exempt agent of this proof is left
+// running`, with `exemptAgents` one above the baseline §6 recorded. Its control
+// PASSES in the same run, which is the pair worth reading: the counter moved,
+// and it did not come back. The three §8 lines about the epic probe's own
+// deactivate/forget/status are absent rather than failed, because the mutation
+// removes that probe from the loop instead of breaking it.
+//
+// ⚠ THIS DRIVE LEAVES A REAL EXEMPT AGENT RUNNING ON YOUR FLEET, and no re-run
+// of this script will take it back out — the next run makes new probes. Restore
+// the file, then clean the leak up by hand and confirm it went:
+//
+// ⚠ `crabcast list` IS NOT THE WAY TO FIND IT, measured here on 2026-08-18:
+// on this fleet it dies with `Line exceeded 1048576 characters`, in --json and
+// plain alike, so the obvious command answers nothing. The record is on disk,
+// and `agents.jsonl` is append-only — every past probe path is in it and only
+// one of them is live, so the state is what discriminates, not the grep:
+//
+//   for d in $(grep -o '/tmp/kan492-epic-[A-Za-z0-9]*' \
+//                ~/.local/share/crabcast/agents.jsonl | sort -u); do
+//     echo "$d -> $(crabcast status "$d" --json | grep -o '"state": *"[^"]*"' | head -1)"
+//   done          # expect exactly ONE `running`, the rest `unconfigured`
+//   crabcast deactivate <that path> && crabcast forget <that path>
+//   crabcast status <that path> --json     # its OWN command: expect success false
+//   crabcast status <a real agent's workDir> --json   # the control: expect true
+//   crabcast capacity --json               # `exemptAgents` back to the baseline
 
 import fs from 'fs';
 import os from 'os';
@@ -417,6 +456,15 @@ rule('§6  ON THE WIRE — CrabCast reports back the flags Butchr sent');
 const socketPath = defaultCrabCastSocket();
 let link = null;
 
+// THE BASELINE AND ITS CONTROL, both read off CrabCast's own capacity surface
+// and both consumed by §8. `exemptAsFound` is the fleet's exempt count BEFORE
+// this proof configures or activates anything, so §8 can ask whether the count
+// came back to it — the question its assertion is named for. `exemptWithProbe`
+// is the same counter read while this proof's exempt probe was live, which is
+// what stops §8's comparison from being satisfied by a counter that never moves.
+let exemptAsFound = null;
+let exemptWithProbe = null;
+
 if (!fs.existsSync(socketPath)) {
   skip(
     'the live round trip',
@@ -435,6 +483,17 @@ if (!fs.existsSync(socketPath)) {
     daemonStatus.success === true,
     'the live CrabCast daemon answers — this is a real peer, not a stub',
     JSON.stringify(daemonStatus).slice(0, 400)
+  );
+
+  // Read BEFORE the first configure_agent below, so it is the fleet as this
+  // proof found it rather than the fleet with this proof's records already in
+  // it. A configured-but-inactive record is not observed to move `exemptAgents`,
+  // but taking the baseline here means §8 does not have to rely on that.
+  const asFound = await link.request({ action: 'capacity' });
+  exemptAsFound = asFound?.exemptAgents;
+  console.log(
+    `  fleet as found: running ${asFound?.running} · exempt ${exemptAsFound}` +
+      ` · atCapacity ${asFound?.atCapacity}`
   );
 
   console.log('\n  type     sent (r/c/p)      configure echo      agent_status echo');
@@ -584,6 +643,7 @@ if (!link) {
     // CrabCast recounts on its own timer; give it a moment rather than racing it.
     await new Promise((r) => setTimeout(r, 1500));
     const after = await capacityOf();
+    exemptWithProbe = after.exempt;
     console.log(
       `  after:  running ${after.running} · exempt ${after.exempt} · atCapacity ${after.atCapacity}\n`
     );
@@ -629,7 +689,12 @@ rule('§8  CLEANUP — every record and pane this proof made is taken back out')
 if (!link) {
   skip('the cleanup proof', 'nothing was configured, because §6 did not run.');
 } else {
-  for (const p of probes) {
+  // RED-DRIVE ANCHOR (KAN-510). §6 carries two loops spelled exactly like the
+  // one below, so a sed on `for (const p of probes) {` would hit three places
+  // and the drive would not be measuring what its header says. This name gives
+  // the mutation in the header one line it cannot mistake for another.
+  const toCleanUp = probes;
+  for (const p of toCleanUp) {
     if (p.activated) {
       const stopped = await link.request({ action: 'deactivate_agent', path: p.workDir });
       check(
@@ -667,11 +732,78 @@ if (!link) {
     `\n  fleet restored: running ${restored.running} · exempt ${restored.exemptAgents}` +
       ` · atCapacity ${restored.atCapacity}`
   );
+  // ⚠ THE MEASUREMENT IS A DELTA, AND IT USED TO BE AN ABSOLUTE (KAN-510).
+  // This assertion read `restored.exemptAgents === 0` until 2026-08-18 — a
+  // MACHINE-WIDE count, under a name that says *of this proof*. Those are
+  // different questions, and the gap was invisible in the output: on a live
+  // fleet `{"exemptAgents": 5}` reads like a leak this proof caused, when it is
+  // the fleet's own supervisors, which this proof neither created nor owns. So
+  // it could only be RED where it ran and SKIPPED where it could have passed,
+  // and there was no configuration in which it meaningfully passed at all.
+  //
+  // Two other measurements were available and were rejected, named here so the
+  // next reader does not re-propose them:
+  //
+  //   • Assert per-probe that none of OUR agents is left — rejected as a
+  //     DUPLICATE. The loop directly above already asserts `agent_status` has no
+  //     record for each probe path, so a per-probe rewrite could not go red
+  //     without one of those going red first. It would restate a passing check
+  //     rather than add one, on the same surface.
+  //   • Move it below the socket gate so it skips honestly in CI — rejected as
+  //     a NO-OP: it is already inside §6's `if (!link)` gate and already skips
+  //     in CI. It converts *wrong question* into *not asked* and leaves the
+  //     assertion never running anywhere it can pass.
+  //
+  // The delta is the one that adds something, because it interrogates a
+  // DIFFERENT SURFACE for the same claim: the per-probe loop reads the record
+  // surface, and this reads CrabCast's own capacity accounting. A record that is
+  // gone while the counter still holds its reservation is not hypothetical —
+  // that is KAN-507's shape exactly, a cap held by agents Butchr thought were
+  // gone — and it is the only failure the per-probe loop cannot see.
+  //
+  // ⚠ IT ASSUMES THE FLEET HOLDS STILL for the seconds between §6 and here: a
+  // supervisor started or stopped by anything else moves this counter for a
+  // reason that is not a leak. That is not a new assumption — §7's own
+  // `after.exempt === before.exempt + 1` and `midway.running === before.running`
+  // make the same one, on the same counters, over a window inside this one.
   check(
-    restored.exemptAgents === 0,
-    'no exempt agent of this proof is left running',
-    JSON.stringify({ exemptAgents: restored.exemptAgents })
+    restored.exemptAgents === exemptAsFound,
+    `no exempt agent of this proof is left running — \`exemptAgents\` is back to ` +
+      `the ${exemptAsFound} this proof found`,
+    JSON.stringify({
+      asFound: exemptAsFound,
+      withOurProbeLive: exemptWithProbe,
+      restored: restored.exemptAgents
+    })
   );
+  // THE POSITIVE CONTROL, and the assertion above is worth nothing without it.
+  // `restored === asFound` is satisfied identically by a counter that returned
+  // and by a counter that never moves — a frozen `exemptAgents` would pass it
+  // forever, which is the class of defect this ticket was filed about. Only a
+  // reading that DIFFERS separates them, and §7 took one: the same counter, from
+  // the same call, while this proof's own exempt agent was live.
+  if (exemptWithProbe === null) {
+    skip(
+      "the movement control for `exemptAgents`",
+      "this proof's exempt probe never activated, so §7 never read the counter moving. " +
+        'That failure is §7\'s and is reported there; asserting it again here would be one ' +
+        'cause read as two agreeing instruments.'
+    );
+  } else {
+    // ⚠ THIS LINE CLAIMS ONLY THAT THE COUNTER MOVES, and it is worded that way
+    // because the red drive showed why. An earlier draft interpolated
+    // `restored` and announced a RETURN — and in the run where the assertion
+    // above was RED it printed `5 is a RETURN` beside a leak, a PASS describing
+    // the state its own neighbour had just refuted. The return is the assertion
+    // above; the movement is this one. Neither may narrate the other's verdict.
+    check(
+      exemptWithProbe === exemptAsFound + 1,
+      `…and the control for it: the same counter was SEEN at ${exemptWithProbe}, one above ` +
+        `the ${exemptAsFound} baseline, while this proof's exempt agent was live — so the ` +
+        `comparison above is against a counter that CAN move`,
+      JSON.stringify({ asFound: exemptAsFound, withOurProbeLive: exemptWithProbe })
+    );
+  }
   link.close();
 }
 
