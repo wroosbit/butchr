@@ -3,17 +3,24 @@ node_modules/
 
 # Build output
 dist/
-# The baseline build a `verify-` script compares against (see the usage block in
-# daemon/scripts/verify-mcp-runtime-validation.mjs).
-dist-unfixed/
-# The guard-removed copy verify-board-reconciler-guard.mjs builds to show the
-# fleet being torn down. It removes it on exit; this is for the run that
-# crashes before it can.
-dist-guardless-*/
-# Same shape, from verify-absence-is-not-intent.mjs's red drive. Added by
-# KAN-368 after `git add -A` swept 58 of its files into a commit: the two
-# patterns above exist because that had already happened twice.
-dist-kan342-red-*/
+# Scratch build trees, as a GLOB rather than one pattern per ticket (KAN-516).
+#
+# This block used to enumerate them — `dist-unfixed/` for the baseline
+# verify-mcp-runtime-validation.mjs compares against, `dist-guardless-*/` for
+# the copy verify-board-reconciler-guard.mjs tears the fleet down with,
+# `dist-kan342-red-*/` for verify-absence-is-not-intent.mjs's red drive. Each
+# was added AFTER a `git add -A` had already swept that tree into a commit,
+# KAN-368's note recording 58 files on the third occasion.
+#
+# An enumeration requires every future red drive to remember to extend it, and
+# fails silently and hugely when one does not: KAN-516 committed 81,309 lines
+# across two `dist-kan343-*` trees, and every required check passed on them.
+# `dist-kan342-red-*` was listed; `dist-kan343-*` was not, because nobody had
+# got to it yet. The glob needs nobody to remember.
+#
+# Checked safe rather than assumed: `git ls-tree -r origin/main` matched no
+# tracked path against `(^|/)dist-`, so this newly ignores nothing.
+dist-*/
 
 # Logs
 *.log
