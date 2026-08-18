@@ -2346,11 +2346,34 @@ export function describeCapacity(c: Capacity): string {
     );
   }
 
+  // ⚠ THE PARENTHETICAL SAYS WHICH FIGURE, BECAUSE THE TWO DISAGREE (KAN-539).
+  // It read *"not measured into the per-agent cost above"* until 2026-08-18,
+  // flat, and that is true of the CORE figure and false of the MEMORY one: the
+  // sampler averages cores over `measurement.chargeable.agents` (task trees)
+  // and memory over `measurement.totals.agents` (every tree, supervisors
+  // included) — daemon.ts, `agentTrees` and `memoryAgentTrees`. The `measured:`
+  // line a few lines above already said so, in the opposite direction, which
+  // made this the same defect KAN-539 was filed for: two emitted strings in one
+  // derivation disagreeing, with nothing holding them together. Found by that
+  // ticket's sweep of this function rather than by anybody hitting it.
+  //
+  // And it is said only on the readings where it is TRUE, which is the same
+  // discipline the stall and provenance lines above follow. Supervisors are in
+  // the memory figure only when a live measurement caught them — a seed figure
+  // measured nobody on this machine, and a window that ran with no supervisor
+  // up has the same two populations in it. `memoryAgentTrees !== agentTrees` is
+  // exactly that condition, and it is the one the `measured:` line splits on.
+  const supervisorsInMemoryFigure =
+    c.measured !== null &&
+    (c.measured.memoryAgentTrees ?? c.measured.agentTrees) !== c.measured.agentTrees;
   lines.push(
     `running: ${c.running} task agent(s)` +
     (c.supervisors > 0
-      ? `, plus ${c.supervisors} epic/story supervisor agent(s) ` +
-        '(not counted against the cap, and not measured into the per-agent cost above)'
+      ? `, plus ${c.supervisors} epic/story supervisor agent(s) (not counted against the cap` +
+        (supervisorsInMemoryFigure
+          ? '; their CPU is not in the per-agent core figure above, and their memory IS in ' +
+            'the per-agent memory figure — the `measured:` line names the population behind each)'
+          : ', and not measured into the per-agent cost above)')
       : '')
   );
   // The stall term gets its own line whether or not it fired, and says so when
@@ -2420,13 +2443,28 @@ export function describeCapacity(c: Capacity): string {
   // absence a reader has to interpret, and "the ceiling is the cap" is the
   // answer they came for as much as the other one is (the KAN-218 rule about
   // the stall term, applied here).
+  //
+  // ⚠ THE SHORTFALL CLAUSE SAYS WHICH TERM BOUND AND GENERALISES ABOUT NOTHING
+  // (KAN-539). It read *"`boundBy` binds first, and admission never reads the
+  // cap at all"* until 2026-08-18, and the second half was false by the
+  // docblock on `effectiveCeilingOf` a few hundred lines up — which names that
+  // exact sentence as the thing not to say and refutes it with the chain. The
+  // cost was not the line: `epic/KAN-203` read this string, believed it, and
+  // repeated it to the human, to two supervisors, into KAN-517's own
+  // description and into the systemd drop-in where the cap is set. A runtime
+  // string is read by more people than a docblock is, so it is the copy that
+  // has to be right. `verify-cap-claims-match-the-chain.mjs` is what now stops
+  // the two drifting apart again — it measures the chain and then refuses any
+  // emitted string in this file that denies it.
   const ceiling = effectiveCeilingOf(c);
   lines.push(
     `effective ceiling: ${ceiling.ceiling} task agent(s) alive — working OR ` +
     `parked awaiting a decision, which cost the same memory — ${ceiling.arithmetic}` +
     (ceiling.shortfall > 0
       ? `. The cap is ${c.cap}, so ${ceiling.shortfall} of its slot(s) cannot be reached: ` +
-        `${ceiling.boundBy} binds first, and admission never reads the cap at all`
+        `${ceiling.boundBy} binds first. The cap is not inert — it is read at every ` +
+        `admission, as the count term, which allows ${c.headroomByCap} here; it is simply ` +
+        `not the term binding at this moment`
       : `. The cap is ${c.cap} and it is reachable`) +
     ` (this figure ${
       ceiling.stability === 'projects'

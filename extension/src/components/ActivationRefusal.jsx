@@ -62,11 +62,15 @@ export function ActivationRefusal({ refusal, onOverride, onPreempt, onDismiss })
           <div className="capacity-figures">
             {/*
               KAN-517: `N of M task agents` invites a subtraction the gate does
-              not honour. `cap` is not consulted at admission — the gate is
-              live headroom — so on a machine whose memory or CPU binds first,
-              M is a number that cannot be reached and M − N is a count of
-              slots that do not exist. Measured on the human's machine at a
-              configured cap of 10, the ceiling was about 8.
+              not honour. ⚠ KAN-539 corrects the mechanism this comment used to
+              give — it read *"`cap` is not consulted at admission"*, which is
+              false: `cap` IS read, as `headroomByCap = max(0, cap − running)`,
+              one of the three terms `headroom` takes the minimum of. What is
+              true is that it is only ONE of them, so on a machine whose memory
+              or CPU binds lower, M is a number that cannot be reached and
+              M − N is a count of slots that do not exist. Measured on the
+              human's machine at a configured cap of 10, the ceiling was
+              about 8.
 
               `shortfall` is 0 whenever the cap IS reachable, which is when the
               old wording was right, so that case renders exactly as before.

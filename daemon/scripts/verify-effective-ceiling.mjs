@@ -4,9 +4,9 @@
 //
 // WHAT FAILURE THIS WOULD CATCH: a reported ceiling that quietly reports the
 // cap. That is the defect this ticket exists to complain about, one level up:
-// `cap` was already a number admission never reads, and the fix for it is
-// another published number, so the fix fails in exactly the way the bug did if
-// the figure stops tracking the terms. Also caught: a summary line that still
+// `cap` was already a number that rarely decides an admission, and the fix for
+// it is another published number, so the fix fails in exactly the way the bug
+// did if the figure stops tracking the terms. Also caught: a summary line that still
 // invites `cap − running` on a machine where those slots do not exist; a
 // ceiling that names the wrong binding term; and — section 3 — a capacity gate
 // that has stopped refusing at all, which is the way a "make the ceiling
@@ -68,11 +68,14 @@
 //     headroomByCap 5      cpu allows 0      memory allows 1
 //     summary: "5/10 task agents, room for 0 more (... bound by cpu)"
 //
-// So the installed daemon does gate on live headroom with the cap unread: it
-// was refusing every start while `cap` said 10 and the count term had five
-// slots. That is this section's claim, observed on the real thing rather than
-// computed — and the summary line is the ticket's complaint at its sharpest,
-// since `cap − running` reads 5 where the truth is 0.
+// So the installed daemon does gate on live headroom rather than on the cap:
+// it was refusing every start while `cap` said 10 and the count term had five
+// slots. ⚠ Note what `headroomByCap 5` is doing in that reading — the cap WAS
+// read, it produced a term, and that term simply was not the smallest of the
+// three (KAN-539; the earlier wording here said "with the cap unread", which
+// this very line refutes). That is this section's claim, observed on the real
+// thing rather than computed — and the summary line is the ticket's complaint
+// at its sharpest, since `cap − running` reads 5 where the truth is 0.
 //
 // Thirty minutes earlier the SAME daemon at the SAME fleet size read
 // `headroom 3, bound by memory` (06:23:49Z). Same population, different term,
