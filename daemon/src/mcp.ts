@@ -26,6 +26,58 @@ import {
   fitGenericResponse,
   MEASURED_CLIENT_CAP_CHARS
 } from './mcp-response-budget.js';
+import {
+  BUILD_SKEW_TOLERANCE_MS,
+  classifyServerBuild,
+  newestMtimeMs,
+  readOwnBuild,
+  ServerBuildRelation
+} from './mcp-build.js';
+
+/**
+ * Which build THIS server process loaded (KAN-526).
+ *
+ * Read at module load, before anything can rebuild `dist/` underneath a process
+ * that has already read it. Every agent gets its own long-lived copy of this
+ * process and nothing in the deploy path restarts them, so this constant is the
+ * only thing that can answer "is the code answering you the code that was
+ * merged?" without killing the session to find out.
+ */
+const OWN_BUILD = readOwnBuild(import.meta.url);
+
+/**
+ * This process's build, judged against the tree it was loaded from **now**.
+ *
+ * THE ANSWER TO "IS THE FIX LIVE FOR ME?" (KAN-526, AC2), and it has to be
+ * composed here. The daemon can report which servers are stale because they
+ * announce themselves to it; it cannot answer this one for the caller, because
+ * the caller's question is about the process that is *serving the caller* — and
+ * that process is this one. An agent that asks the daemon and reads a green is
+ * reading a fact about the daemon.
+ *
+ * Re-reads the tree on every call rather than caching, deliberately: the whole
+ * value of the answer is that {@link OWN_BUILD} was fixed at load while the
+ * files on disk were not, and a cached comparison would freeze the half that is
+ * supposed to move.
+ */
+function describeOwnBuild(): {
+  pid: number;
+  startedAt: string;
+  loadedBuildAt: string | null;
+  distDir: string;
+  distBuildAtNow: string | null;
+  relation: ServerBuildRelation;
+} {
+  const nowNewest = newestMtimeMs(OWN_BUILD.distDir);
+  return {
+    ...OWN_BUILD,
+    distBuildAtNow: nowNewest === null ? null : new Date(nowNewest).toISOString(),
+    relation:
+      nowNewest === null
+        ? { kind: 'unreadable', distDir: OWN_BUILD.distDir }
+        : classifyServerBuild(OWN_BUILD, OWN_BUILD.distDir, nowNewest, BUILD_SKEW_TOLERANCE_MS)
+  };
+}
 
 /**
  * Which agent this server belongs to, read off this process's own argv.
@@ -467,7 +519,19 @@ function daemonLink(opts: { reconnect?: boolean } = {}): Promise<net.Socket> {
           writeJsonLine(socket, {
             action: 'hello',
             workspaceType: callerIdentity.type,
-            workspaceKey: callerIdentity.key
+            workspaceKey: callerIdentity.key,
+            // WHICH BUILD THIS SERVER IS RUNNING (KAN-526). The daemon cannot
+            // work this out for itself: an `mcp.js` is a stdio child of an
+            // agent's client, so the daemon knows a socket and nothing about
+            // the process behind it — not its pid, not its age, and certainly
+            // not which `dist` it read. Announcing it here is what turns "every
+            // agent might be stale" into a list of which ones are.
+            //
+            // Re-sent on every reconnect along with the identity, and correct
+            // to: the values describe this process, and this process is the one
+            // that has just come back. A server that reconnects has not
+            // reloaded anything.
+            build: OWN_BUILD
           });
         }
 
@@ -920,7 +984,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "butchr_staleness_check",
         description:
-          "Reports whether the Butchr installation on this machine is actually running the code that was merged: local checkout vs origin/main, daemon/src vs daemon/dist, the running daemon vs the build on disk, and extension sources vs extension/dist. Run this BEFORE citing anything observed from a running daemon or a loaded extension as proof that your change works — otherwise you may be testing whatever was last built rather than what you merged. It only reports; it never pulls, rebuilds or restarts anything.",
+          "Reports whether the Butchr installation on this machine is actually running the code that was merged: local checkout vs origin/main, daemon/src vs daemon/dist, the running daemon vs the build on disk, THE AGENT MCP SERVERS vs that same build, and extension sources vs extension/dist. Run this BEFORE citing anything observed from a running daemon or a loaded extension as proof that your change works — otherwise you may be testing whatever was last built rather than what you merged. READ `servingProcess` FIRST, AND READ IT AS BEING ABOUT YOU: every other field here was computed by the daemon, and that one is computed by the mcp.js process serving YOUR calls, which a deploy does not restart (KAN-526). `relation.kind` of `older` means the process answering you loaded a build older than the one on disk, so anything you observe through your own proxy is evidence about the code you started with rather than about the deploy — and green daemon-side items sit happily beside it, because the daemon and your server are restarted by different things. The `mcp-servers` item asks the same question of every connected agent. It only reports; it never pulls, rebuilds or restarts anything, and nothing here can reload an mcp.js without costing that agent its session.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1271,11 +1335,27 @@ async function dispatchTool(name: string, args: unknown): Promise<ToolResult> {
     if (name === "butchr_staleness_check") {
       const { force } = (args ?? {}) as any;
       const res = await callDaemonAPI('staleness_check', { force: force === true });
-      // isError when something *is* stale, not only when the check failed: a
-      // caller that skims tool output for problems must not skim past this one.
+      // WHO ANSWERED, AND OUT OF WHICH BUILD (KAN-526).
+      //
+      // Every other field here was computed by the daemon and forwarded through
+      // this process. This one is computed *by* this process, and that is the
+      // whole point: the caller is an agent asking "am I looking at the code
+      // that was merged?", and the honest answer has two halves, because the
+      // daemon and this server are restarted by different things. The daemon's
+      // half arrives on a deploy; this half arrives when the agent's client is
+      // restarted, which a deploy does not do.
+      //
+      // It is attached here rather than composed in the daemon for the reason
+      // the ticket rests on: a report about the answering process cannot be
+      // written by anything except the answering process.
+      const serving = describeOwnBuild();
       return {
-        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
-        isError: res?.success === false || res?.stale === true,
+        content: [{ type: "text", text: JSON.stringify({ ...res, servingProcess: serving }, null, 2) }],
+        // A stale *server* is an alarm on the same footing as a stale daemon:
+        // it is the state in which this agent's live output is evidence about
+        // the build it started with and nothing else.
+        isError:
+          res?.success === false || res?.stale === true || serving.relation.kind === 'older',
       };
     }
 

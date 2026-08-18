@@ -2,6 +2,14 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { FETCH_INTERVAL_MS, PROMPT_REF, resolvePromptSource } from './prompt-source.js';
+import {
+  BUILD_SKEW_TOLERANCE_MS,
+  classifyServerBuild,
+  isBehindDeploy,
+  newestMtimeMs,
+  ServerBuildRelation,
+  ServingProcess
+} from './mcp-build.js';
 
 /**
  * Is the code running here the code that was merged?
@@ -34,11 +42,13 @@ export const CACHE_TTL_MS = 15_000;
 /**
  * Slack allowed before a source file counts as newer than a build.
  *
- * Not a fudge factor for clock skew — src and dist are on the same filesystem.
- * It absorbs the one legitimate ordering inversion: a file written in the same
- * second the build read it. Anything larger would hide a real edit.
+ * Defined in `mcp-build.ts` and re-exported here, unchanged, so that the
+ * `mcp-servers` item — which lives in that module's dependency-free half
+ * because every agent's server process loads it — judges a loaded build by the
+ * same number this file judges a `dist` by. Two copies of one tolerance is the
+ * shape `docs/doc-constant-drift.md` is about.
  */
-export const BUILD_SKEW_TOLERANCE_MS = 2_000;
+export { BUILD_SKEW_TOLERANCE_MS } from './mcp-build.js';
 
 /**
  * Age at which our knowledge of `origin/main` stops being worth asserting.
@@ -48,6 +58,22 @@ export const BUILD_SKEW_TOLERANCE_MS = 2_000;
  * a normal working day would fire constantly and be ignored by the next one.
  */
 export const FETCH_KNOWLEDGE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * How long after this daemon starts before its view of connected servers is
+ * worth reading (KAN-526).
+ *
+ * A daemon restart drops every registration, and each agent's `mcp.js`
+ * re-announces itself on a jittered backoff capped at `RECONNECT_MAX_MS`
+ * (15s, `mcp.ts`). Reading the connection map before they have come back
+ * measures the restart rather than the fleet — and it fails toward the
+ * comfortable answer, an empty list that could be mistaken for "nothing stale".
+ *
+ * Three times the cap rather than exactly it: the backoff is jittered, an agent
+ * whose client was itself starting takes about twelve seconds to register at
+ * all, and this delays a log line rather than anything anybody waits on.
+ */
+export const RECONNECT_SETTLE_MS = 45_000;
 
 const GIT_TIMEOUT_MS = 5_000;
 
@@ -104,6 +130,7 @@ export type StalenessItemId =
   | 'prompt-source'
   | 'daemon-build'
   | 'daemon-process'
+  | 'mcp-servers'
   | 'extension-build';
 
 export interface StalenessItem {
@@ -140,6 +167,19 @@ export interface StalenessOptions {
    * not loaded is still the old code, and that gap looks exactly like success.
    */
   daemonStartedAt?: Date;
+  /**
+   * The MCP server processes currently connected, newest connection per agent.
+   *
+   * Enables the `mcp-servers` item (KAN-526). Absent — in the unit-test and
+   * script constructions that hold no daemon — the item reports `unknown`
+   * rather than silently claiming nothing is stale, which is the distinction
+   * the whole item is about.
+   *
+   * A supplier rather than an array: the report is cached for
+   * {@link CACHE_TTL_MS} but the fleet is not, and a stored array would be a
+   * snapshot of whoever happened to be connected when the daemon started.
+   */
+  servers?: () => ServingProcess[];
   /** Skip the cache. */
   force?: boolean;
 }
@@ -863,6 +903,170 @@ function checkDaemonProcess(repoRoot: string, startedAt: Date, now: number): Sta
   };
 }
 
+/**
+ * The per-workspace MCP servers against the build on disk.
+ *
+ * THE FIFTH GAP, AND THE ONE NO RESTART REACHES (KAN-526). The four checks
+ * above cover the checkout, the briefs, `dist/` and the daemon process, and
+ * between them they describe a deploy completely — as long as the daemon is the
+ * only long-lived process. It is not. Every agent's client spawns its own
+ * `mcp.js`, every proxy call that agent makes is served by it, and `git pull`,
+ * `npm run build` and `systemctl --user restart butchr-daemon.service` reach
+ * none of them.
+ *
+ * Measured 2026-08-18: with the checkout at the merge commit and the daemon
+ * rebuilt and restarted, **not one server on the fleet was post-merge**, and one
+ * agent got a live daemon-side fix and an inert `mcp.js`-side defect out of a
+ * single call. So this item's absence was not a small hole — it is the half of
+ * the deploy that nothing reported at all, while the four green items above
+ * described the deploy as complete.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO. It does not restart anything and proposes no
+ * remedy that would: an `mcp.js` is a stdio child of its agent's client, so
+ * reloading one costs that agent its session and whatever it had in flight.
+ * KAN-526 scopes the restart policy out and asks for the state to be visible.
+ * The remedy therefore names the trade rather than a command.
+ *
+ * ⚠ WHAT AN EMPTY LIST MEANS, said here because the comfortable reading is
+ * wrong. No connected servers is `unknown`, never `fresh`: the daemon has just
+ * dropped every registration if it has just restarted, and servers re-register
+ * over the following seconds. "Nobody is stale" and "I can see nobody" are the
+ * same output from this check unless it says which it is.
+ */
+function checkMcpServers(
+  repoRoot: string,
+  servers: ServingProcess[] | undefined,
+  now: number
+): StalenessItem {
+  const base = { id: 'mcp-servers' as const, label: 'agent MCP servers' };
+  const distDir = path.join(repoRoot, 'daemon/dist');
+
+  if (!servers) {
+    return {
+      ...base,
+      state: 'unknown',
+      headline: 'no view of connected servers from here',
+      detail:
+        'This staleness report was built without a connection registry, so which MCP servers are ' +
+        'running — and which build each loaded — cannot be seen. Only the daemon holds that; ask it ' +
+        'with butchr_staleness_check.'
+    };
+  }
+
+  const newest = newestMtimeMs(distDir);
+  if (newest === null) {
+    return {
+      ...base,
+      state: 'unknown',
+      headline: 'no build on disk to compare the servers against',
+      detail: `${distDir} is missing or empty, so there is no deployed build to judge ${servers.length} connected server(s) against.`
+    };
+  }
+
+  if (servers.length === 0) {
+    return {
+      ...base,
+      state: 'unknown',
+      headline: 'no agent MCP server is connected right now',
+      detail:
+        `Nothing has announced itself to this daemon, so this is a statement about what can be seen ` +
+        `from here and not about the fleet. A daemon restart drops every registration and servers ` +
+        `re-register over the next few seconds — ${describeAge(RECONNECT_SETTLE_MS)} covers a jittered ` +
+        `backoff — so an empty list moments after a restart is expected. It is never evidence that ` +
+        `nothing is stale.`
+    };
+  }
+
+  const judged = servers.map((server) => ({
+    server,
+    relation: classifyServerBuild(server.build, distDir, newest, BUILD_SKEW_TOLERANCE_MS)
+  }));
+
+  const describe = (
+    server: ServingProcess,
+    relation: ServerBuildRelation
+  ): string => {
+    const who = `${server.type}/${server.key}`;
+    const pid = server.build ? `pid ${server.build.pid}` : 'pid unknown';
+    switch (relation.kind) {
+      case 'older':
+        return `${who} (${pid}, up since ${server.build?.startedAt}) loaded a build ${describeAge(
+          relation.behindMs
+        )} older than daemon/dist`;
+      case 'unstamped':
+        return `${who} (${server.connectionId}) announced no build at all — its mcp.js predates KAN-526, so it cannot be running the current one`;
+      case 'other-tree':
+        return `${who} (${pid}) was loaded from ${relation.distDir}, a different tree`;
+      case 'unreadable':
+        return `${who} (${pid}) could not read its own ${relation.distDir} at start`;
+      case 'current':
+        return `${who} (${pid}) loaded ${relation.loadedBuildAt}`;
+    }
+  };
+
+  const behind = judged.filter((j) => isBehindDeploy(j.relation));
+  const undecidable = judged.filter(
+    (j) => j.relation.kind === 'other-tree' || j.relation.kind === 'unreadable'
+  );
+  const distAge = ageOf(newest, now);
+
+  // The remedy is not a command, and that is the finding rather than an
+  // omission: nothing on this machine can reload one of these without taking
+  // the agent's session with it.
+  const remedy =
+    'Nothing here restarts them, deliberately: an mcp.js is a stdio child of its agent\'s client, so ' +
+    'it reloads only when that agent is reset or re-activated, which costs that agent its session ' +
+    'and any work in flight. Until then, treat live output from these agents as evidence about the ' +
+    'build they loaded and not about the deploy.';
+
+  if (behind.length) {
+    return {
+      ...base,
+      state: 'stale',
+      headline: `${behind.length} of ${servers.length} agent MCP server${
+        servers.length === 1 ? '' : 's'
+      } ${behind.length === 1 ? 'is' : 'are'} running a build older than daemon/dist`,
+      detail:
+        `daemon/dist was last written ${distAge} ago. ` +
+        `${behind.map((j) => describe(j.server, j.relation)).join('; ')}. ` +
+        `A deploy does not restart these processes, so a merged fix is inert for every agent here ` +
+        `until its client is restarted — and a live probe answered by one of them reports the age of ` +
+        `that process rather than the state of the deploy (docs/staleness.md).` +
+        (undecidable.length
+          ? ` Not judged: ${undecidable.map((j) => describe(j.server, j.relation)).join('; ')}.`
+          : ''),
+      remedy
+    };
+  }
+
+  if (undecidable.length) {
+    return {
+      ...base,
+      state: 'unknown',
+      headline: `${undecidable.length} of ${servers.length} agent MCP server${
+        servers.length === 1 ? '' : 's'
+      } cannot be judged against daemon/dist`,
+      detail:
+        `No connected server is demonstrably behind daemon/dist (written ${distAge} ago), but ` +
+        `${undecidable.map((j) => describe(j.server, j.relation)).join('; ')} — so this is not a ` +
+        `claim that every server is current.`
+    };
+  }
+
+  return {
+    ...base,
+    state: 'fresh',
+    headline: `all ${servers.length} connected agent MCP server${
+      servers.length === 1 ? '' : 's'
+    } loaded the build on disk`,
+    detail:
+      `daemon/dist was last written ${distAge} ago and every connected server loaded it or later: ` +
+      `${judged.map((j) => describe(j.server, j.relation)).join('; ')}. ` +
+      `This covers the servers that have announced themselves to this daemon; an agent whose client ` +
+      `is not running has no server here to be stale.`
+  };
+}
+
 // --- the report -------------------------------------------------------------
 
 let cached: { at: number; key: string; report: StalenessReport } | null = null;
@@ -875,7 +1079,13 @@ let cached: { at: number; key: string; report: StalenessReport } | null = null;
  * can take the daemon down is not a safety feature.
  */
 export function getStalenessReport(options: StalenessOptions): StalenessReport {
-  const key = `${options.repoRoot}|${options.daemonStartedAt?.getTime() ?? ''}`;
+  // Whether a connection view was offered is part of the key: a caller that has
+  // one must not be served a cached report computed by a caller that had none,
+  // which would answer "no view of connected servers from here" to the one
+  // reader who does have the view.
+  const key = `${options.repoRoot}|${options.daemonStartedAt?.getTime() ?? ''}|${
+    options.servers ? 'servers' : 'no-servers'
+  }`;
   const now = Date.now();
   if (!options.force && cached && cached.key === key && now - cached.at < CACHE_TTL_MS) {
     return cached.report;
@@ -898,6 +1108,11 @@ export function getStalenessReport(options: StalenessOptions): StalenessReport {
       ...(options.daemonStartedAt
         ? [checkDaemonProcess(options.repoRoot, options.daemonStartedAt, now)]
         : []),
+      // Directly after the daemon process, because it is the same question
+      // asked of the other long-lived process — and because a reader who has
+      // just been told the daemon is current is exactly the reader about to
+      // conclude that the deploy landed.
+      checkMcpServers(options.repoRoot, options.servers?.(), now),
       checkBuild(
         'extension-build',
         'extension build',

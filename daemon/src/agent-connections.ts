@@ -1,5 +1,6 @@
 import * as net from 'net';
 import { renderedKey } from './keys.js';
+import { McpServerBuild, ServingProcess } from './mcp-build.js';
 
 /**
  * Which agent is on the other end of a daemon connection.
@@ -78,6 +79,18 @@ export interface AgentConnection {
   address: AgentAddress;
   socket: net.Socket;
   registeredAt: Date;
+  /**
+   * Which build the announcing server loaded (KAN-526), or null when it said
+   * nothing — which is itself the answer for any `mcp.js` built before the
+   * field existed.
+   *
+   * Deliberately **not** derived from {@link registeredAt}: a server
+   * re-registers whenever the link drops, so this connection may be minutes old
+   * while the process behind it is hours old. That difference is the entire
+   * defect — a deploy restarts the daemon, every server reconnects, and every
+   * one of them is still running whatever it loaded at spawn.
+   */
+  build: McpServerBuild | null;
 }
 
 /** What `connected_agents` reports; a shape a diagnostic reader can print. */
@@ -90,6 +103,8 @@ export interface AgentConnectionSnapshot {
     registeredAt: string;
     /** Whether {@link AgentConnectionRegistry.resolve} would pick this one. */
     current: boolean;
+    /** What the server said it loaded, or null if it said nothing (KAN-526). */
+    build: McpServerBuild | null;
   }[];
 }
 
@@ -139,7 +154,11 @@ export class AgentConnectionRegistry {
    * silently holding both would make `resolve` answer for an agent that is not
    * there.
    */
-  public register(socket: net.Socket, address: AgentAddress): RegisterResult {
+  public register(
+    socket: net.Socket,
+    address: AgentAddress,
+    build: McpServerBuild | null = null
+  ): RegisterResult {
     if (!address.type || !address.key) {
       return { ok: false, error: 'hello requires both workspaceType and workspaceKey' };
     }
@@ -150,7 +169,13 @@ export class AgentConnectionRegistry {
       id: `conn-${++this.nextId}`,
       address: { type: address.type, key: address.key },
       socket,
-      registeredAt: new Date()
+      registeredAt: new Date(),
+      // Defaulted to null rather than required, so the existing constructions
+      // that only care about addressing stay as they were — and so an
+      // announcement with no build is stored as the absence it is instead of
+      // being rejected. A server that cannot say which build it loaded is still
+      // an agent that must stay addressable.
+      build
     };
     const slot = this.byAddress.get(canonical(address));
     if (slot) slot.push(connection);
@@ -237,6 +262,34 @@ export class AgentConnectionRegistry {
     );
   }
 
+  /**
+   * One row per agent — the connection {@link resolve} would write to, and the
+   * build the process behind it loaded (KAN-526).
+   *
+   * The **current** connection only, and that is the whole shape of it: an
+   * agent's older sockets belong to the same process, so counting them would
+   * report one stale server several times and make a fleet look worse than it
+   * is. Keys are left in the announced spelling, as {@link addresses} does and
+   * for its reason — this is read by a check, not printed as a heading.
+   */
+  public servingProcesses(): ServingProcess[] {
+    const out: ServingProcess[] = [];
+    for (const [, slot] of this.byAddress) {
+      if (slot.length === 0) continue;
+      const current = this.resolve(slot[0].address);
+      if (!current) continue;
+      out.push({
+        type: current.address.type,
+        key: current.address.key,
+        connectionId: current.id,
+        build: current.build
+      });
+    }
+    return out.sort((a, b) =>
+      `${a.type}/${a.key}`.toLowerCase().localeCompare(`${b.type}/${b.key}`.toLowerCase())
+    );
+  }
+
   /** How many identified connections are held, across all addresses. */
   public get size(): number {
     return this.bySocket.size;
@@ -254,7 +307,8 @@ export class AgentConnectionRegistry {
         connections: slot.map((c) => ({
           id: c.id,
           registeredAt: c.registeredAt.toISOString(),
-          current: current === c
+          current: current === c,
+          build: c.build
         }))
       });
     }
