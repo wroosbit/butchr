@@ -1,3 +1,4 @@
+import { jiraAdfViolations } from './adf.js';
 import {
   CredentialStore,
   CredentialStatus,
@@ -385,11 +386,43 @@ export function truncate(text: string): string {
  * the sentence — the single most useful thing in the response — was being
  * dropped on the floor.
  */
-function extractDetail(raw: string, parsed: any): string | undefined {
+/**
+ * Jira's field-keyed `errors` map, rendered as one sentence.
+ *
+ * Returns `undefined` rather than an empty string for an absent or empty map,
+ * so it composes with the `??` chain in {@link extractDetail}: "there was no
+ * field-level error" and "there was one and it was blank" are different facts
+ * and only the first should fall through to the next candidate.
+ */
+function fieldErrors(errors: any): string | undefined {
+  if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return undefined;
+  const said = Object.entries(errors)
+    .filter(([, value]) => typeof value === 'string' && value.trim())
+    .map(([field, value]) => `${field}: ${String(value).trim()}`);
+  return said.length ? said.join('; ') : undefined;
+}
+
+// Exported for the reason `redact` and `truncate` are: it is a pure function
+// whose output an agent reads, and KAN-502's create-path gap was a claim about
+// exactly what it returns for one payload shape.
+export function extractDetail(raw: string, parsed: any): string | undefined {
   const candidate =
     (Array.isArray(parsed?.errorMessages) && typeof parsed.errorMessages[0] === 'string'
       ? parsed.errorMessages[0]
       : undefined) ??
+    // KAN-502: Jira puts a *field-level* rejection in `errors`, an object keyed
+    // by field name, and leaves `errorMessages` an empty array beside it. This
+    // list read `errorMessages` and never `errors`, so a 400 whose whole
+    // explanation was `{"description":"INVALID_INPUT"}` arrived at the agent as
+    // a bare "rejected this request as malformed (400)" with no detail — the
+    // detail was in the response the entire time and nothing looked at it. It
+    // was measured as the difference between two endpoints refusing the *same*
+    // malformed input: the comment path named INVALID_INPUT and the
+    // issue-creation path named nothing (KAN-513, recorded on KAN-502). Both
+    // are read here now, and the field name is kept because "description:
+    // INVALID_INPUT" says which body Jira objected to when a create carries
+    // more than one.
+    fieldErrors(parsed?.errors) ??
     (typeof parsed?.message === 'string' ? parsed.message : undefined) ??
     (typeof parsed?.error_description === 'string' ? parsed.error_description : undefined) ??
     (typeof parsed?.error === 'string' ? parsed.error : undefined) ??
@@ -1513,7 +1546,11 @@ export type JiraProxyOutcome =
  * agent to check the site address over a mistyped key would be the same class
  * of confident misdiagnosis this file was written to end.
  */
-function explainProxyFailure(
+// Exported for the same reason `explainLegs` is: it is a pure function from a
+// status and a payload to the sentence an agent reads, and the only way to
+// check that sentence is right is to call it with a refusal and read what comes
+// back. KAN-502's AC3 is a claim about this function's output.
+export function explainProxyFailure(
   status: number,
   legs: JiraLegResult[],
   write = false,
@@ -1525,7 +1562,13 @@ function explainProxyFailure(
   // deliberately do NOT take it: those are about the credential, which is one
   // credential for both products, so naming a product there would suggest the
   // other one still worked.
-  product: TransportProduct = 'jira'
+  product: TransportProduct = 'jira',
+  // KAN-502: the request body this daemon sent, so a 400 can be explained by
+  // what was in it. Optional and defaulted because every read path calls this
+  // with nothing to send — a GET has no document to blame — and because a
+  // caller that cannot supply it should get today's message rather than a
+  // worse one.
+  sent?: unknown
 ): { error: string; diagnosis?: JiraDiagnosis; credentialFault: boolean } {
   const said_by = product === 'confluence' ? 'Confluence' : 'Jira';
   // KAN-291: on a write, a 403 has one overwhelmingly likely cause that a read
@@ -1586,8 +1629,24 @@ function explainProxyFailure(
     };
   }
   if (status === 400) {
+    // KAN-502 AC3. Jira's 400 for a bad document is `INVALID_INPUT` and nothing
+    // else — no node, no mark, no field — and on the issue-creation endpoint it
+    // arrives with no code at all. An agent reading it has no reason to suspect
+    // its own markup, which is exactly what happened: KAN-513 lost two attempts
+    // to a bare `malformed (400)` before finding the cause written on another
+    // ticket. So where the request carried a document this daemon built, the
+    // document is inspected here and whatever Jira is known to refuse in it is
+    // named. An empty list is a real answer and says so — see
+    // `jiraAdfViolations`.
+    const named = product === 'jira' ? jiraAdfViolations(sent) : [];
+    const construct = named.length
+      ? ` The document Butchr sent contains ${named.length === 1 ? 'a construct' : 'constructs'} ` +
+        `Jira's ADF validator refuses, which is the likeliest cause: ${named.join('; ')}. ` +
+        'Rewrite that part of your markdown — moving the backticked identifier outside the bold ' +
+        'run is usually enough — and nothing was written, so nothing needs undoing.'
+      : '';
     return {
-      error: `${said_by} rejected this request as malformed (400).${because}`,
+      error: `${said_by} rejected this request as malformed (400).${because}${construct}`,
       credentialFault: false
     };
   }
@@ -2031,7 +2090,7 @@ export class JiraIssueTypeService {
       // is still distinguishable from a silent failure.
       if (status >= 200 && status < 300) return { ok: true, status, body: responseBody };
 
-      const explained = explainProxyFailure(status, legs, write, product);
+      const explained = explainProxyFailure(status, legs, write, product, body);
 
       // KAN-291. About to tell an agent that its *query* was at fault — while a
       // credential-bearing leg was refused. That combination is exactly the
