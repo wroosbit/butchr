@@ -51,9 +51,10 @@
  * live activation.
  *
  * ── ⚠ BUILD DEPENDENCE IS MIXED — READ THE SECTION, NOT THE EXIT CODE ───────
- * §1-§5 are build-free: they shell out to `git` and read `daemon/src/prompt.ts`
- * and `prompts/task.md` as TEXT. Their verdicts are about your change even
- * after a failed build, and discarding them out of caution wastes a good red.
+ * §1-§5 are build-free: they shell out to `git` and read `daemon/src/prompt.ts`,
+ * every file in `prompts/`, and `.github/workflows/ci.yml` as TEXT. Their
+ * verdicts are about your change even after a failed build, and discarding them
+ * out of caution wastes a good red.
  *
  * §6 imports `../dist/prompt.js`. After a failed build its verdict is evidence
  * about the PREVIOUS build. It skips loudly when `dist` is absent rather than
@@ -74,7 +75,7 @@ import { execFileSync } from 'node:child_process'
 // to the sync file-writer as the start of a generated shim and excludes every
 // exit that follows it, which would hide this file's verdict exit. The files
 // written below are fixtures.
-import { mkdtempSync, rmSync, writeFileSync as writeFixture, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync as writeFixture, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -286,22 +287,48 @@ try {
 
     // The mechanism warning is the half that prevents recurrence.
     //
-    // ⚠ This assertion was originally three loose `/--depth/`-style tests over
-    // the whole document, and it PASSED with the load-bearing bullet deleted —
-    // the words survived in neighbouring bullets that do not carry the claim.
-    // It now binds the proposition rather than the vocabulary: one bullet must
-    // say that a depth flag is forbidden, and that the reason is that a
-    // worktree shares the shared clone's `.git`. Driven red by deleting that
-    // bullet, which is the mutation the loose version did not notice.
-    const prompt = readFileSync(join(REPO, 'prompts', 'task.md'), 'utf8')
-    const bullets = prompt.split(/\n(?=- |\s*- )/)
-    const warns = bullets.filter(
-      (b) => /--depth/.test(b) && /\bNever\b/.test(b) && /worktree/i.test(b) && /shared clone/i.test(b)
-    )
-    if (warns.length >= 1) {
-      pass('prompts/task.md forbids --depth and says why: a worktree shares the shared clone')
-    } else {
-      fail('no single bullet in prompts/task.md carries the forbid-and-explain warning')
+    // ⚠ TWO WEAKNESSES HAVE BEEN FOUND IN THIS ASSERTION AND BOTH ARE RECORDED,
+    // because each was a green that meant nothing and neither was caught by
+    // reading the code.
+    //
+    // (1) It was originally three loose `/--depth/`-style tests over the whole
+    //     document, and it PASSED with the load-bearing bullet deleted — the
+    //     words survived in neighbouring bullets that do not carry the claim. A
+    //     green from vocabulary rather than from the proposition. Fixed by
+    //     requiring one CONTIGUOUS unit to carry every part of the claim.
+    //
+    // (2) It then checked `prompts/task.md` ALONE, and `prompts/epic.md` shipped
+    //     without the warning — caught by `epic/KAN-39` in review, not by this
+    //     script. Epic agents are the most exposed population on the machine:
+    //     reviewing a PR means `git fetch origin pull/NNN/head`, and that runs
+    //     in a review worktree of the shared clone. 242 worktrees hang off it.
+    //     A per-file check would have gone green on exactly the file that
+    //     mattered, so the loop below is the fix rather than a fourth literal.
+    //
+    // EVERY prompt is covered, discovered by reading the directory. A prompt
+    // added later is covered without editing this script — which is the same
+    // reason `ci.yml` does not list the verify set.
+    const promptDir = join(REPO, 'prompts')
+    const promptFiles = readdirSync(promptDir).filter((f) => f.endsWith('.md')).sort()
+
+    if (promptFiles.length >= 4) pass(`found ${promptFiles.length} prompts to check (discovered, not listed)`)
+    else fail(`only ${promptFiles.length} prompt(s) found — the discovery is broken, so the loop below proves little`)
+
+    for (const file of promptFiles) {
+      const text = readFileSync(join(promptDir, file), 'utf8')
+      // Units are paragraphs AND individual bullets, so a conjunction cannot be
+      // satisfied by two different pieces of prose sitting near each other.
+      const units = text.split(/\n\s*\n|\n(?=\s*[-*] )/)
+      const carries = units.some(
+        (u) =>
+          /--depth/.test(u) &&
+          /\bNever\b/.test(u) &&
+          /worktree/i.test(u) &&
+          /\.git\/shallow/.test(u) &&
+          /repository-wide/i.test(u)
+      )
+      if (carries) pass(`${file} forbids --depth in one unit, and gives the repository-wide .git/shallow reason`)
+      else fail(`${file} carries no single unit forbidding --depth with the worktree/.git-shallow reason`)
     }
 
     const ci = readFileSync(join(REPO, '.github', 'workflows', 'ci.yml'), 'utf8')
