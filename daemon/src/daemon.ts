@@ -44,6 +44,7 @@ import {
 } from './channel.js';
 import {
   freshConnectionFrom,
+  superviseAdoptedStartup,
   superviseChannelStartup
 } from './channel-startup.js';
 import {
@@ -1084,6 +1085,51 @@ herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
   });
 });
 
+// EVERY PANE THIS DAEMON SERVES IS NOW ANNOUNCED ONCE, WHOEVER STARTED IT
+// (KAN-538). The listener above covers panes we spawned; this one covers panes
+// we adopted, which under CrabCast is most of the fleet at every daemon start.
+//
+// THERE IS NO `channelEnabled` GATE HERE, AND ITS ABSENCE IS THE POINT. The
+// spawn listener returns early on `spawn.channelEnabled !== true` because a
+// spawn knows its own argv. An adoption does not — CrabCast publishes no
+// command line for a pane it started before this process existed — so the
+// question that gate asks is unanswerable here, and answering it on a guess is
+// the KAN-496 trap by a new door. What replaces it is not a weaker gate but a
+// different instrument: `superviseAdoptedStartup` reads the pane, and
+// `classifyStartupDialog` is the only thing that may say a key can be pressed.
+// A pane with no dialog of ours costs one tail and returns.
+herdrBridge.setAgentAdoptedListener((session, adoptedAt) => {
+  const address = { type: session.type, key: session.key };
+  void superviseAdoptedStartup({
+    address,
+    adoptedAt,
+    world: {
+      // The same three members the spawn watcher uses, called rather than
+      // copied — `AdoptedStartupWorld` is `Omit<ChannelStartupWorld,
+      // 'freshConnection'>` so there is one definition of what a pane read is.
+      readPane: async () => {
+        const tail = await herdrBridge.tailAgent(session.key, session.type, 140);
+        return tail.success && typeof tail.text === 'string' ? tail.text : null;
+      },
+      pressEnter: (confirmation) => {
+        log(
+          `[AdoptedStartup] ${describeAddress(address)}: pressing Enter — the live dialog is ` +
+          `the development-channels one, matched on "${confirmation.evidence}"`
+        );
+        herdrBridge.pressPaneKey(session.key, session.type, 'Enter');
+      },
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      log: (message) => log(message)
+    }
+  }).catch((err) => {
+    // `superviseAdoptedStartup` promises not to throw, and this is caught anyway
+    // for the reason the spawn chain's `.catch` gives: an unhandled rejection
+    // here would take the daemon down over a watcher.
+    log(`[AdoptedStartup] ${describeAddress(address)}: watcher failed unexpectedly:`, err);
+  });
+});
+
 herdrBridge.setSessionEndedListener((event) => {
   log(
     `Session ended: ${event.sessionId} (${event.type}/${event.key}) ` +
@@ -2075,14 +2121,38 @@ function onListen() {
         (o) => agentConnections.resolve({ type: o.type, key: o.key }) === undefined
       );
       if (unregistered.length) {
+        // ⚠ THIS LINE USED TO SAY `the agents are fine`, AND KAN-538 IS WHY IT
+        // DOES NOT.
+        //
+        // That clause was a positive claim of health made by a check that
+        // cannot establish one, and on 2026-08-18 it was false for exactly the
+        // two agents it was printed about. `story/KAN-117` and `epic/KAN-59`
+        // were sitting at an unanswered development-channels dialog with ZERO
+        // child processes — no MCP server had ever started, which is precisely
+        // why they held no registration — and this line reported them as fine
+        // for 90 minutes. It was written about the ordinary case, where a
+        // restart drops every registration and the servers re-announce within
+        // seconds, and it is right about that case; what it cannot do is tell
+        // that case from this one. The two are IDENTICAL from here: an absent
+        // registration is what both look like.
+        //
+        // Which is the ticket's own standing rule turned on its author — *a
+        // green is a claim about your check* — and the honest repair is not a
+        // better adjective but naming the instrument that can actually separate
+        // them. `[AdoptedStartup]` is that instrument, and it reads the pane.
         log(
           `[reconcile] ${unregistered.length} of ${survivors.length} surviving agent(s) hold no ` +
           `channel registration: ${unregistered.map((o) => `${o.type}/${o.key}`).join(', ')}. ` +
-          `A daemon restart drops every one — the agents are fine and are simply not addressable ` +
-          `over the channel until each one's MCP server re-announces itself, which it now does by ` +
-          `itself within seconds rather than waiting for the agent's next tool call. Until then a ` +
-          `steer to one is REFUSED rather than delivered by a composer interrupt, and ` +
-          `butchr_list_agents reports transport 'unregistered' on its row (KAN-274).`
+          `TWO DIFFERENT STATES LOOK EXACTLY LIKE THIS AND THIS LINE CANNOT TELL THEM APART: an ` +
+          `agent that came through the restart healthy, whose MCP server re-announces itself ` +
+          `within seconds; and an agent parked at an unanswered startup dialog, which holds no ` +
+          `registration because it never started a server at all and will not start one on its ` +
+          `own. Do not read this as either. What separates them is the pane: an ` +
+          `\`[AdoptedStartup]\` line for one of these keys reports what is actually on it ` +
+          `(KAN-538), and \`butchr_tail_agent\` answers the same question by hand. Until a ` +
+          `registration appears, a steer to one is REFUSED rather than delivered by a composer ` +
+          `interrupt, and butchr_list_agents reports transport 'unregistered' on its row ` +
+          `(KAN-274).`
         );
       } else if (survivors.length) {
         log(

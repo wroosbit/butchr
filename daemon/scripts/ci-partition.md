@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 122 |
+| `yes` | 123 |
 | `partial` | 14 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **161** |
+| **total** | **162** |
 
-**136 of 161** run on every pull request.
+**137 of 162** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -58,6 +58,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-adf-identifier-survives` | yes | imports the built converter and asserts against it in process; no live daemon, no herdr, no credential, no network, no terminal. |
 | `verify-adf-jira-mark-combinations` | yes | imports the built converter and asserts against it in process; no live daemon, no herdr, no credential, no network, no terminal. |
 | `verify-adf-refusal-names-the-construct` | yes | `explainProxyFailure` is a pure function from a status and a payload to a sentence, and it is called here directly; no live daemon, no herdr, no credential, no network, no terminal. |
+| `verify-adopted-pane-supervision` | yes | imports the built daemon modules and drives them in process, plus one source-text section; no live daemon, no herdr, no credential, no peer, no terminal, no real CrabCast socket (section 5 speaks CrabCast's wire protocol to a fake peer on a unix socket in a temp dir). |
 | `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Every section that ASSERTS derives from stated facts, so no verdict here moves with the load, the disk pressure or the free memory of the host. |
 | `verify-agent-connection-identity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-name-brands-have-one-home` | yes | reads `daemon/src/**/*.ts` as TEXT and asserts against it in process. No build, no `dist`, no live daemon, no herdr, no credential, no peer, no terminal, no network, and it writes nothing: the red-drive flags rewrite an in-memory copy of the source rather than the tree. |

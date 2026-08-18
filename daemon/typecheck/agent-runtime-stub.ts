@@ -82,6 +82,19 @@ class StubRuntime implements AgentRuntime {
     _listener: (session: HerdrSession, spawnedAt: number, spawn: AgentSpawn) => void
   ): void {}
 
+  // KAN-538 added the OTHER half of the same question, and this fixture is
+  // where a third runtime is told that answering only the first half is not an
+  // implementation of this seam.
+  //
+  // A runtime announces every pane it serves, and there are two ways to come by
+  // one: spawn it, or adopt it from a peer that already had it running. Under
+  // CrabCast only the first was announced, so an adopted pane joined the fleet
+  // with nothing watching it — and two supervisors sat at an unanswered startup
+  // dialog for 90 minutes because of it. A runtime that does not adopt may
+  // leave this unfired, which is what `HerdrBridge` does and says; what it may
+  // not do is be unable to say so.
+  setAgentAdoptedListener(_listener: (session: HerdrSession, adoptedAt: number) => void): void {}
+
   // KAN-482 added `_priority`, and this fixture is where a third runtime is
   // TOLD it exists. That is the point of the parameter being required rather
   // than optional: `provision()` sent a hard-coded `1` for every agent for as
