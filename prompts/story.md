@@ -1255,30 +1255,36 @@ KAN-39's `total` was **211**, then **214**, then **216**, then **221** across a
 single afternoon — four readings, hours apart, all correct when taken. **A
 figure quoted without its time is a claim about a ticket that has since moved.**
 
-**And on this one you cannot page back, so say what you actually read.** There
-is **no comment-listing tool** on the official Atlassian MCP — `getJiraIssue`
-and the JQL search take no comment offset, and `fetch` takes an ARI rather than
-a REST path — so **111 of KAN-39's 211 comments cannot be reached by any agent
-through any surface you have**. `KAN-39` is the most-cited history in this
-project, which makes the practical consequence sharp: **"I checked the epic and
-found nothing" is a claim about the newest hundred comments**, and it reads like
-a claim about the ticket. Two duplicate tickets in one day came from that gap.
-So when a search of a long ticket's history comes back empty, **report the
-window you searched and its `total` alongside the finding** — that is this
-file's *empty result is a claim about your search* rule with the instrument
-named, and here the instrument hands you the numbers to name it with. Butchr's
-own proxy carries `atlassian_get_issue_comments`, which pages the whole
-history by `startAt`. **It is off by default, and the first time it was
-switched on it returned nothing at all** (KAN-501): a comment arrives as ADF,
-ADF is roughly five times the size of the words in it, and the response budget
-replaced the entire body — paging envelope included — so `maxResults: 1`, the
-narrowest request it takes, came back with no comment and no `total` to page
-by. It now renders bodies to text, which is what makes a page fit, and keeps
-`total`, `startAt` and `maxResults` outside the clippable region. **Two things
-still hold: check it is enabled before you rely on it, and a single comment
-long enough to exceed the budget by itself still cannot be returned by it** —
-the answer says so in `noWayBack` rather than printing a recipe you cannot
-type.
+**And through the official server you cannot page back, so say what you
+actually read.** There is **no comment-listing tool** on the official
+Atlassian MCP — `getJiraIssue` and the JQL search take no comment offset, and
+`fetch` takes an ARI rather than a REST path — so **through that server alone
+the older part of a long ticket is not addressable at all**. **No count is
+quoted here on purpose**, because the rule directly above governs this
+paragraph too: KAN-39's `total` read **211** on 2026-08-11 and **260** on
+2026-08-17, so a figure written into a prompt is stale before it is read.
+`KAN-39` is the most-cited history in this project, which makes the practical
+consequence sharp: **"I checked the epic and found nothing" is a claim about
+the newest hundred comments**, and it reads like a claim about the ticket. Two
+duplicate tickets in one day came from that gap. So when a search of a long
+ticket's history comes back empty, **report the window you searched and its
+`total` alongside the finding** — that is this file's *empty result is a claim
+about your search* rule with the instrument named, and here the instrument
+hands you the numbers to name it with.
+
+**Butchr's own proxy is what closes that gap, and it carries a limit of its
+own.** `atlassian_get_issue_comments` pages the whole history by `startAt` —
+that is the surface the official server has not got. **It is off by default,
+and the first time it was switched on it returned nothing at all** (KAN-501):
+a comment arrives as ADF, ADF is roughly five times the size of the words in
+it, and the response budget replaced the entire body — paging envelope
+included — so `maxResults: 1`, the narrowest request it takes, came back with
+no comment and no `total` to page by. It now renders comment bodies to text,
+which is what makes a page fit, and keeps `total`, `startAt` and `maxResults`
+outside the clippable region. **Two things still hold: check it is enabled
+before you rely on it, and a single comment long enough to exceed the budget
+by itself still cannot be returned** — the answer says so in `noWayBack`
+rather than printing a recipe you cannot type.
 
 It is the same shape this file teaches for `butchr_send_to_agent`: **a success
 that reports the call was made, not that the thing happened.**
