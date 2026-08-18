@@ -404,16 +404,34 @@ interface ProxyOperationBase {
    * Reshape what Atlassian returned before the agent sees it, or combine the
    * answers of a fan-out into one (KAN-292).
    *
-   * **Absent on all but two operations, and it should stay that way.** A proxy
+   * **Absent on all but three operations, and it should stay that way.** A proxy
    * that rewrites what the upstream said is a proxy whose output nobody can
    * check against the API's own documentation, and every transform is a place
    * for a field to go missing exactly as silently as KAN-183's dropped list
-   * item. The two that have one cannot avoid it:
+   * item. The three that have one cannot avoid it:
    *
    *  - `atlassian_search` has two responses and must return one thing.
    *  - `atlassian_get_accessible_resources` reads a bare `{cloudId}` and has to
    *    pair it with the site the daemon is configured against, which is not in
    *    any response body because it is not something Atlassian was asked.
+   *  - `atlassian_get_issue_comments` (KAN-501) — WAS THE THIRD, and it was
+   *    added against this paragraph rather than around it. The alternative was
+   *    not "an untransformed response": it was **no response**, measured. A
+   *    comment arrives as ADF, ADF is ~5x the size of the prose in it, and the
+   *    response budget therefore replaced the entire body on every real ticket,
+   *    down to `maxResults: 1`. The tool that exists for when a history matters
+   *    could not return a history. Rendering is what makes a page fit.
+   *
+   *    **The three things this paragraph is afraid of are answered rather than
+   *    waved past.** A reader who wants Atlassian's own object asks for
+   *    `commentFormat: 'adf'` and gets it byte for byte. A field that went
+   *    missing is named on the comment it went missing from —
+   *    `bodyUnrenderedNodes` carries any ADF node type the renderer had no rule
+   *    for, and an empty list there is the claim that every node was understood.
+   *    And `via.reshapedByDaemon` already says a transform ran at all.
+   *
+   *    A fourth one should be argued for on the same terms, not by pointing at
+   *    this one.
    *
    * `context` carries the non-secret facts about the credential — never the
    * credential. See {@link ProxyTransformContext}.
@@ -940,12 +958,12 @@ function pageOffset(args: Record<string, any>, field = 'startAt'): number {
 function commentBodyFormat(
   args: Record<string, any>
 ): { format: 'text' | 'adf' } | { error: string } {
-  const raw = args?.bodyFormat;
+  const raw = args?.commentFormat;
   if (raw === undefined || raw === null || raw === '') return { format: 'text' };
   if (raw === 'text' || raw === 'adf') return { format: raw };
   return {
     error:
-      `bodyFormat must be "text" or "adf"; got ${JSON.stringify(raw)}. ` +
+      `commentFormat must be "text" or "adf"; got ${JSON.stringify(raw)}. ` +
       '"text" (the default) renders each comment to plain text, which is what makes a page ' +
       'of a real ticket fit inside the response budget. "adf" returns Atlassian\'s raw ' +
       'document, which on a long comment can exceed that budget on its own.'
@@ -1142,7 +1160,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       'as the whole history, and walk startAt until startAt + returned reaches it. A failure ' +
       'is loud, as above. COMMENT BODIES ARE RENDERED TO TEXT BY DEFAULT (KAN-501): ADF is ' +
       'roughly five times the size of the words in it, which put every real ticket over the ' +
-      'response budget and returned no comment body at all. Pass bodyFormat: "adf" for the ' +
+      'response budget and returned no comment body at all. Pass commentFormat: "adf" for the ' +
       'raw document when you need its structure, and expect a page of one on a long ticket. ' +
       'A rendered body carries bodyUnrenderedNodes when the renderer met an ADF node type it ' +
       'has no rule for — an empty list there is the claim that every node was understood.',
@@ -1160,14 +1178,17 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
           type: 'number',
           description: `Optional. 1..${PROXY_COMMENT_MAX_RESULTS}; defaults to ${PROXY_COMMENT_MAX_RESULTS}.`
         },
-        bodyFormat: {
+        commentFormat: {
           type: 'string',
           enum: ['text', 'adf'],
           description:
             "Optional, default 'text'. 'text' renders each comment to Markdown-flavoured " +
             "plain text, which is what the words cost rather than what the node tree costs. " +
             "'adf' returns Atlassian's raw document — complete, and large enough that one " +
-            'comment can exceed the response budget on its own.'
+            'comment can exceed the response budget on its own. NOT THE SAME PARAMETER AS ' +
+            "`bodyFormat` on the Confluence page read, which takes 'storage' or 'view': " +
+            'they are named apart because their values are disjoint, and one name over two ' +
+            'domains is a value that is valid on one tool and refused on the next.'
         }
       },
       required: ['issueKey']
@@ -1231,7 +1252,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         startAt: page.startAt ?? null,
         maxResults: page.maxResults ?? null,
         returned: comments.length,
-        bodyFormat: 'text',
+        commentFormat: 'text',
         comments: comments.map((c: any) => {
           const rendered = adfToText(c?.body);
           return {

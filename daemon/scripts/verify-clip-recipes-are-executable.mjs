@@ -238,7 +238,7 @@ check(
 
 // THE ASSERTION THAT IS THE WHOLE TICKET. Pre-fix this reads
 //   $.body.readWith: names `section`, which atlassian_get_issue_comments does
-//   not accept (it takes issueKey, startAt, maxResults, bodyFormat)
+//   not accept (it takes issueKey, startAt, maxResults, commentFormat)
 auditRecipes('the clipped comment page', commentTool, commentFit.payload);
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -576,16 +576,16 @@ if (commentOp?.transform) {
     `unrendered: ${JSON.stringify(firstComment?.bodyUnrenderedNodes)}`
   );
 
-  // The other arm, so `bodyFormat` is a real choice rather than a documented one.
-  const asAdf = commentOp.transform([commentPage.body], {}, { issueKey: 'KAN-501', bodyFormat: 'adf' });
+  // The other arm, so `commentFormat` is a real choice rather than a documented one.
+  const asAdf = commentOp.transform([commentPage.body], {}, { issueKey: 'KAN-501', commentFormat: 'adf' });
   check(
-    "bodyFormat: 'adf' returns Jira's own object untouched, so nothing is lost by default-changing",
+    "commentFormat: 'adf' returns Jira's own object untouched, so nothing is lost by default-changing",
     asAdf === commentPage.body,
     'the adf arm reshaped the page it was asked not to reshape'
   );
-  const refusal = commentOp.build({ issueKey: 'KAN-501', bodyFormat: 'ADF' });
+  const refusal = commentOp.build({ issueKey: 'KAN-501', commentFormat: 'ADF' });
   check(
-    'and a bodyFormat the operation does not accept is REFUSED rather than quietly defaulted',
+    'and a commentFormat the operation does not accept is REFUSED rather than quietly defaulted',
     typeof refusal?.error === 'string',
     JSON.stringify(refusal)
   );
