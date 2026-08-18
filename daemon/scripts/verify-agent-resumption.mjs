@@ -338,24 +338,62 @@ check('the nudge asserts no rewrite of a file the runtime never wrote', () => {
 // ---------------------------------------------------------------------------
 section('4. The launcher carries the resume framing into the pane');
 
-check('the claude launcher still tries --continue first', () => {
-  const { command } = AGENT_LAUNCHERS.claude.command();
-  assert.ok(command.startsWith('claude --permission-mode bypassPermissions --continue ||'), command);
+// KAN-533: the `||` is gone — herdr 0.7 runs the agent's executable directly,
+// so there is no shell in the spawn path and the daemon picks the arm itself
+// from `hasConversation`. These three checks kept their SUBJECTS and changed
+// their instruments; the third one got strictly stronger, and says how below.
+//
+// ⚠ THE CHANNEL FLAGS ARE FILTERED OUT, AND THAT FIXES A LATENT ENVIRONMENT
+// SENSITIVITY RATHER THAN PAPERING OVER ONE. `AGENT_LAUNCHERS.claude.command()`
+// reads the channel kill switch off `$HOME` at call time, and this file — unlike
+// `verify-channel-launch-flag.mjs` — does not stage a `$HOME`. So on a machine
+// with `{"enabled": true}` in `~/.local/share/butchr/channel.json` the argv
+// carries an extra flag and these assertions failed, while on a CI runner with
+// no such file they passed. That was true of the ORIGINAL `startsWith(...)`
+// assertion too, measured: it returns `false` on a switch-on machine. Whether
+// the flag is present is `verify-channel-launch-flag.mjs`'s question, asked
+// there under a staged `$HOME`; what belongs HERE is the resume framing, which
+// is the same either way.
+const withoutChannelFlags = (argv) =>
+  argv.filter((w) => !w.startsWith('--dangerously-load-development-channels'));
+
+check('the claude launcher tries --continue when a conversation exists', () => {
+  const { argv } = AGENT_LAUNCHERS.claude.command({ hasConversation: true });
+  assert.deepStrictEqual(
+    withoutChannelFlags(argv),
+    ['claude', '--permission-mode', 'bypassPermissions', '--continue'],
+    argv.join(' ')
+  );
 });
 
-check('a degraded prompt reaches the fallback, correctly quoted', () => {
+check('a degraded prompt reaches the cold-start arm, as one argv element', () => {
   const prompt = degradedResumePrompt('task', 'KAN-21', HERDR_BRIEF);
-  const { command } = AGENT_LAUNCHERS.claude.command(prompt);
-  assert.ok(command.includes("'"), 'the prompt must be single-quoted for bash');
-  const quoted = command.slice(command.indexOf('||') + 2);
-  assert.ok(quoted.includes('NO memory'), 'the degraded framing did not reach the fallback');
+  const { argv } = AGENT_LAUNCHERS.claude.command({ promptCommand: prompt, hasConversation: false });
+  const last = argv[argv.length - 1];
+  assert.ok(last.includes('NO memory'), 'the degraded framing did not reach the cold-start arm');
+  // The whole framing is ONE element. Under `bash -c` this was a quoting
+  // obligation; as argv it is a structural property, and asserting it here is
+  // what would catch a future edit that went back to joining the argv.
+  assert.strictEqual(argv.filter((w) => w.includes('NO memory')).length, 1);
+  assert.ok(!argv.some((w) => w === '--continue'), 'the cold arm must not also carry --continue');
 });
 
-check('a prompt containing a single quote cannot break out of the quoting', () => {
-  const { command } = AGENT_LAUNCHERS.claude.command(`don't; rm -rf /`);
-  // Everything after the fallback's flags must be one quoted word; the escape
-  // sequence for an embedded quote is close-escape-reopen.
-  assert.ok(command.includes(`'don'\\''t; rm -rf /'`), command);
+check('a prompt containing a single quote has nothing to break out of', () => {
+  const { argv } = AGENT_LAUNCHERS.claude.command({
+    promptCommand: `don't; rm -rf /`,
+    hasConversation: false
+  });
+  // ⚠ THE CLAIM IS STRONGER THAN THE ONE IT REPLACES, not weaker. The old
+  // assertion checked that `shellQuote` escaped the quote correctly —
+  // close-escape-reopen — which is a check that the ESCAPING is right. There is
+  // no escaping now: the prompt is one argv element handed to `execFile`, never
+  // to a shell, so `;` and `rm -rf /` are characters in a string and there is no
+  // parser that could treat them otherwise. What is asserted is that the
+  // dangerous text arrives intact and undivided, which is the property the
+  // quoting existed to produce.
+  assert.strictEqual(argv[argv.length - 1], `don't; rm -rf /`, argv.join(' | '));
+  const bare = withoutChannelFlags(argv);
+  assert.strictEqual(bare.length, 4, `expected exactly 4 argv elements, got ${bare.length}: ${bare.join(' | ')}`);
 });
 
 check('the resume modal thresholds are raised past any real conversation', () => {

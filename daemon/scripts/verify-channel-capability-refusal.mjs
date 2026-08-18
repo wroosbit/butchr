@@ -393,11 +393,22 @@ try {
   // description of it — with the switch in both states.
   const { AGENT_LAUNCHERS, DEV_CHANNELS_FLAG } = await import('../dist/launchers.js');
 
+  // KAN-533: the launcher takes a context and returns argv. There is no `||`
+  // any more — herdr 0.7 runs the executable directly — so "both arms" is now
+  // two SPAWNS rather than two halves of one string, and each has to be asked
+  // for. `resumed`/`cold` are exactly the two the `||` used to hold.
+  const compose = (enabled) => {
+    fs.writeFileSync(CHANNEL_SWITCH_PATH, JSON.stringify({ enabled }) + '\n');
+    return {
+      resumed: AGENT_LAUNCHERS.claude.command({ promptCommand: 'PROMPT', hasConversation: true }),
+      cold: AGENT_LAUNCHERS.claude.command({ promptCommand: 'PROMPT', hasConversation: false })
+    };
+  };
+  const onArms = compose(true);
+  const offArms = compose(false);
   fs.writeFileSync(CHANNEL_SWITCH_PATH, JSON.stringify({ enabled: true }) + '\n');
-  const on = AGENT_LAUNCHERS.claude.command('PROMPT');
-  fs.writeFileSync(CHANNEL_SWITCH_PATH, JSON.stringify({ enabled: false }) + '\n');
-  const off = AGENT_LAUNCHERS.claude.command('PROMPT');
-  fs.writeFileSync(CHANNEL_SWITCH_PATH, JSON.stringify({ enabled: true }) + '\n');
+  const on = onArms.cold;
+  const off = offArms.cold;
 
   process.stdout.write(`  herdr, switch ON : ${on.command.slice(0, 110)}…\n`);
   process.stdout.write(`  herdr, switch OFF: ${off.command.slice(0, 110)}…\n`);
@@ -407,10 +418,24 @@ try {
   check('herdr WITH the switch on reports channelEnabled', on.channelEnabled, true);
   check('herdr with the switch off does not, and says so',
     off.command.includes(DEV_CHANNELS_FLAG) === false && off.channelEnabled === false, true);
-  // BOTH ARMS OF THE ||, because a half-flagged command line works on the
-  // resumed path and fails on the cold one — the hazard KAN-246 names.
-  check('herdr flags BOTH arms of the || (a half-flagged line is the worse bug)',
-    on.command.split(DEV_CHANNELS_FLAG).length - 1, 2);
+  // BOTH ARMS, because a half-flagged spawn works on the resumed path and fails
+  // on the cold one — the hazard KAN-246 names. ⚠ COUNTING OCCURRENCES IN ONE
+  // STRING NO LONGER ASKS THIS QUESTION. Under the `||` both arms shared a
+  // command line, so "the flag appears twice" was the test; each arm is now its
+  // own spawn, so the same count is 1 on a correct build and the old assertion
+  // fails on code that is right. The question is unchanged — is EITHER arm
+  // unflagged? — so it is asked of each arm directly, which is also stricter:
+  // a count of 2 could have been satisfied by two flags on one arm and none on
+  // the other, and this cannot.
+  check('herdr flags the RESUMED arm',
+    onArms.resumed.argv.filter((w) => w.startsWith(DEV_CHANNELS_FLAG)).length, 1);
+  check('herdr flags the COLD-START arm (a half-flagged spawn is the worse bug)',
+    onArms.cold.argv.filter((w) => w.startsWith(DEV_CHANNELS_FLAG)).length, 1);
+  // And the switch-off side of the same pair, which the old single-string check
+  // could not express at all.
+  check('with the switch off NEITHER arm carries it',
+    offArms.resumed.argv.concat(offArms.cold.argv)
+      .some((w) => w.startsWith(DEV_CHANNELS_FLAG)), false);
 
   // AND THE OTHER SIDE OF THE COMPARISON. ⚠ THIS ASSERTION IS INVERTED SINCE
   // KAN-496, and the inversion is the finding rather than an accommodation.

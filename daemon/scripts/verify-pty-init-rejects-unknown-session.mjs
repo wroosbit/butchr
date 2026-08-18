@@ -82,11 +82,42 @@ const socketPath = path.join(fakeHome, '.local', 'share', 'butchr', 'butchr.sock
 
 // --- a private herdr, so a spawn cannot reach the live server -----------------
 let herdrAvailable = false;
+/** Why §5 was skipped, so the banner never says "no herdr" about one that exists. */
+let herdrSkipReason = 'no herdr to start an agent with';
 try {
   execFileSync('which', ['herdr'], { stdio: 'ignore' });
   herdrAvailable = true;
 } catch {
   console.log('herdr is not on PATH: the regression stage will be skipped.\n');
+}
+
+// ⚠ A herdr THIS BUTCHR CANNOT DRIVE IS NOT A HERDR, FOR THIS SECTION'S
+// PURPOSES (KAN-533). §5 starts a genuine session in order to test what the
+// daemon does with one; it is not a test of the version floor, which
+// `verify-herdr-spawn-argv.mjs` §4 and §7 own. Butchr's spawn path requires
+// herdr >= 0.7, so on an older binary this section's activation fails for a
+// reason that has nothing to do with the thing under test — and reports it as
+// a proof failure, which sends the reader after a defect in `initPty`.
+//
+// ⚠ THE SKIP IS REACHABLE ONLY FOR AN UNSUPPORTED VERSION, AND SAYS THE
+// VERSION. A herdr that is present, supported, and then fails still FAILS —
+// this must not become a way for a real regression to go quiet. The version is
+// parsed rather than pattern-matched, for the reason KAN-533 found the hard
+// way: `/0\.[7-9]/` alternations match the middle of `0.6.4`.
+if (herdrAvailable) {
+  const raw = execFileSync('herdr', ['--version'], { encoding: 'utf8' }).trim();
+  const m = /(\d+)\.(\d+)/.exec(raw);
+  const supported = m !== null && (Number(m[1]) > 0 || Number(m[2]) >= 7);
+  if (!supported) {
+    herdrAvailable = false;
+    herdrSkipReason = `${raw} is older than the 0.7 line Butchr requires`;
+    console.log(
+      `${raw} is older than the 0.7 line Butchr's spawn path requires, so no session ` +
+      `can be started with it: the regression stage will be skipped. This is a statement ` +
+      `about this machine's herdr, not about the daemon — the version floor itself is ` +
+      `proved by verify-herdr-spawn-argv.mjs §4 and §7.\n`
+    );
+  }
 }
 
 if (herdrAvailable) {
@@ -298,7 +329,7 @@ record('pty_init refuses a request with no sessionId', missing.success === false
 // --- 5. regression: a real session still works -------------------------------
 banner('5. regression — a genuine session, and a re-init of it');
 if (!herdrAvailable) {
-  console.log('SKIPPED: no herdr to start an agent with.');
+  console.log(`SKIPPED: ${herdrSkipReason}.`);
 } else {
   // `shell`, and `override: true` with it. What this stage needs is a PTY the
   // daemon genuinely holds a session for — a bare shell, not an agent — and the
