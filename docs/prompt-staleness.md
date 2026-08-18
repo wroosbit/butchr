@@ -118,13 +118,14 @@ can forget it:
 
   ```bash
   git -C /home/brooswit/code/wroosbit/butchr fetch origin
-  git -C /home/brooswit/code/wroosbit/butchr log --oneline 21a6e14..origin/main -- prompts/task.md
+  git -C /home/brooswit/code/wroosbit/butchr rev-parse 21a6e14:prompts/task.md origin/main:prompts/task.md
   ```
 
-  **No output means this brief is current**… **Any line is a rule that changed after you were briefed**…
+  **Two identical shas mean this brief is current**… **Two different shas mean a rule changed**…
+  **And if it prints `fatal:` instead of two shas, it has told you it cannot answer**…
 ```
 
-Three properties it has to have, each of which a plausible implementation gets
+Four properties it has to have, each of which a plausible implementation gets
 wrong:
 
 1. **The template's own last commit, never `HEAD`.** `HEAD` moves on every
@@ -139,6 +140,23 @@ wrong:
    committed — the block says so and tells the reader to go to `origin/main`
    anyway. It never omits itself, because an absent block reads as "nothing to
    check here".
+4. ⚠ **It compares the FILE, never walking HISTORY** — KAN-523, and the reason
+   the command above is `rev-parse` rather than `log`. A shallow clone's graft
+   root has its parents erased, so a range starting before the graft cannot be
+   walked and git reports every file in that tree as newly *added* there. On
+   2026-08-17 the shared clone was grafted at `e7ac6bf` and the old check
+   answered `739 insertions` — the whole brief — for a blob whose sha was
+   identical at every point. Note the direction: it fails toward the *alarming*
+   answer, so the cost lands on the agent being careful. `<rev>:<path>` resolves
+   through the tree, so depth cannot reach it, and a missing commit makes
+   `rev-parse` exit non-zero with `fatal:` rather than quietly print nothing —
+   which is why the block spells out that a refusal is not "nothing changed".
+
+   **How the clone got grafted is the half worth carrying**: a worktree's `.git`
+   is a file pointing into the shared clone and `.git/shallow` is a
+   repository-wide file, so a `--depth` fetch run in *any agent's worktree*
+   grafts the clone for the whole machine. Measured on a fixture in
+   `daemon/scripts/verify-brief-staleness-check-is-depth-robust.mjs`.
 
 **`## This brief is a snapshot, and it can be out of date`** in all four
 `prompts/*.md`, placed before the first instruction section so it is met before

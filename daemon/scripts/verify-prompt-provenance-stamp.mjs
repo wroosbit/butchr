@@ -252,15 +252,21 @@ try {
   );
 
   // Verbatim. If the sha, the pathspec or the ref in the rendered text is
-  // wrong, this is where it shows — and note that the WRONG answer here is
-  // silence, which the block defines as "current". That is why section 3
-  // exists: an empty answer only means something if a non-empty one is
-  // reachable.
+  // wrong, this is where it shows.
+  //
+  // KAN-523 CHANGED WHAT "CURRENT" LOOKS LIKE, and the new shape is the safer
+  // one to assert. The check used to be a history walk whose "current" answer
+  // was SILENCE — so a command that was malformed, or pointed at the wrong
+  // path, produced the reassuring answer by failing. It is now a blob
+  // comparison, and "current" is two IDENTICAL shas: a positive, 40-character
+  // answer that a broken command cannot counterfeit. Section 3 still exists for
+  // the other half — that a DIFFERENT pair is reachable.
   runEmbedded(commands[0]);
   const whenCurrent = runEmbedded(commands[1]);
+  const currentShas = whenCurrent.split('\n').map((l) => l.trim()).filter(Boolean);
   check(
-    'running the second verbatim against an unmoved origin/main prints nothing',
-    whenCurrent === '',
+    'running the second verbatim against an unmoved origin/main prints two identical shas',
+    currentShas.length === 2 && currentShas[0] === currentShas[1] && /^[0-9a-f]{40}$/.test(currentShas[0]),
     `got: ${JSON.stringify(whenCurrent)}`
   );
 
@@ -282,24 +288,31 @@ try {
 
   runEmbedded(commands[0]);
   const whenMoved = runEmbedded(commands[1]);
+  const movedShas = whenMoved.split('\n').map((l) => l.trim()).filter(Boolean);
   check(
-    'the frozen brief\'s command now names the superseding commit',
-    whenMoved.includes(supersedingCommit),
-    `expected ${supersedingCommit} in:\n${whenMoved || '(empty — the check did not fire)'}`
+    "the frozen brief's command now reports two DIFFERENT blob shas",
+    movedShas.length === 2 && movedShas[0] !== movedShas[1],
+    `expected two differing shas, got:\n${whenMoved || '(empty — the check did not fire)'}`
   );
+  // The discriminating half: the FIRST sha must still be the blob the brief was
+  // rendered from. A command that simply printed origin/main twice would differ
+  // from nothing and would pass a looser assertion.
   check(
-    'and reports exactly the one commit that moved the rule',
-    whenMoved.split('\n').filter(Boolean).length === 1,
-    whenMoved
+    'and the first is still the blob the frozen brief was rendered from',
+    movedShas[0] === git(clone, ['rev-parse', `${templateShort}:${template}`]) &&
+      movedShas[1] === git(clone, ['rev-parse', `origin/main:${template}`]),
+    `got:\n${whenMoved}`
   );
 
-  // The diff command the block offers for reading what moved.
-  const diffMatch = block.match(/`git -C (\S+) diff (\S+)\.\.origin\/main -- (\S+)`/);
+  // The diff command the block offers for reading what moved. It is blob-to-blob
+  // for the same reason the check is: a range diff cannot be walked on a
+  // shallow clone (KAN-523).
+  const diffMatch = block.match(/`git -C (\S+) diff (\S+):(\S+) origin\/main:(\S+)`/);
   check('the block also offers a diff command', Boolean(diffMatch), block);
   if (diffMatch) {
     const diff = execFileSync(
       'git',
-      ['-C', diffMatch[1], 'diff', `${diffMatch[2]}..origin/main`, '--', diffMatch[3]],
+      ['-C', diffMatch[1], 'diff', `${diffMatch[2]}:${diffMatch[3]}`, `origin/main:${diffMatch[4]}`],
       { encoding: 'utf8' }
     );
     check(
