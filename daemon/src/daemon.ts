@@ -25,7 +25,7 @@ import { createAtlassianIntegration } from './integrations/atlassian-integration
 import { coreMcpServerDefinitions } from './launchers.js';
 import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
 import { resolveUserPath, which } from './env.js';
-import { getStalenessReport, formatStalenessReport } from './staleness.js';
+import { getStalenessReport, formatStalenessReport, RECONNECT_SETTLE_MS } from './staleness.js';
 import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
 import { AgentRegistry, REGISTRY_PATH } from './agent-registry.js';
 import {
@@ -33,6 +33,7 @@ import {
   addressFromAnnouncement,
   describeAddress
 } from './agent-connections.js';
+import { buildFromAnnouncement } from './mcp-build.js';
 import {
   CHANNEL_META_KEY_PATTERN,
   CHANNEL_SWITCH_PATH,
@@ -345,6 +346,43 @@ for (const line of formatStalenessReport(
   log(line);
 }
 
+/**
+ * WHAT THE RESTART DID NOT REACH (KAN-526, AC1).
+ *
+ * A restart of this service is what a deploy consists of, and it reaches this
+ * process and nothing else that is long-lived. Every agent runs its own
+ * `mcp.js`, spawned by its client, serving every proxy call that agent makes,
+ * and no part of `git pull && npm run build && systemctl restart` touches one.
+ * Until this line existed the deploy said nothing at all about them — and the
+ * four items logged directly above went green, which is worse than silence
+ * because it reads as a complete account of the deploy.
+ *
+ * It cannot be logged with them: this daemon has just dropped every
+ * registration, so at that moment the connection map is empty by construction
+ * and would report "no servers connected" every single time. So it waits
+ * {@link RECONNECT_SETTLE_MS} for the fleet to re-announce itself and then says
+ * plainly which servers are still on an older build — or that it can see none,
+ * which is a different sentence and stays a different sentence.
+ *
+ * `unref`ed: the daemon exits 0 when it has nothing to supervise, and a pending
+ * timer must not be the thing that keeps it alive.
+ */
+setTimeout(() => {
+  const report = getStalenessReport({
+    repoRoot,
+    daemonStartedAt,
+    servers: () => agentConnections.servingProcesses(),
+    force: true
+  });
+  const item = report.items.find((i) => i.id === 'mcp-servers');
+  if (!item) return;
+  log(
+    `deploy reach: restarting this daemon did NOT restart any agent's MCP server — ${item.headline}`
+  );
+  log(`        ${item.detail}`);
+  if (item.remedy) log(`        fix: ${item.remedy}`);
+}, RECONNECT_SETTLE_MS).unref();
+
 const connections = new Set<net.Socket>();
 
 const broadcast = (msg: any) => {
@@ -545,6 +583,10 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
   switch (msg?.action) {
     case 'hello': {
       const address = addressFromAnnouncement(msg);
+      // KAN-526. Parsed the same way and with the same strictness as the
+      // address: it is a claim by the announcing process, and a malformed one is
+      // stored as "said nothing" rather than as a stamp nobody checked.
+      const build = buildFromAnnouncement(msg);
       if (!address) {
         // Not an error worth closing over. A client with nothing to announce
         // should not be sending `hello` at all, but the honest answer is that
@@ -558,7 +600,7 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         });
         return true;
       }
-      const result = agentConnections.register(socket, address);
+      const result = agentConnections.register(socket, address, build);
       if (!result.ok) {
         reply({ action: 'hello_response', success: false, error: result.error, identified: false });
         return true;
@@ -567,7 +609,16 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
       log(
         `Connection ${connection.id} is ${describeAddress(connection.address)}` +
           (replaced ? ` (was ${describeAddress(replaced.address)} as ${replaced.id})` : '') +
-          ` — ${agentConnections.size} identified of ${connections.size} connected`
+          ` — ${agentConnections.size} identified of ${connections.size} connected` +
+          // The process behind the socket, said at the one moment the daemon
+          // hears from it (KAN-526). A reconnect after a deploy prints an
+          // hours-old `loaded` beside a fresh connection, which is the defect
+          // in one line.
+          (connection.build
+            ? `, pid ${connection.build.pid} up since ${connection.build.startedAt}, loaded ${
+                connection.build.loadedBuildAt ?? 'an unreadable build'
+              }`
+            : ', announcing no build (an mcp.js from before KAN-526)')
       );
       reply({
         action: 'hello_response',
@@ -1055,7 +1106,14 @@ const server = net.createServer((socket) => {
     broadcast,
     {
       jira,
-      install: { repoRoot, daemonStartedAt },
+      install: {
+        repoRoot,
+        daemonStartedAt,
+        // KAN-526: the fifth staleness item needs to know which agent MCP
+        // servers are connected and what each of them loaded. Read at call
+        // time, never captured — the fleet changes under a long-lived daemon.
+        servers: () => agentConnections.servingProcesses()
+      },
       agentRegistry,
       launchdarkly,
       // `capacitySource` is deliberately absent (KAN-221): production wants its
@@ -1238,7 +1296,14 @@ const daemonRouter = new MessageRouter(
   broadcast,
   {
     jira,
-    install: { repoRoot, daemonStartedAt },
+    install: {
+      repoRoot,
+      daemonStartedAt,
+      // KAN-526: the fifth staleness item needs to know which agent MCP
+      // servers are connected and what each of them loaded. Read at call
+      // time, never captured — the fleet changes under a long-lived daemon.
+      servers: () => agentConnections.servingProcesses()
+    },
     agentRegistry,
     launchdarkly,
     boardControl: reportBoardControl,

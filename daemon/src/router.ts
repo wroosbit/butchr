@@ -101,6 +101,7 @@ import {
   selectVictim
 } from './priority.js';
 import { getStalenessReport, StalenessReport } from './staleness.js';
+import { ServingProcess } from './mcp-build.js';
 import { sweepWorkspaces, lastReclaimSummary, reclaimWorkspace, formatBytes } from './reclaim.js';
 import { AddressableAgent, BoardControlReport } from './board-control.js';
 import {
@@ -927,7 +928,20 @@ export interface MessageRouterOptions {
    * staleness check needs. Absent in the unit-test constructions that do not
    * care, in which case the check is simply not offered.
    */
-  install?: { repoRoot: string; daemonStartedAt: Date };
+  install?: {
+    repoRoot: string;
+    daemonStartedAt: Date;
+    /**
+     * The MCP server processes connected right now, for the `mcp-servers`
+     * staleness item (KAN-526).
+     *
+     * A supplier, and it belongs to the daemon rather than to this router: the
+     * identity map lives beside the connections it indexes, exactly as the
+     * channel carrier does, and the router gets a closure over it rather than a
+     * reference to a socket registry it is deliberately kept ignorant of.
+     */
+    servers?: () => ServingProcess[];
+  };
   /**
    * The durable record of which agents should exist. Optional for the same
    * reason `install` is — the unit-test constructions do not care — and when
@@ -1232,7 +1246,7 @@ export class MessageRouter {
   /** See {@link MessageRouterOptions.jira}. */
   private readonly jira?: JiraIssueTypeService;
   /** See {@link MessageRouterOptions.install}. */
-  private readonly install?: { repoRoot: string; daemonStartedAt: Date };
+  private readonly install?: MessageRouterOptions['install'];
   /** See {@link MessageRouterOptions.agentRegistry}. */
   private readonly agentRegistry?: AgentRegistry;
   /** See {@link MessageRouterOptions.launchdarkly}. */
