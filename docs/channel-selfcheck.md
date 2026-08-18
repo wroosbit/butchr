@@ -93,7 +93,14 @@ assumption with a habit."*
 
 The client reports its own version in `initialize`. The check records it beside
 the result, **per agent**, and compares it against `VERIFIED_CLIENT_VERSIONS` —
-the set of versions on which a channel event was measured reaching *the model*:
+the set of versions on which a channel event was measured reaching *the model*.
+
+<!-- constant-pin: VERIFIED_CLIENT_VERSIONS
+     src: daemon/src/channel-selfcheck.ts
+     sha256: 71edc27416cc
+     says: **`VERIFIED_CLIENT_VERSIONS` holds `['2.1.224', '2.1.226']`**, and the table below carries one row per entry, naming who measured it. -->
+
+**`VERIFIED_CLIENT_VERSIONS` holds `['2.1.224', '2.1.226']`**, and the table below carries one row per entry, naming who measured it.
 
 | Version | Measured by |
 |---|---|
