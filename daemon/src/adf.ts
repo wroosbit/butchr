@@ -814,6 +814,18 @@ function applyMarks(text: string, marks: AdfNode['marks']): string {
 export function adfToText(doc: unknown): AdfText {
   const unrendered = new Set<string>();
 
+  // AN INPUT THAT IS NOT A NODE IS NOT AN EMPTY DOCUMENT, and the two must not
+  // render the same. Walking a `null` body returns '' — which reads as a comment
+  // somebody left blank, with an empty `unrendered` still claiming every node
+  // was understood. That is a silent loss inside the function whose whole
+  // contract is that it does not have any, so it is named here instead.
+  if (!doc || typeof doc !== 'object' || typeof (doc as AdfNode).type !== 'string') {
+    return {
+      text: '',
+      unrendered: [`not-adf:${doc === null ? 'null' : typeof doc}`]
+    };
+  }
+
   const renderInline = (nodes: AdfNode[] | undefined): string =>
     (nodes ?? []).map((n) => renderNode(n, '')).join('');
 
