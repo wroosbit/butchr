@@ -309,8 +309,31 @@ the issue's real URL, never an invented one), verify the fresh spawn with
 `butchr_tail_agent` rather than trusting the activate response, monitor it,
 steer it with `butchr_send_to_agent`, **approve its PR** when the section below
 says you may, and when that PR merges — merged by the task's own agent, not by
-you — set the task **Done** and deactivate its agent with
-`butchr_deactivate_agent`. Done agents are not left running.
+you — set the task **Done**. Done agents are not left running.
+
+**Setting `Done` IS the stand-down, and standing the agent down by hand is no
+longer your job (KAN-508).** This bullet told you to call
+`butchr_deactivate_agent` in the same motion until 2026-08-17, and the human has
+since ruled that **the board reconciler owns agent lifecycle**, driven off the
+two fields the board already carries: an agent runs while its ticket is
+`In Progress` or `In Review` **and** has an assignee, and is stood down when it
+is not. So the transition you were making anyway is the whole instruction — the
+reconciler reads it within a cycle and stops the agent for you.
+
+**Why the rule keys on the ticket rather than on your judgement.** The
+requirement was that nothing may stand down an agent whose work is unfinished,
+and keying on status satisfies it *by construction*: a ticket at `In Review` is
+still staffed, so its agent keeps running whoever else thinks it is finished.
+That is the case `epic/KAN-203` got right by hand on 2026-08-16 — two agents at
+`Done` stood down, `task/kan-420` at `In Review` deliberately left — and the
+rule now reproduces it without anybody having to remember.
+
+**What this does not license.** It is not permission to leave a ticket at
+`Done` with its work unmerged, and it is not a reason to move a ticket you are
+not otherwise ready to move: the transition still has to be *true*. If you need
+an agent gone for a reason the board cannot express — it is wedged, it is on the
+wrong branch — `butchr_deactivate_agent` is still there and still yours to call.
+What changed is that the ordinary case no longer needs it.
 
 **Preempted tasks are yours to reconcile.** `butchr_list_agents` reports
 `preemptedAgents`; for each of your tasks stood down, transition its issue back

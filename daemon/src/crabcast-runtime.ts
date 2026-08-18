@@ -15,7 +15,8 @@ import type {
   AgentSpawn,
   PaneObservation,
   SendToAgentResult,
-  WorkspaceMcpServers
+  WorkspaceMcpServers,
+  CloseAgentOutcome
 } from './agent-runtime.js';
 import {
   CRABCAST_CONTRACT_VERSION,
@@ -1969,15 +1970,189 @@ export class CrabCastRuntime implements AgentRuntime {
     return deleteWorkspaceDir(type, key);
   }
 
-  closeAgentByKey(
+  /**
+   * **A stand-down is addressed to a WORKSPACE, and holding a session for it is
+   * an optimisation rather than the address (KAN-508).**
+   *
+   * Until 2026-08-17 this method was `this.sessions` and nothing else, so an
+   * agent this daemon held no session for could not be stopped through it at
+   * all — it answered *"no session this daemon started matches <type>/<key>"*
+   * and left a live process holding a CrabCast slot. **That refusal was correct
+   * about the session map and wrong about the world**, and KAN-507 made it say
+   * so without making it act: `handleDeactivateByKey` now reports
+   * `stillRunning` with `stopItWith: crabcast deactivate <workDir>`, which is a
+   * route the daemon named and could not take.
+   *
+   * **Why the population is not exotic.** `this.sessions` dies with the daemon;
+   * CrabCast's registry does not. So *every* agent that outlives a daemon
+   * restart is in this state while running, charged and visible in the census.
+   * {@link adoptFromCensus} recovers most of them on the next census tick, but
+   * it is deliberately best-effort — it refuses to adopt a row with no
+   * `sessionId`, no `createdAt`, or a launcher outside Butchr's vocabulary
+   * (KAN-429), and each of those refusals is a row that stays sessionless *for
+   * good*. Those are exactly the agents that accumulate: KAN-507 measured
+   * `task/kan-420` sessionless and running at pid 156100, 546 MB, holding one
+   * of three slots.
+   *
+   * **CrabCast's north star 3 is what makes the fallback honest rather than a
+   * workaround: an agent IS a canonical filesystem path.** The `deactivate_agent`
+   * verb has always taken a `path` — {@link terminateSession} passes
+   * `session.workDir` — so the session was never what CrabCast needed, only what
+   * this adapter happened to look the path up in. {@link pathForAddress} is the
+   * same translation `spawnSession` addresses with, so the fallback asks for the
+   * agent at the address Butchr would have started it at, not one it inferred.
+   *
+   * **It fails CLOSED, and that is the half worth checking in review.** The
+   * census must positively assert an agent at that workspace before anything is
+   * sent. An unreachable census establishes nothing, so it refuses rather than
+   * firing a stand-down at a path nobody confirmed — the same trade
+   * `standDownVerdict` (router.ts) and `liveWorkspaceCheck` already make, for
+   * the same reason: a stand-down is unrecoverable and an agent's context does
+   * not survive it.
+   *
+   * **`ambiguous` stays a refusal on both routes.** It is the destructive pair's
+   * rule (KAN-473) and the fallback does not soften it: a key held by two types
+   * is refused here exactly as it is refused among sessions, because
+   * "whichever workspace matched first" is not an address a stand-down may act
+   * on either.
+   *
+   * The return says which route ran. That is not decoration — `route:
+   * 'workspace'` means this daemon stopped an agent it was not tracking, which
+   * is a thing an operator reading a stand-down should be able to see without
+   * inferring it from the absence of a session.
+   */
+  closeAgentByKey(key: string, type?: string): CloseAgentOutcome {
+    const addressed = this.addressedSession(key, type);
+    if (addressed.outcome === 'one') {
+      const session = addressed.session;
+      const result = this.terminateSession(session.sessionId);
+      return { ...result, agentName: agentNameFor(session.type, session.key), route: 'session' };
+    }
+    // A key that names two agents is not an address, and that is true of the
+    // workspace route as much as the session one. Refuse it before the census
+    // is consulted, so the fallback cannot resolve what the session map
+    // declined to.
+    if (addressed.outcome === 'ambiguous') return { success: false, error: addressed.error };
+
+    return this.closeAgentByWorkspace(key, type, addressed.error);
+  }
+
+  /**
+   * The fallback of {@link closeAgentByKey}: stand an agent down at its
+   * workspace path, for the population this daemon holds no session for.
+   *
+   * `sessionRefusal` is carried in rather than rebuilt so that a refusal from
+   * here still reports what the session map said first — the two are one
+   * failure to a caller, and dropping the first half would leave an operator
+   * unable to tell "no session AND no census row" from "no census row" alone.
+   */
+  private closeAgentByWorkspace(
+    key: string,
+    type: string | undefined,
+    sessionRefusal: string
+  ): CloseAgentOutcome {
+    const refuse = (why: string) => ({
+      success: false,
+      error: renderRefusal(
+        this.link.refusal(
+          'butchr-adapter',
+          // Both halves, in the order they were established: the session map
+          // first, then the census. A caller that sees only the second cannot
+          // tell "no session AND no row" from "no row", and those are different
+          // states — the first is the ordinary post-restart agent, the second is
+          // an address for something that is not running at all.
+          `${sessionRefusal}; and ${why}`,
+          'A stand-down is only sent for a workspace the runtime census positively ' +
+            'reports an agent at. Nothing was sent.'
+        )
+      )
+    });
+
+    // An unreachable census asserts nothing. Refusing here is what stops a
+    // stand-down being aimed at a path on the strength of a reading that did
+    // not happen.
+    if (!this.census.reachable) {
+      return refuse('the runtime census did not answer, so nothing could be established');
+    }
+
+    const matches = this.censusAddressesForKey(key, type);
+    if (matches.length === 0) {
+      return refuse(`the runtime census reports no agent at ${type ?? '*'}/${key}`);
+    }
+    if (matches.length > 1) {
+      return {
+        success: false,
+        error: renderRefusal(
+          this.link.refusal(
+            'butchr-adapter',
+            ambiguousKeyMessage(
+              key,
+              matches.map((m) => agentNameFor(m.type, m.key))
+            ),
+            'Pass the workspace type, so this stands one agent down rather than ' +
+              'whichever workspace the census listed first.'
+          )
+        )
+      };
+    }
+
+    const address = matches[0];
+    // `pathForAddress`, not the row's own `workDir`: the address Butchr would
+    // have spawned at is the one it may stand down. A row's path is CrabCast's
+    // string, and honouring it here would let a row outside the workspace tree
+    // steer this call at a directory Butchr never owned.
+    const dir = pathForAddress(address.type, address.key);
+    const agentName = agentNameFor(address.type, address.key);
+
+    // Fire-and-forget with the same honesty as `terminateSession`: this returns
+    // "asked", not "stopped". There is no session to mark, so nothing local
+    // changes — the next census tick is what will show the slot released.
+    void this.link
+      .request({ action: 'deactivate_agent', path: dir })
+      .then((res) => {
+        if (res.success !== true) this.log(`deactivate refused for ${dir}: ${String(res.error)}`);
+      })
+      .catch((err) => this.log(`deactivate failed for ${dir}: ${err.message}`));
+
+    this.log(
+      `stood down ${agentName} by workspace (${dir}): this daemon holds no session for it, ` +
+        `so it was addressed by path. The census reported it running; the slot is released ` +
+        `when CrabCast actually stops it, which the next census tick shows.`
+    );
+
+    return { success: true, agentName, route: 'workspace' };
+  }
+
+  /**
+   * Every census address matching `key`, folded exactly as
+   * {@link addressKey} folds it, optionally narrowed to one type.
+   *
+   * Reads {@link CrabCastRuntime.census}`.rows` alone and never `foreign`: a
+   * foreign pane is one CrabCast did not start for Butchr, and standing one
+   * down would reach a terminal somebody else owns. `addressForPath` already
+   * answers `null` for anything outside the workspace tree, so this is a second
+   * guard rather than the only one — deliberately, because the cost of getting
+   * it wrong here is somebody's shell.
+   */
+  private censusAddressesForKey(
     key: string,
     type?: string
-  ): { success: boolean; agentName?: string; error?: string } {
-    const addressed = this.addressedSession(key, type);
-    if (addressed.outcome !== 'one') return { success: false, error: addressed.error };
-    const session = addressed.session;
-    const result = this.terminateSession(session.sessionId);
-    return { ...result, agentName: agentNameFor(session.type, session.key) };
+  ): Array<{ type: string; key: string }> {
+    const wanted = key.toLowerCase();
+    const seen = new Set<string>();
+    const out: Array<{ type: string; key: string }> = [];
+    for (const row of this.census.rows) {
+      if (row.state !== 'running') continue;
+      const address = addressForPath(row.workDir ?? row.path);
+      if (!address) continue;
+      if (address.key.toLowerCase() !== wanted) continue;
+      if (type && address.type !== type) continue;
+      const id = addressKey(address.type, address.key);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(address);
+    }
+    return out;
   }
 
   // ── lookup ───────────────────────────────────────────────────────────────

@@ -13,7 +13,8 @@ import type {
   AgentRuntime,
   AgentSpawn,
   SendToAgentResult,
-  WorkspaceMcpServers
+  WorkspaceMcpServers,
+  CloseAgentOutcome
 } from './agent-runtime.js';
 import {
   RESUME_ENV,
@@ -2423,7 +2424,7 @@ export class HerdrBridge implements AgentRuntime {
    * fallback when it does not. Never throws — the caller is a request handler
    * that owes its client a response either way.
    */
-  public closeAgentByKey(key: string, type?: string): { success: boolean; agentName?: string; error?: string } {
+  public closeAgentByKey(key: string, type?: string): CloseAgentOutcome {
     let agentName: string;
     try {
       agentName = this.agentNameForAddress(key, type);

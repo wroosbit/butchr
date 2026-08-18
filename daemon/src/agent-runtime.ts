@@ -262,6 +262,36 @@ export interface SendToAgentResult {
   pane: PaneObservation;
 }
 
+/**
+ * What a by-key stand-down became.
+ *
+ * **Spelled once, here, and shared by both runtimes on purpose (KAN-508).** It
+ * was written out longhand at each implementation until this ticket, and the
+ * cost of that showed up immediately: adding `route` to the interface and to
+ * `CrabCastRuntime` left `HerdrBridge`'s own copy narrower than the interface it
+ * satisfies, so `router.ts` reading `result.route` compiled against the seam and
+ * **stopped compiling the moment the seam was reverted** — which is precisely
+ * the property `verify-agent-runtime-seam.mjs` §1 exists to measure, and it went
+ * red. Two hand-written return types that are supposed to be one type are two
+ * things to carry a change to, and the evidence that one gets missed is that
+ * this happened on the first change either had seen.
+ *
+ * `route` says how the agent was reached, and it is optional because one
+ * runtime has only one way to reach one: `HerdrBridge` resolves through herdr's
+ * own pane list and has no second address, so it never sets this.
+ * `CrabCastRuntime` has two — the session map this daemon holds, and the
+ * workspace path CrabCast actually addresses by — and `'workspace'` means it
+ * stopped an agent it was **not tracking**. A caller that wants to report *how*
+ * a stand-down happened reads this; one that only wants to know *whether* it
+ * happened reads `success`, exactly as before.
+ */
+export interface CloseAgentOutcome {
+  success: boolean;
+  agentName?: string;
+  error?: string;
+  route?: 'session' | 'workspace';
+}
+
 export interface AgentRuntime {
   // -- identity -------------------------------------------------------------
 
@@ -524,10 +554,10 @@ export interface AgentRuntime {
 
   resetWorkspace(type: string, key: string): { success: boolean; error?: string };
 
-  closeAgentByKey(
-    key: string,
-    type?: string
-  ): { success: boolean; agentName?: string; error?: string };
+  /**
+   * Stand an agent down by address. See {@link CloseAgentOutcome}.
+   */
+  closeAgentByKey(key: string, type?: string): CloseAgentOutcome;
 
   // -- lookup ---------------------------------------------------------------
 
