@@ -153,8 +153,8 @@ log(`PATH resolved to: ${process.env.PATH}`);
 if (herdrPath) {
   log(`herdr found at ${herdrPath}`);
   // Which herdr, not just whether there is one: 0.7 changed `agent start`
-  // incompatibly, and without this the only symptom is `unknown option: --cwd`
-  // on every activation.
+  // incompatibly and Butchr now requires that redesign (KAN-533), so on a 0.6
+  // build the only symptom is `unknown option: --kind` on every activation.
   try {
     const version = execFileSync(herdrPath, ['--version'], {
       encoding: 'utf8',

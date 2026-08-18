@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 119 |
+| `yes` | 120 |
 | `partial` | 14 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **158** |
+| **total** | **159** |
 
-**133 of 158** run on every pull request.
+**134 of 159** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -107,6 +107,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-herdr-spawn-argv` | yes | reads `daemon/src/*.ts` as TEXT and imports the built daemon's `herdr-health.js`. No herdr binary, no server, no pane, no PTY. |
 | `verify-idle-fleet-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Section 1 reads this machine's real /proc for its machine facts and says so. |
 | `verify-integration-enablement` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-integration-pluggability` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

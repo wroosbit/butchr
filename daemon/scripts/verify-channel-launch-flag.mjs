@@ -72,11 +72,50 @@ const oneArm = process.argv.includes('--one-arm');
  * "the switch-off path is what it always was", and a claim checked against
  * something the build under test also produces is a claim about self-consistency
  * rather than about history. This string was read off `origin/main` at d869b59.
+ *
+ * ⚠ **IT IS NO LONGER WHAT THE PRODUCT PRODUCES, AND THAT IS THE POINT**
+ * (KAN-533). herdr 0.7 removed the shell from the spawn path — `agent start`
+ * takes `--kind` and an argv, not a `bash -c` string — so the `||` is gone and
+ * the daemon chooses the arm itself. This literal stays exactly as it was
+ * because it is the HISTORICAL record; what changed is that it is now compared
+ * against a rendering of the two argvs rather than against one string. Rewriting
+ * the literal to match the new output would have deleted the only evidence in
+ * this file that the flags and the prompt did not drift during the port.
  */
 const PRE_CHANNELS_COMMAND =
   "claude --permission-mode bypassPermissions --continue || " +
   "claude --permission-mode bypassPermissions " +
   "'Please read and follow the instructions in .butchr-prompt.md to begin.'";
+
+/**
+ * The same frozen fact, as the two argvs 0.7 spawns instead.
+ *
+ * Written out by hand from the literal above rather than parsed out of it: a
+ * split on `' || '` would make this a restatement of that string instead of an
+ * independent claim about what each arm must contain.
+ */
+const PRE_CHANNELS_ARGV = {
+  resumed: ['claude', '--permission-mode', 'bypassPermissions', '--continue'],
+  cold: [
+    'claude', '--permission-mode', 'bypassPermissions',
+    'Please read and follow the instructions in .butchr-prompt.md to begin.'
+  ]
+};
+
+/**
+ * Render the two argvs the way the old single string read, so section 1 and
+ * section 3 can still compare against {@link PRE_CHANNELS_COMMAND}.
+ *
+ * The cold arm's prompt is re-quoted here because the old string carried it
+ * shell-quoted and the argv does not — argv needs no quoting, which is one of
+ * the things the port buys. Quoting it back is what makes the two comparable;
+ * it is presentation, and nothing executes this.
+ */
+function renderAsShellCommand({ resumed, cold }) {
+  const arm = (argv) =>
+    argv.map((w) => (w.includes(' ') ? `'${w}'` : w)).join(' ');
+  return `${arm(resumed)} || ${arm(cold)}`;
+}
 
 const FLAG = '--dangerously-load-development-channels';
 const SERVER = 'butchr';
@@ -148,16 +187,23 @@ function commandWithSwitch(enabled) {
     );
   }
   const launchers = pathToUrl(path.join(distUnderTest, 'launchers.js'));
+  // BOTH ARMS, FROM ONE PROCESS. The `||` used to put them in one string for
+  // free; now each is a separate call, distinguished only by `hasConversation`.
+  // Asking for both here keeps the "two arms, independently" claim in section 2
+  // a claim about one build rather than about two invocations of it.
   const out = execFileSync(
     process.execPath,
     [
       '-e',
       `import(${JSON.stringify(launchers)}).then((m) => ` +
-        `process.stdout.write(m.AGENT_LAUNCHERS.claude.command().command))`
+        `process.stdout.write(JSON.stringify({` +
+        `resumed: m.AGENT_LAUNCHERS.claude.command({ hasConversation: true }).argv,` +
+        `cold: m.AGENT_LAUNCHERS.claude.command({ hasConversation: false }).argv` +
+        `})))`
     ],
     { encoding: 'utf8', env: { ...process.env, HOME: home } }
   );
-  return out;
+  return JSON.parse(out);
 }
 
 function pathToUrl(p) {
@@ -167,8 +213,8 @@ function pathToUrl(p) {
 say('== 1. switch OFF — the shipped state, and the state this ticket leaves the fleet in ==');
 say('');
 
-const off = commandWithSwitch(false);
-const absent = commandWithSwitch(null);
+const off = renderAsShellCommand(commandWithSwitch(false));
+const absent = renderAsShellCommand(commandWithSwitch(null));
 say(`  with {"enabled": false}: ${off}`);
 say('');
 check(
@@ -184,38 +230,53 @@ check(
 check(!off.includes(FLAG), 'no channels flag anywhere in it');
 
 say('');
-say('== 2. switch ON — both arms of the `||`, independently ==');
+say('== 2. switch ON — both arms, independently ==');
 say('');
 
-const on = commandWithSwitch(true);
+const onArgv = commandWithSwitch(true);
+const on = renderAsShellCommand(onArgv);
 say(`  with {"enabled": true}: ${on}`);
 say('');
 
-const arms = on.split(' || ');
-check(arms.length === 2, 'the `||` is still exactly one `||` — the structure is not restructured',
-  `split into ${arms.length} arm(s)`);
+// KAN-533: the arms no longer come from splitting a string on `||` — they are
+// two separate calls, so there is no structure left to assert about. What
+// replaced that check is stronger: each arm is asserted to be the frozen argv
+// plus the flag, element by element, which a `||` count never was.
+const { resumed, cold } = onArgv;
+check(Array.isArray(resumed) && Array.isArray(cold), 'both arms are argv arrays');
 
-if (arms.length === 2) {
-  const [resumed, cold] = arms;
-  // Asserted per arm rather than by counting occurrences across the whole
-  // string: two flags in one arm and none in the other would satisfy a count.
-  check(resumed.includes(FLAG_WITH_SERVER), 'arm 1 (`--continue`) carries the flag', resumed);
-  check(cold.includes(FLAG_WITH_SERVER), 'arm 2 (the cold-start prompt) carries the flag', cold);
-  check(resumed.trimEnd().endsWith('--continue'), 'arm 1 is still the `--continue` resume attempt');
-  check(
-    cold.includes("'Please read and follow the instructions in .butchr-prompt.md to begin.'"),
-    'arm 2 still carries the shell-quoted bootstrap prompt'
-  );
-  check(
-    resumed.includes('--permission-mode bypassPermissions') &&
-      cold.includes('--permission-mode bypassPermissions'),
-    'both arms still carry --permission-mode bypassPermissions'
-  );
-  check(
-    resumed.indexOf(FLAG) < resumed.indexOf('--permission-mode'),
-    'the flag precedes --permission-mode, the ordering KAN-217 configuration D measured'
-  );
-}
+// Asserted per arm rather than by counting occurrences across both: two flags
+// in one arm and none in the other would satisfy a count.
+check(resumed.includes(FLAG_WITH_SERVER), 'arm 1 (`--continue`) carries the flag', resumed.join(' '));
+check(cold.includes(FLAG_WITH_SERVER), 'arm 2 (the cold-start prompt) carries the flag', cold.join(' '));
+check(resumed[resumed.length - 1] === '--continue', 'arm 1 is still the `--continue` resume attempt');
+check(
+  cold[cold.length - 1] === 'Please read and follow the instructions in .butchr-prompt.md to begin.',
+  'arm 2 still ends with the bootstrap prompt, as ONE argv element'
+);
+// The prompt being one element is the port's own claim and not a restatement of
+// the line above: as a `bash -c` string it needed shell-quoting, and a build
+// that split it back into words would pass every `includes` check in this file.
+check(
+  cold.filter((w) => w.includes('.butchr-prompt.md')).length === 1,
+  'the prompt is exactly one argv element, not re-split into words'
+);
+check(
+  resumed.join(' ').includes('--permission-mode bypassPermissions') &&
+    cold.join(' ').includes('--permission-mode bypassPermissions'),
+  'both arms still carry --permission-mode bypassPermissions'
+);
+check(
+  resumed.indexOf(FLAG_WITH_SERVER) < resumed.indexOf('--permission-mode'),
+  'the flag precedes --permission-mode, the ordering KAN-217 configuration D measured'
+);
+check(
+  JSON.stringify(resumed.filter((w) => w !== FLAG_WITH_SERVER)) ===
+    JSON.stringify(PRE_CHANNELS_ARGV.resumed) &&
+  JSON.stringify(cold.filter((w) => w !== FLAG_WITH_SERVER)) ===
+    JSON.stringify(PRE_CHANNELS_ARGV.cold),
+  'each arm minus the flag is the frozen pre-channels argv, element for element'
+);
 
 say('');
 say('== 3. the ONLY difference between the two is the flag ==');
