@@ -33,6 +33,12 @@ Chrome launches, which relays to the one long-lived daemon over a Unix socket
 at `~/.local/share/butchr/butchr.sock`. Registering that host is step 5, and it
 is the step most likely to be the reason nothing works.
 
+**Agents message each other over a fourth thing that is off by default**, and it
+is the one omission most likely to be mistaken for a bug later: without it,
+`butchr_send_to_agent` falls back to typing into the recipient's terminal, which
+interrupts whatever that agent was doing. It is a research preview and it is
+step 9.
+
 ---
 
 ## 1. Prerequisites
@@ -328,8 +334,8 @@ exits non-zero if any of them is not true. It reports node, herdr, herdr's live
 fd soft limit and the pane headroom that implies, both builds *and whether they
 are stale relative to their sources*, the native-messaging manifest (including
 whether the path it names still exists), the systemd unit and linger, whether
-anything can actually connect to the daemon socket, and which backend a Jira
-token would land in.
+anything can actually connect to the daemon socket, which backend a Jira
+token would land in, and whether agent-to-agent channels are on.
 
 A clean run ends in `Ready.`
 
@@ -362,7 +368,113 @@ validates it at submit time. See `docs/butchr.md` for the full design.
 
 ---
 
-## 9. Keeping it working
+## 9. Optional: agent-to-agent channels
+
+<!-- constant-pin: DEV_CHANNELS_FLAG
+     src: daemon/src/launchers.ts
+     sha256: 4d18addee408
+     says: `--dangerously-load-development-channels=server:butchr` -->
+<!-- constant-pin: VERIFIED_CLIENT_VERSIONS
+     src: daemon/src/channel-selfcheck.ts
+     sha256: 71edc27416cc
+     says: measured on ['2.1.224', '2.1.226'] -->
+
+**Off unless you turn it on.** This step exists because the alternative is not
+"agents that cannot talk to each other" — it is agents that talk by a route
+which damages the thing it is steering.
+
+Butchr carries an agent-to-agent message (`butchr_send_to_agent`) one of two
+ways, and the daemon picks per recipient. A **channel** places the message in
+the recipient's context, to be read at its next turn boundary; it interrupts
+nothing. With no channel the daemon falls back to the **composer**, which types
+into the recipient's terminal — and that fallback opens with a Ctrl+C:
+
+* it **destroys the tool call the recipient had in flight**, which the recipient
+  then reports as a human having rejected work that nobody rejected;
+* a long or multi-line message can be **left in the composer unsubmitted**
+  ([KAN-499](https://wroosbit.atlassian.net/browse/KAN-499)), silently.
+
+So the default switches nothing on behind your back, and it is not free. If your
+agents coordinate at all, read this step before you decide the silence is a bug.
+
+### Turning it on
+
+One switch, read fresh on every routing decision. **Absent, malformed, or
+anything but `true` reads as off** — it fails closed, which matters most when
+somebody has been editing it in a hurry.
+
+```bash
+# read it
+cat ~/.local/share/butchr/channel.json
+
+# turn it on
+printf '{ "enabled": true }\n' > ~/.local/share/butchr/channel.json
+```
+
+⚠ **Turning it on does not reach the agents already running.** Whether an agent
+has a channel is decided once, when it is spawned; whether the daemon writes to
+one is decided per message. Flip it on under a running fleet and the daemon
+starts writing frames at agents whose clients **discard them in silence**. So
+restart the fleet to mean it. Flipping it **off** is immediate and needs no
+restart — that direction is what a kill switch is for.
+
+### The flag, and its name
+
+With the switch on, the daemon adds one argument to every agent it spawns:
+
+```
+--dangerously-load-development-channels=server:butchr
+```
+
+The spelling `--dangerously-load-development-channels=server:butchr` is
+upstream's, and so is the word in the middle of it. We neither soften it nor
+wrap it in something friendlier, because renaming somebody else's warning is how
+a caveat stops being read. What it warns about is scope: it loads a
+**development** channel from a named MCP server — Butchr's own — rather than
+promising the feature is finished. If you searched that string to find out
+whether we knew: we do, and this paragraph is the reason.
+
+### What is unfinished about it
+
+**Channels are a research preview.** Delivery all the way to a *model* has been
+measured on ['2.1.224', '2.1.226'] and on no other client version, so a client
+upgrade can move the contract with nothing announcing it.
+
+The daemon does not pretend otherwise — it flags rather than assumes. Each
+agent's startup self-check is readable per agent under `channel` in
+`butchr_list_agents`:
+
+| what it reports | what it means |
+| --- | --- |
+| `transport: 'channel'` | messages to it travel by channel and interrupt nothing |
+| `transport: 'composer'` | its channel did not prove out; a message will interrupt it |
+| `transport: 'unregistered'` | no registration right now, so a send is **refused** rather than delivered. Ordinary for a few seconds after a daemon restart, and it clears itself |
+| `outcome: 'unverified-client'` | the loop works, but on a client version nobody has measured. Treat delivery as unproven and say so if you rely on it |
+
+**A brand-new agent is not a channel-less agent.** Registration lands roughly
+twelve seconds after spawn, so an agent read the instant it starts will honestly
+report no channel yet.
+
+### Why this is optional and not recommended
+
+Recommending it to every new install would mean telling you to pass a flag whose
+contract is a research preview we do not control, pinned to a measured-version
+list that is two entries long — and both directions of getting it wrong are
+quiet. Leaving it off and saying nothing is the state this step replaces: the
+failure a new user actually met was the composer's, with nothing to tell them a
+better mode existed. So it stays off, it is written down, and the switch is
+yours.
+
+`butchr-doctor` reports which way the switch is set, and warns when the file
+exists but does not parse — the one state here that is a surprise rather than a
+decision. See [docs/channel-addressed-delivery.md](channel-addressed-delivery.md)
+for the switch's design and
+[docs/channel-messaging-design.md](channel-messaging-design.md) for the split
+between the two carriers.
+
+---
+
+## 10. Keeping it working
 
 Merging a PR changes nothing on your machine until you do this. The daemon now
 says so when it is outstanding — at startup in its log, and as a banner on the

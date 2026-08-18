@@ -326,6 +326,71 @@ await new Promise((resolve) => {
   }
 }
 
+// --- 9. whether agent-to-agent channels are on -------------------------
+// Not a pass/fail either: off is the shipped default and a supported way to
+// run, so failing on it would be reporting a choice as a fault. It is reported
+// because the state lives in a file nobody looks at, and because BOTH values
+// have a consequence a user meets later and does not connect back to here —
+// off means an agent-to-agent message interrupts its recipient, and on means
+// the fleet has to be restarted before any agent actually gets a channel.
+//
+// The malformed case is a WARN rather than a PASS, and that is the whole
+// reason this reads the file rather than asking the daemon: `channelEmissionEnabled`
+// fails closed, so a file somebody has half-edited reads as OFF with nothing
+// to say it was meant to be on. That is the one state here that is a surprise
+// rather than a decision.
+
+{
+  const switchPath = path.join(BUTCHR_DIR, 'channel.json');
+  const composerNote =
+    'Agent-to-agent messages fall back to the composer, which types into the\n' +
+    'recipient and destroys the tool call it had in flight. See docs/SETUP.md, step 9.';
+  if (!fs.existsSync(switchPath)) {
+    pass(
+      'agent-to-agent channels',
+      `off — no ${switchPath}, which is the default.\n${composerNote}`
+    );
+  } else {
+    // Read and parse are reported apart because they fail for different
+    // reasons and only one of them is about the file's contents. Collapsing
+    // them lets this print "is not valid JSON" about a file it never managed
+    // to read, which is the same defect in miniature as everything else here:
+    // a sentence claiming more than the mechanism behind it established.
+    let unreadable = null;
+    let parsed;
+    try {
+      const raw = fs.readFileSync(switchPath, 'utf8');
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        unreadable = 'is not valid JSON';
+      }
+    } catch (e) {
+      unreadable = `could not be read (${e?.code || e?.message})`;
+    }
+    if (unreadable) {
+      warn(
+        'agent-to-agent channels',
+        `${switchPath} ${unreadable}, so the daemon reads it as OFF.\n` +
+        `That is the fail-closed default doing its job, but if you wrote that file\n` +
+        `meaning to turn channels on, they are not on.\n${composerNote}`
+      );
+    } else if (parsed?.enabled === true) {
+      pass(
+        'agent-to-agent channels',
+        'on — agents spawned from now on are given a channel.\n' +
+        'Agents already running were spawned without one and keep the composer\n' +
+        'until they are restarted. Channels are a research preview; see step 9.'
+      );
+    } else {
+      pass(
+        'agent-to-agent channels',
+        `off — ${switchPath} does not say { "enabled": true }.\n${composerNote}`
+      );
+    }
+  }
+}
+
 // --- verdict ------------------------------------------------------------
 
 const failed = results.filter((r) => r.level === 'fail');
