@@ -382,6 +382,22 @@ this cannot be driven from outside the browser. If you skip it you will be
 testing yesterday's bundle while reading today's code, which is a genuinely
 expensive mistake and the reason it is spelled out twice in this document.
 
+**None of this reaches a running agent's MCP server, and nothing above will.**
+Each running agent holds its own long-lived `mcp.js`, spawned by its client and
+serving every proxy call that agent makes; the restart above reaches the daemon
+and not one of them. So after a deploy, a merged fix is live for everything the
+daemon computes and inert for everything `mcp.js` computes, until each agent's
+client is restarted — which costs that agent its session, and is therefore left
+to a human rather than done for you.
+
+The daemon stops being silent about it: about 45 seconds after it starts — long
+enough for the fleet to re-announce itself — it logs a `deploy reach:` line
+naming which agents are still running an older build. `butchr_staleness_check`
+answers the same question on demand under `mcp-servers`, and tells an agent
+about *its own* server under `servingProcess`. See
+[docs/staleness.md](staleness.md) — *"a live probe measures the answering
+process, not the deploy"*.
+
 ---
 
 ## What is running on your machine when this is done

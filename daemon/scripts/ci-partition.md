@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 115 |
+| `yes` | 116 |
 | `partial` | 13 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **153** |
+| **total** | **154** |
 
-**128 of 153** run on every pull request.
+**129 of 154** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -124,6 +124,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-ld-storage-disclosure` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-list-agents-answer-is-bounded` | yes | reads a captured census fixture and imports the built budget module in process; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-list-agents-survives-restart` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-mcp-server-build-staleness` | yes | no live daemon, no herdr, no credential, no network. It spawns the built `dist/mcp.js` against a stub socket in a temp HOME, and drives the real registry and the real staleness report in process. |
 | `verify-message-provenance` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-mjs-stub-arity-matches-seam` | yes | reads `daemon/src/agent-runtime.ts` and the `.mjs` files as TEXT; no build, no socket, no peer, no credential, no network. Unaffected by a failed build, so its verdict is about what you wrote rather than what last compiled. |
 | `verify-notifications-never-type` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. |

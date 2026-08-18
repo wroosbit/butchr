@@ -32,6 +32,13 @@ systemctl --user restart butchr-daemon.service
 cd extension && npm run build && cd ..
 ```
 
+**There is no step 4, and that is the point of the next section.** None of the
+above restarts the per-workspace MCP servers — one `mcp.js` per running agent,
+each serving every proxy call that agent makes. They go on executing whatever
+they loaded at spawn. Since KAN-526 the daemon says so ~45s after it starts,
+naming which agents are behind, instead of leaving the four green items above to
+read as a complete account of the deploy.
+
 ...and then **press Reload on the extension at `chrome://extensions` yourself.**
 
 That last step cannot be automated from here, and this document is not going to
@@ -46,7 +53,7 @@ which is exactly the mistake this page exists to prevent.
 
 ## What the check looks at
 
-The daemon compares four things, all from local reads. Each is reported
+The daemon compares the following, all from local reads. Each is reported
 fresh / stale / unknown **with the evidence it was decided on**, because
 "stale" without a commit hash or an mtime is one more thing to distrust.
 
@@ -55,6 +62,7 @@ fresh / stale / unknown **with the evidence it was decided on**, because
 | `git` — local checkout | `HEAD` vs `origin/main`, as last fetched | commits merged that this checkout does not have |
 | `daemon-build` | newest mtime among `daemon/`'s **build inputs** vs newest `daemon/dist` mtime | an input changed after the last build |
 | `daemon-process` | daemon start time vs `daemon/dist` mtime | `dist` was rebuilt while this daemon kept running |
+| `mcp-servers` | the build each connected agent's `mcp.js` loaded, vs newest `daemon/dist` mtime | an agent is serving its own calls out of a build older than the deploy |
 | `extension-build` | newest mtime among `extension/`'s **build inputs** vs newest `extension/dist` mtime | an input changed after the last build |
 
 ### What counts as a build input
@@ -104,7 +112,9 @@ expired credential.
 * **Over the socket**: `{"action": "staleness_check"}`, with `{"force": true}`
   to bypass the 15s cache.
 * **Over MCP**: `butchr_staleness_check`. It returns `isError` when the
-  install is stale, so an agent that asks cannot skim past the answer.
+  install is stale, so an agent that asks cannot skim past the answer. Its
+  `servingProcess` block is written by the `mcp.js` answering *your* call, not
+  by the daemon — see below.
 
 ### Why the Agents page
 
@@ -121,6 +131,87 @@ the right one. Of the surfaces that exist:
 
 For agents rather than humans, the MCP tool is the surface, and it is the one
 worth using *before* citing anything observed from a running daemon as proof.
+
+---
+
+## A live probe measures the answering process, not the deploy
+
+**This is the one on this page that costs the most time when it is not known**,
+and it was re-derived at cost on 2026-08-18 (KAN-526) after two agents read the
+same deployed build and observed opposite behaviour, both reporting honestly.
+
+Butchr has **two** long-lived processes, and they are restarted by different
+things:
+
+| Process | One per | Restarted by | Reached by a deploy? |
+| --- | --- | --- | --- |
+| `daemon.js` | machine | `systemctl --user restart butchr-daemon.service` | **yes** |
+| `mcp.js` | *running agent* | that agent's client starting — i.e. an agent reset or re-activation | **no** |
+
+Every proxy call an agent makes is served by that agent's own `mcp.js`, spawned
+when its client started and living as long as the session does. Nothing in the
+deploy path restarts them, and nothing should decide to on its own: reloading
+one costs that agent its session and whatever work it had in flight, which is a
+decision rather than a defect (KAN-526 scopes the restart policy out
+deliberately).
+
+**So "is this deployed?" is not answerable by observation.** A live probe
+reports the age of whichever process answered it. Concretely, on 2026-08-18 a
+single call from one agent carried both halves at once:
+
+* a **daemon-side** ADF coercion carrying KAN-502's fix, merged twelve minutes
+  earlier and **live** — because a daemon restart reaches it;
+* an **`mcp.js`-side** recovery recipe carrying KAN-501's defect, merged
+  eighteen minutes earlier and **inert** — because nothing had restarted that
+  server, which had been up since 21:42.
+
+⚠ **The direction of the error is the dangerous one.** The daemon-side half goes
+live first, so a deploy *looks* successful; KAN-501 was announced fleet-wide as
+live on exactly that basis and had to be retracted.
+
+⚠ **And the unit is the surface, not the commit and not the ticket.** KAN-501
+straddles the seam by itself: its ADF-to-text rendering lives in
+`atlassian-proxy.ts` and rides the daemon, while its response-budget stub and the
+recipe that stub prints come from `mcp.js` and do not. One commit, half live. A
+check that answered *"KAN-501: live"* or *"KAN-501: not live"* would be wrong
+either way — which is why the `mcp-servers` item and `servingProcess` both report
+**processes and builds**, never tickets.
+
+⚠ **Whether a behavioural probe sees the defect depends on the size of its
+response.** Two agents on the same build reported opposite results and both were
+right: one's comments call fit the response budget, so the stub never fired and
+only the daemon-side half was exercised; the other's exceeded it, so the stale
+`mcp.js` half spoke. **"I called the tool and it worked" is therefore not
+evidence** — a response small enough to pass the budget never reaches the path in
+question. Any *behavioural* verification of a budget-side fix has to provoke a
+clip deliberately and say that it did. (The `mcp-servers` item is not exposed to
+this: it compares build stamps and exercises no response path, so no size of
+anything can turn it green.)
+
+### What to do about it
+
+* **Say which surface you measured.** "The fix is live" is true per surface, not
+  per commit. A check that does not name its surface is true and misleading at
+  once.
+* **`reshapedByDaemon: true` on a proxy response is a per-response
+  discriminator** — it marks daemon-side behaviour, and its absence on a clip
+  envelope marks the `mcp.js` side. It needs no knowledge of process start
+  times.
+* **Ask, rather than infer.** `butchr_staleness_check` carries
+  `servingProcess`: the pid, start time and loaded build of the `mcp.js`
+  answering *that call*, with `relation.kind` of `current`, `older`,
+  `other-tree`, `unreadable` or `unstamped`. It is composed by that process,
+  because a report about the answering process cannot be written by anything
+  else. `older` means your own live output is evidence about the code you
+  started with.
+* **`unstamped` means old, not unknown.** Only an `mcp.js` built after KAN-526
+  announces a build at all, so a server that announces none cannot be running
+  one that does.
+* **Read the `mcp-servers` item for the fleet.** It names which agents are
+  behind. An **empty** list there is reported as `unknown`, never as fresh: a
+  daemon restart drops every registration and servers re-announce themselves
+  over the following seconds, so "I can see nobody" and "nobody is stale" stay
+  different sentences.
 
 ---
 
