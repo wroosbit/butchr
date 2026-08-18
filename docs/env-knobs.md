@@ -1,3 +1,8 @@
+<!-- constant-pin: RUNTIME_ENV_VAR
+     src: daemon/src/runtime-switch.ts
+     sha256: 28959b7fe578
+     says: **The runtime switch:** `BUTCHR_AGENT_RUNTIME`, the knob that selects which agent runtime the daemon serves. -->
+
 # The `BUTCHR_*` environment knobs
 
 **Ticket:** KAN-534. **This is the one place a `BUTCHR_*` environment variable is
@@ -44,6 +49,8 @@ These are meant for a person running a fleet. Every one of them falls back to
 the stated default when unset, and every one of them falls back **loudly** when
 set to something it cannot read — an unparseable value never takes a subsystem
 off the air.
+
+**The runtime switch:** `BUTCHR_AGENT_RUNTIME`, the knob that selects which agent runtime the daemon serves. That sentence is pinned to `RUNTIME_ENV_VAR` at the top of this file (KAN-347's mechanism), so renaming the constant turns this page red rather than leaving it quietly wrong.
 
 <!-- knob-table -->
 | knob | values | default | what it does |
