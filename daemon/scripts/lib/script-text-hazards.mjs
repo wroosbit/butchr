@@ -212,7 +212,7 @@ export function lex(src) {
       i = close === -1 ? n : close + 2;
       continue;
     }
-    if (ch === '/' && !/[)\]}\w$'"`]/.test(prev)) {
+    if (ch === '/' && startsRegex(src, i, prev)) {
       const end = regexEnd(src, i);
       if (end !== -1) {
         i = end + 1;
@@ -255,16 +255,61 @@ export function lex(src) {
     i += 1;
   }
 
-  // An unterminated template at EOF still yields what was read of it.
+  // A template still open at EOF is a MISPARSE, not a source file. Real
+  // JavaScript does not end inside a template literal, so reaching here means a
+  // backtick, quote or slash was read as something it was not — and everything
+  // after it was lexed in the wrong state. What was read of it is still
+  // returned, and the fact is returned WITH it: a caller that silently accepted
+  // the file would report a clean §2 for a file it never really read, which is
+  // the "empty result is a claim about your search" defect one layer down.
+  let unterminated = false;
   for (const frame of stack) {
     if (frame.kind === 'template') {
+      unterminated = true;
       frame.quasis.push({ start: frame.quasiStart, end: n, text: src.slice(frame.quasiStart) });
       templates.push(frame);
     }
+    // A code frame left inside an interpolation is the same fact seen from the
+    // other side: `${` was opened and never closed.
+    if (frame.template) unterminated = true;
   }
   for (const t of templates) t.exprs = t.exprs ?? [];
 
-  return { mask: mask.join(''), strings, templates };
+  return { mask: mask.join(''), strings, templates, unterminated };
+}
+
+/**
+ * Keywords a `/` can legally follow and still open a regex literal.
+ *
+ * `return /`/.test(s)` is valid JavaScript AND the shape that defeats the
+ * character-only test this replaces: the character before the slash is `n`, an
+ * identifier character, so the slash reads as division and the backtick inside
+ * the regex opens a template that never closes. The whole rest of the file is
+ * then lexed in the wrong state. It was measured on this repository's own
+ * lexer, not imagined — see `red-drive-kan527.sh`.
+ *
+ * The list is not the full grammar and is not trying to be. Anything it still
+ * gets wrong is caught by the `unterminated` flag rather than swallowed, which
+ * is why an imperfect heuristic is acceptable here and an imperfect heuristic
+ * with no coverage control would not be.
+ */
+const REGEX_MAY_FOLLOW = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'throw', 'case', 'do', 'else', 'yield', 'await'
+]);
+
+/** Does the `/` at `at` open a regex literal, or is it division? */
+function startsRegex(src, at, prev) {
+  if (!/[)\]}\w$'"`]/.test(prev)) return true;
+  if (!/\w/.test(prev)) return false;
+  // The previous character is a word character, so read back to the whole
+  // token: a keyword can be followed by a regex, an identifier or a number
+  // cannot.
+  let i = at - 1;
+  while (i >= 0 && /\s/.test(src[i])) i -= 1;
+  let end = i + 1;
+  while (i >= 0 && /[\w$]/.test(src[i])) i -= 1;
+  return REGEX_MAY_FOLLOW.has(src.slice(i + 1, end));
 }
 
 function quoteEnd(src, from, quote) {
@@ -335,15 +380,22 @@ function fallbackOperator(mask, at) {
 
 /**
  * Every vacuous-or-nearly-vacuous fallback sitting in a position where it
- * disarms a match.
+ * disarms a match, AND whether the lexer finished in a sane state.
  *
  * A fallback anywhere else is not reported. `String(x ?? '').slice(0, 90)` is
  * an ordinary display default and there are 276 of that shape in this tree; a
  * guard that flagged them all would be read once and then routed around, which
  * is the failure mode this repository already has a document about.
+ *
+ * `unterminated` travels WITH `found` rather than being available separately,
+ * on `sweepTree`'s argument: a caller cannot take the findings without also
+ * being handed the evidence that the reading was sound, so "the scan understood
+ * this file" stops being a claim a reader has to take on trust. An empty
+ * `found` from a misparsed file and an empty `found` from a clean one are the
+ * same value, and this is the only thing that separates them.
  */
 export function vacuousFallbacks(src) {
-  const { mask, strings, templates } = lex(src);
+  const { mask, strings, templates, unterminated } = lex(src);
   const spans = matcherSpans(mask);
   const found = [];
 
@@ -364,7 +416,7 @@ export function vacuousFallbacks(src) {
       found.push({ ...positionOf(src, lit.start), kind, operator, where: alternation });
     }
   }
-  return found;
+  return { found, unterminated };
 }
 
 /**

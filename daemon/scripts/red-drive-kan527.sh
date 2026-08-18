@@ -245,6 +245,32 @@ expect_red "an empty ALTERNATION alternative — (4|) matches every string in ex
 write_target 'const label = String(id ?? "").slice(0, 20); console.log(haystack.includes(label), words, n);'
 expect_green "the same spelling in a DISPLAY position — String(x ?? \"\").slice(...)"
 
+# 2's OWN COVERAGE LEG, driven red on VALID JavaScript.
+#
+# A regex literal containing a backtick, in a position the lexer's
+# regex-versus-division heuristic gets wrong, is read as division — so the
+# backtick opens a template that never closes and the whole rest of the file is
+# lexed in the wrong state. `found` comes back EMPTY, which is byte-identical to
+# a clean file. The `unterminated` flag is the only thing that separates them,
+# and this arm is what shows it can fire.
+#
+# The heuristic knows about `return /re/` and the keywords around it; this arm
+# uses `if (s) /re/`, which it does not. That is the honest state of it: the
+# lexer is a heuristic, it will always have a case it gets wrong, and the leg
+# exists so that case arrives as a DOUBT rather than as a green.
+write_target 'if (haystack) /`/.test(String(id)); console.log(words, n);'
+node --check "$TARGET" > "$BAK/check.log" 2>&1
+valid=$?
+echo
+echo "  \$ node --check $TARGET"
+echo "      EXIT=$valid   <- the mutation is VALID JavaScript; the lexer is what misreads it"
+if [ $valid -ne 0 ]; then
+  echo "      THAT IS NOT VALID JAVASCRIPT, so this arm proves less than it claims:"
+  sed 's/^/        /' "$BAK/check.log"
+  wrong=$((wrong + 1))
+fi
+expect_red "a regex the lexer misparses — 2 would have reported this file CLEAN"
+
 rm -f "$TARGET"
 expect_green "the tree as this branch leaves it, with nothing mutated"
 

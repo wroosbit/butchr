@@ -120,6 +120,7 @@ for (const dir of SCRIPT_DIRS) {
 
 const SOURCE = /\.(mjs|cjs|js|jsx|ts|tsx)$/;
 const vacuousHits = [];
+const misparsed = [];
 let sourcesScanned = 0;
 
 for (const dir of SCRIPT_DIRS) {
@@ -134,8 +135,15 @@ for (const dir of SCRIPT_DIRS) {
     // still read here rather than skipped, so one file cannot hide the other
     // reading by failing the first.
     const src = fs.readFileSync(path.join(abs, name)).toString('utf8');
-    const found = vacuousFallbacks(src);
+    const { found, unterminated } = vacuousFallbacks(src);
     if (found.length) vacuousHits.push({ rel, found });
+    // §2's own coverage control. A file the lexer did not finish reading in a
+    // sane state yields an empty `found` that looks exactly like a clean one,
+    // so it is reported as a DOUBT about this sweep rather than allowed to pass
+    // as a verdict about that file. Measured at zero across all 214 source
+    // files on this branch, which is what makes the leg worth having: it is a
+    // green that would change if the lexer ever stopped understanding one.
+    if (unterminated) misparsed.push(rel);
   }
 }
 
@@ -151,7 +159,10 @@ console.log(
 console.log(
   `   permitted-binary list: ${BINARY_FILES.length ? BINARY_FILES.join(', ') : '(empty)'}`
 );
-console.log(`§2 read ${sourcesScanned} source file(s) for a fallback constant in a matching position.\n`);
+console.log(
+  `§2 read ${sourcesScanned} source file(s) for a fallback constant in a matching position,\n` +
+    `   and ${sourcesScanned - misparsed.length} of them were lexed to a sane end state.\n`
+);
 
 if (byteHits.length) {
   console.log(`${byteHits.length} file(s) carry a byte that hides them from text tools:`);
@@ -195,6 +206,13 @@ if (vacuousHits.length) {
   console.log('');
 } else if (verbose) {
   console.log('§2 PASS — no fallback constant sits in a matching position.\n');
+}
+
+if (misparsed.length) {
+  sweepUnproven.push(
+    `${misparsed.length} source file(s) ended mid-template — the lexer did not understand ` +
+      `them, so their §2 verdict is a claim about a misreading: ${misparsed.join(', ')}`
+  );
 }
 
 if (sweepUnproven.length) {
