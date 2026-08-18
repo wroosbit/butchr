@@ -12,6 +12,14 @@
 //     RED    "**bold wrapping `inline_code` here.**"    -> 400, nothing written
 //     GREEN  "**bold** and `inline_code` side by side"  -> 201, comment 12767
 //
+// ⚠ It would ALSO catch the over-stripping repair, which is §2b and which was
+// added at `epic/KAN-39`'s review: a fix that made every marked node plain
+// would satisfy "no node carries code with strong" and be worse than the
+// defect. Every check outside §2b asks what the converter does NOT emit, and a
+// converter emitting no marks at all would pass all of them. §2b states the
+// other half — a legal mark is untouched, and only the companion Jira refuses
+// ever goes.
+//
 // It would equally catch the over-broad repair, and that one is the reason §3
 // exists: stripping the combination for BOTH products. Confluence stores
 // `code+strong` perfectly well (HTTP 201, measured the same day), so a fix that
@@ -220,6 +228,83 @@ if (!fs.existsSync(briefPath)) {
     `${carriers} carriers found; if this is 0 the section above measured an absence of input, not an absence of defects`
   );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+rule('2b. the marks that are LEGAL still survive — the over-stripping guard');
+
+// ⚠ ADDED AT `epic/KAN-39`'s REVIEW OF #225, AND IT FOUND A REAL WEAKNESS.
+//
+// Their objection: *"a fix that makes every marked node plain would pass 'no
+// node carries code with strong' and be worse than the defect."* That is exact.
+// Every check above this line asks what the converter does NOT emit, and a
+// converter that emitted no marks at all would satisfy all of them.
+//
+// It was not entirely uncovered — the mutation was written and run, and it was
+// caught: `verify-adf-identifier-survives.mjs` §3 lost its `_emphasis_` marks,
+// and §1/§5 here lost their coercion because stripping happened before anything
+// could record it. But **both catches were incidental**, one of them in another
+// file, and neither said what was wrong. A property worth holding is worth
+// asserting directly rather than relying on a side effect of a different check
+// noticing it.
+//
+// So this section states the other half: on Jira, a mark that is LEGAL is
+// untouched, and the only thing that ever goes is the companion Jira refuses.
+const LEGAL = [
+  ['**just bold**', 'strong'],
+  ['*just em*', 'em'],
+  ['~~just struck~~', 'strike'],
+  ['`just code`', 'code'],
+  ['**bold** and `code` side by side', 'strong'],
+  ['**bold** and `code` side by side', 'code'],
+  ['[a link](https://example.com/x)', 'link'],
+  ['**bold [link](https://example.com/y) inside**', 'link+strong']
+];
+
+for (const [source, want] of LEGAL) {
+  const result = convert(source, 'jira');
+  if (result.refused) {
+    check(`jira: ${JSON.stringify(source)} converts`, false, result.refused);
+    continue;
+  }
+  const marks = [];
+  const walk = (n) => {
+    if (n.type === 'text') marks.push((n.marks ?? []).map((m) => m.type).sort().join('+'));
+    (n.content ?? []).forEach(walk);
+  };
+  result.doc.content.forEach(walk);
+  check(
+    `jira: ${JSON.stringify(source)} still carries ${want}`,
+    marks.includes(want),
+    `marks produced: ${JSON.stringify(marks)}`
+  );
+}
+
+// And the surrounding run keeps its emphasis when only the code span is fixed.
+// The failure this rules out is a fix that flattens the whole paragraph to
+// repair one node inside it.
+const surround = convert('**bold wrapping `inline_code` here.**', 'jira');
+if (!surround.refused) {
+  const kept = [];
+  const walk = (n) => {
+    if (n.type === 'text' && (n.marks ?? []).some((m) => m.type === 'strong')) kept.push(n.text);
+    (n.content ?? []).forEach(walk);
+  };
+  surround.doc.content.forEach(walk);
+  check(
+    'the text AROUND a repaired code span keeps its bold — only the code node changed',
+    kept.some((t) => typeof t === 'string' && t.includes('bold wrapping')),
+    `still bold: ${JSON.stringify(kept)}`
+  );
+}
+
+// Nothing is stripped from a document that never had a conflict, and the
+// absence of a coercion is what says so.
+const untouched = convert('**bold** and `code` side by side', 'jira');
+check(
+  'a document with no conflict reports no coercion and loses no mark',
+  !untouched.refused && untouched.coercions.length === 0,
+  untouched.refused ?? JSON.stringify(untouched.coercions)
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 rule('3. Confluence is NOT changed — the two products stay distinguished');
