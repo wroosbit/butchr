@@ -772,6 +772,55 @@ function freeText(
  */
 const MAX_BODY_CHARS = 32000;
 
+/**
+ * Coercions recorded by every {@link markdownBody} call of the operation
+ * currently being built, so the agent can be told what changed in its content.
+ *
+ * ## WHY A COLLECTOR RATHER THAN A RETURN VALUE (KAN-502)
+ *
+ * `markdownToAdf` has always returned `coercions`, and `markdownBody` has
+ * always passed them back, and **every one of the eight call sites dropped
+ * them on the floor**. Nothing consumed the field, so an agent whose heading
+ * became a bold paragraph was never told — the converter's own header says the
+ * list is *"returned rather than logged so that the caller can put it in front
+ * of the agent"*, and for the whole life of the proxy the caller did not.
+ *
+ * That was not carelessness at any one site; it is what threading a value
+ * through eight independent `build` functions produces. So the value is
+ * collected here, at the one place every conversion passes through, and read
+ * once in `router.ts` around the `build` call. An operation added tomorrow
+ * gets this for free and cannot forget it, because there is nothing for its
+ * author to remember.
+ *
+ * **`build` is synchronous** — `router.ts` calls it without `await` and it
+ * returns a `BuildResult`, not a promise — so a reset immediately before and a
+ * read immediately after cannot interleave with another request. That is the
+ * same argument `adf.ts` makes for `pendingCoercions`, and it holds here for
+ * the same reason.
+ *
+ * ⚠ **This is disclosure, not permission.** It exists so a content change is
+ * *reported*; it is never a licence to make one silently that could have been
+ * avoided. The distinction matters on this ticket in particular: the official
+ * Atlassian server also rewrites a code span out of a bold run, returns 200,
+ * and says nothing — measured twice on 2026-08-18, by `epic/KAN-39` on KAN-39's
+ * own description and by `epic/KAN-203` on comment 12903. A fix that matched
+ * that behaviour would have adopted the silence. What separates this from it is
+ * exactly this list arriving with the response.
+ */
+let buildCoercions: string[] = [];
+
+/** Start collecting for one `build` call. Called by `router.ts` immediately before it. */
+export function beginBuildCoercions(): void {
+  buildCoercions = [];
+}
+
+/** What that `build` call changed about the agent's content. Read immediately after. */
+export function takeBuildCoercions(): string[] {
+  const out = buildCoercions;
+  buildCoercions = [];
+  return out;
+}
+
 function markdownBody(
   args: Record<string, any>,
   field: string,
@@ -796,6 +845,9 @@ function markdownBody(
   }
   try {
     const { doc, coercions } = markdownToAdf(raw, target);
+    // Recorded for the agent here rather than at the eight call sites, none of
+    // which ever read the value they were handed. See `buildCoercions`.
+    for (const coercion of coercions) buildCoercions.push(`${field}: ${coercion}`);
     return { doc, coercions };
   } catch (err: any) {
     // `markdownToAdf` throws exactly when it would otherwise have written
