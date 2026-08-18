@@ -566,11 +566,10 @@ clause was correct and outgunned. The collision is removed rather than defined:
 nothing.** `KAN-518` is a Task whose `parent` is `KAN-59` — an Epic, since Jira
 allows a task no other kind — filed by `story/KAN-117` and `Blocks`-linked to
 `KAN-117`. **`story/KAN-117` staffs it; `epic/KAN-59` does not**, and reading
-`parent` there names the one agent that must not activate it. The case is real:
-`epic/KAN-59` did conclude KAN-518 and KAN-519 were theirs, and withdrew. ⚠ **It
-is not evidence about this sentence and is not offered as any** —
-`prompts/epic.md` is their brief and carries no clause like this one. The
-evidence is the file itself (KAN-521).
+`parent` there names the one agent that must not activate it. ⚠ **That
+divergence is structural, not anecdotal** — it holds for every task any story
+files, because Jira has nowhere else to put the parent, so there is no version
+of this rule under which the two readings can be relied on to agree (KAN-521).
 
 **The anti-race property is untouched**: exactly one agent per ticket, never
 two. What changed is which one the sentence names.
