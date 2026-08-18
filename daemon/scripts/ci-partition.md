@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 116 |
+| `yes` | 117 |
 | `partial` | 14 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **155** |
+| **total** | **156** |
 
-**130 of 155** run on every pull request.
+**131 of 156** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -144,6 +144,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-resumed-conversation-nudge` | yes | imports the built daemon modules, stands up its own unix socket in a temporary directory, and needs no herdr, no pty, no network, no credential and no CrabCast. Sections 3 and 4 create and remove probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-runtime-agnostic-census` | yes | imports the built daemon modules, stands a fake CrabCast peer on a Unix socket in a scratch $HOME, and asserts in process. No live daemon, no real CrabCast, no herdr, no credential, no terminal. |
 | `verify-same-key-other-type` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-search-keeps-every-issue` | yes | imports the built modules in process and reads one captured fixture; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-selfcheck-rechecks-replaced-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. §4 opens a Unix socket inside its own scratch directory. |
 | `verify-selfcheck-verdict-outlives-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-send-claims-not-collapsed` | yes | it imports the built daemon modules and drives the real MessageRouter in-process. No terminal, no socket, no network, no `claude`. |

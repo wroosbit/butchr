@@ -806,9 +806,18 @@ function clippedVerdict(
  * The universal backstop for every other tool on this server.
  *
  * WHAT IT IS NOT: the fitter above. It has no ladder, because it knows nothing
- * about the shape it is given — so it gives up whole top-level fields, largest
- * first, which is the only reduction that is safe on an unknown object and
- * still leaves valid JSON.
+ * about the shape it is given — so it gives up whole fields, largest first,
+ * which is the only reduction that is safe on an unknown object and still
+ * leaves valid JSON.
+ *
+ * WITH ONE EXCEPTION, AND IT IS THE ONE SHAPE THIS FUNCTION *DOES* KNOW
+ * SOMETHING ABOUT (KAN-522): a **list** is trimmed to the largest non-empty
+ * prefix that fits, rather than replaced. Nothing about the entries has to be
+ * understood to know that n of them beat none of them, and `ClipRecord` already
+ * carries `returned`/`total`/`omitted`, so the disclosure costs the same either
+ * way. Zero still gets the stub — an empty array reads as a search that found
+ * nothing, which is the defect at the top of this file rather than a smaller
+ * answer.
  *
  * WHY IT EXISTS AT ALL. `butchr_list_agents` is the tool that was measured over
  * the cap, and it is the one this ticket names. But the property worth having
@@ -942,37 +951,94 @@ export function fitGenericResponse(
   }
   candidates.sort((a, b) => b.size - a.size);
 
-  const stillOver = (): boolean => {
+  const measure = (payload: Record<string, unknown>, against: ClipRecord[]): number => {
     const provisional =
-      clips.length === 0
+      against.length === 0
         ? completeVerdict(0, budgetChars)
-        : clippedVerdict(0, budgetChars, unclippedChars, clips as [ClipRecord, ...ClipRecord[]]);
-    return sizeOf(withCompleteness(working, provisional)) > budgetChars;
+        : clippedVerdict(0, budgetChars, unclippedChars, against as [ClipRecord, ...ClipRecord[]]);
+    return sizeOf(withCompleteness(payload, provisional));
   };
+
+  const stillOver = (): boolean => measure(working, clips) > budgetChars;
 
   for (const candidate of candidates) {
     if (!stillOver()) break;
     const recovery = recoveryFor(candidate.path);
 
-    if (candidate.owner === null) {
-      const value = working[candidate.key];
-      working = { ...working, [candidate.key]: sectionStub(candidate.key, value, recovery) };
-    } else {
+    /** `working` with `value` written at this candidate's path. */
+    const place = (value: unknown): Record<string, unknown> | null => {
+      if (candidate.owner === null) return { ...working, [candidate.key]: value };
       const owner = working[candidate.owner];
-      if (!isPlainObject(owner)) continue;
-      const value = owner[candidate.key];
-      working = {
-        ...working,
-        [candidate.owner]: {
-          ...owner,
-          [candidate.key]: sectionStub(candidate.key, value, recovery)
-        }
-      };
-    }
+      if (!isPlainObject(owner)) return null;
+      return { ...working, [candidate.owner]: { ...owner, [candidate.key]: value } };
+    };
 
     const raw = candidate.owner === null
       ? (response as Record<string, unknown>)[candidate.key]
       : ((response as Record<string, unknown>)[candidate.owner] as Record<string, unknown>)[candidate.key];
+
+    // ---- an array is TRIMMED, never deleted (KAN-522) ---------------------
+    //
+    // WHY THIS RUNG EXISTS AT ALL. Giving up whole fields is the only reduction
+    // that is safe on a shape this function knows nothing about — but a list is
+    // the one shape it *does* know something about, and on a list the two moves
+    // are not comparable: a prefix of n entries strictly dominates zero of them
+    // for every n > 0, and costs the same disclosure either way, because
+    // `ClipRecord` already models `returned`/`total`/`omitted` exactly.
+    //
+    // MEASURED, WHICH IS WHY IT IS HERE RATHER THAN IN A LATER TICKET.
+    // `atlassian_search_issues` condenses its rows (KAN-522) and a 50-row page
+    // of this board's summaries still exceeds the budget — so without this rung
+    // the fix one file over would have moved the ceiling from three issues to
+    // about forty and left the same cliff at the end of it, where the answer
+    // goes from forty rows to none.
+    //
+    // ⚠ **THE PREFIX MUST BE NON-EMPTY, AND THE STUB IS WHAT ZERO GETS.** An
+    // empty array is not a small answer, it is a WRONG one: `issues: []` reads
+    // as a search that found nothing, which is KAN-423's defect exactly — a
+    // short list and a clipped list being the same bytes. The stub says
+    // `omitted: 'for-budget'` and cannot be read that way, so the two arms are
+    // split on `keep > 0` rather than on tidiness.
+    if (Array.isArray(raw) && raw.length > 0) {
+      const total = raw.length;
+      const recordFor = (keep: number): ClipRecord => ({
+        field: candidate.path,
+        reduction: 'entries-omitted',
+        returned: keep,
+        total,
+        omitted: total - keep,
+        readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why
+      });
+
+      // The largest prefix that fits, by binary search rather than by halving.
+      // Halving is what the two older rungs in this file do and it overshoots by
+      // up to half the list every time — the restore pass in
+      // `fitListAgentsResponse` exists to undo exactly that. A search is
+      // measured in entries a reader wanted, so the overshoot is the cost worth
+      // not paying, and the size of a prefix is monotone in its length.
+      let lo = 0;
+      let hi = total;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi + 1) / 2);
+        const trial = place(raw.slice(0, mid));
+        if (trial && measure(trial, [...clips, recordFor(mid)]) <= budgetChars) lo = mid;
+        else hi = mid - 1;
+      }
+
+      if (lo > 0) {
+        const trimmed = place(raw.slice(0, lo));
+        if (trimmed) {
+          working = trimmed;
+          clips.push(recordFor(lo));
+          continue;
+        }
+      }
+    }
+
+    const stubbed = place(sectionStub(candidate.key, raw, recovery));
+    if (!stubbed) continue;
+    working = stubbed;
+
     clips.push({
       field: candidate.path,
       reduction: candidate.owner === null ? 'section-omitted' : 'members-omitted',
