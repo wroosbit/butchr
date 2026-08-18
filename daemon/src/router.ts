@@ -2994,6 +2994,13 @@ export class MessageRouter {
       success: result.success || goneAlready,
       ...(preemption ? { preempted: true } : {}),
       ...(reclaim ? { reclaim } : {}),
+      // KAN-508. `workspace` means the runtime stopped an agent this daemon
+      // held no session for, by addressing its workspace path — the route
+      // KAN-507 could only name in `stopItWith`. It is reported because "the
+      // stand-down worked" and "the stand-down worked *and* it went down a
+      // route that exists for agents this daemon had lost track of" are
+      // different facts to an operator reading a fleet that stopped shrinking.
+      ...(result.route ? { standDownRoute: result.route } : {}),
       // "…so it will not be restored" is what this said until KAN-196, and it
       // promised more than the record provides. What a `deactivated` record
       // actually buys is that `AgentRegistry.expected()` omits this agent, so

@@ -23,6 +23,48 @@ import {
  * quietly stop being that — by keeping its own idea of what should run, by
  * exempting favourites, by guessing at what it could not read.
  *
+ * THIS LOOP OWNS AGENT LIFECYCLE, AND THAT IS NOW A RULING RATHER THAN AN
+ * IMPLICATION (KAN-508, 2026-08-17)
+ *
+ * The algorithm above always implied it, and for a year nothing said it, so in
+ * practice the answer to *"who stands an agent down when its ticket reaches
+ * Done?"* was **nobody, until a guardian happened to notice at capacity**. That
+ * is not a gap in this file — this loop was converging correctly — it is that
+ * three other candidates were live in the fleet's own instructions at the same
+ * time: the agent itself at the end of its run, the approver in the same motion
+ * as setting `Done`, and the guardian sweep. `prompts/story.md` and
+ * `prompts/epic.md` told supervisors to call `butchr_deactivate_agent` by hand,
+ * which is the second of those.
+ *
+ * The human ruled, relayed on KAN-508 by `epic/KAN-203`: *"butchr should be
+ * responsibile for telling crabcast to turn on/off agents based on the status
+ * and assignee of the jira issue"*. So it is this loop, and the other three are
+ * out — **the guardian sweep especially, because doing it by accident is what
+ * let three finished agents fill a cap of three** (KAN-507's incident, where
+ * four activations were refused including the deploy of the fleet's own
+ * messaging fix).
+ *
+ * **Nothing in the algorithm changed, and that is the substance of the ruling
+ * rather than a caveat on it.** The requirement attached to it was that nothing
+ * may stand down an agent whose work is unfinished, and keying on `status IN
+ * (In Progress, In Review) AND assignee` satisfies that **by construction**: a
+ * ticket at `In Review` is still staffed, so its agent keeps running. That is
+ * the case `epic/KAN-203` got right by hand on 2026-08-16 — two agents at
+ * `Done` stood down, `task/kan-420` at `In Review` deliberately left — and this
+ * loop reproduces it without anybody having to remember. A rule keyed on
+ * anything looser destroys work.
+ *
+ * **What the ruling exposed is that this loop could DECIDE a stand-down it
+ * could not PERFORM**, which is the half KAN-508 actually had to build. Under
+ * CrabCast, `closeAgentByKey` resolved against the daemon's own session map;
+ * that map dies with the daemon and CrabCast's registry does not, so every
+ * agent outliving a daemon restart was refused while running and charged. The
+ * stand-downs below were computed correctly and silently did nothing for
+ * exactly the population that accumulates. See
+ * `CrabCastRuntime.closeAgentByKey` for the workspace-addressed route that
+ * closes it, and `verify-standdown-reaches-sessionless-agent.mjs` for the
+ * proof. **A loop that owns lifecycle has to be able to end one.**
+ *
  * WHY THIS IS NOT reconcile.ts
  *
  * reconcile.ts converges the fleet against the **agent registry** — the durable

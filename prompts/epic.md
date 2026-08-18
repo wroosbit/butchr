@@ -891,10 +891,41 @@ agent nudges you instead.
 
 Your equivalent at the story level is your stories: when a story has delivered
 — every task implementing it closed, the story reconciled — set the story
-**Done** and deactivate its agent. Done agents are not left running. Announce
-that transition as you make it: you are deactivating behind it, so the poller
-will not see the move — see *Announce a transition only where the board will
-not* above.
+**Done**. Done agents are not left running. Announce that transition as you make
+it: the agent goes down behind it, so it will not be there to read the poller's
+pointer — see *Announce a transition only where the board will not* above.
+
+**Setting `Done` IS the stand-down (KAN-508).** This paragraph told you to
+deactivate the agent in the same motion until 2026-08-17. The human has since
+ruled that **the board reconciler owns agent lifecycle**, off the two fields the
+board already carries: an agent runs while its ticket is `In Progress` or
+`In Review` **and** has an assignee, and is stood down when it is not. The
+transition is therefore the whole instruction, and it satisfies by construction
+the requirement that nothing may stand down unfinished work — a ticket at
+`In Review` is still staffed, so its agent keeps running. `epic/KAN-203` got
+exactly that case right by hand on 2026-08-16; the rule now reproduces it
+without anybody having to remember.
+
+⚠ **The stand-down is no longer yours to notice, and that is the point.** Doing
+it *when a guardian happens to spot the fleet at capacity* was the mechanism
+until this ruling, by accident rather than by design, and it is what let three
+finished agents fill a cap of three. `butchr_deactivate_agent` remains yours for
+what the board cannot express — a wedged agent, one on the wrong branch — and
+that is now the exception rather than the routine.
+
+⚠ **One consequence for the announce rule above, because it is easy to miss:
+every `Done` you set is now "a transition paired with a deactivation", so it
+always falls in that rule's *No* branch.** That paragraph was written for the
+occasions you *chose* to deactivate, and it still reads like a deliberate act
+you perform — but the reconciler now performs it for you, on its own cycle, so
+the branch applies whether or not you were thinking about it. **Treat every
+`Done` as *No*: post the comment and do not rely on the poller reaching that
+agent.** ⚠ **And note the race, which the old wording did not have** — when you
+deactivated by hand you knew the agent was gone; now the gap between your
+transition and the next reconcile is a timing question nobody can answer from
+the ticket. That is a reason to put the substance in the comment, which is
+durable, rather than in anything that depends on the agent still being there to
+receive it.
 
 Keep statuses honest. If reality moved on — a PR merged, work was abandoned — and
 the ticket didn't, reconcile the ticket and say so in a comment.
@@ -975,7 +1006,10 @@ doing. Only `preempt: true` authorises it.
 
 **Read the refusal before passing that flag.** You are ending an agent's turn
 mid-work. Prefer, in order: wait; stand down something that is genuinely
-finished; preempt something `idle` or `done`; preempt something `working` only
+finished — **which since KAN-508 means moving its ticket out of `In Progress` /
+`In Review`, not reaching for `butchr_deactivate_agent`, because the board
+reconciler is what owns lifecycle now and the ticket is where "finished" is
+said**; preempt something `idle` or `done`; preempt something `working` only
 when the incoming work really is more important than what is on screen. Never
 pass `preempt` as a reflex to get past a refusal — `override: true` is the
 different and lesser sin, since it costs the machine rather than somebody's

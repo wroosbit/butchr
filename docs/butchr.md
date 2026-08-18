@@ -542,6 +542,34 @@ measurement beats the seed, and `BUTCHR_MAX_AGENTS` pins the cap before any of
 it. Overrides are per-dimension — setting `BUTCHR_AGENT_CORES` alone leaves
 the memory figure measured.
 
+**This fleet sets `BUTCHR_MAX_AGENTS=10`, and the machine-side backstop stays
+armed (KAN-508, 2026-08-18).** The human asked for *"a set 10, maybe
+configurable"* rather than a computed number, and the override delivers it at
+zero code: `computeCapacity` **assigns** `cap = configuredCap` rather than
+`min`-ing it with the derived terms, so the derivation is skipped outright —
+capacity reports `cap: 10 … (set by BUTCHR_MAX_AGENTS, derivation skipped)` and
+`capBoundBy: "configured"`.
+
+⚠ **Concurrency is board-derived; refusal is still machine-derived, and the two
+are complements rather than competitors.** How many agents are *asked for* is
+now the board's answer — the reconciler starts and stops agents from Jira status
+and assignee — while whether the machine can *take* them is still this section's
+answer. So the headroom terms and the stall veto below are deliberately
+untouched: an earlier instruction to remove the live gate was withdrawn on
+`epic/KAN-59`'s argument that `stallRefusePercent` is not a concurrency governor
+at all, and that on a 4-core box carrying ten agents that valve matters more
+than it did at three. Measured immediately after the change: `cap 10`,
+`headroom 2`, `headroomBoundBy: "cpu"` — the board's ceiling was raised and the
+machine was still what bound.
+
+⚠ **Note that the override has no floor under it**, because it assigns rather
+than `min`s. `BUTCHR_MAX_AGENTS=10` on a two-core laptop yields a cap of ten,
+with only the live headroom terms between that and the machine. Nobody has ruled
+on whether that is right; it is written here so it is visible rather than
+discovered. The two caps are also **separate variables** — CrabCast's own
+`CRABCAST_MAX_AGENTS` governs what it will hold, and raising one without the
+other moves the refusal rather than removing it.
+
 **Headroom is a different question from the cap** and is answered three ways —
 count, CPU actually in use, available memory — with the smallest winning. (The
 CPU term asked the 1-minute load average until KAN-201 replaced it with cores
