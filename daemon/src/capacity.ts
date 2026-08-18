@@ -1909,6 +1909,224 @@ export function readCapacity(
 const gib = (bytes: number) => `${(bytes / GIB).toFixed(1)} GiB`;
 
 /**
+ * WHETHER THE CEILING FORECASTS ANYTHING, WHICH IS NOT THE SAME QUESTION AS
+ * WHAT IT IS RIGHT NOW
+ *
+ * `running + headroom` is one number whichever term produced it, and the three
+ * terms differ in what that number is *worth* to a reader planning starts:
+ *
+ * - `'static'` — bound by `cap`. Nothing live moves it; the ceiling is the
+ *   configured number and reaching it is arithmetic.
+ * - `'projects'` — bound by `memory`. Every admitted start is **charged to
+ *   this term**: it takes one `cost.residentBytes` out of `availableBytes`,
+ *   which is the numerator the term divides. So the count does not chase
+ *   itself — `running + headroomByMemory` stays put as starts land, and the
+ *   figure is a forecast of where they stop rather than a description of now.
+ *   It is still a reading: `availableBytes` also moves for reasons that are
+ *   nobody's agent, so the forecast drifts with the machine even though it
+ *   does not drift with the fleet.
+ * - `'drifts'` — bound by `cpu` or vetoed by `stall`. Neither term is charged
+ *   per start: `cpuBusyCores` measures what the fleet is *doing* and a stall
+ *   measures the disk, so five idle agents and five compiling ones give
+ *   different ceilings at the same population. This reading describes the
+ *   moment it was taken and forecasts nothing.
+ *
+ * KAN-517 is the ticket that made this distinction load-bearing rather than
+ * decorative. It measured `headroom: 3` at `running: 2` (bound by cpu) and
+ * again at `running: 4` (bound by memory) and read the pair as one stable
+ * ceiling of about 7 — two readings of two *different* terms, one of which
+ * forecasts and one of which does not. A ceiling published without this field
+ * would have been exactly the artifact that ticket exists to complain about:
+ * a sentence claiming more than its mechanism covers.
+ *
+ * THE WORKED CASE, WHICH IS TWO AGENTS DISAGREEING AND BOTH BEING RIGHT
+ *
+ * Within the same half hour on 2026-08-18, three readings of this machine:
+ *
+ *     06:13:49Z  running 2  headroom 3  bound by cpu      (epic/KAN-203)
+ *     06:18:49Z  running 4  headroom 3  bound by memory   (epic/KAN-203)
+ *     ~06:2xZ    running 5  headroom 1  bound by cpu      (epic/KAN-59)
+ *     06:23:49Z  running 5  headroom 3  bound by memory   (task/KAN-517)
+ *
+ * The last two are minutes apart at the *same* population and disagree by two.
+ * Neither is wrong. `epic/KAN-59` caught the machine busy, so the cpu term —
+ * which measures what the fleet is *doing* — bound at 1 and `stability` would
+ * have read `'drifts'`; the memory term, which measures how many there are,
+ * bound at 3 and reads `'projects'`. **A ceiling is a reading with a timestamp
+ * on it, and this field is what says whether the timestamp matters.** Quoting
+ * either figure as "the ceiling of this machine" without it is the thing that
+ * made two correct measurements look like a contradiction.
+ *
+ * AND THIS IS BUTCHR'S GATE, WHICH IS NOT THE ONLY ONE IN THE PATH
+ *
+ * `epic/KAN-59` established (KAN-517, 2026-08-18) that CrabCast carries an
+ * independent headroom gate of its own — same `if (!capacity.atCapacity)`
+ * shape, its own file, its own terms — and that the two disagreed four times
+ * in a day, Butchr reporting headroom 5 while CrabCast refused at 3/3. Their
+ * KAN-504 activation was refused with `refused by crabcast-daemon:
+ * activate_agent refused: at capacity`, which is not this gate at all.
+ *
+ * So everything computed here is **an answer about Butchr's admission**, and a
+ * start can still be refused downstream by a ceiling this figure knows nothing
+ * about. That limit is stated in the rendered text as well as here, because a
+ * reader who takes this for the machine's only ceiling will go looking for a
+ * bug in the wrong daemon. Recorded second-hand and deliberately not verified
+ * from source: reading CrabCast's tree is invariant 10, permanent.
+ */
+export type CeilingStability = 'static' | 'projects' | 'drifts';
+
+/**
+ * The largest task-agent fleet this machine will actually admit, with the
+ * arithmetic and the term that set it.
+ *
+ * @see effectiveCeilingOf — and read its contract before adding this to
+ * {@link Capacity}, which is deliberately where it does not live.
+ */
+export interface EffectiveCeiling {
+  /**
+   * Task agents this machine admits in total, override aside. `running +
+   * headroom`: what is already on it plus what the gate will still let on.
+   */
+  ceiling: number;
+  /** The term that set it — the same one {@link Capacity.headroomBoundBy} names. */
+  boundBy: HeadroomBound;
+  /** Whether this figure forecasts where starts stop, or only describes now. */
+  stability: CeilingStability;
+  /**
+   * Slots the configured cap offers that the gate will not admit: `cap −
+   * ceiling`, floored at 0. Zero means the cap is reachable and there is
+   * nothing to report — which is most machines, and why every caller here
+   * says nothing when it is 0.
+   */
+  shortfall: number;
+  /** The arithmetic, in the figures it used, naming the term. One line. */
+  arithmetic: string;
+}
+
+/**
+ * The effective ceiling — KAN-517.
+ *
+ * THE FINDING THIS ANSWERS: `cap` is not consulted at admission. The gate is
+ * `if (!capacity.atCapacity)` and `atCapacity` is `headroom <= 0`, so setting
+ * `BUTCHR_MAX_AGENTS=10` sets a number the gate never reads. Measured on the
+ * human's 15.4 GiB machine on 2026-08-18, the memory term admitted about eight
+ * while `cap` read 10 — so the configured number bound lower than configured,
+ * and nothing said so. Two of the three surfaces a person actually reads
+ * opened with `5/10`, which subtracts to five free slots when three were.
+ *
+ * THIS IS A REPORT AND NOT A TERM, AND THAT IS ENFORCED BY WHERE IT LIVES
+ *
+ * KAN-517's acceptance criterion 5 forbids changing any live capacity term
+ * without first-hand human authorisation, and the obvious way to break it is
+ * not malice — it is a later author finding `effectiveCeiling` sitting on
+ * {@link Capacity} beside `headroom` and reasonably concluding the gate ought
+ * to consider it. So it is not on {@link Capacity}. It is a pure function of
+ * one, computed by whoever is about to *render* it, and the admission path in
+ * router.ts holds a `Capacity` that has no such property to read.
+ *
+ * That is a type-level fact rather than a comment asking nicely: `capacity.
+ * effectiveCeiling` does not compile, so the gate cannot start consulting this
+ * by accident, and a deliberate change has to import this function and say so
+ * in a diff. Preferring the unrepresentable state to the assertion is this
+ * repository's own rule (prompts/task.md, 2026-08-11); this is that rule
+ * applied to a number whose whole risk is being mistaken for a limit.
+ *
+ * `daemon/scripts/verify-effective-ceiling.mjs` holds the proof, including the
+ * red drive: the gate refusing a start with its own measured figures while
+ * `cap` still reads 10.
+ *
+ * THE THREE OPTIONS KAN-517 PUT UP, AND WHY ONLY THIS ONE WAS TAKEN
+ *
+ * The ticket offered three and required that the two not taken be named with
+ * their reasons, because the next person to meet a cap of 10 that admits 8
+ * will reach for one of them. Recorded here rather than only on the ticket:
+ * this file is where somebody about to raise a number is already reading.
+ *
+ *   1. **Accept it — treat the cap as a ceiling, not a target — and make the
+ *      gap visible.** TAKEN, and it is the only one of the three that changes
+ *      no live term. Everything above is that option.
+ *
+ *   2. **Raise the reachable number by lowering the human reserve or the
+ *      per-agent figure.** NOT TAKEN. It changes a live term, which KAN-517's
+ *      own criterion 5 forbids without recorded first-hand human
+ *      authorisation, and the human was away. On the substance it is also
+ *      weaker than it looks: `cost.residentBytes` is *measured* (757 MB on
+ *      2026-08-18), so lowering it does not spend anything — it makes the
+ *      model understate what an agent costs while the agent goes on costing
+ *      it, which buys admissions and not memory. Lowering
+ *      {@link humanReserveBytes} does spend something real, and the thing it
+ *      spends is the one this file names as the failure in that direction:
+ *      the human's own machine becoming unusable. That is a price worth
+ *      paying or not, and it is theirs to set.
+ *
+ *   3. **Make the configured cap authoritative and drop the live memory
+ *      veto.** NOT TAKEN, and this is the one to argue with hardest, because
+ *      it is the reading that makes "get rid of dynamic cap calculations"
+ *      come out tidiest. Three costs, the third of which is new:
+ *
+ *      - **The out-of-memory risk, named because it is the whole cost.** Ten
+ *        task agents plus four supervisors at ~760 MB each is ~10.6 GiB on a
+ *        15.4 GiB machine the human also uses. The live memory term is the
+ *        only thing between that arithmetic and the OOM killer.
+ *      - **`epic/KAN-59` argued against it on the ticket, from the other side
+ *        of the same seam**: cap as ceiling and headroom as admission is the
+ *        shape they want kept, and closing this by gating on `cap` "deletes
+ *        the machine-side protection".
+ *      - **It would not even deliver 10.** CrabCast runs an independent
+ *        headroom gate (see above), so removing this one moves the refusal
+ *        downstream rather than removing it — and moves it somewhere with no
+ *        ceiling report and no derivation attached. The visible symptom would
+ *        improve and the actual limit would not.
+ *
+ * ⚠ **And no single term is the lever anyway.** The binding term moved
+ * between every pair of readings taken on 2026-08-18 — cpu, memory, cpu,
+ * memory — so raising whichever one bound last leaves the other one binding.
+ * KAN-517 says this in its own words: "this is not one weak term that could
+ * simply be raised."
+ */
+export function effectiveCeilingOf(c: Capacity): EffectiveCeiling {
+  const ceiling = c.running + c.headroom;
+  const stability: CeilingStability =
+    c.headroomBoundBy === 'cap'
+      ? 'static'
+      : c.headroomBoundBy === 'memory'
+        ? 'projects'
+        : 'drifts';
+
+  // Named per term rather than generically, because "bound by memory" tells a
+  // reader which lever moves the number and a bare figure does not. The
+  // KAN-60 rule — lead with the constraint, not the count — applied to the
+  // ceiling instead of to the refusal.
+  const sum = `${c.running} running + ${c.headroom} more`;
+  const arithmetic =
+    c.headroomBoundBy === 'cap'
+      ? `${sum} = ${ceiling}, the configured cap itself — no live term is binding below it`
+      : c.headroomBoundBy === 'memory'
+        ? `${sum} = ${ceiling}, set by memory: ` +
+          `(${gib(c.machine.availableBytes)} available − ${gib(c.reservedForHuman.bytes)} reserved) ` +
+          `÷ ${Math.round(c.cost.residentBytes / MIB)} MB per agent = ${c.headroomByMemory}. ` +
+          'Each start is charged to this term, so the figure holds as they land'
+        : c.headroomBoundBy === 'cpu'
+          ? `${sum} = ${ceiling}, set by cpu: ` +
+            `(${c.machine.cores} cores − ${c.cpuBusyCores.toFixed(2)} in use − ` +
+            `${c.reservedForHuman.cores} reserved) ÷ ` +
+            `${(c.liveCoresBound ? c.liveCoresBound.used : c.cost.cores).toFixed(3)} per agent = ` +
+            `${c.headroomByCpu}. This term measures what the fleet is doing, not how ` +
+            'many there are, so the figure moves when they go quiet'
+          : `${sum} = ${ceiling}, vetoed by a ${c.stallPercent?.toFixed(2)}% ` +
+            `${c.stallSource} stall — the terms allowed ${c.headroomBeforeStall} and a ` +
+            'stalled machine admits nothing whatever they say';
+
+  return {
+    ceiling,
+    boundBy: c.headroomBoundBy,
+    stability,
+    shortfall: Math.max(0, c.cap - ceiling),
+    arithmetic
+  };
+}
+
+/**
  * The derivation in words, with the numbers that produced it.
  *
  * This is the whole point of the ticket: an agent refused for capacity has to
@@ -2144,6 +2362,34 @@ export function describeCapacity(c: Capacity): string {
       : `; bound by ${c.headroomBoundBy}`)
   );
 
+  // The effective ceiling (KAN-517), stated here because this is the one place
+  // that promises the whole arithmetic. Every line above answers "how much room
+  // is there now"; none of them answers "how many will this machine ever take",
+  // and the gap between that number and `cap` is what nothing said.
+  //
+  // Printed unconditionally, including when there is no gap. A line that
+  // appeared only on machines whose cap is unreachable would be a line whose
+  // absence a reader has to interpret, and "the ceiling is the cap" is the
+  // answer they came for as much as the other one is (the KAN-218 rule about
+  // the stall term, applied here).
+  const ceiling = effectiveCeilingOf(c);
+  lines.push(
+    `effective ceiling: ${ceiling.ceiling} task agent(s) — ${ceiling.arithmetic}` +
+    (ceiling.shortfall > 0
+      ? `. The cap is ${c.cap}, so ${ceiling.shortfall} of its slot(s) cannot be reached: ` +
+        `${ceiling.boundBy} binds first, and admission never reads the cap at all`
+      : `. The cap is ${c.cap} and it is reachable`) +
+    ` (this figure ${
+      ceiling.stability === 'projects'
+        ? 'holds as starts land — they are charged to the term that set it'
+        : ceiling.stability === 'static'
+          ? 'is fixed until the cap is changed'
+          : 'describes this moment only — the term that set it measures activity, not population'
+    }). It is a reading and not a constant: quote it with the time it was taken. ` +
+    'This is Butchr\'s admission only — CrabCast runs an independent headroom gate ' +
+    'and can refuse a start this figure says there is room for'
+  );
+
   return lines.join('\n');
 }
 
@@ -2174,8 +2420,32 @@ export function summarizeCapacity(c: Capacity): string {
         : c.costSource.cores === 'restored'
           ? '; cost figures were carried across a daemon restart'
           : '';
+  // The effective ceiling, on the one line most callers read (KAN-517).
+  //
+  // `5/10 task agents` was the specific text that ticket named as misleading,
+  // and the defect is in the *fraction*, not in either number: a reader
+  // subtracts, gets five slots free, and the gate was holding at three. Both
+  // figures were honest and the shape they were in was not — the same failure
+  // the `unobservedStarts` block was renamed for (a rate beside an amount,
+  // with nothing saying which was which).
+  //
+  // So when the cap cannot be reached, the fraction is taken apart into the
+  // three numbers it was hiding, in the order that decides anything: what is
+  // running, what this machine will actually take, what somebody configured.
+  // Nothing is dropped — `10 configured` still appears, and now it appears
+  // somewhere a reader cannot subtract from it by accident.
+  //
+  // Unchanged when there is no gap, which is the ordinary case and every
+  // machine whose cap is reachable. This says something exactly when there is
+  // something to say, the same rule `provenanceNote` above follows.
+  const ceiling = effectiveCeilingOf(c);
+  const population =
+    ceiling.shortfall > 0
+      ? `${c.running} running, ${ceiling.ceiling} reachable on this machine, ` +
+        `${c.cap} configured`
+      : `${c.running}/${c.cap} task agents`;
   const figures =
-    `${c.running}/${c.cap} task agents, room for ${c.headroom} more ` +
+    `${population}, room for ${c.headroom} more ` +
     `(${c.machine.cores} cores, ${c.cpuBusyCores.toFixed(2)} in use, ` +
     `${gib(c.machine.availableBytes)} available` +
     provenanceNote +

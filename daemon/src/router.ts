@@ -106,6 +106,7 @@ import {
   capacityReason,
   capacityRefusal,
   describeCapacity,
+  effectiveCeilingOf,
   readCapacity,
   summarizeCapacity
 } from './capacity.js';
@@ -392,6 +393,17 @@ function capacityDto(c: Capacity) {
     // `headroom` unless `stalled`, and the pair is what makes the veto's effect
     // legible instead of looking like a machine that happened to be full.
     headroomBeforeStall: c.headroomBeforeStall,
+    // The effective ceiling (KAN-517) — how many task agents this machine will
+    // admit in total, against the `cap` a caller might otherwise plan against.
+    // Sent on every capacity payload rather than only when the two differ, for
+    // the reason the block above gives about `unobservedStarts`: a caller
+    // cannot tell a machine whose cap is reachable from a build that does not
+    // compute this, and `shortfall: 0` is the answer to the first question.
+    //
+    // Derived here rather than read off `c`, because it is deliberately not a
+    // property of Capacity — see effectiveCeilingOf's contract for why the
+    // admission gate is not given a ceiling it could start consulting.
+    effectiveCeiling: effectiveCeilingOf(c),
     totalMb: Math.round(c.machine.totalBytes / (1024 * 1024)),
     availableMb: Math.round(c.machine.availableBytes / (1024 * 1024)),
     agentMemoryMb: Math.round(c.cost.residentBytes / (1024 * 1024)),
