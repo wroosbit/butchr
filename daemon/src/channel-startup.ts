@@ -600,7 +600,16 @@ export type AdoptedStartupOutcome =
   | 'foreign-dialog'
   /** The pane could not be read at all, so nothing here knows what is on it. */
   | 'unreadable-pane'
-  /** Readable, no dialog ever seen, and never at a prompt. */
+  /**
+   * Readable, and never at a prompt.
+   *
+   * Covers two situations that share a verdict and NOT a sentence: no dialog
+   * was ever seen, and a dialog was seen, cleared, and no prompt followed. The
+   * `detail` distinguishes them, because the second one has to say out loud that
+   * the keystroke worked — reporting it as `dialog-unanswered`, which this did
+   * until it was caught in review, sends an operator to press a key at a box
+   * that is no longer there.
+   */
   | 'no-prompt';
 
 export interface AdoptedStartupResult {
@@ -813,7 +822,21 @@ export async function superviseAdoptedStartup(opts: {
 
   const waited = world.now() - startedAt;
 
-  if (dialogOnScreen || sawDialog) {
+  // ⚠ `dialogOnScreen` AND `sawDialog` ARE NOT THE SAME QUESTION, AND THIS
+  // BRANCH READ `dialogOnScreen || sawDialog` UNTIL IT WAS CAUGHT IN REVIEW.
+  //
+  // Under that wording, a dialog that WAS cleared and was followed by a client
+  // that never reached a prompt reported `dialog-unanswered` — which sends an
+  // operator to press a key at a box that is no longer on the screen, and buries
+  // the thing that actually happened. It is this ticket's own defect shape: a
+  // verdict claiming more than its mechanism covers, degrading toward the
+  // familiar answer.
+  //
+  // `dialogOnScreen` is the LAST SUCCESSFUL READ's verdict — a failed read
+  // leaves it alone deliberately, so an unreadable final frame does not erase
+  // the memory of a box that was there a moment ago. That is what makes it safe
+  // to branch on rather than the whole-run memory.
+  if (dialogOnScreen) {
     const detail =
       `a development-channels dialog was on an adopted pane and was still not cleared ` +
       `${waited}ms later (${dialogsAnswered} answered` +
@@ -833,10 +856,17 @@ export async function superviseAdoptedStartup(opts: {
     return done('unreadable-pane', false, detail);
   }
 
-  const detail =
-    `the pane of this adopted agent was readable and never showed either a startup dialog or a ` +
-    `session prompt within ${waited}ms. It is not parked on a dialog this daemon can answer; ` +
-    `read the pane before assuming what it is doing.`;
+  // A DIALOG THAT WAS CLEARED AND NO PROMPT BEHIND IT is its own sentence rather
+  // than the same one, because it sends a reader somewhere else entirely: the
+  // keystroke worked and the client is what did not arrive.
+  const detail = sawDialog
+    ? `a development-channels dialog on this adopted pane was cleared ` +
+      `(${dialogsAnswered} answered) and the pane still never reached a session prompt within ` +
+      `${waited}ms. THE KEYSTROKE IS NOT THE PROBLEM — the box is gone; a client that booted ` +
+      `and then exited looks exactly like this, so read the pane before pressing anything.`
+    : `the pane of this adopted agent was readable and never showed either a startup dialog or ` +
+      `a session prompt within ${waited}ms. It is not parked on a dialog this daemon can ` +
+      `answer; read the pane before assuming what it is doing.`;
   world.log(`[AdoptedStartup] ${who}: GIVING UP — ${detail}`);
   return done('no-prompt', false, detail);
 }

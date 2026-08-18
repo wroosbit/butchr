@@ -72,6 +72,7 @@
 //   node daemon/scripts/verify-adopted-pane-supervision.mjs --no-adopt-fire
 //   node daemon/scripts/verify-adopted-pane-supervision.mjs --drop-foreign-guard
 //   node daemon/scripts/verify-adopted-pane-supervision.mjs --drop-watcher-guard
+//   node daemon/scripts/verify-adopted-pane-supervision.mjs --conflate-dialog-memory
 //   node daemon/scripts/verify-adopted-pane-supervision.mjs --reassert-fine
 //
 // `--no-adopt-fire` is THE DEFECT ITSELF, restored: it deletes the one call
@@ -91,7 +92,13 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
 const dist = path.join(daemonDir, 'dist');
 
-const MUTATIONS = ['--no-adopt-fire', '--drop-foreign-guard', '--drop-watcher-guard', '--reassert-fine'];
+const MUTATIONS = [
+  '--no-adopt-fire',
+  '--drop-foreign-guard',
+  '--drop-watcher-guard',
+  '--conflate-dialog-memory',
+  '--reassert-fine'
+];
 const mutation = process.argv.find((a) => MUTATIONS.includes(a)) ?? null;
 
 if (!fs.existsSync(path.join(dist, 'channel-startup.js'))) {
@@ -170,6 +177,18 @@ if (mutation === '--drop-watcher-guard') {
     /if \(inFlight\.has\(who\)\)\s*return null;/,
     '/* KAN-538 guard dropped: a second watcher is allowed onto the same pane */',
     '--drop-watcher-guard'
+  );
+}
+
+if (mutation === '--conflate-dialog-memory') {
+  // Restore the wording this fix replaced: decide the deadline verdict on the
+  // MEMORY of a dialog rather than on whether one is still there. Section 4d is
+  // the only thing that separates those.
+  patchBuild(
+    'channel-startup.js',
+    /if \(dialogOnScreen\) \{(\s*const detail = `a development-channels dialog was on an adopted pane)/,
+    'if (dialogOnScreen || sawDialog) {$1',
+    '--conflate-dialog-memory'
   );
 }
 
@@ -430,6 +449,37 @@ say('');
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+say('');
+say('== 4d. a dialog that WAS cleared with no prompt behind it is not called unanswered ==');
+say('');
+{
+  // TWO STATES THAT SHARE A DEADLINE AND NOT A SENTENCE. This branch read
+  // `dialogOnScreen || sawDialog` until it was caught in review, which reported
+  // an ANSWERED dialog as `dialog-unanswered` — sending an operator to press a
+  // key at a box that is no longer on the screen, and burying the client that
+  // actually died. It is this ticket's own defect shape, in this ticket's own
+  // fix: a verdict claiming more than its mechanism covers.
+  const { result, state, lines } = await run({
+    // The dialog clears on the first Enter and nothing arrives behind it: no
+    // prompt, ever. A `claude` that booted, took the key and exited.
+    pane: (s) => (s.enters < 1 ? DIALOG_FRAME : 'No conversation found to continue')
+  });
+  check(
+    result.outcome === 'no-prompt',
+    `outcome is 'no-prompt', NOT 'dialog-unanswered'`,
+    `got '${result.outcome}' — ${result.detail}`
+  );
+  check(state.enters === 1, 'the one Enter it needed was sent', `sent ${state.enters}`);
+  check(
+    /THE KEYSTROKE IS NOT THE PROBLEM/.test(result.detail),
+    'the detail says out loud that the box is gone and the keystroke worked'
+  );
+  check(
+    !lines.some((l) => l.includes('REVERT')),
+    'and it does NOT print the revert runbook, which is for a dialog nobody cleared'
+  );
+}
+
 say('');
 say('== 5. EVERY path into the runtime session map announces itself  [drives the runtime] ==');
 say('');
