@@ -2082,7 +2082,39 @@ export interface EffectiveCeiling {
  * between every pair of readings taken on 2026-08-18 — cpu, memory, cpu,
  * memory — so raising whichever one bound last leaves the other one binding.
  * KAN-517 says this in its own words: "this is not one weak term that could
- * simply be raised."
+ * simply be raised." `epic/KAN-203` measured the end state at 07:05Z: **both
+ * live terms at zero independently**, cpu allowing 0 and memory allowing 0.
+ *
+ * ⚠ **AND THE LOAD AVERAGE IS NOT THE LEVER EITHER, WHICH LOOKS LIKE ONE.**
+ * Two readings twenty-six minutes apart, same fleet size, same answer:
+ *
+ *     06:39:49Z  running 6  headroom 0  bound by cpu  load1 16.63
+ *     07:05:50Z  running 6  headroom 0  bound by cpu  load1  4.76
+ *
+ * `load1` fell by a factor of three and moved nothing, because it is reported
+ * and is explicitly not what gates (KAN-201 retired it in favour of
+ * {@link Capacity.cpuBusyCores}). Anyone reaching for the intuitive measure
+ * gets that pair as the counter-example.
+ *
+ * WHAT THE CEILING COUNTS, WHICH IS NOT WHAT A READER WILL ASSUME
+ *
+ * ⚠ **It counts agents ALIVE, not agents working**, and on this board those
+ * are routinely very different numbers. An agent that has finished, opened its
+ * PR and is waiting on an approval marker is idle — it spends almost no CPU —
+ * **and it still holds its full resident set**, which is exactly the quantity
+ * the memory term divides. `epic/KAN-203` measured the case on KAN-517:
+ * six agents running, four of them parked awaiting a decision, `cpuBusyCores`
+ * 1.91 across the whole fleet, and ~704 MB held by each of the parked ones.
+ *
+ * **That is correct behaviour and nothing here proposes changing it** — a
+ * parked agent must stay alive to answer its approval and carry its merge, and
+ * standing one down means its PR never lands. But it means the honest reading
+ * of this figure is *"how many agents can exist at once"*, and never *"how
+ * many can work at once"*. On a queue with several PRs in flight the parked
+ * ones can be most of the fleet, as they were when this was written. The
+ * rendered text says so for the same reason this comment does: a ceiling a
+ * reader silently converts into a throughput is the artifact this whole ticket
+ * is about.
  */
 export function effectiveCeilingOf(c: Capacity): EffectiveCeiling {
   const ceiling = c.running + c.headroom;
@@ -2374,7 +2406,8 @@ export function describeCapacity(c: Capacity): string {
   // the stall term, applied here).
   const ceiling = effectiveCeilingOf(c);
   lines.push(
-    `effective ceiling: ${ceiling.ceiling} task agent(s) — ${ceiling.arithmetic}` +
+    `effective ceiling: ${ceiling.ceiling} task agent(s) alive — working OR ` +
+    `parked awaiting a decision, which cost the same memory — ${ceiling.arithmetic}` +
     (ceiling.shortfall > 0
       ? `. The cap is ${c.cap}, so ${ceiling.shortfall} of its slot(s) cannot be reached: ` +
         `${ceiling.boundBy} binds first, and admission never reads the cap at all`
