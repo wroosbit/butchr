@@ -212,6 +212,12 @@ for (const r of set) {
   const dirtied = after === null ? null : after.filter((l) => !baseline.includes(l));
   if (after !== null) baseline = after;
 
+  // A child that dirties the tree FAILS even when its own assertions all held —
+  // its exit code is a verdict about what it was testing, never about what it
+  // wrote. (KAN-350's rule, kept: the KAN-373 clause below widens which exit
+  // CODES are acceptable and takes nothing off the tree-write condition, which
+  // is still ANDed in below.)
+  //
   // KAN-373: exit 2 is INCOMPLETE — nothing failed, and something did not run.
   // See `lib/verdict-exit.mjs`. On a `partial` script that is the expected
   // outcome here: the class means "some sections need what CI has not got", CI
@@ -358,8 +364,8 @@ if (incompletes.length) {
   console.log(
     `\n${incompletes.length} script(s) exited ${EXIT_INCOMPLETE} — INCOMPLETE. Nothing failed, and a\n` +
       'section did not run. Each is `partial`, and CI has no CrabCast peer, so this is the\n' +
-      'expected outcome here — but it is NOT a pass, and these are the sections no runner on\n' +
-      'this machine has ever exercised:'
+      'expected outcome here — but it is NOT a pass. What those sections cover is unproved\n' +
+      'BY THIS RUN; read each script above for what it skipped and who else could reach it:'
   );
   for (const r of incompletes) console.log(`  - ${r.name}`);
 }
