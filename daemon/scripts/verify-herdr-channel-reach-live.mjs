@@ -44,14 +44,12 @@
  * `--allow-skipped` makes a caller who accepts an incomplete run say so out
  * loud, and turns 2 into 0.
  *
- * ⚠ **The constants are spelled locally here, and that is temporary and
- * deliberate.** `daemon/scripts/lib/verdict-exit.mjs` is the shared helper and
- * it does not exist on `main` yet — it arrives with #246, which was still open
- * when this landed. Importing a module that is not there would be a proof that
- * cannot run. **When #246 lands, delete these three constants and the four-line
- * verdict at the foot of this file and call the helper**; the values, the flag
- * name and the precedence are copied from that PR precisely so the swap is
- * mechanical and no second vocabulary outlives it.
+ * The contract is `lib/verdict-exit.mjs`'s, and this file calls it rather than
+ * restating it. An earlier revision spelled the three constants locally,
+ * because #246 had not merged and importing a module that is not there is a
+ * proof that cannot run; #246 landed as `6fc6949` and the local copy is gone.
+ * **One decision, one implementation** — a second spelling of a verdict is the
+ * thing that drifts, and it would have drifted here first.
  *
  * ---------------------------------------------------------------------------
  * ⚠ WHAT THIS SUPPLIES, AND THE ARM IT CANNOT MEASURE
@@ -89,6 +87,7 @@
 // harness built.
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { reportAndExit } from './lib/verdict-exit.mjs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -96,13 +95,6 @@ import { fileURLToPath } from 'url';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
 const verbose = process.argv.includes('--verbose');
-const allowSkipped = process.argv.includes('--allow-skipped');
-
-// ⚠ DELETE THESE AND IMPORT `./lib/verdict-exit.mjs` WHEN #246 LANDS. See the
-// header. The values and the flag name are #246's, copied rather than invented.
-const EXIT_PASS = 0;
-const EXIT_FAIL = 1;
-const EXIT_INCOMPLETE = 2;
 
 let failures = 0;
 let skipped = 0;
@@ -317,45 +309,13 @@ try {
 
 say('');
 
-// ── THE VERDICT ────────────────────────────────────────────────────────────
+// KAN-373's contract, called rather than restated. An earlier revision of this
+// file wrote the branches out by hand — correct, and a second implementation of
+// one decision, which is what drifts. `reportAndExit` reads `--allow-skipped`
+// off argv itself, so a caller who accepts an incomplete run still has to say
+// so out loud.
 //
-// Written as counter-conditioned exits rather than through a `verdictFor`
-// helper of my own, for two reasons that point the same way.
-//
-// ⚠ **The first is that `sweep-verify-exit-paths.mjs` could not see the helper
-// version, and it was right not to.** It reads each exit's *expression* and
-// asks whether the value is derived from an accumulated counter;
-// `process.exit(code)` names a local whose provenance it cannot follow, so it
-// scored this file as `NONE — 2 exit(s), all guards`, which is its verdict for
-// a script that cannot report failure. #246 teaches it to resolve a reference
-// back to what it was assigned from; until that lands, an exit whose CONDITION
-// names the counter is the spelling the sweep can actually check. Writing code
-// a required check cannot read, and then arguing the check is behind, is how a
-// gate stops being a gate.
-//
-// The second is that duplicating #246's helper here would have been a second
-// implementation of one decision — the thing this repository keeps paying for.
-// Four lines of branch, deleted wholesale when the helper lands, leaves nothing
-// to drift.
-//
-// The ORDER is the contract's and is load-bearing: a failure outranks a skip,
-// so a run that both failed and skipped is FAILING. There is no `?? 0` on
-// either tally — a fallback would convert "this script lost track of its own
-// skips" into "nothing was skipped", the exact substitution the contract exists
-// to refuse.
-if (failures > 0) {
-  say(`RED — ${failures} assertion(s) failed${skipped ? `, ${skipped} skipped` : ''}.`);
-  process.exit(EXIT_FAIL);
-}
-if (skipped > 0 && !allowSkipped) {
-  say(`INCOMPLETE — nothing failed, and ${skipped} arm(s) did not run.`);
-  say('A skip is not a pass, and nothing here has checked what those arms would have said.');
-  say('If an incomplete run is acceptable to you, say so with --allow-skipped and this exits 0.');
-  process.exit(EXIT_INCOMPLETE);
-}
-say(
-  skipped > 0
-    ? `GREEN, with ${skipped} arm(s) skipped and --allow-skipped passed to accept them.`
-    : 'GREEN — every arm ran, and every assertion passed.'
-);
-process.exit(EXIT_PASS);
+// ⚠ It exits 2 today, and that is the honest answer rather than a failure of
+// this script: KAN-557 blocks the `loaded` arm, so one arm did not run and
+// nothing here has checked what it would have said.
+reportAndExit({ failures, skipped });
