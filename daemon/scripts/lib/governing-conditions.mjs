@@ -36,6 +36,17 @@
 // unrelated `if` one line above governs nothing. Neither error is fixed by
 // changing the number.
 //
+// COST, MEASURED RATHER THAN ARGUED, because this backs a REQUIRED check. The
+// scan resumes at the body of each `if` it finds so that nested ones are found
+// by the same loop, which re-reads a body once per enclosing level: linear in
+// the file, quadratic in NESTING DEPTH. Measured on synthetic input, a chain
+// 160 `if`s deep costs 395ms; 1600 sequential blocks over 100 KB cost 11.7ms.
+// Real scripts nest five or six deep, and the whole sweep went from 1.7s to
+// 2.7s over 164 files on one loaded machine. A single-pass stack would remove
+// the depth term; it is not worth restructuring a required check for a second
+// per pull request, and the number is written down here so that a future reader
+// meeting a pathological file knows the shape rather than rediscovering it.
+//
 // WHAT THIS IS NOT: a parser. It answers one question — "which `if` bodies
 // enclose this offset" — over code that `mask-non-code.mjs` has already
 // stripped of comments, strings, template text and regex literals, so every
