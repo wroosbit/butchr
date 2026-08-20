@@ -97,6 +97,7 @@ import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { readPartition, partitionProblems, REPO_ROOT, RUNS_IN_CI, CLASSES, summaryParts } from './lib/ci-partition.mjs';
+import { EXIT_INCOMPLETE } from './lib/verdict-exit.mjs';
 
 const verbose = process.argv.includes('--verbose');
 const listOnly = process.argv.includes('--list');
@@ -213,11 +214,41 @@ for (const r of set) {
 
   // A child that dirties the tree FAILS even when its own assertions all held —
   // its exit code is a verdict about what it was testing, never about what it
-  // wrote.
-  const ok = run.status === 0 && dirtied !== null && dirtied.length === 0;
-  results.push({ ...r, ok, status: run.status, signal: run.signal, timedOut, seconds, run, dirtied });
+  // wrote. (KAN-350's rule, kept: the KAN-373 clause below widens which exit
+  // CODES are acceptable and takes nothing off the tree-write condition, which
+  // is still ANDed in below.)
+  //
+  // KAN-373: exit 2 is INCOMPLETE — nothing failed, and something did not run.
+  // See `lib/verdict-exit.mjs`. On a `partial` script that is the expected
+  // outcome here: the class means "some sections need what CI has not got", CI
+  // has no CrabCast peer, and those sections skip. It is NOT a failure.
+  //
+  // ⚠ IT IS ALSO NOT A PASS, AND THAT IS THE WHOLE POINT OF COUNTING IT. The
+  // tempting one-line alternative was to hand every `partial` child
+  // `--allow-skipped` and let it exit 0 — which would have rebuilt the exact
+  // defect KAN-373 was filed about, one level up: a green job that cannot
+  // distinguish "all 139 ran" from "134 ran and 5 skipped". So an incomplete
+  // child is reported as INCOMPLETE, counted separately, and named in the
+  // summary.
+  //
+  // On a `yes` script exit 2 IS a failure — that class asserts it needs nothing
+  // CI lacks, so a skip there means the header is wrong about its own script.
+  const incomplete = run.status === EXIT_INCOMPLETE && r.class === 'partial';
+  const ok = (run.status === 0 || incomplete) && dirtied !== null && dirtied.length === 0;
+  results.push({
+    ...r,
+    ok,
+    incomplete,
+    status: run.status,
+    signal: run.signal,
+    timedOut,
+    seconds,
+    run,
+    dirtied
+  });
   console.log(
-    `${ok ? 'PASS' : 'FAIL'}  ${r.name.padEnd(48)} ${seconds.toFixed(1).padStart(6)}s` +
+    `${ok ? (incomplete ? 'SKIP' : 'PASS') : 'FAIL'}  ${r.name.padEnd(48)} ${seconds.toFixed(1).padStart(6)}s` +
+      (incomplete ? '   (INCOMPLETE — a section did not run; exit 2, not a pass)' : '') +
       (r.class === 'partial' ? '   (partial — see its header for what CI does not reach)' : '') +
       (dirtied === null ? '   (DIRTIED? — git status stopped answering mid-run)' : '') +
       (dirtied?.length ? `   (WROTE INTO THE WORKING TREE — ${dirtied.length} path(s))` : '')
@@ -318,10 +349,26 @@ function announceTheRest() {
 }
 
 const failed = results.filter((r) => !r.ok);
+// KAN-373: counted apart from the passes, because "passed" and "did not run"
+// are the two things this whole ticket exists to keep separable.
+const incompletes = results.filter((r) => r.ok && r.incomplete);
 const wall = results.reduce((s, r) => s + r.seconds, 0);
 
 console.log('');
-console.log(`${results.length - failed.length}/${results.length} passed in ${wall.toFixed(1)}s of child wall clock.`);
+console.log(
+  `${results.length - failed.length - incompletes.length}/${results.length} passed` +
+    (incompletes.length ? `, ${incompletes.length} INCOMPLETE` : '') +
+    ` in ${wall.toFixed(1)}s of child wall clock.`
+);
+if (incompletes.length) {
+  console.log(
+    `\n${incompletes.length} script(s) exited ${EXIT_INCOMPLETE} — INCOMPLETE. Nothing failed, and a\n` +
+      'section did not run. Each is `partial`, and CI has no CrabCast peer, so this is the\n' +
+      'expected outcome here — but it is NOT a pass. What those sections cover is unproved\n' +
+      'BY THIS RUN; read each script above for what it skipped and who else could reach it:'
+  );
+  for (const r of incompletes) console.log(`  - ${r.name}`);
+}
 console.log('');
 announceTheRest();
 

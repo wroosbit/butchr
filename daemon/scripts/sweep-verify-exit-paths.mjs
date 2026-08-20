@@ -34,6 +34,29 @@
 // this script report a failure at all", which is exactly the question the five
 // broken scripts answered no to.
 //
+// ── KAN-373: AND THE SAME QUESTION ASKED OF SKIPS ──────────────────────────
+//
+// KAN-119 was three checks rendering a FAILURE as an all-clear. KAN-373 is the
+// same defect with the sign flipped — an UNRUN SECTION rendered as one — and
+// this sweep would have found it had it looked for skips as well as failures.
+// It did not, so it did not. Six scripts held the shape at once: each tallied
+// `skipped`, each ended `process.exit(failures ? 1 : 0)`, and that expression
+// consults the skip tally not at all. A `CI-RUNNABLE: partial` proof whose live
+// section skipped for want of a peer therefore exited 0, and a runner with no
+// peer downgraded the gate to nothing while the build went green.
+//
+// So there is a third question here now, asked of the same masked code and in
+// the same shape as the first: **if a script tallies skips, does any verdict
+// exit read that tally?** A script with no skip tally is not asked, and a skip
+// is never counted as a failure — the answer to an unrun section is a third
+// exit code, which is `lib/verdict-exit.mjs`.
+//
+// ⚠ WHAT THIS STILL CANNOT SEE, because the list above looks complete: a
+// script that skips WITHOUT TALLYING — one that prints the word SKIP and
+// returns — is invisible to this check exactly as it is invisible to its own
+// exit code. Nothing covers that, here or elsewhere. It is named rather than
+// left to be discovered from a green run.
+//
 // Usage: node daemon/scripts/sweep-verify-exit-paths.mjs [--verbose]
 
 import fs from 'fs';
@@ -58,6 +81,28 @@ const SCRIPT_DIRS = ['daemon/scripts', 'extension/scripts'];
  * whose value is computed from one of these; anything else is a guard.
  */
 const COUNTER = /\b(failures?|failed|problems|errors|violations|leaks|bad)\b/i;
+
+/**
+ * Identifiers a script accumulates SKIPS into (KAN-373).
+ *
+ * A skip is a section that did not run. It is not a failure and must not be
+ * counted as one — but a verdict that never consults it cannot tell "the peer
+ * proved it" from "nobody started a peer", and 0 is the value every caller
+ * reads as "the gate held".
+ */
+const SKIP_COUNTER = /\b(skipped|skips|unrun|notRun|omitted)\b/i;
+
+/**
+ * A script may delegate its verdict to a shared helper rather than spell
+ * `process.exit` itself. `lib/verdict-exit.mjs` is that helper, and six scripts
+ * end in it since KAN-373.
+ *
+ * ⚠ THE LIMIT, AND IT FAILS SAFE: this reads ONE LINE, so a `reportAndExit(`
+ * call broken across lines is not matched — and an unmatched call means the
+ * script shows NO verdict exit and this sweep goes RED. Loud and wrong beats
+ * quiet and wrong, which is the direction every rule in this file leans.
+ */
+const DELEGATED = /\breportAndExit\s*\(([^;]*)\)/;
 
 /**
  * Every `process.exit(...)` / `process.exitCode = ...`, with its line AND its
@@ -91,9 +136,55 @@ function exitPaths(source) {
         expr: exitCode[1].trim(),
         text: line.trim()
       });
+    // KAN-373. Carries `index` for the same reason KAN-540 added it to the two
+    // above: containment is answered against offsets, never against lines.
+    const delegated = line.match(DELEGATED);
+    if (delegated)
+      found.push({
+        line: i + 1,
+        index: offset + delegated.index,
+        kind: 'delegated',
+        expr: delegated[1].trim(),
+        text: line.trim()
+      });
     offset += line.length + 1;
   });
   return found;
+}
+
+/**
+ * An expression with its object KEYS removed, leaving only what it REFERENCES.
+ *
+ * ⚠ Written because the first version of the KAN-373 check was fooled by its
+ * own subject matter. `reportAndExit({ failures: 0, skipped: 0 })` cannot report
+ * anything — both tallies are literals — and it PASSED, because the words
+ * `failures` and `skipped` were present as KEY NAMES. That is exactly the
+ * "pattern-matching for failing-exit spellings" this file's header retires as
+ * attempt 1, reintroduced one level down. It was caught by driving the new
+ * check red, and by nothing else.
+ *
+ * `{ failures, skipped }` is shorthand — no colon — so both survive and it is
+ * a verdict. `{ failures: 0 }` loses `failures:` and leaves `0`, which
+ * references nothing. `{ failures: myCount }` leaves `myCount`, judged on its
+ * own name.
+ */
+function references(expr) {
+  return expr.replace(/\b[A-Za-z_$][\w$]*\s*:/g, ' ');
+}
+
+/**
+ * The identifiers this script increments as a skip tally, if any.
+ *
+ * Asked of the MASKED copy, so the word "skipped" in a comment or in a printed
+ * message is not mistaken for a counter — which is the whole reason this file
+ * does not grep.
+ */
+function skipTallies(code) {
+  const found = new Set();
+  for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?:\+\+|\+=\s*1)/g)) {
+    if (SKIP_COUNTER.test(m[1])) found.add(m[1]);
+  }
+  return [...found];
 }
 
 /**
@@ -151,6 +242,15 @@ function classify(entry, source, regions) {
   const condition = kind === 'exit' ? governingCounterCondition(regions, index) : null;
   if (condition !== null) {
     return { verdict: true, why: `reached only when \`${renderCondition(condition)}\`` };
+  }
+
+  // reportAndExit(<expr>) — a verdict iff the TALLIES are what it is handed.
+  // `references` is what stops `{ failures: 0 }` counting: a tally has to be
+  // referenced, not merely spelled as a key.
+  if (kind === 'delegated') {
+    return COUNTER.test(references(expr))
+      ? { verdict: true, why: 'verdict delegated to reportAndExit with an accumulated tally' }
+      : { verdict: false, why: 'reportAndExit called with no accumulated tally' };
   }
 
   if (kind === 'exitCode') {
@@ -246,11 +346,19 @@ for (const dir of SCRIPT_DIRS) {
       .map((e) => ({ ...e, text: (sourceLines[e.line - 1] ?? '').trim() }));
     const verdicts = paths.filter((p) => p.verdict);
     const guards = paths.filter((p) => !p.verdict);
+    // KAN-373: a skip tally that no verdict reads is a section that can fail to
+    // run while the process still says the gate held.
+    const tallies = skipTallies(code);
+    const blindTallies = tallies.filter(
+      (t) => !verdicts.some((v) => new RegExp(`\\b${t}\\b`).test(references(v.expr)))
+    );
     rows.push({
       rel: path.join(dir, name),
       name: name.replace(/\.mjs$/, ''),
       canFail: verdicts.length > 0,
       hasHeader: /WHAT FAILURE THIS WOULD CATCH/.test(source),
+      tallies,
+      blindTallies,
       verdicts,
       guards,
       masked
@@ -276,8 +384,23 @@ for (const r of rows) {
 
 const cannotFail = rows.filter((r) => !r.canFail);
 const noHeader = rows.filter((r) => !r.hasHeader);
+const skipsInvisible = rows.filter((r) => r.blindTallies.length > 0);
 
 console.log('');
+if (skipsInvisible.length) {
+  console.log(
+    `${skipsInvisible.length} script(s) tally SKIPS that no verdict exit consults — an unrun\n` +
+      'section is reported as a pass:'
+  );
+  for (const r of skipsInvisible) {
+    console.log(`  - ${r.rel} (tallies \`${r.blindTallies.join('`, `')}\`, and no exit reads it)`);
+  }
+  console.log(
+    '  A skip is not a failure and must not be counted as one. It is also not a pass.\n' +
+      '  `lib/verdict-exit.mjs` is the shared contract: 0 ran-and-passed, 1 failed,\n' +
+      '  2 nothing failed and something did not run.\n'
+  );
+}
 if (cannotFail.length) {
   console.log(`${cannotFail.length} script(s) have NO verdict-driven exit — they cannot report failure:`);
   for (const r of cannotFail) {
@@ -289,10 +412,12 @@ if (noHeader.length) {
   for (const r of noHeader) console.log(`  - ${r.rel}`);
 }
 
-if (!cannotFail.length && !noHeader.length && !sweepUnproven.length) {
+if (!cannotFail.length && !noHeader.length && !skipsInvisible.length && !sweepUnproven.length) {
+  const tallying = rows.filter((r) => r.tallies.length > 0).length;
   console.log(
     `ALL PASS — every one of the ${rows.length} verify-* scripts has a verdict-driven exit and\n` +
-      'states what failure it would catch.\n\n' +
+      `states what failure it would catch, and each of the ${tallying} that tally skips let those\n` +
+      'skips reach the verdict.\n\n' +
       'This does NOT establish that any of their assertions can be false. That is the\n' +
       'fourth level of the rule and it is proved only by breaking the behaviour under\n' +
       'test and watching the script go red — see the KAN-119 PR for that evidence.'
@@ -306,4 +431,6 @@ if (sweepUnproven.length) {
   for (const line of sweepUnproven) console.log(`  - ${line}`);
 }
 
-process.exit(cannotFail.length + noHeader.length + sweepUnproven.length > 0 ? 1 : 0);
+process.exit(
+  cannotFail.length + noHeader.length + skipsInvisible.length + sweepUnproven.length > 0 ? 1 : 0
+);
