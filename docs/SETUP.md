@@ -364,16 +364,20 @@ Then the end-to-end check, which needs the browser:
 3. A herdr pane appears with an agent in it; `herdr agent list` shows
    `butchr-task-kan-1`.
 
+<!-- constant-pin: RUNTIME_ENV_VAR
+     src: daemon/src/runtime-switch.ts
+     sha256: 28959b7fe578
+     says: a daemon that would have come up without the `BUTCHR_AGENT_RUNTIME` this machine pins refuses to start -->
+
 **If `systemctl --user status butchr-daemon.service` and the fleet disagree** —
 the unit reads `inactive` or `failed` while agents are plainly working — that is
 the KAN-550 shape and `butchr-doctor`'s *serving daemon* line resolves it. The
 unit is also now able to say so itself: a daemon that loses the race for the
 socket to a process that is **not** the unit's own exits `3` rather than `0`, so
 `Restart=on-failure` retries and the unit ends up `failed` instead of sitting
-quietly `inactive`. A daemon that would have come up without the
-`BUTCHR_AGENT_RUNTIME` this machine pins refuses to start at all and exits `4`,
-printing what it expected and what it got; set `BUTCHR_ALLOW_UNPINNED_RUNTIME=1`
-if you mean it.
+quietly `inactive`. And a daemon that would have come up without the `BUTCHR_AGENT_RUNTIME` this machine pins refuses to start
+at all — it exits `4`, printing what it expected and what it got. Set
+`BUTCHR_ALLOW_UNPINNED_RUNTIME=1` if you mean it.
 
 If the sidepanel reports it cannot reach the daemon, the order to check things
 in is: `butchr-doctor` first, then `~/.local/share/butchr/daemon.log`, then
