@@ -25,6 +25,19 @@
 // PTY, no credential and no network. §6 needs a live CrabCast daemon and SKIPS
 // without one. A skip is printed as a skip and never counted as a pass.
 //
+// KAN-373 — AND THE EXIT CODE NOW CARRIES THAT SENTENCE. It did not. This
+// script ended `process.exit(failures ? 1 : 0)`, which consults the skip
+// tally not at all, so a skipped live section exited 0 and a caller reading
+// the exit code could not tell a proved peer from an absent one. The prose
+// above was true of the PRINTING and false of the process. Now:
+//
+//   0  every section ran, and every assertion passed
+//   1  at least one assertion failed
+//   2  nothing failed, and something did not run
+//
+// Pass `--allow-skipped` to assert that an incomplete run is acceptable to
+// THIS caller and get 0 back. See `lib/verdict-exit.mjs`.
+//
 // ── WHICH SECTIONS READ WHAT, AND WHY THAT MATTERS BEFORE THE VERDICT ──────
 //
 // THIS SCRIPT IS A BLEND, so read the SECTION and never the exit code alone
@@ -94,6 +107,7 @@ import net from 'net';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { reportAndExit } from './lib/verdict-exit.mjs';
 
 const verbose = process.argv.includes('--verbose');
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -601,8 +615,7 @@ try {
   /* teardown */
 }
 
-console.log(
-  `\n${failures === 0 ? '\x1b[32mALL CHECKS PASSED\x1b[0m' : `\x1b[31m${failures} CHECK(S) FAILED\x1b[0m`}` +
-    `${skipped ? ` (${skipped} skipped)` : ''}`
-);
-process.exit(failures ? 1 : 0);
+// KAN-373: was `process.exit(failures ? 1 : 0)`, which read a skipped live
+// section as a pass. See `lib/verdict-exit.mjs` for why a skip now exits 2.
+console.log('');
+reportAndExit({ failures, skipped });
