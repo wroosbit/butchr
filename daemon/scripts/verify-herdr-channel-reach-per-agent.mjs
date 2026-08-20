@@ -32,7 +32,15 @@
  *      a recorded `not-loaded` gets NOTHING written to a live connection, its
  *      unrecorded neighbour gets a frame — and then the record is DELETED and
  *      the answer is watched falling back to `'unknown'`, not to `'not-loaded'`.
- *   §5 ⚠ THE REAL SPAWN, and AC1. Opt-in with `--live`; skipped otherwise.
+ *
+ * ⚠ **There is no §5, and there used to be.** The real-spawn section lives in
+ * `verify-herdr-channel-reach-live.mjs` now. It was a `--live` section here,
+ * and this script tallied the skip when the flag was absent and then exited
+ * `failures ? 1 : 0` — a verdict that consulted the tally not at all, so the
+ * ordinary invocation printed GREEN and exited 0 while the only section that
+ * tests arrival had not run. That is KAN-373's shape. **Splitting is the repair
+ * rather than an exit code**: this file now has nothing in it that can fail to
+ * run, so it has no way to report a green it did not earn.
  *
  * ---------------------------------------------------------------------------
  * ⚠ WHAT THIS SCRIPT SUPPLIES ITSELF, AND WHO COVERS THE REST
@@ -46,17 +54,17 @@
  *     chose. So they establish what the store does with a verdict and what the
  *     router does with the store, and **nothing whatever about whether a real
  *     spawn produces one.** On their own they are precisely the KAN-145 shape.
- *   * §5 IS WHAT COVERS THAT, and it is the only section that can. It drives a
- *     real `HerdrBridge`, the real `claude` launcher and the real kill switch
- *     into two real panes, and the `AgentSpawn` it reads is the one the product
- *     composed. It needs herdr and a terminal, so it is opt-in and its output
- *     goes on the pull request.
- *   * ⚠ WHAT EVEN §5 SUPPLIES is the two-line listener body — `record(address,
+ *   * `verify-herdr-channel-reach-live.mjs` IS WHAT COVERS THAT, and it is the
+ *     only thing that can. It drives a real `HerdrBridge`, the real `claude`
+ *     launcher and the real kill switch into a real pane, and the `AgentSpawn`
+ *     it reads is the one the product composed. It needs herdr and a terminal,
+ *     so it is `CI-RUNNABLE: no` and its output goes on the pull request.
+ *   * ⚠ WHAT EVEN THAT SUPPLIES is the two-line listener body — `record(address,
  *     spawn.channelEnabled)`. The production listener lives in `daemon.ts` and
  *     is not exported, so no script can call the real one. **§3 is what makes
  *     that honest**: it asserts against `src/daemon.ts` as TEXT that the
  *     production closure records the same three-state verdict at the same seam,
- *     ahead of the supervision guard. Neither section subsumes the other and
+ *     ahead of the supervision guard. Neither script subsumes the other and
  *     the seam between them is real: nothing here would notice if `daemon.ts`
  *     stopped installing the listener at all.
  *   * WHO COVERS THAT LAST GAP: nobody, today, and it is named rather than left
@@ -71,8 +79,6 @@
  * ---------------------------------------------------------------------------
  *   node daemon/scripts/verify-herdr-channel-reach-per-agent.mjs [--verbose]
  *
- *   --live         run §5: two REAL herdr panes, the real claude launcher and
- *                  the real kill switch. Off by default because it spawns.
  *   --red-drive    patch a COPY of the build so `reachFromSpawnVerdict(null)`
  *                  answers `'unknown'` instead of `undefined`, and watch §1's
  *                  discriminating row go red. A gate nobody has watched fail
@@ -84,14 +90,13 @@
  * Run it after `npm run build` in daemon/.
  */
 
-// CI-RUNNABLE: partial — §1–§4 import the built daemon modules and assert
-//       against them in process, over unix sockets this script creates under
-//       os.tmpdir(); no live daemon, no herdr, no credential, no peer, no
-//       terminal. §5 needs a real herdr on PATH and spawns two real panes, so
-//       it is opt-in behind `--live` and announces itself SKIPPED without it —
-//       including in CI, which has neither. It is not mocked and there is no
-//       fallback: the whole value of §5 is that the `AgentSpawn` is the
-//       product's, so a reproduction of one would prove nothing.
+// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
+//       in process, over unix sockets it creates under os.tmpdir(); no live
+//       daemon, no herdr, no credential, no peer, no terminal. EVERY section
+//       runs on a runner, which is why this is `yes` rather than `partial` and
+//       why it tallies no skips: the real-spawn proof is a separate file,
+//       `verify-herdr-channel-reach-live.mjs`, and a green here has never
+//       claimed anything about it.
 //
 // The one piece of shared state §4 touches — the channel kill switch under
 // BUTCHR_DIR — it reads, writes ENABLED, and restores in a `finally`. Enabling
@@ -118,11 +123,9 @@ import { fileURLToPath } from 'url';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
 const verbose = process.argv.includes('--verbose');
-const live = process.argv.includes('--live');
 const redDrive = process.argv.includes('--red-drive');
 
 let failures = 0;
-let skipped = 0;
 const say = (s = '') => process.stdout.write(`${s}\n`);
 const rule = (title) => {
   say('');
@@ -137,10 +140,6 @@ const check = (ok, label, detail = '') => {
     say(`        ${String(detail).split('\n').slice(0, 6).join('\n        ')}`);
   }
   return ok;
-};
-const skip = (what, why) => {
-  skipped += 1;
-  say(`  SKIP  ${what}\n        ${why}`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -447,180 +446,6 @@ try {
   for (const s of servers) await new Promise((r) => s.close(r));
   rmSync(sockDir, { recursive: true, force: true });
 
-  // ═════════════════════════════════════════════════════════════════════════
-  rule('§5  ⚠ THE REAL SPAWN — AC1, and the only section that tests arrival');
-  // ═════════════════════════════════════════════════════════════════════════
-  if (!live) {
-    skip(
-      'the real herdr spawn',
-      'pass --live to run it. It starts TWO real panes through the real claude ' +
-        'launcher and writes the real kill switch, so it is opt-in rather than ' +
-        'default. Everything above supplies its own record and therefore says ' +
-        'nothing about whether a spawn produces one — see this file’s header.'
-    );
-  } else {
-    const { workspaceDirFor } = await import(u('workspace-dir.js'));
-    const bridge = new HerdrBridge();
-
-    // THE HARNESS-SUPPLIED HALF, AND IT IS TWO LINES ON PURPOSE. §3 asserts
-    // against `src/daemon.ts` that the production closure does exactly this, at
-    // this seam, ahead of the supervision guard. What is NOT supplied is
-    // everything on the left of it: the switch read, the command composed, the
-    // pane started, and the `AgentSpawn` that comes back out.
-    const liveStore = new ChannelSpawnReachStore();
-    const seen = [];
-    bridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
-      seen.push({ key: session.key, channelEnabled: spawn.channelEnabled, command: spawn.command });
-      liveStore.record({ type: session.type, key: session.key }, spawn.channelEnabled);
-    });
-    const liveReachOf = (address) => liveStore.get(address) ?? bridge.channelReach;
-
-    const spawnedKeys = [];
-    const spawnUnder = (enabled, key) => {
-      writeFileSync(CHANNEL_SWITCH_PATH, `${JSON.stringify({ enabled }, null, 2)}\n`);
-      const session = bridge.spawnSession(
-        'task', key, undefined, 'KAN-497 reach probe — this pane is closed immediately.',
-        1, false, 'claude'
-      );
-      spawnedKeys.push(key);
-      return session;
-    };
-
-    try {
-      // ON FIRST, DELIBERATELY. On a live fleet the switch is normally on, so
-      // this arm changes nothing, and the off-arm's window is a fraction of a
-      // second before the `finally` puts it back. Off is also the SAFE
-      // direction to be wrong in — a send that would have taken the channel
-      // falls back to the composer and still arrives.
-      const on = spawnUnder(true, 'kan497-reach-on');
-      const off = spawnUnder(false, 'kan497-reach-off');
-
-      const onAddr = { type: 'task', key: 'kan497-reach-on' };
-      const offAddr = { type: 'task', key: 'kan497-reach-off' };
-
-      // The product's own verdict, off a real spawn. Printed as well as
-      // asserted, because a reviewer re-running this should see the argv that
-      // produced it.
-      for (const s of seen) {
-        say(`  ${s.key}: channelEnabled=${JSON.stringify(s.channelEnabled)}  ${String(s.command).slice(0, 90)}…`);
-      }
-
-      // ── the OFF arm: a real spawn, all the way to the record ─────────────
-      check(
-        off.status !== 'terminated',
-        'switch OFF → the pane started',
-        `${off.status} / ${off.spawnError ?? ''}`
-      );
-      check(
-        seen.some((s) => s.key === 'kan497-reach-off' && s.channelEnabled === false),
-        'switch OFF → the listener fired, carrying the launcher’s own `false`',
-        JSON.stringify(seen)
-      );
-      check(
-        liveReachOf(offAddr) === 'not-loaded',
-        'switch OFF → and the record that arrived reads not-loaded',
-        liveReachOf(offAddr)
-      );
-
-      // ── the ON arm ⚠ AND WHY IT HAS TWO ACCEPTABLE OUTCOMES ──────────────
-      //
-      // Measured 2026-08-20 on this repository at `4a429ba`: a channel-enabled
-      // `claude` spawn is REFUSED by `herdr agent start`, after 7.4s, with
-      // *"agent … is blocked during startup and is not ready for prompts"*. That
-      // is not this harness being slow and it is not the 20s budget — herdr
-      // detected the agent sitting on a dialog and said so.
-      //
-      // ⚠ THE DIALOG IS THE ONE THE FLAG ITSELF RAISES, and the consequence is
-      // an ordering defect that belongs to the product rather than to this
-      // script: `startAgentInOwnTab` throws, so `agentSpawnedListener` is never
-      // called, so `superviseChannelStartup` — whose ENTIRE JOB is to answer
-      // that dialog (KAN-246) — never runs. The supervision is downstream of a
-      // call that fails because of the thing it exists to supervise. It is
-      // latent today only because the fleet runs CrabCast. `agent start` gained
-      // the readiness wait in herdr 0.7 and `initPty`'s own comment still
-      // describes the 0.6.4 behaviour it replaced.
-      //
-      // ⚠ SO THIS ARM ACCEPTS TWO OUTCOMES AND A CHECK THAT ACCEPTS ANYTHING IS
-      // NOT A CHECK. It is written to have a reachable red: a THIRD outcome —
-      // the spawn succeeding but leaving no record, or leaving one that reads
-      // `unknown` or `not-loaded` — fails here. And when the ordering defect is
-      // fixed, the `blocked` branch stops being reachable and this arm becomes
-      // the plain `'loaded'` measurement AC1 asked for, with no edit needed.
-      // ⚠ THE REFUSAL HAS TWO SHAPES AND BOTH WERE OBSERVED, minutes apart, on
-      // the same machine and the same build. They are one cause read through two
-      // instruments, so matching only the first would have this arm reporting a
-      // hard failure half the time for a condition it is meant to recognise:
-      //
-      //   * `agent … is blocked during startup and is not ready for prompts`
-      //     — herdr's OWN detection, returned at 7.4s, well inside its budget.
-      //   * `failed: spawnSync herdr ETIMEDOUT`
-      //     — Node's spawnSync timeout firing first, so herdr never got to say
-      //     it. Same wedged agent; a different process noticed.
-      //
-      // So the branch is "the spawn did not complete", with the exact text
-      // printed rather than summarised. That is deliberately broad, and the red
-      // it leaves reachable is the one this ticket is about: a spawn that
-      // SUCCEEDS and leaves no record, or a wrong one — KAN-145's defect
-      // exactly. What it can no longer catch is a `loaded` arm that fails for
-      // some unrelated reason, and that is the trade, stated rather than hidden.
-      const onRecorded = liveReachOf(onAddr);
-      const onBlocked = on.status === 'terminated' && (on.spawnError ?? '') !== '';
-
-      if (onBlocked) {
-        say('');
-        say('  ⚠ THE ON ARM WAS REFUSED BY HERDR, AND THIS IS A PRODUCT FINDING:');
-        say(`      ${on.spawnError}`);
-        say('    A channel-enabled spawn cannot complete on the herdr path, so the spawn');
-        say('    listener never fires and KAN-246 channel-startup supervision never runs.');
-        say('    AC1’s `loaded` arm is therefore NOT measured live here. See the ticket');
-        say('    filed against KAN-497 for the ordering defect.');
-        skip(
-          "AC1's `loaded` arm",
-          'blocked by the product ordering defect named above, not by this harness. ' +
-            'The launcher half of that arm IS measured — by the argv printed above, and ' +
-            'by verify-channel-spawn-verdict §1 and verify-channel-capability-refusal §6, ' +
-            'which drive the real launcher under both switch states in CI.'
-        );
-      }
-      check(
-        onBlocked || onRecorded === 'loaded',
-        'switch ON  → a real spawn reads loaded, OR herdr refuses it as blocked-on-dialog',
-        `record=${JSON.stringify(onRecorded)} status=${on.status} spawnError=${on.spawnError ?? '(none)'}`
-      );
-      // THE DISCRIMINATING ROW for the pair — asked ONLY when the ON arm really
-      // produced a record. ⚠ It was gated on `!onBlocked` for one run and that
-      // was wrong in the way this file keeps warning about: with the ON arm
-      // refused, it compared `'unknown'` against `'not-loaded'`, found them
-      // different, and printed PASS. A green for a pair where one side is the
-      // fall-through is a check passing for the wrong reason — it would have
-      // gone green on a build with no store in it at all.
-      if (onRecorded === 'loaded') {
-        check(
-          liveReachOf(onAddr) !== liveReachOf(offAddr),
-          'so the answer is per-agent, not one fleet-wide value'
-        );
-      }
-      check(
-        liveReachOf({ type: 'task', key: 'kan497-never-spawned' }) === 'unknown',
-        'and an agent this daemon never spawned still reads unknown'
-      );
-    } finally {
-      restoreSwitch();
-      for (const key of spawnedKeys) {
-        try {
-          bridge.closeAgentByKey(key, 'task');
-        } catch (e) {
-          say(`  (could not close ${key}: ${e?.message ?? e})`);
-        }
-        // Removed per path rather than by reverting a directory — `task/KAN-291`
-        // lost three uncommitted files to a harness that ran `git checkout`.
-        const dir = workspaceDirFor('task', key);
-        if (dir.includes(`${path.sep}workspaces${path.sep}`) && existsSync(dir)) {
-          rmSync(dir, { recursive: true, force: true });
-        }
-      }
-    }
-  }
 } finally {
   restoreSwitch();
 }
@@ -640,9 +465,12 @@ if (redDrive) {
   process.exit(1);
 }
 
+// No skip tally to consult, because there is nothing here that can fail to
+// run — see the header. A script with sections it might not reach owes its
+// caller a third exit code (KAN-373); this one owes only pass or fail.
 say(
   failures === 0
-    ? `GREEN — every assertion passed${skipped ? `, ${skipped} section(s) skipped` : ''}.`
-    : `RED — ${failures} assertion(s) failed${skipped ? `, ${skipped} skipped` : ''}.`
+    ? 'GREEN — every section ran, and every assertion passed.'
+    : `RED — ${failures} assertion(s) failed.`
 );
 process.exit(failures ? 1 : 0);
