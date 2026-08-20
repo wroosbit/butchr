@@ -10,7 +10,8 @@
 // defect in ours: a blockquote that vanishes from a list item, a list item that
 // takes its own text with it, a table cell whose contents are silently emptied,
 // or the completeness guard being removed so that any of those become possible
-// again.
+// again — and, since KAN-335, the guard being left in the text but made
+// UNREACHABLE (`if (false)`), which the source-text check in §5 cannot see.
 //
 // It would equally catch the converter emitting ADF that is nesting-illegal —
 // which is how the content gets dropped in the first place, since Atlassian
@@ -374,6 +375,123 @@ check(
   'callers cannot distinguish "your markdown could not be represented" from a daemon bug'
 );
 
+// ── THE GUARD IS REACHABLE, NOT MERELY PRESENT (KAN-335) ───────────────────
+//
+// The three source-text checks above were measured to pass with the guard
+// rewritten as `if (false)`: the throw and its message are still in the file,
+// so a text match finds them, and §2 never notices because §2 compares output
+// to input and the converter, being correct, loses nothing. **Those checks are
+// kept on purpose** — they are cheap and they catch a *deleted* throw. What they
+// cannot catch is an *unreachable* one, and that is what this block adds rather
+// than replaces.
+//
+// Non-circularity, because KAN-293 rightly refused "call it and see if it
+// throws": the ORACLE for whether content was lost is §2's own tokeniser, in
+// this file. The SUBJECT is the converter's verdict. The converter is handed a
+// seam (`AdfCompletenessSeam`, which by construction runs before the comparison
+// and cannot skip it) that damages the document; this file independently counts
+// what that damage cost; and the converter must have refused, naming exactly
+// those tokens. If the converter's own count were trusted here, `if (false)`
+// would read as "nothing missing" and the check would agree with it.
+{
+  const source = 'ALPHA-SEAM bravo\n\n- charlie DELTA-SEAM\n  > echo FOXTROT-SEAM';
+  let damaged = null;
+  const seam = {
+    mutilateBeforeCompletenessCheck(doc) {
+      // Drop the blockquote out of the list item — the KAN-266 loss, done on
+      // purpose — and keep a reference so the oracle can count the damage.
+      for (const [, node] of walk(doc)) {
+        if (node.type === 'listItem' && node.content) {
+          node.content = node.content.filter((child) => child.type !== 'blockquote');
+        }
+      }
+      damaged = doc;
+    }
+  };
+
+  let refusal = null;
+  let returned = null;
+  try {
+    returned = markdownToAdf(source, 'confluence', seam);
+  } catch (err) {
+    refusal = err;
+  }
+
+  // First, that the seam did something the oracle can see. Without this the
+  // rest is vacuous: a seam that removed nothing would make "the converter
+  // refused" impossible to satisfy for the wrong reason.
+  const oracleMissing = damaged
+    ? [...new Set(sourceTokens(source))].filter(
+        (t) => !new Set(documentTokens(damaged).match(WORDS) ?? []).has(t)
+      )
+    : [];
+  check(
+    'seam: the damaged document is missing tokens BY THIS FILE\'S COUNT, so the guard had something to refuse',
+    damaged !== null && oracleMissing.length >= 1 && oracleMissing.includes('FOXTROT-SEAM'),
+    `seam ran: ${damaged !== null}; oracle says missing: ${JSON.stringify(oracleMissing)}`
+  );
+
+  // Then the subject: the converter must have thrown rather than returned.
+  // `if (false)` makes it return, and this line goes red.
+  check(
+    'seam: when this file\'s count says content is missing, markdownToAdf REFUSED rather than returned',
+    refusal instanceof AdfConversionError && returned === null,
+    refusal
+      ? `threw ${refusal.constructor?.name}: ${refusal.message}`
+      : `returned a document: ${JSON.stringify(returned?.doc).slice(0, 200)}`
+  );
+
+  // And the two independent counts agree on WHAT was lost — the converter's
+  // refusal names every token this file found missing. A guard that fires but
+  // names the wrong thing is a guard whose arithmetic has drifted from §2's.
+  check(
+    'seam: the refusal names every token this file found missing',
+    refusal instanceof AdfConversionError &&
+      oracleMissing.length > 0 &&
+      oracleMissing.every((t) => refusal.message.includes(JSON.stringify(t))),
+    `oracle: ${JSON.stringify(oracleMissing)}; message: ${refusal?.message ?? '(no refusal)'}`
+  );
+
+  // Positive control on the seam itself: an identity seam must convert cleanly,
+  // so the refusal above was caused by the damage and not by the seam's
+  // presence. Without this, a seam that always threw would pass the check above.
+  let identityOk = false;
+  let identityErr = null;
+  try {
+    const { doc } = markdownToAdf(source, 'confluence', { mutilateBeforeCompletenessCheck() {} });
+    identityOk = nestedUnder(doc, 'listItem', 'blockquote');
+  } catch (err) {
+    identityErr = err;
+  }
+  check(
+    'seam: an identity seam converts without refusing — the refusal above was the damage, not the seam',
+    identityOk && identityErr === null,
+    identityErr?.message ?? 'blockquote missing from the unmutilated document'
+  );
+}
+
+check(
+  'the seam is a proof-only parameter: production calls markdownToAdf with no seam',
+  (() => {
+    const proxy = fs.readFileSync(path.join(daemonDir, 'src', 'atlassian-proxy.ts'), 'utf8');
+    const calls = proxy.match(/markdownToAdf\([^)]*\)/g) ?? [];
+    return calls.length > 0 && calls.every((c) => c.split(',').length <= 2);
+  })(),
+  'a production caller passes a third argument to markdownToAdf; the seam exists to be ' +
+    'damaged by a proof, not by a code path an agent\'s content reaches'
+);
+check(
+  'the seam runs BEFORE the completeness comparison, where it can only add to what the guard refuses',
+  (() => {
+    const body = adfSrc.split('export function markdownToAdf')[1] ?? '';
+    const seamAt = body.indexOf('mutilateBeforeCompletenessCheck(doc)');
+    const measuredAt = body.indexOf('const produced = new Set(');
+    return seamAt > 0 && measuredAt > seamAt;
+  })(),
+  'the seam sits after the measurement, which would let a seam bypass the guard — the ' +
+    'position is the design, see AdfCompletenessSeam in adf.ts'
+);
+
 // The measured claim this whole file rests on must stay traceable to what was
 // measured, not become folklore.
 check(
@@ -411,7 +529,8 @@ console.log(
       ? `FAILED — ${failures} check(s)`
       : 'OK — the nesting that loses content through the official converter survives here, ' +
         'completeness is re-derived independently and shown able to report a loss, every ' +
-        'node is nesting-legal, and coercions are reported rather than silent.'
+        'node is nesting-legal, the runtime guard is shown reachable against a deliberately ' +
+        'damaged document, and coercions are reported rather than silent.'
   }\n`
 );
 process.exit(failures ? 1 : 0);
