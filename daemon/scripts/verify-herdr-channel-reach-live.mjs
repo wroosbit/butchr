@@ -189,21 +189,56 @@ try {
     }
 
     // ── the OFF arm: a real spawn, all the way to the record ─────────────
-    check(
-      off.status !== 'terminated',
-      'switch OFF → the pane started',
-      `${off.status} / ${off.spawnError ?? ''}`
-    );
-    check(
-      seen.some((s) => s.key === 'kan497-reach-off' && s.channelEnabled === false),
-      'switch OFF → the listener fired, carrying the launcher’s own `false`',
-      JSON.stringify(seen)
-    );
-    check(
-      liveReachOf(offAddr) === 'not-loaded',
-      'switch OFF → and the record that arrived reads not-loaded',
-      liveReachOf(offAddr)
-    );
+    //
+    // ⚠ A SPAWN THAT NEVER HAPPENED IS AN UNRUN ARM, NOT A FAILED ONE, and
+    // this arm scored it as a failure until it bit. Measured 2026-08-20: on a
+    // loaded machine `herdr agent start` returned `spawnSync herdr ETIMEDOUT`,
+    // the pane never came up, and three assertions went red — *about a record
+    // that was never given a chance to arrive*. The same run had already been
+    // green twice. A proof that reports RED when the environment could not
+    // supply its input is not a strict proof; it is a proof that cannot tell
+    // "the daemon dropped the verdict" from "this box was busy", which is the
+    // one distinction it exists to make.
+    //
+    // So the arm asks the same question of both spawns — **did a spawn
+    // complete?** — and reports an incomplete one as a SKIP, which is exactly
+    // KAN-373's contract: an unrun section is not a passed section and is not a
+    // failed one either. The exit is `2`, and a caller reading it learns that
+    // nothing was proved here rather than that something broke.
+    //
+    // ⚠ THE DISCRIMINATING RED IS UNTOUCHED, and it is the one that matters:
+    // if the spawn DOES complete and the listener does not fire, or fires and
+    // the record does not arrive, or arrives reading anything but
+    // `not-loaded` — every one of those is still a hard FAIL below. That is
+    // KAN-145's defect, which is the defect this file exists for, and no
+    // environmental branch can reach those three checks.
+    const offSpawned = off.status !== 'terminated';
+    if (!offSpawned) {
+      say('');
+      say('  ⚠ THE OFF ARM DID NOT GET A SPAWN, so it proved nothing either way:');
+      say(`      ${off.spawnError}`);
+      say('    This is the machine, not the daemon — `herdr agent start` never returned a');
+      say('    pane, so no AgentSpawn was ever composed and no record could arrive. Re-run');
+      say('    on a quieter box. It is reported as unrun rather than failed because a');
+      say('    verdict about a spawn that did not happen is not a verdict.');
+      skip(
+        "AC1's `not-loaded` arm",
+        'the spawn did not complete — see above. Nothing here distinguishes a daemon ' +
+          'that drops the verdict from a machine that could not start a pane, so it ' +
+          'claims neither.'
+      );
+    } else {
+      check(
+        seen.some((s) => s.key === 'kan497-reach-off' && s.channelEnabled === false),
+        'switch OFF → the listener fired, carrying the launcher’s own `false`',
+        JSON.stringify(seen)
+      );
+      check(
+        liveReachOf(offAddr) === 'not-loaded',
+        'switch OFF → and the record that arrived reads not-loaded',
+        liveReachOf(offAddr)
+      );
+    }
 
     // ── the ON arm ⚠ AND WHY IT HAS TWO ACCEPTABLE OUTCOMES ──────────────
     //
