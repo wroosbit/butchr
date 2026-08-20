@@ -629,15 +629,26 @@ export function routeChannelMessage(opts: {
   /**
    * Whether this agent's client can render a frame at all (KAN-495).
    *
-   * A thunk rather than a value because the runtime is chosen once and read
+   * A function rather than a value because the runtime is chosen once and read
    * per send, exactly like the kill switch: a caller that captured this at
    * construction would answer for whichever runtime was in service when the
    * daemon booted, and a cutover is precisely when that is wrong.
    *
+   * ⚠ **IT TAKES THE ADDRESS, AND THAT IS KAN-497 RATHER THAN A CONVENIENCE.**
+   * It was `() => ChannelReach` until then, which is the right shape for a fact
+   * about a runtime's spawn *shape* and the wrong shape for the runtime this
+   * daemon actually runs. herdr's spawns CAN carry the flag, so whether any one
+   * agent got one depends on the kill switch as it stood when that pane
+   * started — a per-agent fact, and the argument-less version could not express
+   * it, which is why `HerdrBridge.channelReach` answered `'unknown'` for the
+   * whole fleet. See `channel-spawn-reach.ts`. A caller with only a runtime-wide
+   * answer passes a function that ignores its argument, and nothing about that
+   * is new to it.
+   *
    * **Optional, and its absence is `'unknown'`, which routes as before.** Same
    * contract as `selfCheck` and `managed` above.
    */
-  reach?: () => ChannelReach;
+  reach?: (address: AgentAddress) => ChannelReach;
 }): ChannelRouteOutcome {
   const { registry, address, content, meta, selfCheck, managed, reach } = opts;
 
@@ -710,7 +721,7 @@ export function routeChannelMessage(opts: {
     degraded,
     registered: target !== undefined,
     managed: managed?.(address) ?? false,
-    reach: reach?.() ?? 'unknown',
+    reach: reach?.(address) ?? 'unknown',
     switchPath: CHANNEL_SWITCH_PATH
   });
 
