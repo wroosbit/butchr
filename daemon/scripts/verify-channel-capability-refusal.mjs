@@ -16,7 +16,8 @@
  *   §2 `routeChannelMessage` writes NOTHING to a live socket when reach is
  *      `not-loaded` — the socket is real and is watched, so "refused" is a
  *      measurement rather than a returned string.
- *   §3 the two runtimes declare the reach their spawn shape actually has.
+ *   §3 each runtime's spawn-shape answer, AND herdr's per-agent record
+ *      layered over it — one runtime, three agents, three answers (KAN-497).
  *   §4 ⚠ THE RED DRIVE. The alarm that was blind is shown going off, and shown
  *      staying green on the pre-fix input. This is the section that matters.
  *   §5 the KAN-319 `meta` prior, ruled out rather than assumed.
@@ -178,7 +179,7 @@ try {
   await new Promise((r) => server.close(r));
 
   // -------------------------------------------------------------------------
-  process.stdout.write('\n§3 what each runtime declares\n');
+  process.stdout.write('\n§3 what each runtime declares, and what herdr records per agent\n');
   // -------------------------------------------------------------------------
   const { CrabCastRuntime, buildConfigureAgentPayload } = await import("../dist/crabcast-runtime.js");
   const { HerdrBridge } = await import("../dist/herdr.js");
@@ -255,8 +256,56 @@ try {
   check("and an empty argv OMITS the field rather than sending []",
     Object.prototype.hasOwnProperty.call(payloadOff, 'args'), false);
 
-  check("herdr declares unknown (its spawns CAN carry the flag; per-agent unrecorded)",
+  // ⚠ KAN-497 CHANGED WHAT THIS ROW MEANS AND NOT WHAT IT ASSERTS, and the
+  // distinction is the reason it is not simply left alone.
+  //
+  // It used to read `'unknown'` as *"nobody has recorded this per-agent yet"* —
+  // an honest gap with a ticket against it, and the comment said so. That ticket
+  // has landed and the value has NOT moved, deliberately: the per-agent fact was
+  // never expressible on a runtime member, because this one answers about a
+  // SPAWN SHAPE and *"did the pane serving `task/KAN-1` get the flag?"* is not a
+  // question about a shape. The record lives in `channel-spawn-reach.ts`, keyed
+  // by address, written from the `AgentSpawn` at the spawn seam.
+  //
+  // ⚠ So `'unknown'` here is now LOAD-BEARING rather than residual, and a later
+  // reader who sharpens it to `'not-loaded'` — reasoning that the fleet is
+  // recorded now, so a gap must mean no channel — takes every agent that
+  // outlived a daemon restart off the channel for a fact nobody established.
+  // The store is in memory on purpose; those agents keep the argv they were
+  // started with. That is KAN-497's own stated trap, and this row is one of the
+  // two places standing in front of it.
+  check("herdr declares unknown — the FALL-THROUGH for an agent with no spawn record (KAN-497)",
     herdr.channelReach, "unknown");
+
+  // AND THE PER-AGENT ANSWER, WHICH IS WHAT ACTUALLY ROUTES. The composition
+  // `daemon.ts` uses is `record ?? runtime`, so the same runtime answers three
+  // different things about three agents. Asserted here as well as in
+  // `verify-herdr-channel-reach-per-agent.mjs` because §1 above is about
+  // `carrierFor`'s inputs and this is where the inputs come from — a section
+  // that showed the refusal working while the daemon could only ever feed it one
+  // fleet-wide value would be describing a gate with nothing behind it.
+  const { ChannelSpawnReachStore } = await import("../dist/channel-spawn-reach.js");
+  const spawnReach = new ChannelSpawnReachStore();
+  const perAgentReach = (address) => spawnReach.get(address) ?? herdr.channelReach;
+  const muted = { type: "task", key: "KAN-497-off" };
+  const heard = { type: "task", key: "KAN-497-on" };
+  const never = { type: "task", key: "KAN-497-restarted" };
+  spawnReach.record(muted, false);
+  spawnReach.record(heard, true);
+
+  check("a herdr agent whose spawn had no flag reads not-loaded",
+    perAgentReach(muted), "not-loaded");
+  check("one whose spawn had it reads loaded",
+    perAgentReach(heard), "loaded");
+  // ⚠ THE ROW THAT MUST NOT BECOME 'not-loaded'. An agent with no record is one
+  // that outlived a daemon restart, not one that cannot hear us.
+  check("and one this daemon never spawned still reads unknown, NOT not-loaded",
+    perAgentReach(never), "unknown");
+  // THE DISCRIMINATING ARM. All three above would pass on a lookup that ignored
+  // its argument and happened to be right once; only three answers that DIFFER
+  // show the value is per-agent.
+  check("so one runtime answers three agents differently — the reach is per-agent",
+    new Set([perAgentReach(muted), perAgentReach(heard), perAgentReach(never)]).size, 3);
 
   crabWith.stop?.();
   crabWithout.stop?.();
