@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { StringDecoder } from 'string_decoder';
 import { fileURLToPath } from 'url';
 
@@ -49,8 +49,74 @@ export function writeJsonLine(socket: net.Socket, msg: any): boolean {
   return true;
 }
 
+/** The systemd user unit SETUP.md installs. A string, so a grep finds it. */
+export const DAEMON_UNIT = 'butchr-daemon.service';
+
+/**
+ * Is the daemon a systemd user unit on this machine, and can we reach systemd?
+ *
+ * Both halves matter. A unit file that exists but a `systemctl` that cannot
+ * reach the user manager (no session bus, a container, a CI runner) must read
+ * as "no", so the caller falls through to the raw spawn rather than hanging a
+ * client on a command that will never answer.
+ */
+function daemonUnitIsManaged(): boolean {
+  try {
+    const r = spawnSync('systemctl', ['--user', 'cat', DAEMON_UNIT], {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    return r.status === 0 && typeof r.stdout === 'string' && r.stdout.includes('ExecStart=');
+  } catch {
+    return false;
+  }
+}
+
 export function spawnDaemon(): void {
   ensureButchrDir();
+
+  // ── KAN-550: a stopped daemon must come back CONFIGURED ──────────────────
+  // This function is every client's fallback when the socket is missing —
+  // Chrome's native host, the MCP server, the CLI. It used to `spawn()` the
+  // daemon directly with no `env`, so the child inherited the CLIENT's
+  // environment: for Chrome, one with no BUTCHR_* variables at all. On
+  // 2026-08-20, twice, a stopped unit was replaced within seconds by a daemon
+  // with the runtime unpinned (a silent flip off crabcast), the cap unpinned
+  // (derivation read 12 where the operator had set 6), the proxy off and the
+  // reconciler in report mode — while `systemctl is-active` said INACTIVE,
+  // because the process serving the socket was not systemd's. Then the real
+  // unit could not start: it lost the singleton race and exited 0, and
+  // `Restart=on-failure` does not retry a clean exit. Every status instrument
+  // said "down" while an unconfigured daemon ran the fleet.
+  //
+  // The configuration lives in the unit's drop-ins. So when the unit exists,
+  // ask systemd to start it — that is the one spawner that carries the env —
+  // and only spawn a bare process when there is no unit to ask. `start` on an
+  // already-active unit is a no-op, so racing clients converge on systemd's
+  // daemon instead of on whichever client's child won.
+  if (daemonUnitIsManaged()) {
+    const r = spawnSync('systemctl', ['--user', 'start', DAEMON_UNIT], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    if (r.status === 0) return;
+    // systemd refused or timed out. Fall through to the raw spawn rather than
+    // leave the client with no daemon at all — but say so, because a raw spawn
+    // here is exactly the unconfigured daemon this block exists to prevent.
+    try {
+      fs.appendFileSync(
+        path.join(BUTCHR_DIR, 'daemon-spawn.err'),
+        `${new Date().toISOString()} systemctl --user start ${DAEMON_UNIT} failed ` +
+        `(status ${r.status}): ${(r.stderr ?? '').trim()} — falling back to a RAW spawn, ` +
+        `which will NOT carry the unit's BUTCHR_* environment\n`
+      );
+    } catch {
+      // the error file is best-effort
+    }
+  }
+
   const daemonPath = path.join(__dirname, 'daemon.js');
   // Capture the child's stderr: a daemon that dies during module load (bad
   // node version, missing dep) crashes before its own logger opens, and with

@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 125 |
-| `partial` | 15 |
+| `yes` | 126 |
+| `partial` | 16 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **165** |
+| **total** | **167** |
 
-**140 of 165** run on every pull request.
+**142 of 167** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -133,6 +133,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-mcp-server-build-staleness` | yes | no live daemon, no herdr, no credential, no network. It spawns the built `dist/mcp.js` against a stub socket in a temp HOME, and drives the real registry and the real staleness report in process. |
 | `verify-message-provenance` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-mjs-stub-arity-matches-seam` | yes | reads `daemon/src/agent-runtime.ts` and the `.mjs` files as TEXT; no build, no socket, no peer, no credential, no network. Unaffected by a failed build, so its verdict is about what you wrote rather than what last compiled. |
+| `verify-never-clipped-exemption-is-bounded` | yes | imports the built module in process and reads one source file as text. No live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-no-build-output-is-committed` | yes | reads `git ls-files` off the checkout and the bytes of the files it names, and builds its fixtures under `os.tmpdir()`; node builtins and `git` only, no build, no daemon, no herdr, no credential, no peer, no network, no terminal, no wall clock. |
 | `verify-notifications-never-type` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-off-button-honesty` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -194,6 +195,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
 | `verify-pty-init-rejects-unknown-session` | partial | the rejection path asserts in CI. The regression stage needs herdr to start a real agent and prints `SKIPPED: no herdr to start an agent with` instead. |
 | `verify-shared-clone-is-not-grafted` | partial | sections 1 and 2 build their own git repositories in a temp dir and need nothing but `git`, node and a built `dist`, so they assert in full on a runner. Section 3 classifies the real shared clone at ~/code/wroosbit/butchr, which no CI runner has; it skips loudly and does not fail, and it is the only section that observes a clone this script did not create. |
+| `verify-skip-is-not-a-pass` | partial | §1 and §2 need no peer, no herdr, no PTY, no credential and no network; they read this repository's own helper and spawn `node`. §3 needs `daemon/dist` and SKIPS without it, which makes THIS script exit 2 rather than 0 — the contract under test applied to itself, and deliberate. `run-ci-verify-set.mjs` builds before it runs, so §3 executes there; the `verify-script-sweep` job does not build, and that step passes `--allow-skipped` to say so out loud. |
 | `verify-supervisor-cost-exclusion` | partial | the exclusion arithmetic (1-4), the enablement predicate (5b), the unmarked-tree discriminator (5c) and the falsifier (6) all assert in CI. Section 5 reads the live fleet through /proc and is skipped on a runner, which has no agent trees. KAN-537 is why its unmarked arm no longer fails on a tree that holds no MCP server at all. |
 
 ## `quarantined` — CI-runnable but currently RED — excluded loudly, with a reason and a ticket

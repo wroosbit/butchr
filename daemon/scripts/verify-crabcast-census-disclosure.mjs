@@ -58,6 +58,19 @@
 // PTY, no credential and no network. Section 8 needs a live CrabCast daemon and
 // SKIPS without one; a skip is printed as a skip and never counted as a pass.
 //
+// KAN-373 — AND THE EXIT CODE NOW CARRIES THAT SENTENCE. It did not. This
+// script ended `process.exit(failures ? 1 : 0)`, which consults the skip
+// tally not at all, so a skipped live section exited 0 and a caller reading
+// the exit code could not tell a proved peer from an absent one. The prose
+// above was true of the PRINTING and false of the process. Now:
+//
+//   0  every section ran, and every assertion passed
+//   1  at least one assertion failed
+//   2  nothing failed, and something did not run
+//
+// Pass `--allow-skipped` to assert that an incomplete run is acceptable to
+// THIS caller and get 0 back. See `lib/verdict-exit.mjs`.
+//
 // ── DRIVING IT RED (AC5) ───────────────────────────────────────────────────
 //
 // The pre-fix build is `origin/main`, where `listHerdrAgentsChecked` returns
@@ -85,6 +98,7 @@ import net from 'net';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { reportAndExit } from './lib/verdict-exit.mjs';
 
 const verbose = process.argv.includes('--verbose');
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -716,10 +730,10 @@ fs.rmSync(TMP, { recursive: true, force: true });
 
 console.log('');
 console.log(`pin ${CRABCAST_PIN.slice(0, 12)} · contract v${CRABCAST_CONTRACT_VERSION}`);
-console.log(
-  failures === 0
-    ? `\x1b[32mAll assertions passed\x1b[0m${skipped ? ` (${skipped} skipped — read them above)` : ''}`
-    : `\x1b[31m${failures} assertion(s) failed\x1b[0m`
-);
 
-process.exit(failures ? 1 : 0);
+// KAN-373: `process.exit(failures ? 1 : 0)` stood here, and it read a skipped
+// section 8 as a pass — the line printed above it even said "All assertions
+// passed (1 skipped)". `reportAndExit` is the whole of the change: a run that
+// skipped and did not fail now exits 2, and a caller who wants sections 1-7
+// alone has to say `--allow-skipped` rather than inherit a 0.
+reportAndExit({ failures, skipped });
