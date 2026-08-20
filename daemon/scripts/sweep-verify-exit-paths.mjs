@@ -41,6 +41,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { sweepTree } from './lib/sweep-sources.mjs';
 import { maskNonCode } from './lib/mask-non-code.mjs';
+import {
+  conditionalRegions,
+  governingConditions,
+  renderCondition
+} from './lib/governing-conditions.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -54,33 +59,74 @@ const SCRIPT_DIRS = ['daemon/scripts', 'extension/scripts'];
  */
 const COUNTER = /\b(failures?|failed|problems|errors|violations|leaks|bad)\b/i;
 
-/** Every `process.exit(...)` / `process.exitCode = ...`, with its line. */
+/**
+ * Every `process.exit(...)` / `process.exitCode = ...`, with its line AND its
+ * character offset.
+ *
+ * KAN-540 added `index`. A line number is enough to PRINT an exit and not
+ * enough to place it in the control flow: `if (failures) process.exit(1)` puts
+ * the condition and the exit on one line, so the question "is this exit inside
+ * that `if`'s body" is only answerable against offsets.
+ */
 function exitPaths(source) {
   const found = [];
   const lines = source.split('\n');
+  let offset = 0;
   lines.forEach((line, i) => {
     const exitCall = line.match(/process\.exit\s*\(([^;]*)\)/);
-    if (exitCall) found.push({ line: i + 1, kind: 'exit', expr: exitCall[1].trim(), text: line.trim() });
+    if (exitCall)
+      found.push({
+        line: i + 1,
+        index: offset + exitCall.index,
+        kind: 'exit',
+        expr: exitCall[1].trim(),
+        text: line.trim()
+      });
     const exitCode = line.match(/process\.exitCode\s*=\s*([^;]+)/);
-    if (exitCode) found.push({ line: i + 1, kind: 'exitCode', expr: exitCode[1].trim(), text: line.trim() });
+    if (exitCode)
+      found.push({
+        line: i + 1,
+        index: offset + exitCode.index,
+        kind: 'exitCode',
+        expr: exitCode[1].trim(),
+        text: line.trim()
+      });
+    offset += line.length + 1;
   });
   return found;
 }
 
 /**
- * The condition controlling an exit, if a nearby `if` supplies one.
+ * The condition that actually governs an exit, if one does.
  *
  * `exit(1)` says nothing on its own — `if (failures) process.exit(1)` is a
  * verdict and `if (!existsSync(dist)) process.exit(1)` is a guard, and the
- * difference is entirely in the line above. Reading only the exit's argument
- * misclassified verify-agent-resumption on this sweep's first run: the whole
- * point of level 3 is that the argument is not where the meaning lives.
+ * difference is entirely in the condition that reaches it. Reading only the
+ * exit's argument misclassified verify-agent-resumption on this sweep's first
+ * run: the whole point of level 3 is that the argument is not where the meaning
+ * lives.
+ *
+ * KAN-540 REPLACED A SIX-LINE WINDOW WITH CONTAINMENT. This used to return the
+ * text after the first `if (` within six lines ABOVE the exit, and check
+ * nothing about whether the exit was inside that `if`'s body. Proximity was
+ * taken for control flow, so a five-line script whose only exit was
+ * unconditional passed this required check. `lib/governing-conditions.mjs`
+ * carries the reproduction and the argument; what matters here is that the
+ * condition text now comes from a balanced parenthesis match and from nowhere
+ * else, so this sweep no longer has a code path that can mistake a line
+ * fragment for a condition.
+ *
+ * The chain is searched innermost-outward rather than only at its innermost
+ * link: an exit inside `if (failures) { if (verbose) { … } }` is reached only
+ * when `failures`, and the nearest `if` is not the governing one.
  */
-function controllingCondition(source, lineNumber) {
-  const lines = source.split('\n');
-  for (let i = lineNumber - 1; i >= Math.max(0, lineNumber - 6); i--) {
-    const m = lines[i].match(/\bif\s*\((.*)/);
-    if (m) return m[1];
+function governingCounterCondition(regions, index) {
+  // Written as a loop rather than `.find(…) ?? null` deliberately: `find`
+  // answers `undefined`, and a `?? null` normalising it is exactly the fallback
+  // constant `sweep-script-text-hazards.mjs` refuses — and getting it wrong
+  // here fails toward calling every exit a verdict, since `undefined !== null`.
+  for (const cond of governingConditions(regions, index)) {
+    if (COUNTER.test(cond)) return cond;
   }
   return null;
 }
@@ -97,14 +143,14 @@ function controllingCondition(source, lineNumber) {
  * conditional or computed: setting it to 1 from inside a check and then ending
  * naturally is how eight of these scripts legitimately report failure.
  */
-function classify(entry, source) {
-  const { kind, expr, text, line } = entry;
+function classify(entry, source, regions) {
+  const { kind, expr, text, index } = entry;
 
-  // A literal exit guarded by a check on accumulated failures is a verdict,
-  // whatever its argument looks like.
-  const condition = controllingCondition(source, line);
-  if (kind === 'exit' && condition && COUNTER.test(condition)) {
-    return { verdict: true, why: `reached only when \`${condition.trim().slice(0, 40)}\`` };
+  // A literal exit INSIDE the body of a check on accumulated failures is a
+  // verdict, whatever its argument looks like.
+  const condition = kind === 'exit' ? governingCounterCondition(regions, index) : null;
+  if (condition !== null) {
+    return { verdict: true, why: `reached only when \`${renderCondition(condition)}\`` };
   }
 
   if (kind === 'exitCode') {
@@ -177,11 +223,19 @@ for (const dir of SCRIPT_DIRS) {
     // real file and the diagnostics below quote the real line.
     const code = maskNonCode(source);
     const sourceLines = source.split('\n');
+    // KAN-540: the `if` bodies of this file, computed ONCE and handed to every
+    // classification below. `classify` still gets the source — the
+    // `process.exit(process.exitCode)` branch asks a whole-file question of it
+    // — but it no longer derives a CONDITION from it: the only conditions in
+    // circulation are the ones `conditionalRegions` matched to a closing
+    // parenthesis, which is what makes the retired window's line fragment
+    // unrepresentable rather than merely absent.
+    const regions = conditionalRegions(code);
     const codeExits = exitPaths(code);
     const inCode = new Set(codeExits.map((e) => `${e.line}:${e.kind}`));
     const paths = codeExits.map((e) => ({
       ...e,
-      ...classify(e, code),
+      ...classify(e, code, regions),
       text: (sourceLines[e.line - 1] ?? '').trim()
     }));
     // What the mask removed, kept only so `--verbose` can show its working.
