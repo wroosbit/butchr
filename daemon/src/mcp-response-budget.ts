@@ -1290,6 +1290,14 @@ export function fitGenericResponse(
     // `products`. Descending would clip that, save four characters, record a
     // `members-omitted` against the wrong half, and leave the caller's own
     // 5,300-character query sitting in `path`.
+    //
+    // WHOLE-FIELD CANDIDACY IS NOT THE SAME AS A WHOLE-FIELD OUTCOME, and the
+    // distinction matters since KAN-522. Being a candidate is what makes the
+    // field reducible at all; what happens to it there depends on its shape. An
+    // object — `via` — is given up whole. A LIST is trimmed to the largest
+    // prefix that fits, because n entries beat none for every n > 0, so
+    // `available: [...]` comes back short rather than absent. Both carry
+    // `exemptionRevoked`, which is the half a reader needs either way.
     if (field in NEVER_CLIPPED_FIELDS) {
       candidates.push({ path: field, owner: null, key: field, size: sizeOf(value) });
       continue;
@@ -1383,7 +1391,17 @@ export function fitGenericResponse(
         returned: keep,
         total,
         omitted: total - keep,
-        readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why
+        readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why,
+        // KAN-525. A DEMOTED EXEMPT FIELD REACHES THIS RUNG TOO, AND THE
+        // REVOCATION HAS TO SURVIVE THE BETTER OUTCOME. `available: [...]` —
+        // this ticket's own example — is a list, so KAN-522's trimming rung
+        // takes it before the stub below ever runs, and a reader gets 181 of
+        // 300 entries rather than none. That is strictly better and it is why
+        // the spread is added here rather than the rung being excluded: what
+        // must not happen is the answer losing WHY a field documented as never
+        // clipped was clipped at all. Without this the record reads as an
+        // ordinary trim and the exemption looks like it simply did not work.
+        ...(candidate.owner === null ? revocationSpread(candidate.key, raw) : {})
       });
 
       // The largest prefix that fits, by binary search rather than by halving.

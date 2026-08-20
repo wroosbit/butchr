@@ -300,6 +300,23 @@ rule("3. THE RED — AN EXEMPT NAME CARRYING A LIST IT IS NOT ENTITLED TO");
     fitted.text.length <= DEFAULT_BUDGET_CHARS,
     `${fitted.text.length} > ${DEFAULT_BUDGET_CHARS}`
   );
+  // ASSERTED RATHER THAN LEFT INCIDENTAL, because it is where this ticket meets
+  // KAN-522 and the two could regress apart. A demoted field is a CANDIDATE for
+  // reduction; what happens to it there depends on its shape, and a list takes
+  // the trimming rung. So `available` comes back SHORT rather than absent —
+  // strictly better than the stub — and the revocation above has to survive
+  // that better outcome. If a later change routed demoted fields straight to
+  // the stub, every other check in this block would still pass and a reader
+  // would silently lose 181 entries they could have had.
+  check(
+    `a demoted LIST is trimmed, not stubbed — ${record?.returned}/300 entries survive as a real array`,
+    record?.reduction === 'entries-omitted' &&
+      Array.isArray(fitted.payload.available) &&
+      fitted.payload.available.length === record.returned &&
+      record.returned > 0 &&
+      record.returned + record.omitted === 300,
+    `reduction=${record?.reduction} value=${JSON.stringify(fitted.payload.available)?.slice(0, 80)}`
+  );
   check(
     '`success` — bounded and inside its ceiling — is untouched by the same pass',
     fitted.payload.success === true,
