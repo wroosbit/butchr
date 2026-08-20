@@ -2079,7 +2079,30 @@ export class HerdrBridge implements AgentRuntime {
       const unreadable: CensusUnreadableRecord[] = [];
 
       rows.forEach((agent: any, index: number) => {
-        if (!agent || typeof agent.name !== 'string') {
+        // ── herdr 0.8.x removed `name` from `agent list` (KAN-552, 2026-08-20) ──
+        // Rows now carry `agent`: the KIND for a herdr-started agent ("claude"),
+        // or whatever a supervisor declared via `pane report-agent`, which is
+        // where CrabCast puts its pane name. The comment below this block says
+        // naming a nameless row "would be inventing the one value that
+        // identifies it" — true on 0.6.4, where `name` was the identity and
+        // its absence meant a bare pane. On 0.8.x the identity is still on the
+        // row; it moved fields. Reading `agent` is not invention, it is reading
+        // the field herdr now uses.
+        //
+        // WHY THIS MATTERS HERE AND NOT ONLY IN CRABCAST: under
+        // BUTCHR_AGENT_RUNTIME=crabcast this reader is bypassed — the census
+        // comes from CrabCast's registry, which 9ccce2c taught to derive names.
+        // But a butchr-daemon restarted WITHOUT its environment (KAN-550; twice
+        // on 2026-08-20) falls back to reading herdr directly through THIS
+        // code, and with `name` gone it reported `agentsTotal: 0` against 20
+        // live agents, 15 of them marked `no-name`. The fix being in CrabCast
+        // only meant the reader that actually failed was still blind, masked
+        // until the next unconfigured restart. Same defect, one layer up.
+        const derivedName =
+          typeof agent?.name === 'string' && agent.name ? agent.name
+          : typeof agent?.agent === 'string' && agent.agent ? agent.agent
+          : null;
+        if (!agent || derivedName === null) {
           unreadable.push({
             source: 'herdr-census',
             // `herdr agent list` is a JSON array, not a line-oriented registry,
@@ -2111,7 +2134,7 @@ export class HerdrBridge implements AgentRuntime {
           return;
         }
         agents.push({
-          name: agent.name as string,
+          name: derivedName,
           agentRuntime: typeof agent.agent === 'string' && agent.agent ? agent.agent : null,
           workDir: typeof agent.cwd === 'string' ? agent.cwd : null,
           herdrStatus: toAgentStatus(agent.agent_status)
