@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 125 |
+| `yes` | 126 |
 | `partial` | 15 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **165** |
+| **total** | **166** |
 
-**140 of 165** run on every pull request.
+**141 of 166** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -135,6 +135,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-mjs-stub-arity-matches-seam` | yes | reads `daemon/src/agent-runtime.ts` and the `.mjs` files as TEXT; no build, no socket, no peer, no credential, no network. Unaffected by a failed build, so its verdict is about what you wrote rather than what last compiled. |
 | `verify-no-build-output-is-committed` | yes | reads `git ls-files` off the checkout and the bytes of the files it names, and builds its fixtures under `os.tmpdir()`; node builtins and `git` only, no build, no daemon, no herdr, no credential, no peer, no network, no terminal, no wall clock. |
 | `verify-notifications-never-type` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-nudge-refuses-a-dialog-pane` | yes | imports the built daemon modules and drives the real `awaitAgentReadiness` and `nudgeResumedAgent` against a scripted runtime stub. No live daemon, no herdr, no terminal, no network, no credential, no Jira. It spends real monotonic time, deliberately and about a second of it: every call passes a `ReadinessBudget` shortening the 120s budget to tens of milliseconds. KAN-543 added that seam for this script, and it is why the parked branch is watchable at all. The CLOCK is not part of the seam — see §6, and see `ReadinessBudget`'s docblock for the invariant that decided it. |
 | `verify-off-button-honesty` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-operative-rules-are-carried` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-parentage-in-list-agents` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
