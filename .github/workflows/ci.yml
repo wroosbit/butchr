@@ -103,6 +103,34 @@ jobs:
       - name: Sweep verify-* scripts for verdict-driven exits
         run: node daemon/scripts/sweep-verify-exit-paths.mjs --verbose
 
+      # KAN-373. A STEP IN THIS JOB rather than a new job, for the reason the
+      # two steps above already give: a new job is not a required check until
+      # somebody with admin edits the branch-protection list, which is not an
+      # agent's to do, so a guard that arrives as its own job arrives ungated.
+      #
+      # The sweep above asks STRUCTURALLY whether a script's skip tally reaches
+      # its verdict. This asks whether the verdict it reaches is CORRECT — that
+      # a skipped-but-not-failed run really does leave the process with a
+      # non-zero status, which is a claim about `process.exit` and not about the
+      # shape of an expression. Neither subsumes the other.
+      #
+      # ⚠ `--allow-skipped` IS LOAD-BEARING HERE AND IS NOT A SOFTENER. This job
+      # deliberately does no `npm install` and no build — that is what keeps it
+      # un-flaky — so §3, which drives a real `dist`-importing script end to
+      # end, cannot run and SKIPS. Without the flag this step would exit 2, and
+      # correctly: an incomplete run is not a pass. The flag is this caller
+      # saying, in a line a reviewer can read, "§1 and §2 are what I am gating
+      # on here, and I know §3 did not run." §3 is not lost — `verify-runnable-
+      # set` builds first and executes it there, which is why the script is
+      # classified `partial` rather than `yes`.
+      #
+      # Do NOT reach for `continue-on-error` or `|| true` if this goes red. A
+      # red here means the exit-code contract in `lib/verdict-exit.mjs` moved,
+      # and that contract is the only thing standing between "the peer proved
+      # it" and "nobody started a peer".
+      - name: Prove a skipped section is not reported as a pass
+        run: node daemon/scripts/verify-skip-is-not-a-pass.mjs --verbose --allow-skipped
+
       # KAN-531. A THIRD STEP IN THIS JOB RATHER THAN A NEW JOB, for KAN-527's
       # reason and not for a new one: a new job is not a required check until
       # somebody with admin edits the branch-protection list, which is not an
