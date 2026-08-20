@@ -13,9 +13,7 @@
 // that tree reports at full size five times over; unlinked, it frees nothing at
 // all, because the store's name survives.
 //
-// CI-RUNNABLE: yes - it imports the built daemon module and builds its own
-// filesystem fixture. No live daemon, no herdr, no credential, no peer, no
-// terminal, no network.
+// CI-RUNNABLE: yes — imports the built daemon module and builds its own filesystem fixture on tmpfs; no live daemon, no herdr, no credential, no peer, no terminal, no network.
 //
 // ---------------------------------------------------------------------------
 // THE TICKET SAYS HARDLINKING IS RULED OUT. IT IS NOT, AND BOTH MEASUREMENTS
@@ -166,8 +164,32 @@ if (!fs.existsSync(TMPFS)) {
 }
 
 const MIB = 1024 * 1024;
-/** Per tree. Large enough that a stray page elsewhere cannot explain the delta. */
-const TREE_MIB = 16;
+/**
+ * Per tree. Large enough that a stray page cannot explain the delta, small
+ * enough to fit a containerised runner's 64 MB `/dev/shm`.
+ *
+ * Only three of the five trees cost real blocks — the two store-linked ones are
+ * names over blocks the store already holds — so the fixture is ~3x this.
+ * Nothing but this process writes to tmpfs, so the noise floor is near zero and
+ * the 3% tolerance below is slack rather than a fudge.
+ */
+const TREE_MIB = 8;
+
+// A setup guard, deliberately not a verdict. A fixture that does not fit is a
+// proof that did not run, and it must say so rather than measure a truncated
+// tree and report a verdict about it.
+const NEEDED = TREE_MIB * MIB * 6;
+const availableOnTmpfs = (() => {
+  const st = fs.statfsSync(TMPFS);
+  return st.bavail * st.bsize;
+})();
+if (availableOnTmpfs < NEEDED) {
+  console.error(
+    `${TMPFS} has ${(availableOnTmpfs / MIB).toFixed(1)} MiB free and this proof needs ` +
+      `${(NEEDED / MIB).toFixed(1)} MiB to build a fixture it can read df on`
+  );
+  process.exit(2);
+}
 
 // ---------------------------------------------------------------------------
 // Fixture
