@@ -33,30 +33,47 @@
  *     shape KAN-262 names: `rm -rf` through a symlink into a shared store
  *     empties it for everyone. Skipping costs a workspace's worth of bytes and
  *     cannot empty a store.
- *   - **Hard links are safe, and they have already broken the number.** This is
- *     the line the epic's ruling assigns to whichever of KAN-259/KAN-262 merged
- *     second; KAN-262 merged first, so it is this one, and it is written in the
- *     present tense because the store exists on this machine **now**.
+ *   - **Hard links are safe, and they used to break the number. KAN-545 fixed
+ *     the number.** Deleting a hard-linked tree unlinks names and frees only
+ *     what nothing else references, so it cannot corrupt a store.
  *
- *     Deleting a hard-linked tree unlinks names and frees only what nothing
- *     else references, so it cannot corrupt a store. But `bytes` below counts
- *     allocated blocks, so it reports a hard-linked tree at full apparent size:
- *     KAN-262 measured `rm -rf` of a 174M hard-linked `extension/node_modules`
- *     recovering **5 MB**, store intact at 292M.
+ *     Until KAN-545, `bytes` added `blocks * 512` once per **name**, so a
+ *     hard-linked tree was reported at full apparent size while freeing
+ *     nothing. That was measured twice, three months apart in effect: KAN-262
+ *     saw `rm -rf` of a 174M hard-linked `extension/node_modules` recover
+ *     **5 MB** with the store intact at 292M, and on 2026-08-20 a real sweep
+ *     reported **10.4 GB** against a `df` movement of **1.14 GiB**. The
+ *     multiplier was simply how many workspaces shared each inode: measured the
+ *     same day, `mime-db/db.json` had `nlink=6` — one name in the store and
+ *     five in live workspaces, one inode, 400 blocks, counted six times.
  *
- *     So `bytes` **is misleading today**, not one day: it is the right number
- *     for a private copy and the wrong one for a linked tree, and a workspace
- *     reclaimed for ~0 bytes is the mechanism working rather than failing. The
- *     question that replaces it is *"does any workspace still hold a private
- *     copy of a tree the store already has?"*. `story/KAN-151` recorded the
- *     reconciliation and `epic/KAN-39` owns it.
+ *     `measure()` below now asks the question `df` answers: a file's blocks are
+ *     counted **once**, and only when this sweep is unlinking its **last**
+ *     name. The per-name figure is still reported, as `apparentBytes`, because
+ *     it is a real quantity — it is just not the one an operator low on disk is
+ *     asking about. See `verify-reclaim-bytes-are-freed-bytes.mjs`, which
+ *     asserts the reported figure against a real before/after `statfs` delta
+ *     and against an independent inode-deduplicating walk.
  *
- *     **And no assertion here catches the drift** — section 1 of
- *     `verify-workspace-reclaim.mjs` asserts `sweep.bytes > 0`, which passes on
- *     a hard-linked tree just as it does on a private copy. That is not a
- *     defect in the script; it is why this paragraph has to do the work
- *     instead, and why nobody should read a large `bytes` as proof of a large
- *     `df` movement. (Raised by `task/KAN-262` on KAN-259 after its merge.)
+ *     **KAN-545's ticket says hardlinking was ruled out. It was not.** That
+ *     reading came from sampling one file across six surviving workspaces and
+ *     finding `links=1` on all six — a sound test that landed on the
+ *     private-copy half of a mixed fleet. On 2026-08-20 this machine held 38
+ *     surviving workspace `node_modules`, 14 with multiply-linked files and 24
+ *     without, because a tree is linked only where `link-workspace-deps.mjs`
+ *     built it and private wherever anything ran `npm install`. The reporter's
+ *     own `du -c` figures corroborate the sharing, since `du -c` deduplicates
+ *     by inode: 4.17 GiB across all 99 directories against the tool's 9.69 GiB
+ *     across 72 of them. Both measurements were right; only the conclusion
+ *     drawn from the smaller sample was not.
+ *
+ *     A workspace reclaimed for ~0 bytes is still the mechanism working rather
+ *     than failing; what has changed is that the report now says so instead of
+ *     claiming the tree's full size. The question that goes with it is
+ *     unchanged: *"does any workspace still hold a private copy of a tree the
+ *     store already has?"* — and `apparentBytes - bytes` is now the direct
+ *     answer to it. `story/KAN-151` recorded the reconciliation and
+ *     `epic/KAN-39` owns it.
  *
  * THE STORE IS NOT A ROOT OF THIS SWEEP, AND MUST NOT BECOME ONE. KAN-262 puts
  * its shared store at `~/.local/share/butchr/dep-store` — a *sibling* of the
@@ -89,8 +106,20 @@ const NEVER_DESCEND = new Set(['.git', '.claude']);
 export interface ReclaimedPath {
   /** Absolute path of the removed `node_modules`. */
   path: string;
-  /** Allocated size, from `blocks * 512` — what `df` will show, not apparent size. */
+  /**
+   * Allocated bytes this removal gives back — what `df` will move by.
+   *
+   * Blocks shared with a name that survives (the dep-store's copy, or another
+   * directory in the same sweep that was credited with them) are NOT counted
+   * here. See `measure`.
+   */
   bytes: number;
+  /**
+   * Allocated bytes summed over every name beneath it, the way `bytes` was
+   * computed before KAN-545. Kept because it is a real quantity and something
+   * may want it; it is not what an operator low on disk is asking about.
+   */
+  apparentBytes: number;
   /** Files beneath it, reported so a suspiciously small reclaim is visible. */
   files: number;
 }
@@ -108,7 +137,10 @@ export interface WorkspaceReclaim {
   workDir: string;
   removed: ReclaimedPath[];
   skipped: SkippedPath[];
+  /** Allocated bytes actually freed from this workspace. */
   bytes: number;
+  /** The per-name total, for the reason on `ReclaimedPath.apparentBytes`. */
+  apparentBytes: number;
 }
 
 /** A workspace the sweep refused to touch, and why. */
@@ -132,8 +164,15 @@ export interface ReclaimSweep {
   excluded: ExcludedWorkspace[];
   /** Candidates found and refused, across every workspace. */
   skipped: SkippedPath[];
-  /** Total allocated bytes removed (or, in a dry run, that would be). */
+  /**
+   * Total allocated bytes actually freed (or, in a dry run, that would be).
+   *
+   * This is a claim about `df`, and it is checked against one: see
+   * `daemon/scripts/verify-reclaim-bytes-are-freed-bytes.mjs`.
+   */
   bytes: number;
+  /** The same sweep counted per name — see `ReclaimedPath.apparentBytes`. */
+  apparentBytes: number;
   /** Directories removed (or that would be). */
   directories: number;
   /** Non-fatal failures — one unreadable workspace must not lose the sweep. */
@@ -284,10 +323,92 @@ function findCandidates(dir: string, found: string[], skipped: SkippedPath[], de
   }
 }
 
-/** Allocated size and file count beneath `dir`, following no links. */
-function measure(dir: string): { bytes: number; files: number } {
+/** What one directory's measurement yielded. */
+interface Measurement {
+  /** Allocated bytes this removal actually gives back to the filesystem. */
+  bytes: number;
+  /** Allocated bytes summed over every NAME — the pre-KAN-545 figure. */
+  apparentBytes: number;
+  /** Names beneath it, reported so a suspiciously small reclaim is visible. */
+  files: number;
+}
+
+/**
+ * Every inode this sweep has already claimed a name of.
+ *
+ * Keyed `dev:ino`. `nlink` is recorded at FIRST sight and never refreshed, for
+ * the reason in `measure` below.
+ */
+type InodeLedger = Map<string, { blocks: number; nlink: number; claims: number }>;
+
+/**
+ * Allocated size and file count beneath `dir`, following no links.
+ *
+ * `bytes` is the number `df` will move by, which is not the sum of the sizes of
+ * the names being unlinked. Since KAN-262 a workspace's `node_modules` is
+ * hard-linked from a shared store, so one inode carries many names, and
+ * unlinking one of them frees nothing at all — the blocks go back only when the
+ * LAST name goes. Counting per name is what reported 10.4 GB for a sweep that
+ * moved `df` by 1.14 GiB (KAN-545).
+ *
+ * So a file's blocks are counted once, and only when the sweep is unlinking its
+ * last name. `ledger` is what makes "last" answerable: it spans the whole
+ * sweep, so a tree hard-linked to another tree the same sweep is also removing
+ * is credited exactly once, to whichever of them completes it.
+ *
+ * TWO THINGS THAT LOOK LIKE BUGS AND ARE LOAD-BEARING:
+ *
+ *   - **`nlink` is recorded at first sight and never refreshed.** A real sweep
+ *     deletes as it goes, so by the time a second directory holding the same
+ *     inode is measured, the kernel's `nlink` has already been decremented by
+ *     the first deletion. Trusting the fresh reading would let a tree that
+ *     still has a surviving name in the store look fully-claimed. Pinning the
+ *     first reading makes the arithmetic count NAMES CLAIMED against NAMES THAT
+ *     EXISTED, which is the comparison that answers the question.
+ *   - **That is also what makes a dry run agree with the real thing.** A dry
+ *     run deletes nothing, so it can never observe a decremented `nlink`; if
+ *     the accounting depended on one, a dry run would under-report every
+ *     mutually-linked pair and stop being a prediction. Both paths now read the
+ *     same first-sight `nlink` and reach the same total.
+ *
+ * Directories are counted unconditionally: a directory cannot be hard-linked,
+ * so its own blocks are always freed with it. On tmpfs that contributes zero,
+ * because tmpfs directories report `blocks: 0`; on ext4 it is ~4 KiB apiece and
+ * a `node_modules` has thousands of them.
+ */
+function measure(dir: string, ledger: InodeLedger): Measurement {
   let bytes = 0;
+  let apparentBytes = 0;
   let files = 0;
+
+  /** Charge one directory entry, deciding whether its blocks are really going. */
+  const account = (st: fs.Stats, isDirectory: boolean): void => {
+    // `blocks * 512` rather than `size`: this number is compared against `df`,
+    // and a sparse or small file costs a block either way.
+    const allocated = st.blocks * 512;
+    apparentBytes += allocated;
+
+    if (isDirectory) {
+      bytes += allocated;
+      return;
+    }
+
+    files += 1;
+
+    const key = `${st.dev}:${st.ino}`;
+    let entry = ledger.get(key);
+    if (!entry) {
+      entry = { blocks: st.blocks, nlink: st.nlink, claims: 0 };
+      ledger.set(key, entry);
+    }
+    entry.claims += 1;
+
+    // Exactly `===`: the blocks are freed by the one claim that completes the
+    // set, and charged to the directory that made it. A later claim on the same
+    // inode — which a `nlink` the sweep mis-read could produce — must not charge
+    // for the same blocks twice.
+    if (entry.claims === entry.nlink) bytes += entry.blocks * 512;
+  };
 
   const walk = (current: string) => {
     let entries: fs.Dirent[];
@@ -298,24 +419,28 @@ function measure(dir: string): { bytes: number; files: number } {
     }
     for (const entry of entries) {
       const full = path.join(current, entry.name);
-      if (entry.isDirectory() && !entry.isSymbolicLink()) {
-        walk(full);
-        continue;
-      }
+      let st: fs.Stats;
       try {
-        // `blocks * 512` rather than `size`: this number is compared against
-        // `df`, and a sparse or small file costs a block either way.
-        const st = fs.lstatSync(full);
-        bytes += st.blocks * 512;
-        files += 1;
+        st = fs.lstatSync(full);
       } catch {
         // Vanished mid-walk. Not an error; it is simply not there to reclaim.
+        continue;
       }
+      const isDirectory = entry.isDirectory() && !entry.isSymbolicLink();
+      account(st, isDirectory);
+      if (isDirectory) walk(full);
     }
   };
 
+  // The candidate directory's own blocks go with it too.
+  try {
+    account(fs.lstatSync(dir), true);
+  } catch {
+    // Not there to reclaim; the walk below will find nothing either.
+  }
   walk(dir);
-  return { bytes, files };
+
+  return { bytes, apparentBytes, files };
 }
 
 /**
@@ -360,14 +485,27 @@ function classifyCandidate(root: string, realRoot: string, candidate: string): s
  */
 export function reclaimWorkspace(
   workDir: string,
-  options: { dryRun?: boolean; root?: string } = {}
+  options: { dryRun?: boolean; root?: string; ledger?: InodeLedger } = {}
 ): WorkspaceReclaim {
   const dryRun = options.dryRun !== false;
   const root = options.root ?? workspacesRoot();
   const realRoot = realpathOrNull(root) ?? root;
 
+  // A caller sweeping several workspaces passes its own ledger, so a tree
+  // hard-linked to one in another workspace is counted once across the sweep
+  // rather than once per workspace. A standalone caller gets a fresh one, which
+  // is the right answer for the only removal it is making.
+  const ledger: InodeLedger = options.ledger ?? new Map();
+
   const workspace = path.relative(root, workDir) || workDir;
-  const result: WorkspaceReclaim = { workspace, workDir, removed: [], skipped: [], bytes: 0 };
+  const result: WorkspaceReclaim = {
+    workspace,
+    workDir,
+    removed: [],
+    skipped: [],
+    bytes: 0,
+    apparentBytes: 0
+  };
 
   // The workspace itself gets the same treatment before anything under it is
   // even enumerated. A caller that invents a workspace location gets nothing.
@@ -389,7 +527,7 @@ export function reclaimWorkspace(
       continue;
     }
 
-    const { bytes, files } = measure(candidate);
+    const { bytes, apparentBytes, files } = measure(candidate, ledger);
 
     if (!dryRun) {
       try {
@@ -403,13 +541,19 @@ export function reclaimWorkspace(
     // Say what was reclaimed, every path, at the moment it goes. A silent
     // reclaim that surprises somebody later is the failure this epic keeps
     // deleting.
+    // Say what was reclaimed AND what was only unlinked. A line reading
+    // "removed X (0B)" looks like a failure until it says why, and "shared"
+    // is the why: those blocks have a surviving name.
+    const shared = apparentBytes - bytes;
     console.log(
       `[reclaim] ${dryRun ? 'would remove' : 'removed'} ${candidate} ` +
-        `(${formatBytes(bytes)}, ${files} files)`
+        `(${formatBytes(bytes)} freed, ${files} files` +
+        `${shared > 0 ? `, ${formatBytes(shared)} shared with a surviving name` : ''})`
     );
 
-    result.removed.push({ path: candidate, bytes, files });
+    result.removed.push({ path: candidate, bytes, apparentBytes, files });
     result.bytes += bytes;
+    result.apparentBytes += apparentBytes;
   }
 
   return result;
@@ -447,9 +591,13 @@ export function sweepWorkspaces(options: SweepOptions): ReclaimSweep {
     excluded: [],
     skipped: [],
     bytes: 0,
+    apparentBytes: 0,
     directories: 0,
     errors: []
   };
+
+  // One ledger for the whole sweep — see `measure`.
+  const ledger: InodeLedger = new Map();
 
   let types: fs.Dirent[];
   try {
@@ -487,11 +635,12 @@ export function sweepWorkspaces(options: SweepOptions): ReclaimSweep {
       }
 
       try {
-        const result = reclaimWorkspace(workDir, { dryRun, root });
+        const result = reclaimWorkspace(workDir, { dryRun, root, ledger });
         sweep.skipped.push(...result.skipped);
         if (result.removed.length > 0) {
           sweep.reclaimed.push(result);
           sweep.bytes += result.bytes;
+          sweep.apparentBytes += result.apparentBytes;
           sweep.directories += result.removed.length;
         }
       } catch (e: any) {
@@ -504,9 +653,13 @@ export function sweepWorkspaces(options: SweepOptions): ReclaimSweep {
 
   console.log(
     `[reclaim] sweep ${dryRun ? '(dry run) ' : ''}finished: ` +
-      `${sweep.directories} directories, ${formatBytes(sweep.bytes)} from ` +
+      `${sweep.directories} directories, ${formatBytes(sweep.bytes)} freed from ` +
       `${sweep.reclaimed.length}/${sweep.scanned} workspaces; ` +
-      `${sweep.excluded.length} excluded as live`
+      `${sweep.excluded.length} excluded as live` +
+      `${sweep.apparentBytes > sweep.bytes
+        ? ` (${formatBytes(sweep.apparentBytes - sweep.bytes)} of the ` +
+          `${formatBytes(sweep.apparentBytes)} unlinked is shared with names that survive)`
+        : ''}`
   );
 
   recordSweep(sweep);
@@ -542,7 +695,10 @@ export interface ReclaimSummary {
   finishedAt: string;
   workspaces: number;
   directories: number;
+  /** Allocated bytes actually freed. See `ReclaimSweep.bytes`. */
   bytes: number;
+  /** The per-name total. See `ReclaimedPath.apparentBytes`. */
+  apparentBytes: number;
   excluded: number;
   skipped: number;
   errors: number;
@@ -556,13 +712,22 @@ function recordSweep(sweep: ReclaimSweep): void {
     workspaces: sweep.reclaimed.length,
     directories: sweep.directories,
     bytes: sweep.bytes,
+    apparentBytes: sweep.apparentBytes,
     excluded: sweep.excluded.length,
     skipped: sweep.skipped.length,
     errors: sweep.errors.length,
+    // The headline is the sentence an operator acts on, so it is the freed
+    // figure, and it says so in the word "freed". Where the two differ the
+    // difference is named rather than left for somebody to discover from `df`
+    // — that gap reading as recovered space is the whole of KAN-545.
     headline:
       `${sweep.dryRun ? 'Dry run: ' : ''}` +
-      `${formatBytes(sweep.bytes)} in ${sweep.directories} node_modules ` +
-      `${sweep.dryRun ? 'reclaimable from' : 'reclaimed from'} ${sweep.reclaimed.length} workspaces` +
+      `${formatBytes(sweep.bytes)} ${sweep.dryRun ? 'would be freed' : 'freed'} ` +
+      `from ${sweep.directories} node_modules in ${sweep.reclaimed.length} workspaces` +
+      `${sweep.apparentBytes > sweep.bytes
+        ? `; a further ${formatBytes(sweep.apparentBytes - sweep.bytes)} unlinked but ` +
+          `shared with names that survive`
+        : ''}` +
       `${sweep.excluded.length > 0 ? `; ${sweep.excluded.length} left alone as live` : ''}`
   };
 }
