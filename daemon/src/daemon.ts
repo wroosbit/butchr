@@ -63,6 +63,7 @@ import {
   routeChannelMessage,
   writeChannelSwitch
 } from './channel.js';
+import type { ChannelReach } from './channel.js';
 import {
   freshConnectionFrom,
   oneWatcherPerAddress,
@@ -76,6 +77,7 @@ import {
   ChannelSelfCheckStore,
   runChannelSelfCheck
 } from './channel-selfcheck.js';
+import { ChannelSpawnReachStore } from './channel-spawn-reach.js';
 import { ChannelLivenessProbe } from './channel-liveness.js';
 import {
   GuardianPoker,
@@ -360,14 +362,25 @@ promptSourceKeeper.start();
 const { runtime: herdrBridge, report: agentRuntimeReport } = createAgentRuntime({ log });
 
 /**
- * Whether the runtime in service can put a channel frame in front of a model
- * (KAN-495).
+ * What each spawn decided about its own agent's channel (KAN-497).
+ *
+ * Written by the `setAgentSpawnedListener` closure further down — the one
+ * writer — and read only through {@link channelReach}. See
+ * `channel-spawn-reach.ts` for why it is a store of its own rather than a field
+ * on {@link channelSelfChecks}, which is where KAN-497's sketch proposed
+ * putting it: the shape is identical and the lifetime is not.
+ */
+const channelSpawnReach = new ChannelSpawnReachStore();
+
+/**
+ * Whether a channel frame written to THIS agent can reach a model (KAN-495,
+ * KAN-497).
  *
  * ONE READER, consulted by every route, for the reason channel.ts gives about
  * the kill switch and KAN-145 gives about everything: a fact with two
  * implementations is a fact with a wrong copy, and the copy nobody exercises is
- * the wrong one. A thunk rather than a captured value so it is read per send —
- * the runtime is chosen once at boot and a cutover is exactly when a value
+ * the wrong one. A function rather than a captured value so it is read per send
+ * — the runtime is chosen once at boot and a cutover is exactly when a value
  * captured then is wrong.
  *
  * **What it is asserting at each route, said once here rather than five times.**
@@ -378,8 +391,37 @@ const { runtime: herdrBridge, report: agentRuntimeReport } = createAgentRuntime(
  * `routeChannelMessage` call site below passes this, and the listing carrier
  * asks it too — KAN-274 made those one function precisely so a row cannot
  * report a carrier the next send will not take.
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠ TWO SOURCES, AND THE ORDER BETWEEN THEM IS THE WHOLE OF KAN-497
+ * ---------------------------------------------------------------------------
+ *
+ * It took no argument until KAN-497 and answered `herdrBridge.channelReach` for
+ * every agent alike. That is the right answer for a runtime whose spawn shape
+ * decides it — CrabCast derives its own from the argv it sends (KAN-496) — and
+ * it is not answerable that way for herdr, whose spawns **can** carry the flag:
+ * whether one did depends on the kill switch as it stood when that pane
+ * started, and agents outlive switch flips. So `HerdrBridge.channelReach`
+ * answered `'unknown'` for the entire fleet, honestly and uselessly.
+ *
+ * **The per-agent record wins where there is one, and the runtime answers where
+ * there is not.** Both halves are load-bearing:
+ *
+ * - The record first, because it is about *this pane's argv*, which is the
+ *   thing that actually decides whether the client renders the frame. It is
+ *   written at the spawn, from the same call that composed the command line.
+ * - ⚠ The runtime second, and **never `'not-loaded'` as a default**. An agent
+ *   with no record is one that outlived a daemon restart, not one that cannot
+ *   hear us — the record is in memory on purpose. Falling back to
+ *   `'not-loaded'` would take a working fleet off channels for a fact nobody
+ *   established, which is the collapse `ChannelReach` exists to prevent and the
+ *   one KAN-497 names as its trap. Under herdr the fall-through is `'unknown'`,
+ *   which routes exactly as this daemon routed before KAN-495; under CrabCast
+ *   it is that runtime's own derived answer, which is better than a shrug and
+ *   is untouched by this.
  */
-const channelReach = () => herdrBridge.channelReach;
+const channelReach = (address: { type: string; key: string }): ChannelReach =>
+  channelSpawnReach.get(address) ?? herdrBridge.channelReach;
 
 // The one piece of state that outlives the machine. Everything else here —
 // the session map, herdr's panes, the extension's view — dies in a power cut,
@@ -1077,9 +1119,33 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
 // with `?? false` would be green on every agent anybody tests with and wrong on
 // exactly the population the third state exists for. See AgentSpawn.
 herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
+  const address = { type: session.type, key: session.key };
+
+  // ⚠ KEPT BEFORE THE RETURN, AND THE PLACEMENT IS THE ENTIRE TICKET (KAN-497).
+  //
+  // The guard below is about SUPERVISION — whether there is a channel startup
+  // worth watching — and it is correct that a non-channel spawn needs none. But
+  // the verdict itself is worth exactly as much on the `false` branch as on the
+  // `true` one, and more: `false` is what says *do not write frames to this
+  // agent*, which is the answer KAN-495 spent 75 unsupervised minutes not
+  // having. Recording only the `true` case would keep the fact for the agents
+  // that never needed it and drop it for the ones that did.
+  //
+  // `record` is handed the raw three-state verdict rather than a boolean this
+  // line derives, so the `null` that means "no spawn decided this" stays
+  // distinguishable from the `false` that means "decided, and no channel" —
+  // see `reachFromSpawnVerdict`, which stores nothing for `null` on purpose.
+  // Anything that collapsed them here would be green on every agent anybody
+  // tests with and wrong on exactly the population the third state exists for.
+  const recorded = channelSpawnReach.record(address, spawn.channelEnabled);
+  log(
+    `channel reach for ${describeAddress(address)}: ` +
+      (recorded ?? "unrecorded (the spawn decided nothing — 'null' is not 'false')") +
+      ` — spawn said channelEnabled=${JSON.stringify(spawn.channelEnabled)}`
+  );
+
   if (spawn.channelEnabled !== true) return;
 
-  const address = { type: session.type, key: session.key };
   // THIS AGENT IS BEING RE-SPAWNED, SO WHATEVER WAS KNOWN ABOUT ITS CHANNEL IS
   // NO LONGER KNOWN (KAN-248). Dropped before the new check rather than
   // overwritten after it: a verdict that never held a connection is released by
@@ -1327,7 +1393,15 @@ const server = net.createServer((socket) => {
           // KAN-495, and the row must ask it because the route does: KAN-274
           // made these one function precisely so a listing cannot report a
           // carrier the next send will not take.
-          reach: channelReach(),
+          //
+          // ⚠ ASKED ABOUT **THIS** ADDRESS SINCE KAN-497. It used to be called
+          // with no argument, which made every row in the listing carry one
+          // fleet-wide answer — and under herdr that answer was `'unknown'` for
+          // everybody, so the row could not tell an agent that hears us from one
+          // that cannot. The route reads the same function with the same
+          // address, so the property KAN-274 bought is unchanged: a row still
+          // cannot report a carrier the next send will not take.
+          reach: channelReach(address),
           switchPath: CHANNEL_SWITCH_PATH
         });
       },
