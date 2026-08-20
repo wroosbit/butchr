@@ -39,12 +39,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 123 |
-| `partial` | 14 |
+| `partial` | 15 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **162** |
+| **total** | **163** |
 
-**137 of 162** run on every pull request.
+**138 of 163** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -179,6 +179,7 @@ classification is the deliverable and the CI job is downstream of it.
 | script | class | reason |
 | --- | --- | --- |
 | `verify-brief-staleness-check-is-depth-robust` | partial | §1-§5 build their own git repositories under a temp dir and need nothing but `git` and node: no network, no shared clone, no build. §6 imports daemon/dist and SKIPS loudly on a runner that has not built. |
+| `verify-capacity-runtime-override` | partial | sections 2 to 8 need nothing but a build and a temp directory, so they run anywhere. Section 1, the unfixed baseline that makes the rest mean anything, needs a second dist built from origin/main's capacity.ts and is SKIPPED with a note when one is not supplied. A skipped section is reported as skipped and never counted as a pass, so a CI run cannot read as though the red had been demonstrated. The red itself is in the PR body, run by hand with the commands in the Usage block below. |
 | `verify-crabcast-adopt-launcher-vocabulary` | partial | §1-§5 assert in CI. They read source as text and stand up their own Unix socket under os.tmpdir(); they need no peer, no herdr, no PTY, no credential and no network. §6 needs a live CrabCast daemon and SKIPS without one. A skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-census-disclosure` | partial | sections 1-7 assert in CI. They stand up their own Unix socket and a fake `herdr` on PATH, and need no peer, no real herdr, no PTY, no credential and no network. Section 8 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-mcp-residue-cleared` | partial | §1 and §2 read `daemon/src/*.ts` as text and assert in full. §3–§8 drive CrabCast's REAL `provisionMcpConfig` out of the peer checkout at ~/code/wroosbit/crabcast, which CI has not got, so they announce themselves SKIPPED there. They are not mocked: this proof's whole value is that the refusal is theirs. Note the skip is reachable ONLY when the checkout is absent — one that is present but dirty, behind CRABCAST_PIN, or serving a stale dist FAILS instead. |

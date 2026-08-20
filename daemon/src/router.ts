@@ -113,6 +113,14 @@ import {
   readCapacity,
   summarizeCapacity
 } from './capacity.js';
+import {
+  CAPACITY_OVERRIDE_PATH,
+  MAX_OVERRIDE_AGENTS,
+  clearCapacityOverride,
+  isUsableCap,
+  loadCapacityOverride,
+  setCapacityOverride
+} from './capacity-override.js';
 
 type Respond = (msg: any) => void;
 
@@ -484,6 +492,15 @@ function capacityDto(c: Capacity) {
     },
     capByCpu: c.capByCpu,
     capByMemory: c.capByMemory,
+    // The operator-set cap and where it came from (KAN-544). Both sent on every
+    // payload, `null` in the ordinary derived case, for the reason the
+    // `unobservedStarts` block above gives: a caller cannot otherwise tell a
+    // machine whose cap nobody set from a build that does not report this. The
+    // origin is what makes the figure actionable — `override-file` names a path
+    // a caller can edit right now, `env` names a variable that needs a restart,
+    // and a `cap` on its own cannot distinguish them.
+    configuredCap: c.configuredCap,
+    configuredCapOrigin: c.configuredCapOrigin,
     headroomByCap: c.headroomByCap,
     headroomByCpu: c.headroomByCpu,
     headroomByMemory: c.headroomByMemory,
@@ -1781,6 +1798,9 @@ export class MessageRouter {
         break;
       case 'capacity':
         this.handleCapacity(data, respond);
+        break;
+      case 'set_capacity':
+        this.handleSetCapacity(data, respond);
         break;
       case 'agent_work_state':
         this.handleAgentWorkState(data, respond);
@@ -5169,6 +5189,89 @@ export class MessageRouter {
         herdrStatus: c.herdrStatus
       })),
       fleetPriorities: describeFleetPriorities(candidates)
+    });
+  }
+
+  /**
+   * `butchr_set_capacity`: change the cap without restarting the daemon.
+   *
+   * KAN-544. The write goes to a file rather than to a variable in this
+   * process, and that is the load-bearing choice rather than an implementation
+   * detail: the machine this control exists for is one where an MCP round-trip
+   * may not complete, and a file an operator can `echo` into is reachable when
+   * this handler is not. So this tool is a convenience over the real interface,
+   * never the only way to it — see capacity-override.ts.
+   *
+   * ⚠ THE ANSWER IS A FRESH READ, NOT AN ECHO OF THE REQUEST. It re-derives
+   * capacity after the write and reports what the daemon now believes, so a
+   * caller learns what actually took effect rather than what was asked for.
+   * That distinction is the whole of the difference between this and a control
+   * that reports success and changes nothing.
+   *
+   * ⚠ AND IT THROTTLES ADMISSION WITHOUT EVICTING, WHICH THE ANSWER SAYS OUT
+   * LOUD. Lowering the cap stops new starts; agents already running keep
+   * running until they finish on their own. An operator who reads "cap: 2" on a
+   * machine carrying six and expects the number to come down has been misled by
+   * a true statement, so `takesEffect` names the limit at the moment of the
+   * change rather than leaving it in a doc nobody is reading under load.
+   */
+  private handleSetCapacity(data: any, respond: Respond) {
+    const clear = data?.clear === true;
+    const requested = data?.maxAgents;
+
+    if (!clear && !isUsableCap(requested)) {
+      respond({
+        action: 'set_capacity_response',
+        success: false,
+        error:
+          `maxAgents must be a whole number between 1 and ${MAX_OVERRIDE_AGENTS}, ` +
+          `or pass clear: true to remove the override. Got ${JSON.stringify(requested)}. ` +
+          'Zero is refused rather than accepted: a cap of 0 admits nothing, and a ' +
+          'throttle that can be typed into a full stop is not a throttle.',
+        refusedBy: 'invalid-cap'
+      });
+      return;
+    }
+
+    const wrote = clear
+      ? clearCapacityOverride()
+      : setCapacityOverride(requested as number);
+    if (!wrote) {
+      respond({
+        action: 'set_capacity_response',
+        success: false,
+        error:
+          `Could not ${clear ? 'remove' : 'write'} ${CAPACITY_OVERRIDE_PATH}. The cap is ` +
+          'unchanged. Because reading is file-based, this path is not the only way in: ' +
+          `writing that file by hand has exactly the same effect as this tool.`,
+        refusedBy: 'write-failed',
+        path: CAPACITY_OVERRIDE_PATH
+      });
+      return;
+    }
+
+    // Read back rather than report the write (this repository's rule, and the
+    // reason it exists applies exactly here): a successful write is a claim
+    // about the request, and what the daemon will admit on is whatever
+    // loadCapacityOverride now returns. If a concurrent editor changed the file
+    // between the two, the caller is told the truth rather than its own input.
+    const { agents } = this.surveyAgents();
+    const capacity = this.capacityOf(agents);
+    const inForce = loadCapacityOverride();
+    respond({
+      action: 'set_capacity_response',
+      success: true,
+      cleared: clear,
+      path: CAPACITY_OVERRIDE_PATH,
+      /** The override the daemon now reads, or null when there is none. */
+      override: inForce ? { maxAgents: inForce.maxAgents } : null,
+      takesEffect:
+        'On the next admission — the cap is re-read per activation, so no daemon ' +
+        'restart is needed and none should be performed. This throttles admission ' +
+        'and does not evict: agents already running keep running until they finish. ' +
+        'It survives a daemon restart, because it is a file.',
+      ...capacityDto(capacity),
+      derivation: describeCapacity(capacity)
     });
   }
 

@@ -783,6 +783,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "butchr_set_capacity",
+        description:
+          "Changes the agent cap WITHOUT restarting the daemon, for the moment the desktop has become unusable and a restart is the one thing you cannot afford — a restart drops every channel registration and every session, and sessions do not re-form by themselves. Pass `maxAgents` to set the cap, or `clear: true` to remove the override and hand the cap back to BUTCHR_MAX_AGENTS and then to the machine's own derivation. Takes effect on the NEXT ADMISSION, and survives a daemon restart because it is written to a file. ⚠ THIS THROTTLES ADMISSION AND DOES NOT EVICT: lowering the cap stops new starts, and agents already running keep running until they finish on their own — so on a machine that is ALREADY thrashing this changes nothing until something ends. ⚠ AND LOWERING BINDS WHERE RAISING MAY NOT: the cap is one term in a min() with the CPU and memory terms, so a lower cap reliably reduces what is admitted while a higher one often does nothing at all, because another term is usually the binding one. Read `headroomBoundBy` on the answer to see which. ⚠ BUTCHR IS NOT THE ONLY GATE IN THE PATH: CrabCast runs its own independent CRABCAST_MAX_AGENTS in a different process and can refuse a start Butchr admits, so this is half the control. The value is stored in a small JSON file the answer names; writing that file by hand has exactly the same effect, which is deliberate — when the machine is thrashing, an MCP round-trip is exactly what may fail to complete.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            maxAgents: {
+              type: "integer",
+              minimum: 1,
+              description:
+                "The cap to set: a whole number of concurrent task agents, at least 1. Zero is refused — a cap of 0 admits nothing, and a throttle that can be typed into a full stop is not a throttle. Omit when passing `clear`.",
+            },
+            clear: {
+              type: "boolean",
+              description:
+                "Optional. Remove the runtime override, so the cap falls back to BUTCHR_MAX_AGENTS and then to the derivation from this machine's cores and memory. Use this to undo a scale-down rather than setting a number you guessed at.",
+            },
+          },
+          required: [],
+        },
+      },
+      {
         name: "butchr_activate_agent",
         description:
           "Activates an agent for a specific workspace type and key (e.g. task and KAN-1). Refused when the machine is already at capacity — see butchr_capacity — unless override or preempt is set. A refusal names what is running and what each one is worth; when this activation outranks one of them, the refusal also carries a `preemption` block naming the agent that could be stood down to make room.",
@@ -1222,6 +1244,24 @@ async function dispatchTool(name: string, args: unknown): Promise<ToolResult> {
       const res = await callDaemonAPI('capacity');
       return {
         content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        isError: res?.success === false,
+      };
+    }
+
+    if (name === "butchr_set_capacity") {
+      const { maxAgents, clear } = args as any;
+      // Both omitted is a caller that has not said what it wants, and guessing
+      // either way is wrong: defaulting to a number invents a cap nobody asked
+      // for, and defaulting to clear silently removes a throttle somebody set.
+      if (maxAgents === undefined && clear !== true) {
+        throw new Error("Pass maxAgents to set the cap, or clear: true to remove the override");
+      }
+      const res = await callDaemonAPI('set_capacity', { maxAgents, clear });
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+        // Flagged for the same reason activation is: a refused cap change
+        // arriving as ordinary text is how a caller ends up believing it
+        // throttled a machine it did not.
         isError: res?.success === false,
       };
     }
