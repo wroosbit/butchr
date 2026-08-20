@@ -58,7 +58,13 @@ const fail = (m) => {
 // ---------------------------------------------------------------------------
 
 const SWEEP = 'sweep-verify-exit-paths.mjs';
-const LIBS = ['sweep-sources.mjs', 'mask-non-code.mjs'];
+// KAN-540 added `governing-conditions.mjs`. The list has to be complete or the
+// copied sweep dies on an unresolved import, and `runSweep` reads that as a
+// non-zero exit with EMPTY stdout — which arrives here as "the sweep reported
+// no row for it", i.e. as a substantive finding about the classifier rather
+// than as a broken fixture. Every section below fails at once when this list is
+// short, which is the tell.
+const LIBS = ['sweep-sources.mjs', 'mask-non-code.mjs', 'governing-conditions.mjs'];
 
 /**
  * Build a throwaway repository shaped like this one — `daemon/scripts` with the
@@ -128,6 +134,18 @@ function parseReport(stdout) {
     }
   }
   return rows;
+}
+
+/**
+ * How many scripts the sweep says it swept, from its own summary line.
+ *
+ * The number to compare a parse against: it is printed BEFORE the table, so a
+ * report that arrives truncated still carries the count of what should have
+ * been in it. `null` when the line is absent, which is itself a short read.
+ */
+function sweptCount(stdout) {
+  const m = stdout.match(/^sweeping (\d+) verify-\* scripts/m);
+  return m ? Number(m[1]) : null;
 }
 
 const HEADER = (what) =>
@@ -272,9 +290,22 @@ try {
         r.verdicts.some((v) => /if \(failures\) process\.exit\(1\)/.test(v.text)),
         `verdicts: ${JSON.stringify(r.verdicts.map((v) => v.text))}`
       );
+      // KAN-540: this asked for `guardCount === 0`, and it passed for the wrong
+      // reason. The fixture's own trailing `process.exit(0)` was being credited
+      // to the `if (failures)` on the line above it by the retired proximity
+      // window, so it counted as a VERDICT and never reached the guard column.
+      // It is an unconditional success exit and it is a guard. What this
+      // section is actually about is the SHIM's exits, so it now asks that —
+      // no guard may sit on a line the mask took out.
       check(
         "the shim's exits are not counted as the script's guards",
-        r.guardCount === 0,
+        r.guards.every((g) => !r.maskeds.some((m) => m.line === g.line)),
+        `${r.guardCount} guard(s): ${JSON.stringify(r.guards.map((g) => g.text))}` +
+          `; masked at ${JSON.stringify(r.maskeds.map((m) => m.line))}`
+      );
+      check(
+        "the script's own trailing success exit is its only guard",
+        r.guardCount === 1 && /process\.exit\(0\)/.test(r.guards[0].text),
         `${r.guardCount} guard(s): ${JSON.stringify(r.guards.map((g) => g.text))}`
       );
     }
@@ -398,10 +429,17 @@ try {
 
   const realRun = runSweep(path.join(scriptDir, SWEEP));
   const realRows = parseReport(realRun.stdout);
+  // Against the sweep's OWN count rather than a floor. `> 100` was the check
+  // here until KAN-540, and a floor cannot tell a complete report from a
+  // partial one: a run whose output arrived truncated parsed to 128 of 164 rows
+  // and cleared it, so four named scripts were reported ABSENT — a finding
+  // about the repository, produced by a short read. `prompts/task.md`: an empty
+  // result is a claim about your search.
   check(
-    `the sweep read this repository (${realRows.size} rows)`,
-    realRows.size > 100,
-    'the sweep reported almost nothing — it did not read the real tree'
+    `every row the sweep printed was parsed (${realRows.size})`,
+    realRows.size === sweptCount(realRun.stdout),
+    `the sweep says it swept ${sweptCount(realRun.stdout)} scripts and ${realRows.size} rows parsed` +
+      ' — the report was read partially, so every verdict below is about a subset'
   );
 
   for (const name of REAL_SHIM_SCRIPTS) {
