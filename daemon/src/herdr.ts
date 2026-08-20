@@ -2080,15 +2080,6 @@ export class HerdrBridge implements AgentRuntime {
 
       rows.forEach((agent: any, index: number) => {
         // ── herdr 0.8.x removed `name` from `agent list` (KAN-552, 2026-08-20) ──
-        // Rows now carry `agent`: the KIND for a herdr-started agent ("claude"),
-        // or whatever a supervisor declared via `pane report-agent`, which is
-        // where CrabCast puts its pane name. The comment below this block says
-        // naming a nameless row "would be inventing the one value that
-        // identifies it" — true on 0.6.4, where `name` was the identity and
-        // its absence meant a bare pane. On 0.8.x the identity is still on the
-        // row; it moved fields. Reading `agent` is not invention, it is reading
-        // the field herdr now uses.
-        //
         // WHY THIS MATTERS HERE AND NOT ONLY IN CRABCAST: under
         // BUTCHR_AGENT_RUNTIME=crabcast this reader is bypassed — the census
         // comes from CrabCast's registry, which 9ccce2c taught to derive names.
@@ -2098,9 +2089,30 @@ export class HerdrBridge implements AgentRuntime {
         // live agents, 15 of them marked `no-name`. The fix being in CrabCast
         // only meant the reader that actually failed was still blind, masked
         // until the next unconfigured restart. Same defect, one layer up.
+        //
+        // ⚠ THE FALLBACK IS `pane_id`, AND DELIBERATELY NOT `agent`. The first
+        // attempt at this fix read `agent`, and `agent` is the KIND, not an
+        // identity: measured against live herdr 0.8.2 on 2026-08-20, ten rows
+        // carried four distinct `agent` values because seven of them were all
+        // the literal "claude" — only a supervisor that has called `pane
+        // report-agent` puts anything identifying there. That derivation buys
+        // PRESENCE at the cost of making `name` a colliding key, which is
+        // exactly what the row filter below exists to refuse.
+        //
+        // `pane_id` is herdr's own addressing handle and was distinct on all
+        // ten of those rows. It is what `herdr pane get <pane_id>` resolves —
+        // measured both ways: `pane get w1:p4` returns the pane, `pane get
+        // claude` returns `pane_not_found`. So reading `pane_id` is not
+        // inventing an identity, it is reading the one herdr addresses by;
+        // reading `agent` would have been inventing one, and a colliding one.
+        //
+        // A row with neither `name` nor `pane_id` still cannot be addressed,
+        // and still gets disclosed below rather than admitted under a made-up
+        // name. That is the invariant §7 of verify-crabcast-census-disclosure
+        // pins, and it is unchanged.
         const derivedName =
           typeof agent?.name === 'string' && agent.name ? agent.name
-          : typeof agent?.agent === 'string' && agent.agent ? agent.agent
+          : typeof agent?.pane_id === 'string' && agent.pane_id ? agent.pane_id
           : null;
         if (!agent || derivedName === null) {
           unreadable.push({
@@ -2111,9 +2123,12 @@ export class HerdrBridge implements AgentRuntime {
             problem: 'no-name',
             identity: null,
             reason:
-              'this row carried no string `name`, and a census row without one cannot be ' +
-              'addressed, tailed or supervised. Naming it would be inventing the one value ' +
-              'that identifies it.',
+              'this row carried neither a string `name` nor a string `pane_id`, and a census ' +
+              'row without one of those cannot be addressed, tailed or supervised. Naming it ' +
+              'would be inventing the one value that identifies it. `agent` is NOT that value: ' +
+              'it carries the agent KIND ("claude") unless a supervisor has called `pane ' +
+              'report-agent`, so falling back to it would admit colliding rows under a name ' +
+              'that addresses nothing.',
             // `claimsPath` is CrabCast's registry field and herdr has no
             // counterpart: `herdr agent list` is a JSON array of panes, not a
             // registry of rows that name directories. `null` here is the same
