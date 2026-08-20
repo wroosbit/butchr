@@ -2227,6 +2227,15 @@ export class CrabCastRuntime implements AgentRuntime {
     // typed `string | null` so `0` should not arrive; it is named because the
     // truthy/nullish distinction is what makes this line correct, and a later
     // reader retyping the field is exactly who needs to know that.
+    //
+    // ⚠ KAN-541 BRIEFLY MADE `agentNameFor` THROW, AND THIS LINE IS WHY IT DOES
+    // NOT. `?` is outside herdr's character class, so a validating producer
+    // would have raised `InvalidAgentNameError` for exactly the population this
+    // line exists to serve — an address whose type could not be resolved. The
+    // refusal now lives at the herdr boundary (`assertAgentNameFitsHerdr`),
+    // where the name is about to become a real agent; here it is a display
+    // string, and `HerdrAgentDescription.agentName` is typed `string` partly
+    // because of this case.
     const agentName = agentNameFor(resolvedType || '?', key);
     const dir = resolvedType ? pathForAddress(resolvedType, key) : null;
     // **The `paneName` join below is RIGHT, and stays (KAN-397 AC3).** It reads

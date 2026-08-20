@@ -1,6 +1,6 @@
 import { JiraBoardIssue, JiraBoardOutcome, BOARD_MAX_RESULTS } from './jira.js';
 
-import { agentNameFor } from './herdr.js';
+import { tryAgentNameFor } from './herdr.js';
 import {
   workspaceTypeForJiraIssueTypeStrict,
   jiraIssueWorkspaceTypes
@@ -1098,8 +1098,47 @@ export function computeBoardDiff(
       unresolvedKeys.add(key);
       continue;
     }
+    // KAN-541. A key whose name herdr would reject cannot be staffed, and this
+    // loop is where the fleet decides what to staff — so the question is asked
+    // here rather than left to the spawn, which would start a cycle's worth of
+    // work only to refuse it at the boundary.
+    //
+    // ⚠ It ASKS rather than being thrown at, and that is the point of using
+    // `tryAgentNameFor` here: this runs over every row the board returned, so a
+    // refusal that threw on one key would abort the whole cycle — nothing
+    // started, nothing stood down, for a fleet whose other forty tickets are
+    // fine. That converts "one ticket is unstaffable" into "board control is
+    // down", which is strictly the worse failure and is the one nobody would
+    // attribute to a long project key.
+    //
+    // `unresolved` is the right channel rather than a convenient one: it is
+    // already defined as a row this daemon cannot act on, and it carries the
+    // two behaviours this case needs — start nothing for the key, and do not
+    // stand down anything already running on it. An agent staffed before the
+    // rule tightened keeps running and gets reported, which is what you want
+    // from a constraint that arrived in somebody else's release.
+    //
+    // `tryAgentNameFor` rather than a check followed by `agentNameFor`: the
+    // union's failing arm has no `agentName` to read, so the narrowing below is
+    // what produces the name used two lines later. A caller cannot skip the
+    // question and still compile, which is the property that makes this loop
+    // safe against the next person editing it — `agentNameFor` is total and
+    // would have handed back an unusable name without a word.
+    const named = tryAgentNameFor(type, key);
+    if (named.problem !== undefined) {
+      unresolved.push({
+        key,
+        issueTypeName: issue.issueTypeName,
+        reason:
+          `the agent name Butchr would build for it, \`${named.candidate}\`, ` +
+          `${named.problem} (herdr's limit, not Butchr's — see ` +
+          `HERDR_AGENT_NAME_MAX_LENGTH)`
+      });
+      unresolvedKeys.add(key);
+      continue;
+    }
     desired.push({
-      agentName: agentNameFor(type, key),
+      agentName: named.agentName,
       type,
       key: issue.key.trim(),
       issueTypeName: issue.issueTypeName as string,
