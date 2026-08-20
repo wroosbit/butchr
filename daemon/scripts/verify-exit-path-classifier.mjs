@@ -39,12 +39,15 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execFileSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
 const verbose = process.argv.includes('--verbose');
+
+/** Distinguishes the capture files of one run from each other. */
+let captureSeq = 0;
 
 let failures = 0;
 const ok = (m) => console.log(`  ok    ${m}`);
@@ -86,17 +89,53 @@ function treeWith(fixtures) {
   return { root, sweep: path.join(scripts, SWEEP) };
 }
 
-/** Run a sweep and return its exit code and output, whichever way it went. */
+/**
+ * Run a sweep and return its exit code and output, whichever way it went.
+ *
+ * THE CHILD'S STDOUT GOES TO A FILE, NOT A PIPE, AND THAT IS LOAD-BEARING
+ * (KAN-540). Read through a pipe, this report arrives TRUNCATED under load:
+ * measured twice on one afternoon, `128 of 164` rows and `69 of 165`, with the
+ * sweep's own `sweeping N` line intact at the top and the table cut off part
+ * way down. The cause is NOT established -- `process.exit()` discarding
+ * buffered pipe writes was the obvious candidate and it is refuted, 0 of 10
+ * runs truncated on a 122 KB probe -- and it does not reproduce on demand,
+ * which is what makes it dangerous rather than merely annoying.
+ *
+ * What a short read does to the sections below is the point: every one of them
+ * is of the form "this named script still has this verdict", so a partial
+ * report answers ABSENT for each missing script and the run reports a finding
+ * about the REPOSITORY that is really a fact about the read. It also makes this
+ * a flaky required check, which `ci.yml` says never to keep.
+ *
+ * A file redirect is not a workaround for an unknown cause; it removes the
+ * transport the loss was observed on. The row-count check below stays as the
+ * POSITIVE CONTROL that it worked -- if a short read ever happens again it is
+ * named and loud rather than silent and wrong.
+ */
 function runSweep(sweepPath) {
+  const out = path.join(os.tmpdir(), `sweep-out-${process.pid}-${captureSeq++}.txt`);
+  const fd = fs.openSync(out, 'w');
+  // Closed exactly once. A descriptor closed twice is not a harmless retry: the
+  // number is free after the first close and the second one shuts whatever has
+  // since been handed it.
+  let open = true;
+  const close = () => {
+    if (open) {
+      open = false;
+      fs.closeSync(fd);
+    }
+  };
   try {
-    const stdout = execFileSync(process.execPath, [sweepPath, '--verbose'], {
-      encoding: 'utf8',
+    const run = spawnSync(process.execPath, [sweepPath, '--verbose'], {
+      stdio: ['ignore', fd, 'inherit'],
       timeout: 60_000
     });
-    return { code: 0, stdout };
-  } catch (err) {
-    if (err.stdout === undefined) throw err;
-    return { code: err.status, stdout: err.stdout };
+    close();
+    if (run.error) throw run.error;
+    return { code: run.status, stdout: fs.readFileSync(out, 'utf8') };
+  } finally {
+    close();
+    fs.rmSync(out, { force: true });
   }
 }
 
