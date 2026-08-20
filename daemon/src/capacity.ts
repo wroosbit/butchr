@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { loadCapacityOverride } from './capacity-override.js';
 
 /**
  * How many agents this machine can carry — measured, not declared.
@@ -1160,6 +1161,33 @@ export type HeadroomBound = 'cap' | 'cpu' | 'memory' | 'stall';
 /** Where the `busyCores` figure the CPU term divided came from. */
 export type CpuBusySource = 'measured' | 'load-average';
 
+/**
+ * Where a configured cap came from — KAN-544.
+ *
+ * A discriminated union rather than a source string beside an optional path,
+ * because the two arms carry different evidence and the pairing is the whole
+ * point: an env origin has no file to name, and a file origin without its path
+ * is the "silently mysterious" value the ticket's fourth acceptance criterion
+ * forbids. Written this way, neither state is constructible — the type refuses
+ * an env origin carrying a path, and refuses a file origin with none, so no
+ * later author can introduce the mismatch this exists to prevent.
+ */
+export type ConfiguredCapOrigin =
+  | { source: 'env'; variable: 'BUTCHR_MAX_AGENTS' }
+  | {
+      source: 'override-file';
+      /** The file the cap was read from, so a report names it rather than asserting one. */
+      path: string;
+      /**
+       * The `BUTCHR_MAX_AGENTS` value this file beat, or null when it was not
+       * set. Carried so a derivation can say what was overridden, the way the
+       * cost lines already say which measurement an override displaced — an
+       * operator staring at a drop-in that appears to be ignored is owed the
+       * sentence explaining why.
+       */
+      overrides: number | null;
+    };
+
 export interface Capacity {
   machine: MachineFacts;
   /**
@@ -1204,8 +1232,24 @@ export interface Capacity {
   capByCpu: number;
   capByMemory: number;
   capBoundBy: CapBound;
-  /** Set when BUTCHR_MAX_AGENTS overrode the derivation. */
+  /** Set when an operator's cap overrode the derivation. */
   configuredCap: number | null;
+  /**
+   * Where that cap came from, when anyone said (KAN-544).
+   *
+   * There are two sources now — a file that can change while the daemon runs
+   * and an environment variable that cannot — and `configuredCap` alone cannot
+   * tell them apart. A reader who cannot see which one is in force cannot
+   * answer the only question that matters under load: *can I change this
+   * without a restart?*
+   *
+   * Null means the caller did not say, which is honest for the scripts that
+   * drive {@link computeCapacity} directly with a cap of their own invention.
+   * It never means `env`: an origin nobody supplied and an origin somebody
+   * measured are different facts, and defaulting one to the other is how a
+   * report ends up asserting a provenance it was never told.
+   */
+  configuredCapOrigin: ConfiguredCapOrigin | null;
 
   /** Task agents alive right now. Supervisors are not among them. */
   running: number;
@@ -1290,6 +1334,13 @@ export interface CapacityOptions {
   /** A cap the operator set by hand, bypassing the derivation entirely. */
   configuredCap?: number | null;
   /**
+   * Where {@link configuredCap} came from (KAN-544). Supplied by
+   * {@link optionsFromEnv}, which is the only caller that knows; omitted by the
+   * scripts that pass a cap of their own, and reported as null there rather
+   * than guessed at.
+   */
+  configuredCapOrigin?: ConfiguredCapOrigin | null;
+  /**
    * Supervisors observed running.
    *
    * This used to say "reported only; it changes no arithmetic", and since
@@ -1358,6 +1409,10 @@ export function computeCapacity(
   const cost: AgentCost = { residentBytes: resident.value, cores: coreCost.value };
   const costSource = { residentBytes: resident.source, cores: coreCost.source };
   const configuredCap = options.configuredCap ?? null;
+  // An origin without a cap describes nothing, so it is dropped rather than
+  // reported: the two fields are answers to one question and a reader must
+  // never meet a provenance for a cap that is not in force.
+  const configuredCapOrigin = configuredCap === null ? null : options.configuredCapOrigin ?? null;
 
   const reservedCores = humanReserveCores(machine.cores);
   const reservedBytes = humanReserveBytes(machine.totalBytes);
@@ -1580,6 +1635,7 @@ export function computeCapacity(
     capByMemory,
     capBoundBy,
     configuredCap,
+    configuredCapOrigin,
     running,
     supervisors: supervisorsRunning,
     supervisorReserve,
@@ -1831,7 +1887,11 @@ function envNumber(name: string, allowZero = false): number | undefined {
  * Operator overrides, because someone who has re-measured their own hardware
  * should not have to argue with figures taken on a laptop in July 2026.
  *
- *   BUTCHR_MAX_AGENTS        — set the cap outright, skipping the derivation
+ *   BUTCHR_MAX_AGENTS        — set the cap outright, skipping the derivation.
+ *                              Beaten by the runtime override file, which is
+ *                              the only one of these an operator can change
+ *                              without restarting the daemon — see
+ *                              capacity-override.ts for why that matters
  *   BUTCHR_AGENT_MEMORY_MB   — resident cost of one agent
  *   BUTCHR_AGENT_CORES       — cores one active agent tree spends
  *   BUTCHR_STALL_PERCENT     — the /proc/pressure `full avg10` at which no
@@ -1851,9 +1911,38 @@ export function optionsFromEnv(): CapacityOptions {
   // operator turns the supervisor reserve off deliberately, which has to be
   // distinguishable from not having set the variable at all.
   const supervisorMemoryMb = envNumber('BUTCHR_SUPERVISOR_MEMORY_MB', true);
+  // The cap, and the one dimension here that can move while the daemon runs
+  // (KAN-544). The file is consulted first because it is the only source an
+  // operator can change without a restart, and a restart is what this exists to
+  // avoid — an override that lost to the drop-in it was written to countermand
+  // would be a control with no authority. Absent or unusable, it says nothing
+  // and the env var answers exactly as it always did.
+  //
+  // Read fresh on every call, which is what makes it a runtime control rather
+  // than a second thing fixed at start. That is not a new property of this
+  // function: `readCapacity()` has always called it per admission, so nothing
+  // needed restructuring to make a changed cap take effect on the next start.
+  //
+  // The cap and its provenance come out of ONE branch rather than two, and that
+  // is deliberate. Written as two expressions they can disagree — a report
+  // naming the override file beside a cap the env var set — and a provenance
+  // that lies is worse than none, because it is the field a reader consults to
+  // decide whether a restart is needed. Here the pairing is structural: there
+  // is no way to select a source without also selecting its number.
+  const overrideFile = loadCapacityOverride();
+  const envCap = envNumber('BUTCHR_MAX_AGENTS') ?? null;
+  const configured: { cap: number; origin: ConfiguredCapOrigin } | null = overrideFile
+    ? {
+        cap: overrideFile.maxAgents,
+        origin: { source: 'override-file', path: overrideFile.path, overrides: envCap }
+      }
+    : envCap !== null
+      ? { cap: envCap, origin: { source: 'env', variable: 'BUTCHR_MAX_AGENTS' } }
+      : null;
   return {
     overrides,
-    configuredCap: envNumber('BUTCHR_MAX_AGENTS') ?? null,
+    configuredCap: configured === null ? null : configured.cap,
+    configuredCapOrigin: configured === null ? null : configured.origin,
     stallRefusePercent: envNumber('BUTCHR_STALL_PERCENT') ?? null,
     supervisorMemoryOverride:
       supervisorMemoryMb !== undefined ? supervisorMemoryMb * MIB : null
@@ -2312,7 +2401,32 @@ export function describeCapacity(c: Capacity): string {
   );
 
   if (c.capBoundBy === 'configured') {
-    lines.push(`cap: ${c.cap} task agents (set by BUTCHR_MAX_AGENTS, derivation skipped)`);
+    // Which source set it, named rather than assumed (KAN-544). There are two
+    // now, and they differ in the one way an operator under load cares about:
+    // the file can be changed without a restart and the env var cannot. A line
+    // reading "set by BUTCHR_MAX_AGENTS" while a file was in force would send
+    // that operator to edit a drop-in and restart the daemon — the exact
+    // operation this ticket exists to make unnecessary.
+    const origin = c.configuredCapOrigin;
+    if (origin?.source === 'override-file') {
+      lines.push(
+        `cap: ${c.cap} task agents (runtime override in force, derivation skipped) — ` +
+        `set in ${origin.path}, which is re-read on every admission, so editing it ` +
+        `changes the cap with no daemon restart` +
+        (origin.overrides !== null
+          ? `; it overrides BUTCHR_MAX_AGENTS=${origin.overrides}`
+          : '; BUTCHR_MAX_AGENTS is not set') +
+        '. Delete the file to hand the cap back. NOTE that this throttles ' +
+        'admission and does not evict: lowering it stops new starts, and agents ' +
+        'already running keep running until they finish on their own'
+      );
+    } else if (origin?.source === 'env') {
+      lines.push(`cap: ${c.cap} task agents (set by BUTCHR_MAX_AGENTS, derivation skipped)`);
+    } else {
+      // A cap somebody passed to computeCapacity directly. Reported as what it
+      // is rather than attributed to a source nobody named.
+      lines.push(`cap: ${c.cap} task agents (configured by the caller, derivation skipped)`);
+    }
   } else {
     lines.push(
       `cap: ${c.cap} task agents — ` +
@@ -2507,6 +2621,15 @@ export function summarizeCapacity(c: Capacity): string {
         : c.costSource.cores === 'restored'
           ? '; cost figures were carried across a daemon restart'
           : '';
+  // The runtime cap, on the one line a caller may be reading (KAN-544). Silent
+  // unless the file is in force, the same rule `provenanceNote` above follows,
+  // so this says something exactly when there is something to say. It does not
+  // repeat the path — the derivation names the file, and a one-line summary
+  // that carries an absolute path buries the figures it exists to show.
+  const overrideNote =
+    c.configuredCapOrigin?.source === 'override-file'
+      ? '; cap set by the runtime override file, changeable without a restart'
+      : '';
   // The effective ceiling, on the one line most callers read (KAN-517).
   //
   // `5/10 task agents` was the specific text that ticket named as misleading,
@@ -2536,6 +2659,7 @@ export function summarizeCapacity(c: Capacity): string {
     `(${c.machine.cores} cores, ${c.cpuBusyCores.toFixed(2)} in use, ` +
     `${gib(c.machine.availableBytes)} available` +
     provenanceNote +
+    overrideNote +
     // Only when it fired: a stall figure on every line would be noise, and its
     // absence must not read as "measured and fine" on a machine that has no
     // instrument at all — the derivation is where that distinction lives.
