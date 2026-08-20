@@ -95,7 +95,25 @@ export type ClipRecord = {
      * `maxResults` inside the one object `section-omitted` replaced, so a
      * caller was told to page by a number the same answer had just deleted.
      */
-    | 'members-omitted';
+    | 'members-omitted'
+    /**
+     * KAN-525. NOTHING WENT, AND THE ANSWER IS STILL OVER BUDGET — the one
+     * record that reports a reduction that could not happen. It exists because
+     * the alternative is worse than useless: before this, an answer whose
+     * irreducible fields alone exceeded the budget came back with
+     * `kind: 'complete'` and the sentence *"WHOLE: every field is present and
+     * every list entire"* on it, and the client then cut the middle out of it.
+     * That is KAN-423's own defect rebuilt inside the fix for it — measured at
+     * 73,312 characters against a 9,000 budget on a census carrying 300
+     * `missingAgents`, verdict `complete`.
+     *
+     * The field named is the largest one left, so a reader knows where the
+     * budget went. `returned`, `total` and `omitted` are all `null` because
+     * nothing was dropped HERE — what this record says is that the answer as
+     * sent is larger than the budget, so whether it arrives whole is now the
+     * client's business rather than ours.
+     */
+    | 'irreducible';
   /** How many entries came back. `null` where the field is not a list. */
   readonly returned: number | null;
   /** How many exist. `null` where the field is not a list. */
@@ -104,6 +122,20 @@ export type ClipRecord = {
   readonly omitted: number | null;
   /** The exact call that returns this field unreduced. */
   readonly readTheRest: string;
+  /**
+   * KAN-525. Present only on a field that is ON the exempt list and lost its
+   * exemption because it outgrew the ceiling declared for it in
+   * `NEVER_CLIPPED_FIELDS`.
+   *
+   * SAID IN THE ANSWER RATHER THAN ONLY IN A LOG, because the reader's question
+   * is not "was this clipped" — the record above already says that — but "why
+   * was a field that is documented as never clipped clipped anyway?" Without
+   * this, the honest reduction looks like a bug in the exemption.
+   */
+  readonly exemptionRevoked?: {
+    readonly declaredMaxChars: number;
+    readonly measuredChars: number;
+  };
 };
 
 /**
@@ -207,22 +239,135 @@ export const SECTION_CLIP_ORDER: readonly string[] = CLIP_LADDER.flatMap((s) =>
 );
 
 /**
- * Fields that are never given up, at any budget.
+ * WHY A NAME IS EXEMPT — and what the exemption obliges the field to stay.
  *
- * Each one answers "is the list above whole?" — the question this ticket is
- * about. Clipping the disclosure to make room for the thing it qualifies would
- * be the defect rebuilt with extra steps.
+ * KAN-525. THE LIST BELOW USED TO BE FIFTEEN BARE STRINGS, AND THAT WAS THE
+ * DEFECT. The exemption matches on a field's NAME and is honoured at every rung
+ * of both fitters, so an exempt field is irreducible everywhere — while what
+ * made that safe was the SHAPE of the values those names happened to carry, and
+ * nothing connected the two. A tool answering `available: [...]` as a list, or
+ * an existing exempt name growing a collection, would have been un-clippable at
+ * every rung with nothing able to say so.
+ *
+ * It was not hypothetical. Two instances were measured on `origin/main`'s build
+ * while writing this, both of them live:
+ *
+ *   * `via` on an `atlassian_search` envelope is **5,335 characters**, because
+ *     `via.path` is the audit path and the audit path carries the caller's own
+ *     query — `freeText` accepts 2,000 characters and `encodeURIComponent`
+ *     expands them. At the default budget that irreducible field forced `body`,
+ *     the entire answer, to be given up in order to echo the caller's own
+ *     question back at it. At `MIN_BUDGET_CHARS` the answer came to 6,330
+ *     characters against 1,000 with no lever left at all.
+ *   * `censusUnreadableRecords` measures **~730 characters per entry** on this
+ *     machine today (one entry, read 2026-08-18). Thirteen of them exceed the
+ *     whole budget on their own; three hundred `missingAgents` produced a
+ *     **73,312**-character answer whose verdict read `kind: 'complete'`.
+ *
+ * SO THE INVARIANT IS THIS, AND IT IS DELIBERATELY NOT "AN EXEMPT FIELD IS
+ * NEVER A LIST" — three of them are lists on purpose:
+ *
+ *   **No exempt field may be unbounded.** A `bounded` one is capped by
+ *   declaration, and demoted to an ordinary clip candidate when it exceeds its
+ *   cap. A `disclosure` one is capped by WINDOWING rather than by omission —
+ *   it may lose entries, never the count, because the count is the whole of
+ *   what makes it exempt.
+ *
+ * The two buckets are two different reasons that were sharing one name:
+ *
+ *   `bounded`     — small at every site that produces it, and losing it would
+ *                   cost the reader the verdict while saving a few dozen
+ *                   characters. `maxChars` is what "small" was measured to
+ *                   mean, with headroom, and it is an obligation rather than a
+ *                   description: over it, the exemption does not apply.
+ *   `disclosure`  — answers "is the list above whole?", which is the question
+ *                   this whole module exists to protect. Omitting it to make
+ *                   room for the thing it qualifies would be the defect rebuilt
+ *                   with extra steps, so it is never omitted — but a list that
+ *                   can grow without limit is not protecting that question, it
+ *                   is destroying the answer it sits on, so it is windowed.
+ *
+ * WHAT NO STATIC CHECK CAN DO, NAMED HERE RATHER THAN LEFT TO BE INFERRED: a
+ * ceiling is per field, and nothing here knows which exempt fields CO-OCCUR on
+ * a given answer. A set of fields each individually inside its ceiling can
+ * still exhaust the budget together. That case is not prevented — it is made
+ * LOUD, by `reduction: 'irreducible'` above: an answer that is still over
+ * budget after every lever never comes back saying it is whole.
  */
-export const NEVER_CLIPPED: readonly string[] = [
-  'action',
-  'success',
-  'completeness',
-  'agentsTotal',
-  'standbyTotal',
-  'censusUnreadableRecordsTotal',
-  'censusUnreadableRecords',
-  'missingAgents',
-  'preemptedAgents',
+export type ExemptionReason =
+  | {
+      readonly kind: 'bounded';
+      /**
+       * The declared ceiling, in characters of `JSON.stringify(value, null, 2)`.
+       *
+       * MEASURED AND THEN GIVEN HEADROOM, never guessed: each entry's `why`
+       * names the value it was derived from. It is not a budget to spend — it
+       * is the size past which this field stops looking like the scalar it was
+       * exempted for being.
+       */
+      readonly maxChars: number;
+      readonly why: string;
+    }
+  | {
+      readonly kind: 'disclosure';
+      /**
+       * `'never-reduced'` — not a list, and left exactly as it is at any
+       * budget. `completeness` itself is the case: it is the answer about the
+       * answer, and it is bounded by the number of fields there are to clip.
+       * `'windowed'` — a list that may lose entries from the end, keeping
+       * `total` and `omitted`, so it can always still answer its own question.
+       */
+      readonly whenOverBudget: 'never-reduced' | 'windowed';
+      readonly why: string;
+    };
+
+/** Every exempt name, with the reason it is exempt and what that costs it. */
+export const NEVER_CLIPPED_FIELDS: Readonly<Record<string, ExemptionReason>> = {
+  action: {
+    kind: 'bounded',
+    maxChars: 128,
+    why: 'the envelope name. Measured 22 chars (`list_agents_response`); the longest in this daemon is `launchdarkly_proxy_call_response` at 34.'
+  },
+  success: {
+    kind: 'bounded',
+    maxChars: 32,
+    why: 'the envelope verdict, a boolean. A reduced answer must not be able to lose whether it is an answer at all.'
+  },
+  completeness: {
+    kind: 'disclosure',
+    whenOverBudget: 'never-reduced',
+    why: 'the answer about the answer. Clipping it is the only reduction that could not be reported, because it is what does the reporting.'
+  },
+  agentsTotal: {
+    kind: 'bounded',
+    maxChars: 32,
+    why: 'a count. `agents.length < agentsTotal` is the whole short-list check, and it holds whoever did the clipping.'
+  },
+  standbyTotal: {
+    kind: 'bounded',
+    maxChars: 32,
+    why: 'a count, for the same reason as `agentsTotal` one field over.'
+  },
+  censusUnreadableRecordsTotal: {
+    kind: 'bounded',
+    maxChars: 32,
+    why: 'a count, and `null` is not zero here — it means no disclosure reached this daemon at all, which is exactly the distinction a clip would delete.'
+  },
+  censusUnreadableRecords: {
+    kind: 'disclosure',
+    whenOverBudget: 'windowed',
+    why: 'names the registry rows the census could not read, so it says how the list above is short. Measured ~730 chars PER ENTRY on 2026-08-18, so 13 of them exceed the budget alone — windowed rather than omitted, and never the reverse.'
+  },
+  missingAgents: {
+    kind: 'disclosure',
+    whenOverBudget: 'windowed',
+    why: 'agents the durable registry records active that are not running — work that has silently stopped. 300 of them measured 69,302 chars, which is why this is windowed rather than exempt outright.'
+  },
+  preemptedAgents: {
+    kind: 'disclosure',
+    whenOverBudget: 'windowed',
+    why: 'agents stood down to free capacity, listed until they are put back. Bounded in practice by the fleet size, and windowed for the same reason as its two neighbours.'
+  },
   // KAN-501, and these are here BY DECISION rather than by luck. `task/KAN-420`
   // observed that `butchr_atlassian_proxy_status` keeps `outcome` and `mode`
   // through a clip only because they are small and this function drops
@@ -230,15 +375,92 @@ export const NEVER_CLIPPED: readonly string[] = [
   // fixed the clip keep that property deliberately. It is the field an operator
   // is *instructed* to read to confirm a rung, so a future field ordering that
   // happened to reach it would silence the one answer that check depends on.
-  'outcome',
-  'mode',
-  'available',
-  'whatAnEmptyToolListMeans',
+  outcome: {
+    kind: 'bounded',
+    maxChars: 64,
+    why: "an enum union. Measured 9 chars (`serving`); the longest arm is `unreachable` at 13. It is the field an operator is instructed to read instead of counting their tool list."
+  },
+  mode: {
+    kind: 'bounded',
+    maxChars: 64,
+    why: 'an enum union. Measured 18 chars (`confluence-write`), which is the longest arm there is.'
+  },
+  available: {
+    kind: 'bounded',
+    maxChars: 32,
+    why: "a boolean: the daemon answered but has no service at all, which is a third thing from `off` and `unreachable`. THE FIELD THIS TICKET'S OWN EXAMPLE WAS ABOUT — `available: [...]` as a list is what the ceiling refuses."
+  },
+  whatAnEmptyToolListMeans: {
+    kind: 'bounded',
+    maxChars: 256,
+    why: 'one prose constant, measured 68 chars. Stated rather than left to be inferred from an empty list, because inferring it from an empty list is the defect.'
+  },
   // The proxy envelope's own verdict, for the same reason one field over: a
   // reduced answer must not be able to lose the status it is an answer with.
-  'status',
-  'via'
-];
+  status: {
+    kind: 'bounded',
+    maxChars: 64,
+    why: 'the upstream HTTP status a proxied call came back with — a number, or a short string.'
+  },
+  via: {
+    kind: 'bounded',
+    maxChars: 384,
+    why: 'what actually happened: tool, method, path, products, servedBy. NOT the four scalars it was taken for — `path` is the audit path and carries the CALLER\'S OWN QUERY, so an `atlassian_search` with a 2,000-character CQL measured this field at 5,335 chars. An ordinary call is ~200.'
+  }
+};
+
+/**
+ * Fields that are never given up, at any budget — BY NAME.
+ *
+ * DERIVED RATHER THAN DECLARED A SECOND TIME. A hand-kept list beside the
+ * registry is a list that drifts from it, and a name in one but not the other
+ * is either an exemption with no stated reason or a stated reason that exempts
+ * nothing. Both read as working.
+ */
+export const NEVER_CLIPPED: readonly string[] = Object.keys(NEVER_CLIPPED_FIELDS);
+
+/** The exempt lists that may lose entries rather than be omitted whole. */
+export const DISCLOSURE_WINDOWED_FIELDS: readonly string[] = Object.entries(NEVER_CLIPPED_FIELDS)
+  .filter(([, reason]) => reason.kind === 'disclosure' && reason.whenOverBudget === 'windowed')
+  .map(([field]) => field);
+
+/**
+ * Whether this field's exemption applies to THIS value.
+ *
+ * ASKED OF THE VALUE AND NOT ONLY OF THE NAME, which is the whole of KAN-525.
+ * `NEVER_CLIPPED.includes(field)` — the three guards this replaces — answered a
+ * question about the list; this answers the question the guards were there to
+ * ask, which is whether giving this field up is a loss the reader cannot afford
+ * or a lever the fitter cannot reach.
+ *
+ * A `disclosure` field always holds: it is never omitted, and the windowing
+ * pass is what keeps it from being unbounded. A `bounded` field holds only
+ * while it is inside the ceiling declared for it.
+ */
+export function exemptionHolds(field: string, value: unknown): boolean {
+  const reason = NEVER_CLIPPED_FIELDS[field];
+  if (!reason) return false;
+  if (reason.kind === 'disclosure') return true;
+  return sizeOf(value) <= reason.maxChars;
+}
+
+/**
+ * What to say on the clip record of a field that lost its exemption, or
+ * `undefined` where nothing was revoked because nothing was exempt.
+ */
+function revocationOf(field: string, value: unknown): ClipRecord['exemptionRevoked'] {
+  const reason = NEVER_CLIPPED_FIELDS[field];
+  if (!reason || reason.kind !== 'bounded') return undefined;
+  const measuredChars = sizeOf(value);
+  if (measuredChars <= reason.maxChars) return undefined;
+  return { declaredMaxChars: reason.maxChars, measuredChars };
+}
+
+/** `revocationOf` as a spread, so an absent revocation adds no key at all. */
+function revocationSpread(field: string, value: unknown): Partial<ClipRecord> {
+  const exemptionRevoked = revocationOf(field, value);
+  return exemptionRevoked ? { exemptionRevoked } : {};
+}
 
 type AgentRow = Record<string, unknown>;
 
@@ -366,6 +588,112 @@ function sectionStub(field: string, value: unknown, recovery: Recovery): Record<
 }
 
 /**
+ * KAN-525. THE LAST LEVER, AND IT IS THE ONE THE EXEMPT FIELDS THEMSELVES GIVE.
+ *
+ * Reached only when every other rung has run and the answer is still over
+ * budget, which means what is left is exempt. A `disclosure` list is exempt
+ * because it answers *"is the list above whole?"* — so omitting it is refused,
+ * and always will be. But a list that can grow without limit is not protecting
+ * that question; it is destroying the answer it sits on. Measured on
+ * `origin/main`'s build: 300 `missingAgents` produced a 73,312-character
+ * response against a 9,000 budget, and `censusUnreadableRecords` is ~730
+ * characters PER ENTRY on this machine today, so thirteen of them do the same.
+ *
+ * So the entries go and the COUNT STAYS. `total` and `omitted` on the record
+ * below are the disclosure surviving its own reduction, which is the whole
+ * difference between this and dropping the field: a reader still learns that
+ * the census was short and by how much, and loses only which rows.
+ *
+ * Halved from the end rather than truncated to a fixed count, exactly as the
+ * `agents` rung is, because the right window is whatever fits and nothing here
+ * knows how large one entry is.
+ */
+function windowDisclosureLists(
+  start: Record<string, unknown>,
+  clips: ClipRecord[],
+  fitsWith: (candidate: Record<string, unknown>, clips: readonly ClipRecord[]) => boolean
+): Record<string, unknown> {
+  let working = start;
+  for (const field of DISCLOSURE_WINDOWED_FIELDS) {
+    if (fitsWith(working, clips)) return working;
+    const value = working[field];
+    if (!Array.isArray(value) || value.length === 0) continue;
+    const total = value.length;
+    let keep = total;
+    let at = -1;
+    while (keep > 0) {
+      keep = Math.floor(keep / 2);
+      const record: ClipRecord = {
+        field,
+        reduction: 'entries-omitted',
+        returned: keep,
+        total,
+        omitted: total - keep,
+        readTheRest:
+          `${field} is a disclosure field: it is never omitted, because it is what says whether ` +
+          'the list above is whole. Its entries were windowed to fit; the count is what survives.'
+      };
+      if (at === -1) {
+        clips.push(record);
+        at = clips.length - 1;
+      } else clips[at] = record;
+      working = { ...working, [field]: value.slice(0, keep) };
+      if (fitsWith(working, clips)) break;
+    }
+  }
+  return working;
+}
+
+/**
+ * KAN-525. SAY SO WHEN THERE WAS NOTHING LEFT TO GIVE UP.
+ *
+ * Every lever has run and the answer is still over budget. The one thing that
+ * must not happen now is the thing that used to: come back with
+ * `kind: 'complete'` and *"WHOLE: every field is present and every list
+ * entire"*, and let the client cut the middle out of it. That is KAN-423's own
+ * defect rebuilt inside the fix for it.
+ *
+ * Nothing is dropped here — the record is the honest report that the answer as
+ * sent exceeds the budget, naming the largest field left so a reader knows
+ * where it went. Whether it arrives whole is now the client's business, and
+ * `completeness` is what tells them to check.
+ */
+function irreducibleRecord(full: Record<string, unknown>, budgetChars: number): ClipRecord {
+  // MEASURED OVER THE PAYLOAD WITH ITS `completeness` BLOCK IN IT, and that is
+  // not a detail. At a small budget the disclosure block is routinely the
+  // largest thing left — it grows by one record per reduction — so a scan that
+  // skipped it named whichever stub happened to be biggest and sent the reader
+  // to a 219-character field while 1,700 characters of verdict sat beside it.
+  // Naming `completeness` is the honest answer there: what does not fit is the
+  // account of what did not fit, and the lever for that is the budget itself.
+  const largest = Object.keys(full)
+    .map((k) => [k, sizeOf(full[k])] as const)
+    .sort((a, b) => b[1] - a[1])[0];
+  const field = largest?.[0] ?? 'value';
+  const measured = largest?.[1] ?? 0;
+  const reason = NEVER_CLIPPED_FIELDS[field];
+  return {
+    field,
+    reduction: 'irreducible',
+    returned: null,
+    total: null,
+    omitted: null,
+    // `measured` is this ONE FIELD's size, which no later pass rewrites — unlike
+    // `completeness.chars`, which is the whole answer's and is restamped by
+    // `serialiseWithExactChars` after this string exists. Quoting the stable
+    // number and pointing at the authoritative one is the honest pairing.
+    readTheRest:
+      `nothing here could be given up. \`${field}\` is the largest field left at ${measured} ` +
+      `characters against a ${budgetChars}-character budget` +
+      (reason
+        ? `, and it is exempt from reduction (${reason.kind}) — see NEVER_CLIPPED_FIELDS.`
+        : '.') +
+      ' Nothing was dropped, so what this daemon sent is whole; it is larger than the budget, ' +
+      'so your client may have cut it. Compare what you received against `completeness.chars`.'
+  };
+}
+
+/**
  * Fit a `list_agents` answer to the budget, and describe the fitting.
  *
  * THE FIXED POINT. Every reduction is measured against the serialised size of
@@ -466,7 +794,7 @@ export function fitListAgentsResponse(
     if (step.kind === 'section') {
       const field = step.field;
       if (!(field in working)) continue;
-      if (NEVER_CLIPPED.includes(field)) continue;
+      if (exemptionHolds(field, working[field])) continue;
       const value = working[field];
       // A stub already stands here — the summary view emptied this field, or
       // the ladder has been walked twice by the re-fit backstop.
@@ -602,6 +930,28 @@ export function fitListAgentsResponse(
       current = fits(working);
       if (current.ok) break;
     }
+  }
+
+  // KAN-525. What is left over budget now is exempt, and the disclosure lists
+  // are the part of it that can still give something up without giving up the
+  // question they answer.
+  if (!current.ok) {
+    working = windowDisclosureLists(working, clips, (candidate, withClips) => {
+      const verdict =
+        withClips.length === 0
+          ? completeVerdict(0, budgetChars)
+          : clippedVerdict(0, budgetChars, unclippedChars, withClips as [ClipRecord, ...ClipRecord[]]);
+      return sizeOf(withCompleteness(candidate, verdict)) <= budgetChars;
+    });
+    current = fits(working);
+  }
+
+  if (!current.ok) {
+    const provisionalVerdict =
+      clips.length === 0
+        ? completeVerdict(current.chars, budgetChars)
+        : clippedVerdict(current.chars, budgetChars, unclippedChars, clips as [ClipRecord, ...ClipRecord[]]);
+    clips.push(irreducibleRecord(withCompleteness(working, provisionalVerdict), budgetChars));
   }
 
   const completeness: Completeness =
@@ -792,13 +1142,27 @@ function clippedVerdict(
     // for all of them is the same defect as a recipe built from a tool's name:
     // both are a fact about one shape, generalised by the code that emits it.
     // So the agent sentence is now conditioned on an agent rung having fired.
-    detail:
-      `NOT WHOLE: ${unclippedChars} chars reduced to fit ${budgetChars}. ` +
-      (lost > 0
-        ? `${lost} list entr(ies) are absent — \`clipped\` names the field and the call that returns them.`
-        : clipped.some((c) => c.reduction === 'rows-summarised' || c.reduction === 'rows-addressed')
-          ? 'No entry was dropped; every agent is named, with less said about some.'
-          : 'No list entry was dropped; `clipped` names each field that was reduced and what, if anything, returns it.')
+    // KAN-525 ADDS THE FIRST BRANCH, AND IT IS THE ONE THAT SAYS THE OPPOSITE
+    // OF THE OTHER THREE. Every sentence below it reports a reduction that
+    // happened; `irreducible` reports one that could not, so a verdict carrying
+    // it must not open with "reduced to fit" — the answer is over the budget,
+    // not inside it, and what a reader has to do about that is check what
+    // arrived rather than fetch what went.
+    detail: clipped.some((c) => c.reduction === 'irreducible')
+      ? // `chars` is NOT interpolated here on purpose: `serialiseWithExactChars`
+        // rewrites that field to the true length after this string is built, so
+        // a number baked in now would disagree with the field beside it. Read
+        // `chars` above against `budgetChars`.
+        `STILL OVER BUDGET: this answer is larger than its ${budgetChars}-character budget and ` +
+        'nothing left could be given up — compare `chars` above. Nothing was dropped by this ' +
+        'daemon, but your client may have cut what it delivered; `clipped` names the field the ' +
+        'budget went to.'
+      : `NOT WHOLE: ${unclippedChars} chars reduced to fit ${budgetChars}. ` +
+        (lost > 0
+          ? `${lost} list entr(ies) are absent — \`clipped\` names the field and the call that returns them.`
+          : clipped.some((c) => c.reduction === 'rows-summarised' || c.reduction === 'rows-addressed')
+            ? 'No entry was dropped; every agent is named, with less said about some.'
+            : 'No list entry was dropped; `clipped` names each field that was reduced and what, if anything, returns it.')
   };
 }
 
@@ -916,8 +1280,20 @@ export function fitGenericResponse(
    */
   const candidates: Array<{ path: string; owner: string | null; key: string; size: number }> = [];
   for (const field of Object.keys(response)) {
-    if (NEVER_CLIPPED.includes(field)) continue;
     const value = (response as Record<string, unknown>)[field];
+    if (exemptionHolds(field, value)) continue;
+    // KAN-525. A DEMOTED FIELD GOES STRAIGHT TO WHOLE-FIELD CANDIDACY, and the
+    // member rung is skipped for it deliberately. What put it here is that the
+    // field AS A WHOLE outgrew the ceiling declared for it, and descending
+    // would look for large object members — where `via`, the measured instance,
+    // is 5,335 characters of which the only object member is a two-string
+    // `products`. Descending would clip that, save four characters, record a
+    // `members-omitted` against the wrong half, and leave the caller's own
+    // 5,300-character query sitting in `path`.
+    if (field in NEVER_CLIPPED_FIELDS) {
+      candidates.push({ path: field, owner: null, key: field, size: sizeOf(value) });
+      continue;
+    }
     if (isPlainObject(value)) {
       const members = Object.keys(value).filter(
         (k) => isPlainObject(value[k]) || Array.isArray(value[k])
@@ -1049,7 +1425,8 @@ export function fitGenericResponse(
       // used to read "not paginated on <tool>; narrow the request instead" for
       // every tool — printed, among others, on `atlassian_get_issue_comments`,
       // which is paginated, and to a caller already at `maxResults: 1`.
-      readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why
+      readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why,
+      ...(candidate.owner === null ? revocationSpread(candidate.key, raw) : {})
     });
   }
 
@@ -1058,7 +1435,7 @@ export function fitGenericResponse(
   // whole-field behaviour, unchanged except that its recipe is now honest.
   if (stillOver()) {
     const wholeFields = Object.keys(response)
-      .filter((k) => !NEVER_CLIPPED.includes(k))
+      .filter((k) => !exemptionHolds(k, (response as Record<string, unknown>)[k]))
       .map((k) => [k, sizeOf((response as Record<string, unknown>)[k])] as const)
       .sort((a, b) => b[1] - a[1]);
     for (const [field] of wholeFields) {
@@ -1075,7 +1452,8 @@ export function fitGenericResponse(
         returned: Array.isArray(raw) ? 0 : null,
         total: Array.isArray(raw) ? raw.length : null,
         omitted: Array.isArray(raw) ? raw.length : null,
-        readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why
+        readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why,
+        ...revocationSpread(field, raw)
       };
       // The whole field subsumes any member record already taken from it — a
       // reader wants the end state, not the route the fitter walked to it.
@@ -1091,7 +1469,20 @@ export function fitGenericResponse(
     }
   }
 
-  const chars = sizeOf(
+  // KAN-525. Same last lever as the fleet fitter's, for the same reason: what
+  // is still over budget after the backstop is exempt, and a disclosure list is
+  // the part of it that can give up entries without giving up its count.
+  if (stillOver()) {
+    working = windowDisclosureLists(working, clips, (candidate, withClips) => {
+      const verdict =
+        withClips.length === 0
+          ? completeVerdict(0, budgetChars)
+          : clippedVerdict(0, budgetChars, unclippedChars, withClips as [ClipRecord, ...ClipRecord[]]);
+      return sizeOf(withCompleteness(candidate, verdict)) <= budgetChars;
+    });
+  }
+
+  let chars = sizeOf(
     withCompleteness(
       working,
       clips.length === 0
@@ -1099,6 +1490,19 @@ export function fitGenericResponse(
         : clippedVerdict(0, budgetChars, unclippedChars, clips as [ClipRecord, ...ClipRecord[]])
     )
   );
+  if (chars > budgetChars) {
+    const provisionalVerdict =
+      clips.length === 0
+        ? completeVerdict(chars, budgetChars)
+        : clippedVerdict(chars, budgetChars, unclippedChars, clips as [ClipRecord, ...ClipRecord[]]);
+    clips.push(irreducibleRecord(withCompleteness(working, provisionalVerdict), budgetChars));
+    chars = sizeOf(
+      withCompleteness(
+        working,
+        clippedVerdict(0, budgetChars, unclippedChars, clips as [ClipRecord, ...ClipRecord[]])
+      )
+    );
+  }
   const completeness: Completeness =
     clips.length === 0
       ? completeVerdict(chars, budgetChars)
