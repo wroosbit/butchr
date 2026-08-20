@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 123 |
+| `yes` | 125 |
 | `partial` | 16 |
 | `quarantined` | 3 |
 | `no` | 22 |
-| **total** | **164** |
+| **total** | **166** |
 
-**139 of 164** run on every pull request.
+**141 of 166** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -106,6 +106,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-effective-ceiling` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-env-knobs-documented` | yes | reads `daemon/src/**/*.ts` and `docs/env-knobs.md` off the checkout and matches regexes; node builtins only, no build, no daemon, no herdr, no credential, no network, no terminal, no wall clock. |
 | `verify-exit-path-classifier` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
+| `verify-exit-path-containment` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
 | `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -147,6 +148,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-prompt-provenance-stamp` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-prompt-source-is-fetched-ref` | yes | builds scratch git repositories under `os.tmpdir()` and imports the built daemon modules in process; git and node builtins only, no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-pty-write-refusal-is-read` | yes | imports the built daemon modules and serves its own CrabCast over a unix socket in a temp dir; node builtins only, no live daemon, no herdr, no credential, no network, no terminal. |
+| `verify-reclaim-bytes-are-freed-bytes` | yes | imports the built daemon module and builds its own filesystem fixture on tmpfs; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-resumed-conversation-nudge` | yes | imports the built daemon modules, stands up its own unix socket in a temporary directory, and needs no herdr, no pty, no network, no credential and no CrabCast. Sections 3 and 4 create and remove probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-runtime-agnostic-census` | yes | imports the built daemon modules, stands a fake CrabCast peer on a Unix socket in a scratch $HOME, and asserts in process. No live daemon, no real CrabCast, no herdr, no credential, no terminal. |
 | `verify-same-key-other-type` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

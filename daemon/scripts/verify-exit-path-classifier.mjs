@@ -39,12 +39,15 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execFileSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
 const verbose = process.argv.includes('--verbose');
+
+/** Distinguishes the capture files of one run from each other. */
+let captureSeq = 0;
 
 let failures = 0;
 const ok = (m) => console.log(`  ok    ${m}`);
@@ -58,7 +61,13 @@ const fail = (m) => {
 // ---------------------------------------------------------------------------
 
 const SWEEP = 'sweep-verify-exit-paths.mjs';
-const LIBS = ['sweep-sources.mjs', 'mask-non-code.mjs'];
+// KAN-540 added `governing-conditions.mjs`. The list has to be complete or the
+// copied sweep dies on an unresolved import, and `runSweep` reads that as a
+// non-zero exit with EMPTY stdout — which arrives here as "the sweep reported
+// no row for it", i.e. as a substantive finding about the classifier rather
+// than as a broken fixture. Every section below fails at once when this list is
+// short, which is the tell.
+const LIBS = ['sweep-sources.mjs', 'mask-non-code.mjs', 'governing-conditions.mjs'];
 
 /**
  * Build a throwaway repository shaped like this one — `daemon/scripts` with the
@@ -80,17 +89,53 @@ function treeWith(fixtures) {
   return { root, sweep: path.join(scripts, SWEEP) };
 }
 
-/** Run a sweep and return its exit code and output, whichever way it went. */
+/**
+ * Run a sweep and return its exit code and output, whichever way it went.
+ *
+ * THE CHILD'S STDOUT GOES TO A FILE, NOT A PIPE, AND THAT IS LOAD-BEARING
+ * (KAN-540). Read through a pipe, this report arrives TRUNCATED under load:
+ * measured twice on one afternoon, `128 of 164` rows and `69 of 165`, with the
+ * sweep's own `sweeping N` line intact at the top and the table cut off part
+ * way down. The cause is NOT established -- `process.exit()` discarding
+ * buffered pipe writes was the obvious candidate and it is refuted, 0 of 10
+ * runs truncated on a 122 KB probe -- and it does not reproduce on demand,
+ * which is what makes it dangerous rather than merely annoying.
+ *
+ * What a short read does to the sections below is the point: every one of them
+ * is of the form "this named script still has this verdict", so a partial
+ * report answers ABSENT for each missing script and the run reports a finding
+ * about the REPOSITORY that is really a fact about the read. It also makes this
+ * a flaky required check, which `ci.yml` says never to keep.
+ *
+ * A file redirect is not a workaround for an unknown cause; it removes the
+ * transport the loss was observed on. The row-count check below stays as the
+ * POSITIVE CONTROL that it worked -- if a short read ever happens again it is
+ * named and loud rather than silent and wrong.
+ */
 function runSweep(sweepPath) {
+  const out = path.join(os.tmpdir(), `sweep-out-${process.pid}-${captureSeq++}.txt`);
+  const fd = fs.openSync(out, 'w');
+  // Closed exactly once. A descriptor closed twice is not a harmless retry: the
+  // number is free after the first close and the second one shuts whatever has
+  // since been handed it.
+  let open = true;
+  const close = () => {
+    if (open) {
+      open = false;
+      fs.closeSync(fd);
+    }
+  };
   try {
-    const stdout = execFileSync(process.execPath, [sweepPath, '--verbose'], {
-      encoding: 'utf8',
+    const run = spawnSync(process.execPath, [sweepPath, '--verbose'], {
+      stdio: ['ignore', fd, 'inherit'],
       timeout: 60_000
     });
-    return { code: 0, stdout };
-  } catch (err) {
-    if (err.stdout === undefined) throw err;
-    return { code: err.status, stdout: err.stdout };
+    close();
+    if (run.error) throw run.error;
+    return { code: run.status, stdout: fs.readFileSync(out, 'utf8') };
+  } finally {
+    close();
+    fs.rmSync(out, { force: true });
   }
 }
 
@@ -128,6 +173,18 @@ function parseReport(stdout) {
     }
   }
   return rows;
+}
+
+/**
+ * How many scripts the sweep says it swept, from its own summary line.
+ *
+ * The number to compare a parse against: it is printed BEFORE the table, so a
+ * report that arrives truncated still carries the count of what should have
+ * been in it. `null` when the line is absent, which is itself a short read.
+ */
+function sweptCount(stdout) {
+  const m = stdout.match(/^sweeping (\d+) verify-\* scripts/m);
+  return m ? Number(m[1]) : null;
 }
 
 const HEADER = (what) =>
@@ -272,9 +329,22 @@ try {
         r.verdicts.some((v) => /if \(failures\) process\.exit\(1\)/.test(v.text)),
         `verdicts: ${JSON.stringify(r.verdicts.map((v) => v.text))}`
       );
+      // KAN-540: this asked for `guardCount === 0`, and it passed for the wrong
+      // reason. The fixture's own trailing `process.exit(0)` was being credited
+      // to the `if (failures)` on the line above it by the retired proximity
+      // window, so it counted as a VERDICT and never reached the guard column.
+      // It is an unconditional success exit and it is a guard. What this
+      // section is actually about is the SHIM's exits, so it now asks that —
+      // no guard may sit on a line the mask took out.
       check(
         "the shim's exits are not counted as the script's guards",
-        r.guardCount === 0,
+        r.guards.every((g) => !r.maskeds.some((m) => m.line === g.line)),
+        `${r.guardCount} guard(s): ${JSON.stringify(r.guards.map((g) => g.text))}` +
+          `; masked at ${JSON.stringify(r.maskeds.map((m) => m.line))}`
+      );
+      check(
+        "the script's own trailing success exit is its only guard",
+        r.guardCount === 1 && /process\.exit\(0\)/.test(r.guards[0].text),
         `${r.guardCount} guard(s): ${JSON.stringify(r.guards.map((g) => g.text))}`
       );
     }
@@ -398,10 +468,17 @@ try {
 
   const realRun = runSweep(path.join(scriptDir, SWEEP));
   const realRows = parseReport(realRun.stdout);
+  // Against the sweep's OWN count rather than a floor. `> 100` was the check
+  // here until KAN-540, and a floor cannot tell a complete report from a
+  // partial one: a run whose output arrived truncated parsed to 128 of 164 rows
+  // and cleared it, so four named scripts were reported ABSENT — a finding
+  // about the repository, produced by a short read. `prompts/task.md`: an empty
+  // result is a claim about your search.
   check(
-    `the sweep read this repository (${realRows.size} rows)`,
-    realRows.size > 100,
-    'the sweep reported almost nothing — it did not read the real tree'
+    `every row the sweep printed was parsed (${realRows.size})`,
+    realRows.size === sweptCount(realRun.stdout),
+    `the sweep says it swept ${sweptCount(realRun.stdout)} scripts and ${realRows.size} rows parsed` +
+      ' — the report was read partially, so every verdict below is about a subset'
   );
 
   for (const name of REAL_SHIM_SCRIPTS) {

@@ -249,8 +249,17 @@ else fail(1, `expected 4 directories removed, got ${sweep.directories}`);
 if (sweep.bytes > 0) pass(1, `reported ${sweep.bytes} bytes reclaimed`);
 else fail(1, 'reported zero bytes — a reclaim that recovers nothing is not a reclaim');
 
+// KAN-545 reworded the headline: it now says what was FREED, because "10.4 GB
+// reclaimed" for a sweep that moved `df` by 1.14 GiB is the defect that ticket
+// was filed for. The assertion follows the wording rather than pinning the old
+// one — and it now also checks that the freed figure is the one in the summary.
 const summary = lastReclaimSummary();
-if (summary && summary.directories === 4 && /reclaimed from 2 workspaces/.test(summary.headline)) {
+if (
+  summary &&
+  summary.directories === 4 &&
+  summary.bytes === sweep.bytes &&
+  /freed from 4 node_modules in 2 workspaces/.test(summary.headline)
+) {
   pass(1, `summary recorded for list_agents: "${summary.headline}"`);
 } else {
   fail(1, `summary not recorded correctly: ${JSON.stringify(summary)}`);
