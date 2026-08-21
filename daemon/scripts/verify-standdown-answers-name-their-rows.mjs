@@ -128,9 +128,50 @@ await new Promise((resolve) => server.listen(socketPath, resolve));
 const link = new CrabCastLink({ socketPath, log: () => {}, reconnectDelayMs: 50 });
 const runtime = new CrabCastRuntime({ link, log: () => {}, censusIntervalMs: 10_000 });
 
-const deadline = Date.now() + 10_000;
-while (Date.now() < deadline && !runtime.listHerdrAgentsChecked().reachable) {
+// ⚠ AN UNSETTLED FIXTURE IS ITS OWN OUTCOME, NOT AN ASSERTION FAILURE (KAN-576).
+//
+// This wait used to be 10s, and on expiry the script ASSERTED ANYWAY. On a
+// loaded runner the fake peer had not answered a census yet, so `closeAgentByKey`
+// took its `census did not answer` branch and five assertions went red — every
+// one of them about foreign panes. That is a report about the FIXTURE wearing
+// the words of a report about the STAND-DOWN, and it named the wrong suspect:
+// `epic/KAN-39` reasonably read it as a possible real defect under load and had
+// to be talked out of it.
+//
+// Reproduced exactly rather than inferred — deadline forced to 0 locally
+// reproduces the reported run's outcome on all seven assertions, 5 FAIL and the
+// same 2 PASS, and the failing run's 10.1s duration is this deadline expiring.
+//
+// The repair is KAN-571's shape and NOT a longer sleep: wait on the condition,
+// and make expiry a thing the script can SAY. A fixture that never came up now
+// exits 2 (INCOMPLETE) with the reason, so it can never again be mistaken for a
+// verdict about the code. A peer that genuinely never answers still stops the
+// script — just later, and honestly.
+//
+// ⚠ NO ASSERTION IS RELAXED BY THIS. The point of this proof is that "none
+// there" and "one there I may not touch" must differ; softening either to stop
+// a flake would delete what it exists to prove.
+const SETTLE_TIMEOUT_MS = 60_000;
+const settleDeadline = Date.now() + SETTLE_TIMEOUT_MS;
+let censusReachable = false;
+while (Date.now() < settleDeadline) {
+  if (runtime.listHerdrAgentsChecked().reachable) {
+    censusReachable = true;
+    break;
+  }
   await new Promise((r) => setTimeout(r, 50));
+}
+if (!censusReachable) {
+  console.error(
+    `INCOMPLETE: the fake CrabCast peer at ${socketPath} never answered a census ` +
+      `within ${SETTLE_TIMEOUT_MS}ms, so nothing about the stand-down was exercised. ` +
+      `This is the fixture failing to come up, NOT a finding about the code — a ` +
+      `verdict is deliberately not reported. Re-run when the machine is quieter.`
+  );
+  runtime.dispose?.();
+  server.close();
+  fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(2);
 }
 
 console.log('\n1. THE REFUSAL NAMES THE ROWS IT COUNTED');
