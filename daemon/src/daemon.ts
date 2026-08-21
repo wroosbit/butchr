@@ -16,6 +16,7 @@ import {
   LOST_TO_UNCONFIGURED,
   announceToJournal,
   daemonProvenanceReport,
+  describeNotFleetDaemon,
   describeRefusal,
   describeThisProcess,
   incumbentIsConfigured,
@@ -78,6 +79,7 @@ import {
   runChannelSelfCheck
 } from './channel-selfcheck.js';
 import { ChannelSpawnReachStore } from './channel-spawn-reach.js';
+import { measureClientReachForServer, reachForRoute } from './channel-client-reach.js';
 import { ChannelLivenessProbe } from './channel-liveness.js';
 import {
   GuardianPoker,
@@ -204,6 +206,12 @@ switch (bootPin.kind) {
     break;
   case 'carried':
     log(`runtime pin: carrying ${RUNTIME_ENV_VAR}=${bootPin.value} as ${DAEMON_UNIT} declares it`);
+    break;
+  case 'not-fleet-daemon':
+    // KAN-574. Served, and recorded where a test daemon's own record goes —
+    // see `describeNotFleetDaemon` for why this one is NOT announced to the
+    // journal the way the refusal above is.
+    for (const line of describeNotFleetDaemon(bootPin)) log(line);
     break;
 }
 
@@ -393,8 +401,18 @@ const channelSpawnReach = new ChannelSpawnReachStore();
  * report a carrier the next send will not take.
  *
  * ---------------------------------------------------------------------------
- * ⚠ TWO SOURCES, AND THE ORDER BETWEEN THEM IS THE WHOLE OF KAN-497
+ * ⚠ THREE SOURCES, AND THE ORDER BETWEEN THEM IS THE WHOLE OF KAN-497/KAN-319
  * ---------------------------------------------------------------------------
+ *
+ * **A third source went in front of both of these under KAN-319, and the order
+ * is stated once — in `reachForRoute`, which this now calls.** The two below
+ * are inferences about a spawn *Butchr made*; the new one is a measurement of
+ * the client on the other end of the connection, announced on `hello` by that
+ * client's own child process. It wins because it is an observation, and because
+ * the population that broke the fleet had no Butchr spawn to infer from at all:
+ * herdr restored four supervisor panes itself as `claude --resume <uuid>`, a
+ * command line this daemon never composed and could not see. Everything below
+ * is unchanged and still decides every agent whose server announces nothing.
  *
  * It took no argument until KAN-497 and answered `herdrBridge.channelReach` for
  * every agent alike. That is the right answer for a runtime whose spawn shape
@@ -421,7 +439,20 @@ const channelSpawnReach = new ChannelSpawnReachStore();
  *   is untouched by this.
  */
 const channelReach = (address: { type: string; key: string }): ChannelReach =>
-  channelSpawnReach.get(address) ?? herdrBridge.channelReach;
+  reachForRoute({
+    // KAN-319. FIRST, because it is the only one of the three that is an
+    // observation rather than an inference — the client's own argv, read by its
+    // own child, for the connection this frame is about to go down. The two
+    // below are both derived from a spawn Butchr made, and the defect was a
+    // fleet of four panes **herdr restored itself**: no Butchr spawn to record,
+    // so the store was empty and the fall-through answered about spawns that
+    // were not these. `resolve` is the same call the write uses, deliberately —
+    // asking about the connection that will carry the frame rather than about
+    // the address in the abstract.
+    measured: agentConnections.resolve(address)?.clientReach?.reach,
+    spawn: channelSpawnReach.get(address),
+    runtime: herdrBridge.channelReach
+  });
 
 // The one piece of state that outlives the machine. Everything else here —
 // the session map, herdr's panes, the extension's view — dies in a power cut,
@@ -697,6 +728,20 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
       // address: it is a claim by the announcing process, and a malformed one is
       // stored as "said nothing" rather than as a stamp nobody checked.
       const build = buildFromAnnouncement(msg);
+      // WHETHER THIS CONNECTION'S CLIENT RENDERS CHANNEL FRAMES (KAN-319).
+      //
+      // MEASURED HERE rather than announced by the server, and the reason is
+      // KAN-526's finding rather than a preference: nothing in the deploy path
+      // restarts an `mcp.js`, so a verdict the server announced would reach only
+      // agents that have restarted since it shipped — which is exactly the
+      // population that no longer has the defect. Read off the pid it is
+      // announcing right now, while the process is demonstrably alive because it
+      // is the one talking.
+      //
+      // A server from before KAN-526 announces no pid and measures `'unknown'`,
+      // which routes precisely as it always did. Absent is unmeasured, never
+      // no-channel; `reachForRoute` is where that is enforced.
+      const clientReach = measureClientReachForServer({ serverPid: build?.pid });
       if (!address) {
         // Not an error worth closing over. A client with nothing to announce
         // should not be sending `hello` at all, but the honest answer is that
@@ -710,7 +755,7 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         });
         return true;
       }
-      const result = agentConnections.register(socket, address, build);
+      const result = agentConnections.register(socket, address, build, clientReach);
       if (!result.ok) {
         reply({ action: 'hello_response', success: false, error: result.error, identified: false });
         return true;
@@ -728,7 +773,17 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
             ? `, pid ${connection.build.pid} up since ${connection.build.startedAt}, loaded ${
                 connection.build.loadedBuildAt ?? 'an unreadable build'
               }`
-            : ', announcing no build (an mcp.js from before KAN-526)')
+            : ', announcing no build (an mcp.js from before KAN-526)') +
+          // KAN-319. Said at the one moment the daemon hears from the process,
+          // because it is the only moment anything can: a client that discards
+          // every frame is invisible in every other line this daemon writes.
+          (connection.clientReach
+            ? `, client channel reach ${connection.clientReach.reach}${
+                connection.clientReach.reach === 'loaded'
+                  ? ` (client pid ${connection.clientReach.clientPid})`
+                  : ` — ${connection.clientReach.detail}`
+              }`
+            : ', client channel reach unmeasured')
       );
       reply({
         action: 'hello_response',

@@ -15,8 +15,15 @@
 // before its old socket's `close` fires has the old cleanup delete the new
 // entry — a live agent, unaddressable, with nothing in any log about it.
 //
-// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
-// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+// CI-RUNNABLE: yes — it STARTS A REAL DAEMON from a copy of the build, plus a
+// real `dist/mcp.js`, both isolated by a temp $HOME; no herdr, no credential,
+// no peer, no terminal. This line read "no live daemon" until KAN-574 and that
+// was wrong from the day it was written — §1 has always spawned
+// `dist/daemon.js`, and the paragraph below about isolation-by-$HOME describes
+// the daemon it spawns. The class is unchanged and correct: CI runs this and it
+// passes. What was wrong was the REASON, which is the half `ci-partition.md`
+// copies, so a reader deciding whether a change needs a live daemon was being
+// told the opposite of the truth by a generated file.
 //
 // WHAT IT DOES NOT COVER, AND WHO DOES. This script proves the map resolves an
 // identity to a connection. It does NOT fire an addressed frame down that
