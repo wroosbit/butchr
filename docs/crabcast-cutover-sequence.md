@@ -1042,12 +1042,30 @@ happens if the refusal is bypassed.)
   forcing anything.
 - **Who:** the driver.
 
-### 5c.5 — Tell it what it lost
+### 5c.5 — Tell it what it lost, because it cannot tell on its own
+
+⚠ **THE NEW AGENT CANNOT ESTABLISH THAT IT IS NEW, AND WILL ARGUE THAT IT IS
+NOT.** This is not a hedge — it was measured on this ticket, on the supervisor
+that approved this section. `epic/KAN-39` was re-spawned at 2026-08-21T20:41Z
+and **could not detect it from the inside**: it published a correction claiming
+continuity, citing `sessionless: true` and a batch of held notifications as
+evidence that it was the same process. **Both facts pointed the other way** —
+the notifications had accumulated *because* the old process was gone. It was
+refuted from outside, on the daemon log, the pid and the pane id.
+
+So 5c.0's *"the agent that comes back is competent but new"* is a measurement
+rather than an argument, and it has a sharper form: **continuity is establishable
+only from outside.** An agent asked *"are you the same one?"* will answer from a
+transcript that looks continuous to it, and its answer carries no information.
 
 - **Action:** point the new agent at the comment written in 5c.2. It has no
-  memory of having written it.
+  memory of having written it, **and it may not believe that.**
 - **Check:** it can restate what it is holding without being fed it a second
-  time.
+  time. ⚠ **Do not check continuity by asking it.** The daemon log, the pid and
+  the pane id are the instruments; the agent's own account is not one, however
+  confidently it is given.
+- **Abort:** none — but if the agent disputes that it was re-spawned, that is
+  the expected behaviour recorded above and not evidence that the drain failed.
 - **Who:** the driver.
 
 ### What this runbook is not
