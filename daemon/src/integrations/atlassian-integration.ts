@@ -7,12 +7,22 @@ import {
 } from '../priority.js';
 import { which } from '../env.js';
 import { resolveNpxRuntime } from '../node-runtime.js';
+import { ProxyMode, selectedProxyMode } from '../atlassian-proxy.js';
 
 // Atlassian as Butchr's first integration: one credential, one mcp-remote
 // endpoint, and the workspace types it contributes — Jira's `task`, `story`
 // and `epic`, and Confluence's `confluence` (KAN-142). The unit is the
 // *vendor*, because that is what the credential and the MCP server belong to;
 // Jira and Confluence are two products behind one of each.
+//
+// **"One mcp-remote endpoint" is now conditional, and KAN-603 is where it
+// stopped being unconditional.** That clause was written before the proxy
+// existed, and it described the whole of how an agent reached Atlassian. It no
+// longer does: the daemon's own proxy carries every action the fleet performs
+// under the stored credential, so while it is serving, this integration
+// contributes **no** MCP server and `atlassianMcpServers` returns an empty map.
+// The endpoint below is what an install with the proxy `off` still gets, and
+// the reasoning for the split is on that function.
 //
 // Confluence is the honest test of that grouping, and it passed: adding a
 // whole second product's workspaces is one more element in
@@ -155,8 +165,54 @@ const ATLASSIAN_MCP_ENDPOINT = 'https://mcp.atlassian.com/v1/mcp';
  * Still resolved on every call, and still cheap: node-runtime.ts caches per
  * search path, so the daemon writes one interpreter into every workspace it
  * provisions rather than re-deciding per activation.
+ *
+ * ## KAN-603: WHEN THE PROXY IS ON, THIS SERVER IS NOT EMITTED AT ALL
+ *
+ * `proxyMode` is a **required parameter** rather than something this function
+ * reads for itself, and that is the point of it. The old signature was `()`,
+ * so "emit the official server without consulting the proxy" was the only
+ * thing a caller could express; the mode being an argument makes the decision
+ * one a call site cannot skip. That is the type carrying the invariant —
+ * whether the proxy is on is runtime state, but *having consulted it* is now
+ * a compile-time obligation.
+ *
+ * **What went wrong (measured 2026-08-21, `servyboi` bring-up).** This
+ * definition was emitted unconditionally into every workspace's `.mcp.json`,
+ * beside `butchr`. The official endpoint is remote and needs a browser OAuth
+ * flow that nobody completes on a fresh machine, so a converge-mode fleet came
+ * up with four `mcp-remote` processes hanging on `https://mcp.atlassian.com`,
+ * none authenticated. `task/KAN-568` spent its runway in
+ * `until ls ~/.mcp-auth/…/*token*; do sleep 3; done` — polling for a token that
+ * was never going to arrive — while `story/KAN-117` correctly concluded the
+ * server was dead and carried on through the proxy. That second agent is the
+ * evidence that matters: **the fleet does not need this server, it was simply
+ * never told so.** On the machine where this was written the defect was
+ * invisible, because that box had completed the OAuth flow months earlier and
+ * `mcp-remote` reuses the cached token.
+ *
+ * **Why the gate is the proxy mode and not a flag of its own.** The proxy
+ * (KAN-272 / KAN-419 and the rungs after them) already carries every Atlassian
+ * action the fleet performs, under the daemon's own credential and with no
+ * per-agent login. So the two are alternatives, never companions: any rung
+ * above `off` means the supported route exists, and the official server is a
+ * vestige that can only cost an agent its first minutes. `off` means it is the
+ * *only* route, so it is still emitted there — an un-proxied install is
+ * unchanged by this, which is why no separate switch was invented for
+ * something the existing one already answers.
+ *
+ * **This is an omission and deliberately not an `unusable`.** A definition
+ * carrying `unusable` is still written to disk — `materializeMcpServers`
+ * strips the field on the way — and `unusableMcpServers` turns it into an
+ * *activation refusal*. Both are the wrong shape here: there is nothing wrong
+ * with the machine, and the workspace should come up fine with one server
+ * fewer. Retirement is the absence of the key, not a note attached to it.
  */
-export function atlassianMcpServers(): McpServerDefinitions {
+export function atlassianMcpServers(proxyMode: ProxyMode): McpServerDefinitions {
+  // The whole of the fix. Above `off` the proxy serves this integration's
+  // tools, so provisioning a second, unauthenticated route to the same site
+  // buys an agent nothing and costs it a hang.
+  if (proxyMode !== 'off') return {};
+
   const runtime = resolveNpxRuntime();
   const args = ['-y', 'mcp-remote', ATLASSIAN_MCP_ENDPOINT];
 
@@ -517,7 +573,13 @@ export function createAtlassianIntegration(
     // enablement.ts.
     enabled: false,
     workspaceTypes: atlassianWorkspaceTypes(options.issueTypeLookup),
-    mcpServers: atlassianMcpServers,
+    // Read at call time, never captured here: `McpServerProvider` is a function
+    // precisely so the daemon re-decides on every activation, and the proxy
+    // mode is read from the environment on every call for the same reason
+    // (see `selectedProxyMode`). An operator who changes
+    // `BUTCHR_ATLASSIAN_PROXY` and restarts gets the matching `.mcp.json`
+    // without anything else having to remember.
+    mcpServers: () => atlassianMcpServers(selectedProxyMode().mode),
     ...(options.credential ? { credential: options.credential } : {})
   };
 }

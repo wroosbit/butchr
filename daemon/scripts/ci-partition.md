@@ -88,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 139 |
+| `yes` | 140 |
 | `partial` | 20 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **185** |
+| **total** | **186** |
 
-**159 of 185** run on every pull request.
+**160 of 186** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -124,6 +124,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-atlassian-proxy-read-surface` | yes | imports the built daemon modules and asserts against them in process, and reads `atlassian-proxy.ts` and `router.ts` off the checkout; no live daemon, no herdr, no credential, no peer, no terminal, no network. The half that needs real Atlassian is deliberately not here — it is `probe-atlassian-proxy-read-surface.mjs`, which is a `probe-` precisely because CI cannot run it. |
 | `verify-atlassian-proxy-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-atlassian-proxy-write-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-atlassian-server-retired` | yes | no daemon, no network, no herdr, no real credential. The gate under test reads `process.env.BUTCHR_ATLASSIAN_PROXY` at call time, so every rung is exercised in-process by setting it and running the real registry and the real writer. |
 | `verify-board-asked-is-not-stopped` | yes | imports the built `board-reconcile.js` and drives it with in-process stubs. It points `HOME` at a temp dir and touches nothing else: no herdr, no CrabCast, no PTY, no network, no Jira, no wall clock. |
 | `verify-board-reconciler-guard` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-brief-location` | yes | §1 and §2 read `daemon/src/*.ts` as text; §3 and §4 import the built daemon modules and call them over values this script constructs. It needs no peer, no herdr, no PTY, no credential and no network, and it writes nothing. The `--static-only` flag below is for a human running this against a build that just failed, not for CI, which builds first. |

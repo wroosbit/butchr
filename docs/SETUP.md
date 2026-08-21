@@ -533,10 +533,31 @@ Butchr works without one. Its only effect is that Jira **Stories** open as
 on any failure, by design.
 
 On the extension's **Settings** page, supply your site URL, account email and
-an Atlassian API token. Prefer a **scoped** token limited to `read:jira-work`;
-the daemon has no write path to Jira and none should be added. The page tells
-you which storage backend this machine will use before you type the token, and
-validates it at submit time. See `docs/butchr.md` for the full design.
+an Atlassian API token. The page tells you which storage backend this machine
+will use before you type the token, and validates it at submit time. See
+`docs/butchr.md` for the full design.
+
+**Which scopes that token needs depends on one environment variable, and the
+answer is no longer "read only".** This paragraph read *"prefer a scoped token
+limited to `read:jira-work`; the daemon has no write path to Jira and none
+should be added"* until KAN-603. That was true when it was written and stopped
+being true at **KAN-291**, which gave the daemon a Jira status transition, and
+again at **KAN-293**, which added Confluence writes. `BUTCHR_ATLASSIAN_PROXY`
+selects how far the grant goes — `off` (the default), `jira-read`,
+`confluence-read`, `jira-write`, `confluence-write` — as a ladder where each
+rung contains the one below it. `docs/atlassian-proxy.md` is the full account,
+and the daemon prints the exact grant it is serving at startup, so read that
+line rather than this one for what your machine actually does.
+
+**Which server your agents get depends on the same variable (KAN-603).** With
+the proxy `off`, a workspace is provisioned with the official `atlassian` MCP
+server — a remote endpoint whose first use opens a browser OAuth flow you have
+to complete on this machine. With the proxy on, that server is **not**
+provisioned at all: agents reach Atlassian through Butchr's own `butchr` server,
+under the credential you just typed, with no per-agent login. So a `.mcp.json`
+carrying only `butchr` is the proxy working, not provisioning failing. Before
+KAN-603 the server was emitted either way, which on a fresh machine meant every
+agent came up waiting on an OAuth token nobody was going to supply.
 
 ---
 
