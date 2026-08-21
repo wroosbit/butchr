@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 131 |
+| `yes` | 132 |
 | `partial` | 17 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **174** |
+| **total** | **175** |
 
-**148 of 174** run on every pull request.
+**149 of 175** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -165,6 +165,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-staleness-check` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
 | `verify-staleness-over-socket` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
 | `verify-standdown-and-override-cross-the-seam` | yes | imports the built daemon modules and asserts against them in process. Sections 3 and 4 stand up a fake CrabCast on a unix socket in a temp dir; no live daemon, no real peer, no herdr, no credential, no terminal. |
+| `verify-standdown-answers-name-their-rows` | yes | builds its fixture under `os.tmpdir()`, serves a fake CrabCast over a unix socket it creates itself, and points `HOME` at that temp tree so `workspacesRoot()` resolves inside it. It imports from `daemon/dist`, so it needs the build and nothing else: no herdr, no PTY, no network, no Jira, no wall clock, no live peer. |
 | `verify-standdown-reaches-sessionless-agent` | yes | every section stands up its own Unix socket under os.tmpdir() and answers its own frames, and §7's first arm additionally reads daemon/src/board-reconcile.ts as text out of the checkout, which CI has; no peer, no herdr, no PTY, no credential, no network, and nothing is skipped, so a green is a green. |
 | `verify-standdown-survives-degraded-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-startup-admission` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

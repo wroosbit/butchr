@@ -2104,7 +2104,32 @@ export class CrabCastRuntime implements AgentRuntime {
 
     const matches = this.censusAddressesForKey(key, type);
     if (matches.length === 0) {
-      return refuse(`the runtime census reports no agent at ${type ?? '*'}/${key}`);
+      // ⚠ NAME THE POPULATION, NOT JUST THE VERDICT (KAN-552). This sentence
+      // used to read "the runtime census reports no agent at …", which is a
+      // claim about the whole census made by a search of part of it — and it
+      // lands beside `stillRunning.detail`, which searched the WIDER part and
+      // truthfully says the opposite. Saying which rows were counted is what
+      // turns two contradictory-looking sentences into one legible answer.
+      const skipped = this.censusExclusionsForKey(key, type);
+      const notes: string[] = [];
+      if (skipped.foreign > 0) {
+        notes.push(
+          `${skipped.foreign} pane(s) at that path are FOREIGN — CrabCast can see them and did ` +
+            `not start them for Butchr, and it will not stand down a terminal somebody else owns`
+        );
+      }
+      if (skipped.notRunning > 0) {
+        notes.push(`${skipped.notRunning} row(s) at that path are not \`state: running\``);
+      }
+      return refuse(
+        `no running row this runtime owns is at ${type ?? '*'}/${key}` +
+          (notes.length ? ` (${notes.join('; ')})` : '') +
+          (skipped.foreign + skipped.notRunning > 0
+            ? '. Those rows are still reported as present by the census read that answers ' +
+              '"is anything running here", which is why a stand-down refusal can sit beside a ' +
+              'report that this agent is running: they are different questions over different rows'
+            : '')
+      );
     }
     if (matches.length > 1) {
       return {
@@ -2180,6 +2205,48 @@ export class CrabCastRuntime implements AgentRuntime {
       out.push(address);
     }
     return out;
+  }
+
+  /**
+   * What the narrow predicate above STEPPED OVER for this key — rows that name
+   * this address and were excluded anyway, counted by the reason they were.
+   *
+   * ⚠ THIS EXISTS BECAUSE TWO TRUE SENTENCES READ AS A CONTRADICTION (KAN-552).
+   * `router.ts`'s `standDownVerdict` joins on `census.agents`, which
+   * `censusRecords()` builds from `[...rows, ...foreign]` with NO state filter.
+   * `censusAddressesForKey` above reads `rows` alone and requires
+   * `state === 'running'`. **Both are correct and they must stay different** —
+   * the verdict asks *is anything running here*, and the refusal asks *may I
+   * stand this down*, and the comment on `censusAddressesForKey` says why the
+   * second is deliberately narrower: standing down a foreign pane reaches a
+   * terminal somebody else owns.
+   *
+   * What was wrong was that both rendered as the bare phrase *"the runtime
+   * census"*. `epic/KAN-203` met the result on `task/KAN-497`: one reply
+   * asserting the census "still reports it running" beside an error saying it
+   * "reports no agent", implying opposite remedies, with a reader acting on
+   * whichever they read first. Neither sentence was false; neither named its
+   * population.
+   *
+   * So this reports the gap rather than closing it. A caller told *no running
+   * row I own, and 2 foreign pane(s) not counted* can act; a caller told *the
+   * runtime census reports no agent* cannot.
+   */
+  private censusExclusionsForKey(
+    key: string,
+    type?: string
+  ): { foreign: number; notRunning: number } {
+    const wanted = key.toLowerCase();
+    const matches = (row: CensusRow): boolean => {
+      const address = addressForPath(row.workDir ?? row.path);
+      if (!address) return false;
+      if (address.key.toLowerCase() !== wanted) return false;
+      return !type || address.type === type;
+    };
+    return {
+      foreign: this.census.foreign.filter(matches).length,
+      notRunning: this.census.rows.filter((r) => r.state !== 'running' && matches(r)).length
+    };
   }
 
   // ── lookup ───────────────────────────────────────────────────────────────
