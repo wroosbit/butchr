@@ -618,12 +618,16 @@ export interface RecordStartOptions {
  * functions above, so a proof can assert the decisions exhaustively and then
  * separately watch a real daemon produce a real line.
  *
- * ⚠ **Nothing here throws to the caller.** This runs before the socket in
- * `daemon.ts`, and a daemon that refuses to start because it could not write
- * its own audit line would have turned an audit trail into an outage. A write
- * that fails leaves `consumeError` or nothing at all, and the *next* start sees
- * a missing predecessor and classifies itself `first-record` — visible, and not
- * a false clean.
+ * ⚠ **Every read, write and `git` in here catches its own failure**, because
+ * this runs before the socket in `daemon.ts` and a daemon that refuses to start
+ * because it could not write its own audit line would have turned an audit
+ * trail into an outage. A write that fails leaves `consumeError` or nothing at
+ * all, and the *next* start sees a missing predecessor and classifies itself
+ * `first-record` — visible, and not a false clean.
+ *
+ * That is a property of the code as written and not one the type system holds,
+ * so the call site wraps it as well. Reasoning that a function cannot throw is
+ * not the same as it being unable to.
  */
 export function recordDaemonStart(opts: RecordStartOptions): DeployRecord {
   const now = opts.now ?? new Date();

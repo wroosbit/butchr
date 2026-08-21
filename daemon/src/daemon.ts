@@ -304,16 +304,40 @@ switch (bootPin.kind) {
 // Nothing here can stop the daemon starting. An audit trail that can take the
 // fleet down is a worse trade than the gap it closes, so `recordDaemonStart`
 // swallows its own I/O failures and the next start reports the hole.
-const deployRecord = recordDaemonStart({ distDir: path.dirname(fileURLToPath(import.meta.url)) });
-log(summariseRecord(deployRecord));
-if (deployRecord.consumeError) {
-  // Loud, because an intent left in place would gate the NEXT start too.
-  log(`WARNING: ${deployRecord.consumeError}`);
-}
-if (deployRecord.gate.kind === 'ungated' && changesTheRunningFleet(deployRecord.start)) {
-  announceToJournal(describeUngatedStart(deployRecord), logToFileOnly);
-} else if (deployRecord.gate.kind === 'gated') {
-  log(`deploy ledger: attributed to ${deployRecord.gate.by}; ledger at ${DEPLOY_LEDGER_FILE}`);
+//
+// ⚠ The try is belt and braces and is NOT decoration. `recordDaemonStart` is
+// written not to throw — every read, every write and every `git` inside it
+// catches — but this call sits ABOVE the `uncaughtException` handler installed
+// below, so an unanticipated throw here would take the daemon down before
+// anything could report why. Reasoning that a function cannot throw is not the
+// same as it being unable to, and the difference is a fleet outage caused by an
+// audit line.
+try {
+  const deployRecord = recordDaemonStart({
+    distDir: path.dirname(fileURLToPath(import.meta.url))
+  });
+  log(summariseRecord(deployRecord));
+  if (deployRecord.consumeError) {
+    // Loud, because an intent left in place would gate the NEXT start too.
+    log(`WARNING: ${deployRecord.consumeError}`);
+  }
+  if (deployRecord.gate.kind === 'ungated' && changesTheRunningFleet(deployRecord.start)) {
+    announceToJournal(describeUngatedStart(deployRecord), logToFileOnly);
+  } else if (deployRecord.gate.kind === 'gated') {
+    log(`deploy ledger: attributed to ${deployRecord.gate.by}; ledger at ${DEPLOY_LEDGER_FILE}`);
+  }
+} catch (err) {
+  // Said out loud rather than swallowed: a start with no ledger line makes the
+  // NEXT start read `first-record`, which is a hole in the audit and must not
+  // look like a clean one.
+  announceToJournal(
+    [
+      `butchr: the deploy ledger THREW at startup and this start is unrecorded — ` +
+        `${(err as Error)?.message ?? String(err)}`,
+      `  The next start will read \`first-record\` and judge nothing. That is a hole, not a pass.`
+    ],
+    logToFileOnly
+  );
 }
 
 process.on('uncaughtException', (err) => {
