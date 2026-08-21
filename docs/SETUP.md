@@ -16,6 +16,26 @@ reloading the Chrome extension. Chrome offers no way to install, reload, or
 read the ID of an unpacked extension from outside the browser. Steps 4, 5 and 7
 require you to click. Everything else is a command.
 
+**Every code block here is `bash`, and your login shell may not be.** This
+matters more than it sounds: the second machine this document was rehearsed
+against (KAN-568) has `fish` as its login shell, and a reader who pastes into
+their own prompt is not running what is written here. Most of it survives —
+`export VAR=...`, brace expansion and `$(...)` all work in fish — so the
+breakage is not where you would look for it. **Run `bash` first**, or read the
+per-step notes where a line is called out as shell-sensitive:
+
+```bash
+bash        # then follow the rest of this document inside it
+```
+
+⚠ **The one construct that is not portable is `$?`**, and its failure mode is
+the expensive kind. In fish, `echo "exit=$?"` is a hard parse error — but the
+command *before* it still runs, so you get output that looks like the step
+worked and **no exit code at all**. Where a step's whole content is the exit
+code (step 1's keyring probe is exactly that), fish gives you the setup and
+withholds the answer. That line is written portably below; this note is here
+because the next line somebody adds will not be.
+
 ---
 
 ## 0. What you are installing
@@ -38,6 +58,80 @@ is the one omission most likely to be mistaken for a bug later: without it,
 `butchr_send_to_agent` falls back to typing into the recipient's terminal, which
 interrupts whatever that agent was doing. It is a research preview and it is
 step 9.
+
+---
+
+## 0.5 Is this machine actually clean?
+
+**Skip this if you know the box has never run Butchr. Read it if you are not
+sure, and read it especially if you are rehearsing this document** — an install
+that lands on top of a previous one is the one case where every step below can
+report success while proving nothing.
+
+This section exists because of a measured near-miss (KAN-568). A machine offered
+as the clean-room target for exactly that rehearsal turned out to carry a prior,
+**architecturally different** Butchr: SQLite-backed, with `workspace/` singular,
+`butchr.log`, and units named `butchr.service`, `butchr-sentinel.service`,
+`butchr-resource-guard.service` and `butchr-ld-collector.service` — none of which
+exist in the current tree, which uses `workspaces/` plural, `daemon.log`,
+`agents.jsonl` and `butchr-daemon.service`. Nothing in this document would have
+told the operator that, and most of the prerequisites below were already
+satisfied by whoever installed them last.
+
+⚠ **The hazard is not that the install fails. It is that it succeeds.** A
+prerequisite already present is a step never tested; a `git clone` that finds a
+directory already there is a clone that silently keeps somebody else's commit; a
+stale `butchr.db` sits under a path the current daemon reads. **For a reader who
+cannot read the source and has no one to ask, a false green is worse than a
+crash.**
+
+```bash
+ls -d ~/.local/share/butchr 2>/dev/null
+ls    ~/.config/systemd/user/ | grep -iE 'butchr|herdr|drovr'
+ls -d ~/code/*/butchr ~/code/*/crabcast 2>/dev/null
+```
+
+Every line that prints something is a decision you have to make **before** step
+1, not a thing to install past:
+
+| What you find | What it means |
+| --- | --- |
+| `~/.local/share/butchr/` exists | state from a previous install. `workspace/` singular or a `butchr.db` means a *different generation* of the product, not an older version of this one |
+| any `butchr*.service` that is not `butchr-daemon.service` | a unit this document does not install and step 6 will not overwrite; it can hold the socket and win the race described in step 7 |
+| a `butchr` clone already on disk | step 2's `git clone` will not run. You will build **whatever commit is already checked out** |
+
+**There is no supported migration from that generation, and this document does
+not pretend to offer one.** The honest options are a fresh user account (truly
+clean `$HOME`, same box — this needs `sudo`), a different machine, or removing
+the prior state deliberately with the *Uninstall* recipe at the end of this
+document read against the **old** layout rather than this one. ⚠ Removing it is
+irreversible; on the machine above, artefacts were named `PRESERVED` and
+`leader-preserved`, which is not a state to clear on a hunch.
+
+**If you are rehearsing this document rather than installing for real, say which
+box you were on and whether it was clean.** A rehearsal run over an existing
+install cannot go red, so reporting it as a clean-install pass closes the one
+check that was worth running.
+
+### `sudo`, and where it will stop you
+
+Root is needed in **step 1 only, and conditionally in step 6** — the document
+used to leave you to discover both:
+
+| Where | What wants root | Avoidable? |
+| --- | --- | --- |
+| step 1 | `curl … nodesource … \| sudo -E bash -` and `sudo apt-get install -y nodejs` | yes — `nvm`, or any node 20 already on `PATH` |
+| step 1 | `sudo apt install libsecret-tools gnome-keyring` | yes — the keyring is optional; without it you get the `0600` file backend, which is supported |
+| step 6 | `loginctl enable-linger` | **usually not needed.** `install-service.sh` calls it unprivileged first, and on a desktop polkit normally allows it. Only if that fails does it print `Run: sudo loginctl enable-linger <user>` |
+
+**Everything else runs as an ordinary user.** The daemon, all four units and the
+fd drop-in are `systemd --user` and land under `~/.config`; steps 2–5 and 7–10
+touch nothing privileged. So if you are driving this unattended, or over SSH as
+an account whose `sudo` needs a password nobody is there to type, **arrange node
+20 in advance and decide about the keyring, and the rest completes without a
+password** — with the one caveat that a failed `enable-linger` leaves the units
+starting at login instead of at boot, which is a real difference on a headless
+box and is reported rather than silent.
 
 ---
 
@@ -74,7 +168,13 @@ herdr --version   # herdr 0.8.0, or anything >= 0.7
 
 If it still is not found: `export PATH="$HOME/.local/bin:$PATH"`.
 
-`herdr update` is fine to run, and so is letting it update itself.
+`herdr update` is fine to run **at install time, from an ordinary terminal, with
+no fleet running**. That is the only condition under which this sentence used to
+be unqualified, and it is not the condition most readers meet. Once Butchr is
+running, upgrading herdr is a different operation with two properties that will
+surprise you — it cannot be driven from inside the fleet, and it does not roll
+back. Both are in **step 11**, and it is worth reading before you type it rather
+than after.
 
 > **This section used to say the opposite, and the reversal is worth one
 > paragraph** (KAN-533). Until 2026-08-18 this was *"the one prerequisite you
@@ -116,8 +216,15 @@ backend is not a degraded mode to be embarrassed about, but you should know
 which you are getting *before* you type a token, so:
 
 ```bash
-secret-tool lookup service butchr account jira; echo "exit=$?"
+bash -c 'secret-tool lookup service butchr account jira; echo "exit=$?"'
 ```
+
+**The `bash -c` is load-bearing, not decoration** — it is what makes this line
+give the same answer in every shell. Written bare, the `$?` is a parse error in
+fish and you get the lookup's output with the exit code silently missing, which
+is the one thing this step is for. Measured on both shells: bare, bash prints
+`exit=127` and fish prints neither an `exit=` line nor a usable status; wrapped,
+both print `exit=127`.
 
 Exit `0` or `1` means a working keyring. Anything else (including "command not
 found") means the file backend, at
@@ -496,6 +603,64 @@ agent's startup self-check is readable per agent under `channel` in
 twelve seconds after spawn, so an agent read the instant it starts will honestly
 report no channel yet.
 
+### ⚠ The failure is silent, and it is silent *on the side that would report it*
+
+This is the part most worth understanding before you turn the step on, because
+every instrument above reports from the **sender's** side.
+
+**An agent spawned without the flag is deaf, and nothing tells it so.** It has no
+channel registration, so channel frames addressed to it are never delivered —
+and from inside that agent the result is indistinguishable from nobody having
+written to it. There is no error, no dropped-message log on its own pane, and
+nothing in its context to notice. It will report itself healthy, because by every
+measure available to it, it is.
+
+**Which means the count of deaf agents is not something the fleet can see.** Ask
+from the outside, per agent, and treat a missing answer as a missing answer
+rather than as a clean bill of health:
+
+```bash
+# is the switch on, and who is already deaf because they predate it?
+node daemon/scripts/butchr-doctor.mjs | grep -i channel
+```
+
+That reports the **switch**, and — usefully — says in as many words when agents
+already running were spawned without a channel and will keep the composer until
+restarted. It does not report per-agent transport; the per-agent `channel` block
+on `butchr_list_agents` is what does, and step 9's table above is how to read it.
+**`butchr_agent_status` carries the same block**, but note that on daemons older
+than KAN-435 it omitted the key entirely for every agent — an absent field there
+is the tool declining to answer, not an agent without a channel, and it was
+filed as a defect twice on agents that were fine.
+
+Two ways a fleet ends up here, both quiet:
+
+* **Agents that were already running when you flipped the switch on.** Covered
+  above — whether an agent has a channel is decided when it is *spawned*. Those
+  agents are deaf for the rest of their lives and the daemon will keep writing
+  frames at them.
+* **A client that no longer takes the flag.** The spelling
+  `--dangerously-load-development-channels` **does not appear in `claude --help`
+  at all** — measured `0` occurrences against a positive control of `1` for
+  `permission-mode`, so the search was capable of finding it. It is an
+  undocumented upstream flag. Nothing guarantees it keeps working, and the day it
+  stops, every agent spawns deaf and no agent notices.
+
+⚠ **Check the client version you are actually running against the measured
+list**, which is two entries long and above the fold in this step:
+
+```bash
+claude --version
+```
+
+If that does not match, delivery to a *model* is unproven on your install
+whatever the transport says — `outcome: 'unverified-client'` is the daemon
+saying exactly that, and it is a statement about evidence rather than about
+health. **The fleet this document was last rehearsed against was itself outside
+the measured list** (client `2.1.238`), which is the ordinary state rather than
+an alarming one: clients update on their own schedule and the list only grows
+when somebody re-measures.
+
 ### Why this is optional and not recommended
 
 Recommending it to every new install would mean telling you to pass a flag whose
@@ -550,6 +715,141 @@ answers the same question on demand under `mcp-servers`, and tells an agent
 about *its own* server under `servingProcess`. See
 [docs/staleness.md](staleness.md) — *"a live probe measures the answering
 process, not the deploy"*.
+
+---
+
+## 11. Upgrading herdr — which is not the same operation as step 10
+
+Step 10 upgrades **Butchr**, and it is reversible: the clone is a git checkout,
+so a bad deploy is `git checkout <old>` plus a rebuild. **Upgrading herdr is
+neither of those things**, and this section exists because both of its surprises
+were learned by hitting them rather than by reading anything.
+
+### ⚠ It is forward-only. Keeping the old binary is not a rollback.
+
+Measured across a 0.6.4 → 0.8.2 upgrade: restoring the previous herdr binary did
+**not** undo the upgrade. 0.8.2 had already migrated `session.json` and fetched
+engine-v2 detection manifests, and 0.6.4 put back on top of that **could not open
+a pane at all** — a worse state than either version on its own.
+
+**So back up the state directory, not just the binary**, before you upgrade:
+
+```bash
+cp -a ~/.local/share/herdr ~/.local/share/herdr.bak-$(date +%Y%m%d)
+```
+
+⚠ **Any upgrade advice that implies reversibility — including a previous version
+of this document — is actively dangerous.** The binary is the part that is easy
+to keep and the part that does not help.
+
+### ⚠ It cannot be run from inside the fleet
+
+`herdr update` replaces the binary that owns the panes your agents are sitting
+in, and it wants to stop the running server to do it — the update path carries an
+interactive `stop the old server now? [y/N]` prompt. **An agent cannot answer
+that**, and an agent is by definition running inside a pane that the update is
+about to take away. Butchr's own agents report `herdr update` refusing when
+invoked from inside a herdr session.
+
+**So this is a human step, performed from outside the fleet**, and it is the one
+operation in this document that a Butchr agent cannot do for you:
+
+```bash
+# 1. from a terminal that is NOT a herdr pane -- check
+[ -n "$HERDR_PANE_ID" ] && echo "INSIDE a herdr pane -- do not upgrade here" \
+                        || echo "outside herdr -- ok"
+
+# 2. stop the fleet
+systemctl --user stop butchr-daemon.service
+systemctl --user stop herdr.service     # if Butchr installed one
+
+# 3. back up state (above), then upgrade
+herdr update
+herdr --version
+
+# 4. bring it back
+systemctl --user start herdr.service
+systemctl --user start butchr-daemon.service
+node daemon/scripts/butchr-doctor.mjs
+```
+
+`herdr update` also **refuses outright when herdr came from a package manager**,
+naming the right command instead — Nix, `mise upgrade herdr`, or
+`brew update && brew upgrade herdr`. That refusal is correct and is not a
+failure; use what it tells you.
+
+### Which versions Butchr supports
+
+Step 1 has the detail and it is not repeated here, because a version list written
+in two places drifts. The short form: **0.7 or newer**, 0.6.x is deliberately
+dropped, 0.7.5 and 0.8.0 are the verified pair, and above that the daemon logs
+*"newer than verified"* as a note rather than a refusal. `butchr-doctor` and the
+daemon's startup log both name the version, so a wrong one cannot fail silently.
+
+⚠ **After any herdr upgrade, re-run `butchr-doctor`** — it is the only thing that
+checks the new binary against what Butchr actually issues, and it is cheaper than
+discovering the mismatch at the next activation.
+
+---
+
+## 12. Which runtime you just installed — and why it may not be the one you meant
+
+**Following this document gives you the herdr runtime.** That is the default,
+it is the supported path, and if you have no reason to want otherwise you are
+finished — skip to the summary below.
+
+Read this if you are standing up a box to **match an existing Butchr
+deployment**, because the two can differ with nothing announcing it.
+
+Butchr can drive agents through either of two runtimes, chosen by
+`BUTCHR_AGENT_RUNTIME` and read **once, at daemon construction**:
+
+| value | runtime | how you get it |
+| --- | --- | --- |
+| unset, empty, misspelled, `1`, `true` | **herdr** (`HerdrBridge`) | the default. Every step above installs this |
+| `crabcast` | **CrabCast** (`CrabCastRuntime`) | only if you set it deliberately, in a systemd drop-in |
+
+⚠ **Nothing in steps 1–11 sets it, and nothing warns you that a peer machine
+might have.** The fallback is deliberately asymmetric — an unrecognised value
+falls back to `herdr` and says so, because falling back to CrabCast on a typo
+would move a fleet onto an unproven path. So a fresh install is *always* herdr,
+and a machine you are trying to match may not be.
+
+**Ask the machine rather than assuming**, on both boxes:
+
+```bash
+node daemon/scripts/butchr-doctor.mjs | grep -i runtime
+ls ~/.config/systemd/user/butchr-daemon.service.d/
+```
+
+The drop-in directory is the part worth looking at directly. It is where a
+deployment's real configuration accumulates — the runtime pin, the agent cap, the
+proxy mode — **and this document installs none of it**. Two machines that both
+followed this file to the letter can still be running different products because
+one of them has a drop-in the other does not.
+
+To select CrabCast, if you have been told to:
+
+```bash
+mkdir -p ~/.config/systemd/user/butchr-daemon.service.d
+printf '[Service]\nEnvironment=BUTCHR_AGENT_RUNTIME=crabcast\n' \
+  > ~/.config/systemd/user/butchr-daemon.service.d/crabcast.conf
+systemctl --user daemon-reload
+systemctl --user restart butchr-daemon.service
+```
+
+CrabCast is a **separate tool that must already be installed and running** — it
+is not fetched by anything above, and Butchr talks to it over a socket
+(`BUTCHR_CRABCAST_SOCKET`, which has a default it will report). Butchr pins the
+CrabCast commit it was verified against, and the daemon logs the pin at boot. See
+[docs/crabcast-runtime.md](crabcast-runtime.md) for the contract and
+[docs/crabcast-cutover-sequence.md](crabcast-cutover-sequence.md) for the
+supported way to move a live fleet across.
+
+⚠ **Once the pin is set, the daemon refuses to start without it** — that is the
+exit-`4` behaviour described in step 7, and it is a guard rather than a fault: a
+daemon that would silently have come up on the *other* runtime stops instead.
+`BUTCHR_ALLOW_UNPINNED_RUNTIME=1` overrides it if you mean it.
 
 ---
 
