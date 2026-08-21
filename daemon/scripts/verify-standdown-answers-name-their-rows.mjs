@@ -36,13 +36,25 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'kan552-standdown-'));
 process.env.HOME = TMP;
 
-const distDir = path.join(process.cwd(), 'daemon', 'dist');
+// ⚠ DERIVED FROM THIS FILE, NEVER FROM `process.cwd()`. The first version of
+// this script used `process.cwd()` and went red in CI at 0.0s with "daemon/dist
+// is missing" while every other dist-importing proof in the same run passed —
+// the runner does not invoke scripts from the repo root, so the guard was
+// reporting the runner's working directory rather than the state of the build.
+// A setup guard that fires on the wrong condition is worse than none: it fails
+// the script for a reason that has nothing to do with what it tests.
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(scriptDir, '..', '..');
+const distDir = process.env.BUTCHR_DIST
+  ? path.resolve(process.env.BUTCHR_DIST)
+  : path.join(repoRoot, 'daemon', 'dist');
 if (!fs.existsSync(path.join(distDir, 'crabcast-runtime.js'))) {
-  console.error('daemon/dist is missing — run `npm run build` in daemon/ first.');
+  console.error(`No build at ${distDir}. Run \`npm run build\` in daemon/ first.`);
   process.exit(2);
 }
 
