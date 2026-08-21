@@ -2054,6 +2054,51 @@ export class JiraIssueTypeService {
     return this.proxyCall(method, path, body, product);
   }
 
+  /**
+   * The Atlassian account id this daemon's credential belongs to, or null.
+   *
+   * ---------------------------------------------------------------------------
+   * WHAT IT IS FOR, AND WHY IT IS NOT A NEW GRANT (KAN-577)
+   * ---------------------------------------------------------------------------
+   *
+   * `atlassian_create_issue` has to assign every ticket it files to this
+   * account, because the board reconciler's `BOARD_JQL` is
+   * `assignee = currentUser() AND status IN ("In Progress", "In Review")` and a
+   * ticket that fails the assignee half can never be staffed. `currentUser()`
+   * is evaluated by Jira against this same credential, so this endpoint and
+   * that JQL are two spellings of one account.
+   *
+   * **It reads {@link IDENTITY_PROBE}, which is already in the proxy's granted
+   * scope**: `atlassian_get_user_info` is a listed read on `/rest/api/3/myself`
+   * under `read:jira-user`, and `grantedScopes()` has carried that scope since
+   * that operation existed. Nothing here widens what the credential is used
+   * for; it asks a question an agent could already ask by hand.
+   *
+   * CACHED FOR THE LIFE OF THE DAEMON, AND THE NEGATIVE IS NOT CACHED. An
+   * account id does not change under a fixed credential, so the happy path
+   * costs one request ever. A *failure* is deliberately not remembered: the
+   * ordinary reason to fail is a credential that is not configured yet or an
+   * Atlassian that is briefly unreachable, and caching that would turn a
+   * thirty-second outage into a daemon that refuses every create until it is
+   * restarted. It retries on the next call instead.
+   *
+   * NEVER THROWS, like everything else this service exposes, and a null is a
+   * refusal rather than an empty answer: `atlassian-proxy.ts` turns it into a
+   * loud "nothing was sent" and never into an unassigned ticket.
+   */
+  public async selfAccountId(): Promise<string | null> {
+    if (this.cachedAccountId) return this.cachedAccountId;
+    const outcome = await this.proxyRead(IDENTITY_PROBE);
+    if (!outcome.ok) return null;
+    const accountId = (outcome.body as any)?.accountId;
+    if (typeof accountId !== 'string' || !accountId) return null;
+    this.cachedAccountId = accountId;
+    return accountId;
+  }
+
+  /** See {@link selfAccountId}. Null until one has been read successfully. */
+  private cachedAccountId: string | null = null;
+
   private async proxyCall(
     method: 'GET' | 'POST' | 'PUT',
     path: string,

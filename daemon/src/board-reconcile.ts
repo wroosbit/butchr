@@ -1047,6 +1047,44 @@ export interface BoardHealth {
   diagnostic: BoardDiagnosticHealth;
   /** Empty is an ordinary answer and means the loop withheld nothing. */
   agents: WithheldStandDown[];
+  /**
+   * Tickets that cannot be staffed — In Progress or In Review with an empty
+   * assignee, so {@link BOARD_JQL} can never return them (KAN-577).
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THIS IS PUBLISHED AND NOT MERELY LOGGED, WHICH IS THE ENTIRE ADDITION
+   * ---------------------------------------------------------------------------
+   *
+   * {@link findNearMisses} has *detected* this since KAN-256 and has written one
+   * line per occurrence to `daemon.log` — and nowhere else. That is the same
+   * trade `BoardControlReport.health`'s own docblock names two fields up, and it
+   * failed in exactly the way that docblock predicts: on 2026-08-21 KAN-577
+   * counted 104 unassignable tickets that no supervisor had seen, because the
+   * only thing that said so was a log line nobody reads. Detection was never the
+   * missing half.
+   *
+   * So the same rows come out here, on the `butchr_list_agents` response, which
+   * is what a supervision sweep actually calls. **Nothing about the loop's
+   * behaviour changes**: this is the same reporting-only computation, from the
+   * same reporting-only query, and it starts and stops nothing — see
+   * {@link BOARD_DIAGNOSTIC_JQL} for the containment argument that still holds
+   * unaltered.
+   *
+   * **Null and empty are different answers**, exactly as on
+   * {@link BoardCycle.nearMisses}: `[]` means the diagnostic ran and found none,
+   * `null` means nobody looked. A reader that collapses them reads a cycle whose
+   * query failed as a clean board.
+   *
+   * ⚠ **It is In Progress and In Review only, and it is not the whole
+   * population.** A ticket sitting in To Do with an empty assignee is equally
+   * unstaffable and is **not** here — the diagnostic query does not ask about To
+   * Do, and widening it would feed {@link explainAbsence} a status it reads as
+   * intent, which is a stand-down. KAN-577 deliberately did not make that trade
+   * for a report: it fixed the creation path so the population stops growing,
+   * and swept the backlog once. What this catches is the regression — a ticket
+   * that loses its assignee, or one filed by a route that is not the proxy.
+   */
+  unstaffable: BoardNearMiss[] | null;
   /** ISO timestamp of the cycle this describes. */
   at: string;
 }
@@ -1794,6 +1832,11 @@ export class BoardReconciler {
         key: renderedKey(agent.key),
         condition: reason.condition
       })),
+      // KAN-577. The same rows the near-miss log line is written from, carried
+      // to a surface a supervisor reads. `cycle.nearMisses` is already null when
+      // the diagnostic did not answer, and that null is passed through rather
+      // than flattened — see {@link BoardHealth.unstaffable}.
+      unstaffable: cycle.nearMisses,
       at: new Date().toISOString()
     };
 

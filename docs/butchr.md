@@ -342,6 +342,66 @@ answer from and resolves to off: a Confluence agent runs only while it is
 explicitly switched **On**. `daemon/scripts/verify-confluence-workspaces.mjs`
 proves the resolution, the exclusions and the single inherited MCP server.
 
+### 🏷️ What `assignee` means on this board — decided, not inherited
+
+**It means one thing: *this machine's fleet may start work on this ticket*. It
+carries no triage meaning, and it cannot.** KAN-577 was required to settle this
+rather than assume it, because the convenient answer and the correct one are
+different questions and only one of them was checked.
+
+**The mechanical meaning is the reconciler's partition.** `BOARD_JQL` is `assignee = currentUser() AND status IN ("In Progress", "In Review")`, and `currentUser()` is Jira's own resolution of the credential this daemon holds.
+
+A
+ticket that fails the assignee half is not merely unprioritised — it is
+**unreachable**: it is never started, and if an agent for it is somehow running
+it is spared rather than stood down (KAN-342). Every machine authenticates as its
+own account, so the field is also how two fleets stay out of each other's work.
+
+**The triage reading was tested and it does not hold.** The argument for it is
+that operators might spell "nobody has looked at this yet" as an empty assignee,
+in which case assigning a backlog would destroy a real signal. Three findings
+against, measured 2026-08-21:
+
+  1. **Nothing produces the signal deliberately.** Until KAN-577,
+     `atlassian_create_issue` on the proxy sent no `assignee` at all, so *every*
+     ticket any agent filed was born empty regardless of what anybody intended.
+     A value emitted identically whether or not somebody means it is not a
+     signal — it is a constant.
+  2. **Nothing reads it as triage.** No prompt and no document assigns the empty
+     field a meaning; every place that mentions it — `findNearMisses`,
+     `explainAbsence`, `prompts/story.md`, `prompts/epic.md` — treats it as a
+     ticket that cannot start and says to assign it.
+  3. **The costs were accidents, not decisions.** KAN-568 — the clean-machine
+     rehearsal, the criterion KAN-546 calls the one most likely to go red — sat
+     unstaffable on an empty field while an agent reported "1 of 7" all night and
+     could not see why. Nobody chose that.
+
+**So the field is set at creation and is not an argument.** The proxy assigns
+every ticket it files to the daemon's own account; a caller cannot supply an
+assignee, cannot file work into another account's queue, and cannot file an
+unassignable ticket. Where the account cannot be established the create is
+**refused** rather than defaulted, because both available defaults — omit the
+field, or Jira's `-1` project default — file a ticket that looks filed and can
+never start.
+
+**What carries priority instead: `status`, and the supervisor.** To Do versus In
+Progress is what says whether work should begin, and which ticket is worth a slot
+is the epic agent's judgement against a live capacity ceiling. Neither was ever
+the assignee's job, and reading a queue off it was a coincidence of the defect
+rather than a convention worth keeping.
+
+⚠ **The corollary, because it is the half that will surprise somebody:** after
+this change *both* values stop distinguishing anything, since every new ticket is
+assigned. An empty assignee no longer means "untriaged" and never did — it now
+means only "filed before 2026-08-21, or by a route that is not the proxy, or
+cleared by hand", and `boardControl.health.unstaffable` on `butchr_list_agents`
+is where that shows up.
+
+<!-- constant-pin: BOARD_JQL
+     src: daemon/src/board-reconcile.ts
+     sha256: 8d6e23d84e19
+     says: `BOARD_JQL` is `assignee = currentUser() AND status IN ("In Progress", "In Review")`, and `currentUser()` is Jira's own resolution of the credential this daemon holds. -->
+
 ### 🔎 Why Jira types need a lookup
 
 A Jira issue URL does not carry the issue's type: `…/browse/KAN-5` is
