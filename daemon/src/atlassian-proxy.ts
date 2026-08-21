@@ -3455,7 +3455,16 @@ export function proxyReport(
             'A credential minted with only read scope will refuse these, loudly, on the first call. '
           : '') +
         'A listed tool is not a working one: only a call establishes that the credential is ' +
-        'still accepted.';
+        'still accepted. ' +
+        // KAN-603. The operator-facing half of retiring the official server:
+        // above `off`, workspaces are provisioned WITHOUT `atlassian`, so a
+        // reader who finds only `butchr` in a `.mcp.json` meets the reason here
+        // rather than concluding provisioning is broken. The OFF branch above
+        // states the converse in its own words, and the two must stay in step.
+        'Agents reach Atlassian through this proxy and nothing else: while any rung above off ' +
+        "is selected, workspaces are provisioned with Butchr's own MCP server and WITHOUT the " +
+        'official `atlassian` server, which is a remote endpoint needing a browser OAuth flow ' +
+        'per machine that this proxy exists to make unnecessary.';
 
   return {
     mode: decision.mode,
