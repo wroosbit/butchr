@@ -2143,7 +2143,7 @@ export class HerdrBridge implements AgentRuntime {
               'this row carried neither a string `name` nor a string `pane_id`, and a census ' +
               'row without one of those cannot be addressed, tailed or supervised. Naming it ' +
               'would be inventing the one value that identifies it. `agent` is NOT that value: ' +
-              'it carries the agent KIND ("claude") unless a supervisor has called `pane ' +
+              'it carries the agent KIND ("claude") unless something has declared one via `pane ' +
               'report-agent`, so falling back to it would admit colliding rows under a name ' +
               'that addresses nothing.',
             // `claimsPath` is CrabCast's registry field and herdr has no
