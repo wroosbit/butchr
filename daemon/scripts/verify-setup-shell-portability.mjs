@@ -9,27 +9,34 @@
 //
 // KAN-602 CORRECTED WHAT HAPPENS AROUND THAT LINE, and the correction is the
 // reason §5 exists. The unit fish refuses is the whole PARSE UNIT, not the one
-// line, so what a `$?` costs depends on how much fish was reading:
+// line, so a `$?` anywhere in a FILE discards that file entire — including the
+// steps ABOVE the offending line, which never run. Exit 127. Measured on 3.7.0
+// and independently on 3.3.1 in review: the file case does NOT vary.
 //
-//   `fish -c 'cmd; echo "exit=$?"'`   one unit  -> NOTHING runs, `cmd` included
-//   `fish steps.fish`                 one unit  -> NOT ONE LINE of the file runs,
-//                                                  including steps ABOVE the bad
-//                                                  one; exits 127
-//   two lines typed with Enter between -> two units -> `cmd` runs, the `$?` line
-//                                                  is refused, exit code missing
+// ⚠ THE ONE-LINE CASE DOES VARY BY VERSION, AND THAT IS WHY §4 ASSERTS SO
+// LITTLE. Two measurements of `fish -c 'echo FIRST_RAN; echo "exit=$?"'`:
 //
-// Only the third is quiet. The first two are loud and much broader, and the
-// FILE case is the one a reader following a document actually meets.
+//   fish 3.7.0 -> stdout ""            exit 127   the whole unit is refused
+//   fish 3.3.1 -> stdout "FIRST_RAN"   exit 121   the first command DOES run
 //
-// This header claimed the opposite until KAN-602 — "fish runs the command
-// BEFORE the `$?` and only then refuses, so the reader sees the lookup's
-// output". That is true only of the two-unit case, and §4 below had been
-// written to ASSERT it: it required `FIRST_RAN` on stdout from a `fish -c`
-// one-liner, which is a single unit. Measured on fish 3.7.0 that assertion is
-// false, and §4 was failing on any machine that actually had fish. Nothing in
-// CI runs this script, so the red was never seen. Measured now, on fish 3.7.0:
-// bare, bash prints `exit=127`; fish prints nothing at all on stdout and exits
-// `127`; wrapped in `bash -c '...'`, both print `exit=127`.
+// INVARIANT across both: no `exit=` line, and a non-zero exit. That is the
+// hazard, and it is all §4 asserts. Whether the preceding command's output
+// survives is REPORTED by §4 and never asserted.
+//
+// This bullet has now been wrong in BOTH directions, which is the reason for
+// the care. The original header said the command before the `$?` always runs,
+// and §4 was written to REQUIRE `FIRST_RAN` — false on 3.7.0. KAN-602's first
+// attempt corrected it to require FIRST_RAN's ABSENCE — false on 3.3.1, caught
+// by the reviewer running the proof on their own machine. A version-dependent
+// assertion here is the worst shape available: see the CI note below.
+//
+// ⚠ CI CANNOT CATCH EITHER ERROR, AND THAT IS STRUCTURAL. §4 and §5 skip when
+// `fish` is absent, and the runner has no fish — so `verify-runnable-set` went
+// green on a head whose §4 failed on two different maintainers' machines for
+// two opposite reasons. A wrong assertion in these sections is invisible to CI
+// forever and red only on somebody's laptop. Keeping §4's claim narrow is the
+// mitigation; actually running these sections in CI is not done and is not
+// covered by anything.
 //
 // It catches the general case rather than that one line: any NEW `$?` added to a
 // fenced `bash` block in SETUP.md that is not inside an explicit `bash -c`
@@ -199,6 +206,7 @@ let fishUsable = false;
     console.log('  SKIP  no usable `fish` on PATH -- the class is unobserved here, which is not a pass.');
   } else {
     fishUsable = true;
+    const version = (probe.stdout || 'fish, version unknown').trim();
     const script = 'echo FIRST_RAN; echo "exit=$?"';
     const bare = spawnSync('fish', ['-c', script], { encoding: 'utf8' });
     const wrapped = spawnSync('fish', ['-c', `bash -c '${script}'`], { encoding: 'utf8' });
@@ -210,18 +218,37 @@ let fishUsable = false;
     // was being written.
     const answered = (out) => out.split('\n').some((l) => l.startsWith('exit='));
 
-    // The whole `-c` string is ONE parse unit, so fish refuses it entire and
-    // `echo FIRST_RAN` never runs either. Until KAN-602 this assertion was
-    // written the other way round -- it REQUIRED `FIRST_RAN` on stdout -- and
-    // was false on fish 3.7.0. See the correction in this file's header.
-    if (!bare.stdout.includes('FIRST_RAN') && !answered(bare.stdout)) {
-      ok('bare `$?`: one parse unit, so fish runs NOTHING -- not even the command before it');
+    // ASSERT ONLY THE LEG THAT DOES NOT VARY BY VERSION. Two measurements, and
+    // they disagree about the OTHER leg:
+    //   fish 3.7.0 -- stdout "",           exit 127: the whole unit is refused
+    //   fish 3.3.1 -- stdout "FIRST_RAN",  exit 121: the first command DOES run
+    // What both do is withhold the exit code, and that is the hazard the
+    // document is about. Whether the preceding command's output survives is
+    // not, so it is reported below rather than asserted -- an assertion on it
+    // is red on one maintainer's laptop and green on another's, in a section
+    // CI always skips. Both wordings this replaces got that wrong in opposite
+    // directions: the original REQUIRED `FIRST_RAN`, and KAN-602's first
+    // attempt required its ABSENCE.
+    if (!answered(bare.stdout)) {
+      ok('bare `$?`: fish withholds the exit code -- the hazard, and it holds on every fish measured');
     } else {
-      fail(`bare \`$?\` under \`fish -c\` did not reproduce the measured behaviour: expected no stdout at all. stdout: ${JSON.stringify(bare.stdout)}`);
+      fail(`bare \`$?\` under \`fish -c\` yielded an exit code, so the hazard is absent here. stdout: ${JSON.stringify(bare.stdout)}`);
     }
 
+    if (bare.status !== 0) {
+      ok(`bare \`$?\`: fish exits ${bare.status} rather than succeeding`);
+    } else {
+      fail('bare `$?` under `fish -c` exited 0 -- fish did not refuse the construct at all.');
+    }
+
+    // REPORTED, NEVER ASSERTED -- see above.
+    const precedingRan = bare.stdout.includes('FIRST_RAN');
+    console.log(`  note  ${version}: the command before the \`$?\` ${precedingRan ? 'DID' : 'did NOT'} run, exit ${bare.status}. Version-dependent; not asserted.`);
+
+    // Also the POSITIVE CONTROL for the assertion above: it proves this harness
+    // can observe an `exit=` line at all, so its absence up there is evidence.
     if (answered(wrapped.stdout)) {
-      ok('`bash -c`-wrapped: fish yields the exit code, same as bash');
+      ok('`bash -c`-wrapped: fish yields the exit code, same as bash -- positive control for the assertion above');
     } else {
       fail(`\`bash -c\` wrapper did not restore the exit code under fish. stdout: ${JSON.stringify(wrapped.stdout)}`);
     }
