@@ -4321,16 +4321,27 @@ export class MessageRouter {
    * `atlassian_create_issue` and by nothing else. `JiraIssueTypeService`
    * caches it, so the happy path pays once per daemon.
    *
-   * ⚠ **It is awaited HERE rather than beside `build`, and that is deliberate
-   * twice over.** `beginBuildCoercions()` opens a window whose entire safety
+   * ⚠ **It is awaited HERE rather than beside `build`, and that reason stands
+   * on its own.** `beginBuildCoercions()` opens a window whose entire safety
    * argument is that `build` is synchronous and therefore cannot interleave
    * with another request — an `await` inside it would quietly delete that
-   * argument. And keeping the await out of `handleAtlassianProxyCall`'s body
-   * keeps that body short, which `verify-atlassian-proxy-write-scope.mjs`
-   * depends on: it reads the handler as TEXT and looks for
-   * `refuseWriteOutsideCaller(` within a bounded window of the method's name.
-   * An inline block here pushed that call past the window and reddened a
-   * required check while the policy was still being applied exactly as before.
+   * argument. That is the whole justification, and it is about correctness.
+   *
+   * THIS DOCBLOCK USED TO GIVE A SECOND ONE, AND KAN-587 DELETED IT RATHER THAN
+   * SOFTENING IT. It said keeping the await out of `handleAtlassianProxyCall`
+   * kept that body SHORT, which `verify-atlassian-proxy-write-scope.mjs`
+   * depended on: it looked for `refuseWriteOutsideCaller(` within 3000
+   * characters of the method's NAME, so an inline block here pushed the call
+   * past the window and reddened a required check while the policy was being
+   * applied exactly as before. That check now reads the method's own body,
+   * brace to brace — so the length of this body constrains nothing, and no
+   * future author should contort one to keep a grep happy.
+   *
+   * ⚠ And these two sentences were themselves the bug for a while. Naming
+   * `handleAtlassianProxyCall` and `refuseWriteOutsideCaller(` 174 characters
+   * apart, in PROSE, was enough to satisfy that old window — so the check went
+   * green off this comment and stayed green with the real call deleted. A
+   * docblock is outside the body, so it can no longer vote.
    *
    * A null answer is not a failure of this method — it is the credential
    * declining to say who it is, and the operation's own `build` turns it into a
