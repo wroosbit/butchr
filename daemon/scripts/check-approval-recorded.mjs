@@ -38,6 +38,16 @@
 // approved pull request read `UNSTABLE` forever — is on `exitCodeFor` in
 // `lib/approval-marker.mjs`. Read it before changing either exit path.
 //
+// WHAT THE STATUS SAYS, WHICH CHANGED IN KAN-627. The `description` this POSTs
+// was a single hardcoded sentence — "no approval marker naming this head" — for
+// every refusal `lib/approval-marker.mjs` can reach. It is true of two of the
+// eight and false of the other six: a wrong signer, a quoted marker and all four
+// approver-declaration failures can each occur while a perfectly good marker
+// names this exact head. The sentence also spent 53 of the 140 characters GitHub
+// allows a commit status, so there was room for the truth and it went unused.
+// `statusDescription` in the lib composes the line from the refusals that fired;
+// this file only publishes it.
+//
 // AN ARGUMENT THIS SCRIPT DOES NOT RECOGNISE IS A USAGE ERROR — KAN-453. It
 // exits 2 without judging anything. Until KAN-453 it exited 0 instead, and that
 // is worth stating rather than filing as a fixed bug, because the shape recurs:
@@ -74,7 +84,15 @@
 // of use and stays there.
 
 import fs from 'fs';
-import { evaluate, exitCodeFor, EXIT_ON } from './lib/approval-marker.mjs';
+import {
+  evaluate,
+  exitCodeFor,
+  addRefusal,
+  statusDescription,
+  EXIT_ON,
+  REFUSAL,
+  STATUS_DESCRIPTION_LIMIT
+} from './lib/approval-marker.mjs';
 
 const argv = process.argv.slice(2);
 
@@ -289,12 +307,19 @@ if (!/^[0-9a-f]{40}$/.test(headSha ?? '')) {
 // code disagreed with it.
 if (verdict.ok && !verdict.accepted) {
   verdict.ok = false;
-  verdict.reasons.push(
-    'the gate returned a passing verdict with no accepted marker attached. That is a ' +
+  // KAN-627: through `addRefusal`, so the status describes THIS refusal rather
+  // than inheriting whatever sentence the last one left behind. A reason pushed
+  // straight onto the array would be right in the job log and invisible to the
+  // 140 characters most readers actually see.
+  addRefusal(verdict, {
+    code: REFUSAL.GATE_CONTRADICTION,
+    brief: 'gate defect: a passing verdict carried no accepted marker',
+    reason:
+      'the gate returned a passing verdict with no accepted marker attached. That is a ' +
       'contradiction inside `lib/approval-marker.mjs`, not a fact about this pull request. ' +
       'Refusing rather than passing, because a gate that cannot say who approved has not ' +
       'established that anybody did.'
-  );
+  });
   gateDefects.push(
     '`lib/approval-marker.mjs` returned `ok` with no accepted marker. This is a contradiction ' +
       'in the gate itself — fix the lib.'
@@ -313,7 +338,12 @@ if (verdict.ok) {
 } else {
   console.log('NO APPROVAL RECORDED AT THIS HEAD');
   console.log('');
-  for (const r of verdict.reasons) console.log(`  - ${r}`);
+  // KAN-627: the code is printed beside its prose so that a reader who arrived
+  // from the 140-character status can find the paragraph it was said short in.
+  verdict.reasons.forEach((r, i) => {
+    const code = verdict.refusals?.[i]?.code;
+    console.log(`  - ${code ? `[${code}] ` : ''}${r}`);
+  });
 
   // KAN-321. Printed as its own block as well as inside the reasons, because
   // this is the refusal most likely to be read as the gate malfunctioning: the
@@ -330,9 +360,16 @@ if (verdict.ok) {
 
 if (postStatus) {
   const state = verdict.ok ? 'success' : 'failure';
-  const description = verdict.ok
-    ? `approved at this head by ${verdict.accepted.approver}`.slice(0, 140)
-    : 'no approval marker naming this head — see the job log'.slice(0, 140);
+  // KAN-627. This used to be one hardcoded sentence for every refusal — "no
+  // approval marker naming this head" — which is true of two of `evaluate`'s
+  // eight refusal paths and false of the other six, and which spent 53 of the
+  // 140 characters GitHub allows. `statusDescription` composes it from the
+  // refusals that actually fired; the `.slice` below is the assertion behind
+  // that mechanism, kept because a status GitHub rejects for length is a gate
+  // nobody can read.
+  const description = statusDescription(verdict).slice(0, STATUS_DESCRIPTION_LIMIT);
+  console.log(`status description: ${description}`);
+  console.log(`                    ${description.length}/${STATUS_DESCRIPTION_LIMIT} characters`);
   try {
     await api(`/repos/${REPO}/statuses/${headSha}`, {
       method: 'POST',

@@ -492,17 +492,126 @@ export function ownTicketFromRef(headRef) {
   return m ? m[1] : null;
 }
 
+// ---------------------------------------------------------------------------
+// WHICH REFUSAL THIS IS — KAN-627.
+//
+// `reasons` above is prose written for the job log, where there is room for a
+// paragraph. The `approval-recorded` STATUS is the other end of that scale:
+// GitHub gives a commit status a `description` of at most 140 characters, and
+// it is the only sentence most readers ever see — it is what sits in the merge
+// box, what `gh pr checks` prints, and what an agent reads before deciding
+// whether to go and fetch a fresh marker.
+//
+// UNTIL KAN-627 THAT SENTENCE WAS A CONSTANT. `check-approval-recorded.mjs`
+// posted the literal
+//
+//     no approval marker naming this head — see the job log
+//
+// for EVERY refusal — 53 characters of a 140-character field, so 87 went unused
+// — and `evaluate` has eight refusal paths. The sentence is true of exactly two
+// of them (no marker at all; markers that all name some other head). For the
+// other six a marker naming this head may be sitting on the pull request,
+// perfectly asserted, and the status says it is not there:
+//
+//     no BUTCHR-APPROVER declared      the marker can be flawless
+//     the approver line is quoted      the marker can be flawless
+//     the declared approver is junk    the marker can be flawless
+//     the PR declares its own ticket   the marker can be flawless
+//     the marker is signed by somebody else — it DOES name this head
+//     every marker is quoted           they DO name this head, unasserted
+//
+// That is this repository's false-green family with the sign flipped: an
+// instrument answering plausibly about the wrong thing (KAN-609). It does not
+// go green when it should be red — it goes red for a reason that is not the
+// reason, which sends the reader to fix something that is not broken. It has a
+// recorded instance: `fixtures/kan-321/pr139-comment-5260338837-request.md`
+// pastes that constant off the live status of #139.
+//
+// SO A REFUSAL NOW CARRIES A CODE AND A SHORT SENTENCE OF ITS OWN, and the
+// status description is composed from the ones that actually fired. The codes
+// are a frozen closed set for the same reason `EXIT_ON` and `QUOTED` are:
+// `.mjs` cannot spell them as a literal type, and the nearest available thing
+// is a set plus a throw, so that a typo is a loud crash rather than a status
+// that quietly describes the wrong refusal.
+
+/** Every refusal this gate can reach. Frozen: the set is the type. */
+export const REFUSAL = Object.freeze({
+  HEAD_UNREADABLE: 'head-unreadable',
+  NO_APPROVER_DECLARED: 'no-approver-declared',
+  APPROVER_QUOTED: 'approver-quoted',
+  APPROVER_NOT_AN_AGENT: 'approver-not-an-agent',
+  SELF_APPROVAL: 'self-approval',
+  NO_MARKER: 'no-marker',
+  STALE_MARKER: 'stale-marker',
+  WRONG_SIGNER: 'wrong-signer',
+  QUOTED_MARKER: 'quoted-marker',
+  GATE_CONTRADICTION: 'gate-contradiction'
+});
+
+const REFUSAL_CODES = new Set(Object.values(REFUSAL));
+
+/** GitHub's own ceiling on a commit status `description`. */
+export const STATUS_DESCRIPTION_LIMIT = 140;
+
+/**
+ * Record one refusal on `target`, which is anything carrying `reasons` and
+ * `refusals` — the accumulator inside `evaluate`, or a returned verdict that a
+ * caller is adding to.
+ *
+ * THE POINT OF FUNNELLING BOTH ARRAYS THROUGH ONE CALL is that a reason without
+ * a code is what re-creates this defect: the long prose would be right and the
+ * status would fall back to describing some other refusal. The two arrays are
+ * appended to in lockstep here and nowhere else, so `reasons.length ===
+ * refusals.length` is an invariant a reader can check rather than a convention
+ * a future author has to remember. `verify-approval-recorded.mjs` asserts it on
+ * every refusal path.
+ *
+ * A `brief` is what fits in a status: one clause, no trailing full stop, and no
+ * unbounded value spliced into it — see `clamp` below.
+ */
+export function addRefusal(target, { code, brief, reason }) {
+  if (!REFUSAL_CODES.has(code)) {
+    throw new TypeError(
+      `addRefusal got code=${JSON.stringify(code)}, which is not one of ` +
+        `${[...REFUSAL_CODES].join(', ')}. Refusing to guess, because a wrong code here is a ` +
+        'required check describing a refusal that did not happen.'
+    );
+  }
+  if (typeof brief !== 'string' || brief.trim().length === 0) {
+    throw new TypeError(`addRefusal needs a non-empty brief for ${code} (got ${JSON.stringify(brief)}).`);
+  }
+  if (typeof reason !== 'string' || reason.trim().length === 0) {
+    throw new TypeError(`addRefusal needs a non-empty reason for ${code} (got ${JSON.stringify(reason)}).`);
+  }
+  target.reasons.push(reason);
+  target.refusals.push({ code, brief });
+  return target;
+}
+
+/**
+ * Keep a value spliced into a `brief` from eating the whole status line. An
+ * approver name, a signer list and a ticket key all come off the pull request,
+ * so none of them is bounded by anything in this file.
+ */
+function clamp(value, max) {
+  const s = String(value);
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
 /**
  * The whole verdict, as data. No I/O, no process exit, no printing — so that
  * the proof can drive it over fixtures and the CI entry point can drive it over
  * a live pull request, and both are exercising the same decision.
  *
- * Returns `{ ok, reasons, accepted, markers }`. `reasons` is non-empty exactly
- * when `ok` is false, and each entry is written to be read on a red check by
- * somebody who has not seen this file.
+ * Returns `{ ok, reasons, refusals, accepted, markers }`. `reasons` is non-empty
+ * exactly when `ok` is false, and each entry is written to be read on a red
+ * check by somebody who has not seen this file. `refusals` is the same list said
+ * short enough for a commit status, one entry per reason and in the same order.
  */
 export function evaluate({ headSha, headRef, prBody, comments }) {
   const reasons = [];
+  const refusals = [];
+  const refuse = (code, brief, reason) => addRefusal({ reasons, refusals }, { code, brief, reason });
   const markers = parseMarkers(comments);
   const quotedMarkers = parseQuotedMarkers(comments);
   const declared = parseDeclaredApprover(prBody);
@@ -511,6 +620,15 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
   const head = (headSha ?? '').toLowerCase();
 
   if (!/^[0-9a-f]{40}$/.test(head)) {
+    const broken = { reasons: [], refusals: [] };
+    addRefusal(broken, {
+      code: REFUSAL.HEAD_UNREADABLE,
+      brief: "gate defect: this PR's head is not a 40-character SHA",
+      reason:
+        `the head commit was not readable as a 40-character SHA (got ${JSON.stringify(headSha)}). ` +
+        'This is a defect in the check itself, not in the pull request — the gate cannot ' +
+        'be satisfied until it is fixed, and it must not pass while it cannot see the head.'
+    });
     return {
       ok: false,
       markers,
@@ -518,35 +636,40 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
       accepted: null,
       declared,
       ownTicket,
-      reasons: [
-        `the head commit was not readable as a 40-character SHA (got ${JSON.stringify(headSha)}). ` +
-          'This is a defect in the check itself, not in the pull request — the gate cannot ' +
-          'be satisfied until it is fixed, and it must not pass while it cannot see the head.'
-      ]
+      reasons: broken.reasons,
+      refusals: broken.refusals
     };
   }
 
   if (!declared) {
-    reasons.push(
+    refuse(
+      REFUSAL.NO_APPROVER_DECLARED,
+      'the PR body declares no BUTCHR-APPROVER line',
       'the pull request body does not declare an approver. Add a line of its own reading ' +
         '`BUTCHR-APPROVER: <type>/<KEY>`, naming the agent your ticket says approves you — ' +
         'the Story your task is linked to by a `Blocks` link, else the parent epic. ' +
         'Declaring it in advance is what stops a marker from an uninvolved agent counting.'
     );
     if (quotedDeclared) {
-      reasons.push(
+      refuse(
+        REFUSAL.APPROVER_QUOTED,
+        `the approver is only shown inside ${quotedDeclared.quotedAs}, not declared`,
         `the body does name \`${quotedDeclared.approver}\` as approver, but inside ` +
           `${quotedDeclared.quotedAs}, where it is shown rather than declared (KAN-321). ` +
           'Move the declaration out to the top level of the body.'
       );
     }
   } else if (!AGENT.test(declared)) {
-    reasons.push(
+    refuse(
+      REFUSAL.APPROVER_NOT_AN_AGENT,
+      `the declared approver "${clamp(declared, 32)}" is not a type/KEY agent name`,
       `the declared approver \`${declared}\` is not a \`<type>/<KEY>\` agent name ` +
         '(e.g. `epic/KAN-39`).'
     );
   } else if (ownTicket && declared.endsWith(`/${ownTicket}`)) {
-    reasons.push(
+    refuse(
+      REFUSAL.SELF_APPROVAL,
+      `the PR declares its own ticket ${clamp(ownTicket, 16)} as its approver`,
       `the pull request declares \`${declared}\` as its own approver, which is the ticket ` +
         `this branch is working (${ownTicket}). An agent does not approve its own work. ` +
         'If your ticket genuinely names no approver, that is a filing defect — say so on the ' +
@@ -555,7 +678,9 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
   }
 
   if (markers.length === 0) {
-    reasons.push(
+    refuse(
+      REFUSAL.NO_MARKER,
+      'no approval marker was asserted in any comment',
       'no approval marker was found in any comment on this pull request. An approval is a ' +
         'comment containing, on a line of its own and at the top level of the comment: ' +
         '`BUTCHR-APPROVAL: <40-char-head-sha> BY <type>/<KEY>`. For this head that line is ' +
@@ -571,7 +696,9 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
   const atHead = markers.filter((m) => m.sha === head);
   if (markers.length > 0 && atHead.length === 0) {
     const stale = [...new Set(markers.map((m) => m.sha))];
-    reasons.push(
+    refuse(
+      REFUSAL.STALE_MARKER,
+      `${markers.length} marker(s) found and none names this head — stale`,
       `${markers.length} approval marker(s) were found, and none names this head. ` +
         `Head is ${head}; the markers name ${stale.map((s) => s.slice(0, 12) + '…').join(', ')}. ` +
         'A push — including `gh pr update-branch` — changes the head and therefore invalidates ' +
@@ -581,7 +708,11 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
 
   const accepted = declared ? (atHead.find((m) => m.approver === declared) ?? null) : null;
   if (atHead.length > 0 && declared && !accepted) {
-    reasons.push(
+    const signers = [...new Set(atHead.map((m) => m.approver))];
+    refuse(
+      REFUSAL.WRONG_SIGNER,
+      `a marker names this head but is signed by ${clamp(signers.join(', '), 32)}, ` +
+        `not ${clamp(declared, 32)}`,
       `an approval marker names this head, but is signed by ` +
         `${[...new Set(atHead.map((m) => m.approver))].map((a) => `\`${a}\``).join(', ')} ` +
         `where this pull request declares \`${declared}\` as its approver. The agent that ` +
@@ -601,7 +732,9 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
   if (reasons.length > 0 && quotedMarkers.length > 0) {
     const atHeadQuoted = quotedMarkers.filter((m) => m.sha === head);
     const relevant = atHeadQuoted.length > 0 ? atHeadQuoted : quotedMarkers;
-    reasons.push(
+    refuse(
+      REFUSAL.QUOTED_MARKER,
+      `${quotedMarkers.length} marker(s) seen, all quoted rather than asserted`,
       `${quotedMarkers.length} marker(s) WERE found and every one of them was quoted rather ` +
         'than asserted, so none counted (KAN-321 — the gate used to read a quotation as the ' +
         'thing itself, which let a request for an approval satisfy it). ' +
@@ -621,6 +754,7 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
   return {
     ok: reasons.length === 0,
     reasons,
+    refusals,
     accepted,
     markers,
     quotedMarkers,
@@ -628,4 +762,62 @@ export function evaluate({ headSha, headRef, prBody, comments }) {
     ownTicket,
     head
   };
+}
+
+/**
+ * The sentence the `approval-recorded` commit status carries — KAN-627.
+ *
+ * Pure, so the proof drives it directly rather than only through the shape of a
+ * status the stub happened to receive. Never longer than
+ * `STATUS_DESCRIPTION_LIMIT`, and it says which refusal fired rather than one
+ * constant for all of them.
+ *
+ * HOW IT SPENDS THE 140 CHARACTERS, because the old defect was not only that
+ * the sentence was wrong — it was that 87 characters sat unused while it was
+ * wrong. Refusals are packed in the order `evaluate` found them, joined with
+ * `; `, and the pack stops at the last one that fits WITH ROOM FOR THE TAIL
+ * that says how many were dropped. So a reader is never silently shown a subset:
+ * either every refusal is named, or the count of the ones that are not is.
+ *
+ * NOTHING IS CUT MID-CLAUSE except in the one case where a single brief cannot
+ * fit at all, which is why `clamp` bounds the values spliced into them at the
+ * source. That last resort still names its refusal, which is the property worth
+ * keeping when there is nothing else left to keep.
+ */
+export function statusDescription(verdict) {
+  const limit = STATUS_DESCRIPTION_LIMIT;
+
+  if (verdict?.ok) {
+    // The approved case had spare room too, and a comment id is what turns
+    // "somebody approved this" into a link a reader can go and check.
+    const approver = clamp(verdict.accepted?.approver, 48);
+    const base = `approved at this head by ${approver}`;
+    const commentId = verdict.accepted?.commentId;
+    const withComment =
+      commentId === null || commentId === undefined ? base : `${base} (comment ${clamp(commentId, 24)})`;
+    return (withComment.length <= limit ? withComment : base).slice(0, limit);
+  }
+
+  const briefs = (Array.isArray(verdict?.refusals) ? verdict.refusals : [])
+    .map((r) => (typeof r?.brief === 'string' ? r.brief.trim() : ''))
+    .filter((b) => b.length > 0);
+
+  // A red verdict carrying no refusal at all is a contradiction, and saying so
+  // beats posting an empty description that reads as a status with no opinion.
+  if (briefs.length === 0) return 'refused, and no refusal was recorded — see the job log'.slice(0, limit);
+
+  const tail = (n) => `; +${n} more, see the log`;
+  let packed = '';
+  let taken = 0;
+  for (; taken < briefs.length; taken++) {
+    const candidate = taken === 0 ? briefs[0] : `${packed}; ${briefs[taken]}`;
+    const leftAfter = briefs.length - (taken + 1);
+    if (candidate.length + (leftAfter > 0 ? tail(leftAfter).length : 0) > limit) break;
+    packed = candidate;
+  }
+
+  const dropped = briefs.length - taken;
+  if (dropped === 0) return packed;
+  if (packed.length === 0) return briefs[0].slice(0, limit);
+  return `${packed}${tail(dropped)}`;
 }
