@@ -897,6 +897,29 @@ export type ConfigureAgentPayload = {
   preemptable: boolean;
   launcher: string;
   prompt: string;
+  /**
+   * Who owns this agent — the literal string `butchr` (KAN-552).
+   *
+   * **CrabCast's field, built for exactly this and never set by us until now.**
+   * Its README: *"It exists so an application can find its own agents without
+   * parsing their names."* It is opaque, matched exactly and never interpreted;
+   * CrabCast stores what we already call ourselves and forms no opinion about
+   * its shape.
+   *
+   * ⚠ WHY IT IS THIS AND NOT A NAME MATCH. Criterion 3 wants CrabCast's
+   * `occupied` refusal to say when the occupant is the same logical agent under
+   * another runtime. The obvious route — teach CrabCast to read our
+   * `butchr-<type>-<key>` pane names — was **refused by `epic/KAN-59` as the
+   * repo's owner**, and correctly: a derived pane name *"is not API"*, and
+   * matching a prefix would mint *"a namespace CrabCast would then owe you
+   * compatibility on"*, making a Butchr rename a CrabCast breaking change.
+   *
+   * So neither side parses the other's names. We declare who we are; they
+   * report the string back. Measured before this line existed: `owner` was set
+   * on **0 of 235** rows in `agents.jsonl` — the mechanism shipped in their
+   * contract v11 and nobody had ever passed it.
+   */
+  owner: string;
   mcpServers?: WorkspaceMcpServers;
   /**
    * Extra argv for the launcher, one element per argument (KAN-496).
@@ -1130,6 +1153,15 @@ export type ConfigureAgentPayload = {
  * code nobody runs — the *"a proof that supplies its own input"* defect this
  * repository keeps re-finding.
  */
+/**
+ * What this daemon calls itself to CrabCast, spelled once (KAN-552).
+ *
+ * Exported so a proof asserts on the same constant the payload carries rather
+ * than on a copy of the string — two hand-written `'butchr'`s that drift are
+ * how a check keeps passing while the thing it guards has changed.
+ */
+export const CRABCAST_OWNER = 'butchr';
+
 export function buildConfigureAgentPayload(input: ConfigureAgentInput): ConfigureAgentPayload {
   // One input, three fields, so they cannot be made to disagree. See above for
   // why a supervisor is exempt in all three senses and why the names are read
@@ -1143,7 +1175,12 @@ export function buildConfigureAgentPayload(input: ConfigureAgentInput): Configur
     chargeable,
     preemptable: chargeable,
     launcher: input.defaultAgent ?? 'claude',
-    prompt: input.promptContent
+    prompt: input.promptContent,
+    // Not derived from anything and not configurable: this daemon IS butchr, so
+    // the value is the constant. Making it an input would let a caller declare
+    // somebody else's ownership, which is the one thing an ownership tag must
+    // not permit.
+    owner: CRABCAST_OWNER
   };
   if (input.mcpServers && Object.keys(input.mcpServers).length > 0) {
     payload.mcpServers = input.mcpServers;
