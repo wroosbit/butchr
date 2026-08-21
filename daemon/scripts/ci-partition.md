@@ -88,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 138 |
-| `partial` | 20 |
+| `yes` | 139 |
+| `partial` | 21 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **184** |
+| **total** | **186** |
 
-**158 of 184** run on every pull request.
+**160 of 186** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -154,6 +154,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-cutover-reap-verdict` | yes | node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. §3 and §5 create a temporary unix socket and a temporary directory tree under `os.tmpdir()`, never inside the repository, and remove both. §3 additionally spawns two short-lived node children as positive controls — one held open and killed in a `finally`, one that prints a reading and exits — and §5 spawns the reaper three times. Every child is `process.execPath` and every path is under `os.tmpdir()`. |
 | `verify-cutover-sequence` | yes | reads `docs/*.md`, `daemon/src/*.ts` and `daemon/scripts/install-service.sh` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-daemon-log-is-greppable` | yes | builds its fixtures in a temp directory and asserts against the built daemon modules in process. No live daemon, no herdr, no credential, no peer, no terminal, no network. |
+| `verify-declared-approver-parity` | yes | it imports the built daemon module and the `.mjs` library and compares them in process; no network, no credential, no `gh`, no daemon. |
 | `verify-dep-linking-covers-every-repo-shape` | yes | builds every fixture in a temporary directory, runs `npm ci` only against a hand-written zero-dependency lockfile (no network), and reads `prompts/task.md` off the checkout. Node builtins plus `npm` and `cp`. |
 | `verify-diagnostic-evidence-visible` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no network, no terminal. Section 5 additionally shells out to the repo's own `tsc`, as verify-absence-is-not-intent.mjs §5 does. |
 | `verify-doc-constant-pins` | yes | reads `docs/*.md` and `daemon/src/*.ts` off the checkout as text and asserts on their contents; node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. |
@@ -257,6 +258,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-daemon-provenance-is-loud` | partial | §1-§4 are pure and need nothing. §6 and §7 need `daemon/dist` and spawn real node processes with a stubbed `systemctl`; they SKIP without a build. §5 needs a reachable `systemctl --user` and SKIPS on a runner, which makes this script exit 2 there rather than 0 (KAN-373's contract). `run-ci-verify-set.mjs` builds first, so §6 and §7 execute there. |
 | `verify-jira-nudge-coalescing` | partial | the coalescing assertions run in CI. The CONTROL leg needs an `--unfixed` build to show the defect it prevents, and AC3d needs `--live`; both are skipped without them and both are named in the run output. |
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
+| `verify-pr-watch-approver-routing` | partial | §2-§6 run anywhere: the GitHub reader is a stub, the fleet is invented, and there is no network, no `gh`, no credential and no terminal. §1, the red drive, needs a second `dist` built from `origin/main` and is SKIPPED — loudly, and saying that its absence makes the run no evidence that the defect existed. The recipe is below and its output is pasted in the pull request. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
 | `verify-pty-init-rejects-unknown-session` | partial | the rejection path asserts in CI. The regression stage needs herdr to start a real agent and prints `SKIPPED: no herdr to start an agent with` instead. |
 | `verify-setup-shell-portability` | partial | §1–§3 read `docs/SETUP.md` as TEXT and assert in full on any runner: they parse its fenced `bash` blocks, refuse a bare `$?` outside a `bash -c` wrapper, and prove the detector fires on a synthetic hazard it was never told about. Node builtins only — no build, no daemon, no herdr, no credential, no network, no wall clock. §4 runs the hazard against a REAL `fish` to show that it executes the preceding command and then withholds the exit code; a runner without `fish` on PATH announces that section SKIPPED, and a skip is printed as a skip and never counted as a pass. It is not mocked: the whole value of §4 is that the parse error is fish's own. |
