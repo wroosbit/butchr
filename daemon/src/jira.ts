@@ -2104,13 +2104,24 @@ export class JiraIssueTypeService {
    * that operation existed. Nothing here widens what the credential is used
    * for; it asks a question an agent could already ask by hand.
    *
-   * CACHED FOR THE LIFE OF THE DAEMON, AND THE NEGATIVE IS NOT CACHED. An
-   * account id does not change under a fixed credential, so the happy path
-   * costs one request ever. A *failure* is deliberately not remembered: the
-   * ordinary reason to fail is a credential that is not configured yet or an
-   * Atlassian that is briefly unreachable, and caching that would turn a
-   * thirty-second outage into a daemon that refuses every create until it is
-   * restarted. It retries on the next call instead.
+   * CACHED FOR THE LIFE OF THE CREDENTIAL, AND THE NEGATIVE IS NOT CACHED. An
+   * account id does not change under a *fixed* credential, so the happy path
+   * costs one request per credential. A *failure* is deliberately not
+   * remembered: the ordinary reason to fail is a credential that is not
+   * configured yet or an Atlassian that is briefly unreachable, and caching
+   * that would turn a thirty-second outage into a daemon that refuses every
+   * create until it is restarted. It retries on the next call instead.
+   *
+   * ⚠ **THIS PARAGRAPH READ "FOR THE LIFE OF THE DAEMON" UNTIL KAN-646, AND
+   * THAT WAS THE DEFECT WRITTEN DOWN AS A FEATURE.** It was an accurate
+   * description of the code: nothing cleared the field, `reset()` included, so
+   * a credential swapped through the settings UI rebuilt the transport for the
+   * new account and left the previous account's id here to be stamped onto
+   * every ticket until a restart. The sentence beside it — *"an account id does
+   * not change under a fixed credential"* — is true and was doing the work of
+   * an argument it does not support: the credential is exactly what was not
+   * fixed. **The daemon's lifetime was never the right bound; the credential's
+   * is**, and {@link cachedAccount} now enforces that rather than asserting it.
    *
    * NEVER THROWS, like everything else this service exposes, and a null is a
    * refusal rather than an empty answer: `atlassian-proxy.ts` turns it into a
