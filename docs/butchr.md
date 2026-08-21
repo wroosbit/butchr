@@ -448,16 +448,27 @@ four is a compile error**, which is the property a comment saying *"do not do
 this"* does not have.
 
 **What this does not close, stated because a report that oversells itself is the
-defect this epic keeps re-finding.** The second door stays open and is
-load-bearing: the proxy permits a write only to the caller's own ticket, so the
-official server is the only cross-ticket write a supervisor has. A ticket filed
-through it is still born unassigned; what changed is that it is now **visible
-within one cycle** instead of being found by a supervisor reading changelogs by
-hand. `prompts/task.md` also stopped naming the unguarded tool bare — that lowers
-the rate and is not the mechanism, for the reason `task/KAN-552` established
-first-hand: they had read the staffing rule at activation, filed two unassigned
-tickets hours apart anyway, and wrote *"knowing the rule did not help, which is
-the argument for the default rather than for more care."*
+defect this epic keeps re-finding.** The doors were narrowed by KAN-603 on the
+same day — the official server is no longer provisioned into a workspace while
+the proxy is on — and **narrowing is not closing**. That gate is the proxy mode:
+an install with the proxy `off` still gets the official server as its *only*
+route, and nothing anywhere gates the web UI. A ticket filed by either is still
+born unassigned. What changed is that it is now **visible within one cycle**
+instead of being found by a supervisor reading changelogs by hand.
+
+⚠ **And KAN-603 is itself the argument for putting the invariant here.** Two
+create-path narrowings landed within hours of each other, each correct, each
+per-door, and neither able to speak for the door it does not sit on. The
+reconciler does not have to be updated when the next one moves, because it never
+asks which tool was used. **A guard that must be re-derived for every new route
+is a guard that is one route behind.**
+
+`prompts/task.md`, `story.md` and `epic.md` also stopped naming the unguarded
+tool as a fallback — that lowers the rate and is not the mechanism, for the
+reason `task/KAN-552` established first-hand: they had read the staffing rule at
+activation, filed two unassigned tickets hours apart anyway, and wrote *"knowing
+the rule did not help, which is the argument for the default rather than for
+more care."*
 
 <!-- constant-pin: BOARD_JQL
      src: daemon/src/board-reconcile.ts

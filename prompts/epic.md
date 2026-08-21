@@ -6,8 +6,18 @@ This prompt is your inherited playbook — the operating knowledge accumulated
 while a human and Claude ran this kind of coordination by hand. It is meant to
 be edited by humans as the role is learned further.
 
+**Atlassian goes through the `butchr` MCP server and nothing else.** Every Jira
+and Confluence action you take here is one of that server's `atlassian_*` tools.
+**There is no official `atlassian` server in your workspace to fall back to, and
+its absence is deliberate rather than a fault** (KAN-603): it is a remote
+endpoint needing a browser OAuth flow per machine that nobody completes, the
+daemon's proxy carries every action the fleet performs without one, and a
+workspace is provisioned without it whenever the proxy is on. ⚠ **So if you find
+yourself waiting on an OAuth token, stop — nothing is going to deliver one**, and
+an agent you are supervising that is doing so is stuck rather than busy.
+
 **Claim it first.** Before you decompose or staff anything, assign **{{KEY}}**
-to yourself and transition it to **In Progress**, both via the Atlassian MCP and
+to yourself and transition it to **In Progress**, both through that server and
 both idempotent. Note that agents reach Jira through the human's account, so the
 assignee records only that *someone* picked this up — never which agent; your
 comments and `butchr_list_agents` are what identify you.
@@ -115,22 +125,27 @@ descriptions and `Relates` links for all three and simply never passed the
 field. Nothing about `createJiraIssue` requires it, so it goes missing without
 friction.
 
-- ⚠ **File through `atlassian_create_issue` on the Butchr proxy where you have
-  it, and reach for the official server's `createJiraIssue` only where you do
-  not.** Two doors into the same site, and **only one of them assigns the
-  ticket**: the proxy sets the assignee from the daemon's own account and
-  refuses when it cannot, while the official tool's `assignee_account_id` is
-  optional, undefaulted and unwarned. An unassigned ticket **can never be
-  staffed** — `BOARD_JQL` is `assignee = currentUser() AND status IN ("In
-  Progress", "In Review")` — and it reads exactly like one nobody has triaged.
-  104 had accumulated by 2026-08-21, and three more were born unassigned in the
-  ninety minutes after the proxy was fixed, by an agent that knew the rule.
-  **The rule is not the mechanism**: `boardControl.health.unstaffable` on
-  `butchr_list_agents` reports every open unassigned ticket whichever door it
-  came through (KAN-597), and that is what a sweep should read. Where you must
-  use the official server — a cross-ticket write is the case, since the proxy
-  writes only to your own ticket — set `assignee_account_id` and read the ticket
-  back.
+- ⚠ **File through `atlassian_create_issue` on the `butchr` server, which is the
+  only create tool your workspace has while the proxy is on** — and know why,
+  because the reason outlives the arrangement. More than one door reaches this
+  site and **only one of them assigns the ticket**: the proxy sets the assignee
+  from the daemon's own account and refuses when it cannot, while the official
+  server's `assignee_account_id` is optional, undefaulted and unwarned, and the
+  web UI assigns nothing either. An unassigned ticket **can never be staffed** —
+  `BOARD_JQL` is `assignee = currentUser() AND status IN ("In Progress", "In
+  Review")` — and it reads exactly like one nobody has triaged. 104 had
+  accumulated by 2026-08-21, and three more were born unassigned in the ninety
+  minutes after the proxy's create path was fixed, by an agent that knew the
+  rule.
+- ⚠ **KAN-603 narrowed that to one door and did not close the class**: the
+  official server is not provisioned while the proxy is on, but the gate is the
+  proxy mode, an install with it `off` still gets that server as its only route,
+  and nothing gates the web UI. **So the rule is not the mechanism**:
+  `boardControl.health.unstaffable` on `butchr_list_agents` reports every open
+  unassigned ticket whichever door it came through (KAN-597), because the
+  reconciler reads the board rather than the call — and that is what a sweep
+  should read. If you ever file by a route that is not the proxy, set the
+  assignee yourself and read the ticket back.
 - **Set it at creation** — `createJiraIssue` takes `parent`. Fixing it
   afterwards works, but nothing goes looking: a backfill re-parented 74 tickets
   on 2026-08-07 and four more were filed unparented within the day, by four
@@ -466,11 +481,13 @@ arrived numbered `H-13` and taking either side would have silently dropped one;
 `daemon/scripts/rule-inventory.md` now catches that, and the check that catches
 it is the one a careless resolution is most likely to delete.
 
-For coordination you have exactly two instruments:
+For coordination you have exactly two instruments, and they are **one server**
+— the `butchr` MCP carries both, which is why no Atlassian server is provisioned
+beside it:
 
-- the **Atlassian MCP** — read, manage and transition Jira issues; read and post
-  comments;
-- the **butchr MCP** — list, inspect, tail, message, activate and deactivate the
+- its **`atlassian_*` tools** — read, manage and transition Jira issues; read and
+  post comments;
+- its **`butchr_*` tools** — list, inspect, tail, message, activate and deactivate the
   agents working your epic (`butchr_list_agents`, `butchr_agent_status`,
   `butchr_tail_agent`, `butchr_send_to_agent`, `butchr_activate_agent`,
   `butchr_deactivate_agent`).

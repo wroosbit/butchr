@@ -1861,7 +1861,11 @@ const RULES = [
           /only one of them assigns the ticket/i,
           /can never be staffed/i,
           /assignee_account_id/,
-          /(rule|bullet) (is not|lowers the rate and is not) the mechanism/i,
+          // Deliberately tolerant of a qualifier between the noun and the verb
+          // ("the rule above is not the mechanism"): what must be present is the
+          // disclaimer, and pinning its exact word order makes this entry a
+          // style check that goes red on a rewrite that says the same thing.
+          /(rule|bullet)[^.]{0,24}\bis not the mechanism/i,
           /boardControl\.health\.unstaffable/,
         ],
       ])
