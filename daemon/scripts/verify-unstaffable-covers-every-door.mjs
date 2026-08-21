@@ -269,6 +269,21 @@ rule('2. THE GAP AND ITS CONTROL — a To Do ticket with no assignee is reported
     'the answering branch carries its tickets',
     `the answering branch is malformed: ${JSON.stringify(report)}`
   );
+
+  // KAN-649. Section 1 asserts the query string; this asserts that the PUBLISHED
+  // REPORT names it. The two are different claims and only the second one
+  // reaches a reader: a constant a build does not contain is a constant nobody
+  // can be shown, and on 2026-08-21 the running daemon answered this field with
+  // an empty result from a build that had no cross-door query at all.
+  const expectedJql = scopedDiagnosticJql(BOARD_UNSTAFFABLE_JQL, new Set(['KAN']));
+  verdict(
+    report?.answered === true && report.askedJql === expectedJql,
+    `the report NAMES THE QUERY THAT PRODUCED IT — askedJql is the scoped string the cycle ` +
+      `actually sent (${expectedJql}) — so a build with no such query cannot answer here in a ` +
+      'way that reads like a clean board (KAN-649)',
+    `the report does not name its query, so an empty result from it is indistinguishable from ` +
+      `one published by a build that never asked: ${JSON.stringify(report)}`
+  );
 }
 
 {
@@ -296,6 +311,18 @@ rule('2. THE GAP AND ITS CONTROL — a To Do ticket with no assignee is reported
     "the failing branch carries Jira's own words and the streak, so a partial page is " +
       'distinguishable from an outage',
     `the failing branch does not carry the reason or the count: ${JSON.stringify(report)}`
+  );
+
+  // KAN-649, and this is the half that is easy to leave out. "The query failed"
+  // and "this build has no such query" are as collapsible as `[]` and `null`
+  // ever were, so the failing branch has to name the query too — otherwise the
+  // provenance is present exactly on the cycles that already went well.
+  verdict(
+    report?.answered === false &&
+      report.askedJql === scopedDiagnosticJql(BOARD_UNSTAFFABLE_JQL, new Set(['KAN'])),
+    'and it names the query as well, so a failed read is distinguishable from a build that ' +
+      'holds no cross-door query — the provenance is not only on the cycles that went well',
+    `the failing branch does not name its query: ${JSON.stringify(report)}`
   );
 }
 
@@ -519,8 +546,10 @@ rule('5. THE CONVERTER — the only route into the reported population, and both
     row('KAN-598', 'To Do', OTHER),
     row('   ', 'To Do', null)
   ];
-  const out = toUnstaffableIssues(rows, new Set(['KAN'])).map((t) => t.key);
-  console.log(`\n   toUnstaffableIssues → ${JSON.stringify(out)}\n`);
+  const SCOPED = scopedDiagnosticJql(BOARD_UNSTAFFABLE_JQL, new Set(['KAN']));
+  const evidence = toUnstaffableIssues(rows, new Set(['KAN']), SCOPED);
+  const out = evidence.tickets.map((t) => t.key);
+  console.log(`\n   toUnstaffableIssues → ${JSON.stringify(evidence)}\n`);
 
   verdict(
     out.length === 1 && out[0] === 'KAN-590',
@@ -530,12 +559,38 @@ rule('5. THE CONVERTER — the only route into the reported population, and both
     `the converter let something through or dropped the wrong thing: ${JSON.stringify(out)}`
   );
 
-  const branded = toUnstaffableIssues([row('KAN-590', 'To Do', null)], new Set(['KAN']));
+  const branded = toUnstaffableIssues([row('KAN-590', 'To Do', null)], new Set(['KAN']), SCOPED)
+    .tickets;
   verdict(
     branded[0]?.from === 'unstaffable-query' && !('assigneeAccountId' in branded[0]),
     'and what it emits carries the discriminator and no assignee fields, which is what makes ' +
       'section 3 a compile error rather than a convention',
     `the emitted shape is not the branded one: ${JSON.stringify(branded[0])}`
+  );
+
+  // KAN-649. The rows and the query they came back from leave this function as
+  // ONE value, so there is no moment at which a caller holds the tickets and
+  // has yet to be handed their provenance — which is the moment a report with
+  // no query attached would have to be built in.
+  verdict(
+    evidence.askedJql === SCOPED && evidence.from === 'unstaffable-query',
+    'and it hands back the query string beside the rows, so the report cannot be assembled ' +
+      'out of rows whose provenance was dropped on the way (KAN-649)',
+    `the converter did not carry the query it was asked with: ${JSON.stringify(evidence.askedJql)}`
+  );
+
+  // ⚠ THE CONTROL FOR THE ASSERTION DIRECTLY ABOVE. `askedJql` must be the
+  // string the CALLER sent, never one this function rebuilds — a recomputation
+  // would agree with the real query on every ordinary run and would agree with
+  // it just as readily on a run where the two had diverged, which is the only
+  // run the field exists for.
+  const otherJql = 'project IN ("KAN") AND assignee IS EMPTY AND status = "To Do"';
+  const withOtherJql = toUnstaffableIssues([row('KAN-590', 'To Do', null)], new Set(['KAN']), otherJql);
+  verdict(
+    withOtherJql.askedJql === otherJql,
+    'and the string it reports is the one it was handed rather than one it recomputes — so a ' +
+      'report can never name a query the cycle did not run',
+    `the converter substituted its own query string: ${JSON.stringify(withOtherJql.askedJql)}`
   );
 }
 
@@ -687,7 +742,8 @@ if (!live) {
         const jql = scopedDiagnosticJql(BOARD_UNSTAFFABLE_JQL, new Set(['KAN']));
         console.log(`   board read: ${jql}`);
         const boardRows = await search(jql);
-        const reported = toUnstaffableIssues(boardRows, new Set(['KAN'])).map((t) => t.key);
+        const reported = toUnstaffableIssues(boardRows, new Set(['KAN']), jql).tickets
+          .map((t) => t.key);
         console.log(
           `   the query returned ${boardRows.length} row(s): ${JSON.stringify(boardRows.map((r) => r.key))}`
         );
