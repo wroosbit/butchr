@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 133 |
+| `yes` | 134 |
 | `partial` | 17 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **176** |
+| **total** | **177** |
 
-**150 of 176** run on every pull request.
+**151 of 177** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
