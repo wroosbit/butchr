@@ -361,7 +361,7 @@ export const NEVER_CLIPPED_FIELDS: Readonly<Record<string, ExemptionReason>> = {
   missingAgents: {
     kind: 'disclosure',
     whenOverBudget: 'windowed',
-    why: 'agents the durable registry records active that are not running — work that has silently stopped. 300 of them measured 69,302 chars, which is why this is windowed rather than exempt outright.'
+    why: 'agents the durable registry records active that herdr has no agent by that NAME for — which is not the same as work that has stopped, and each row now carries the difference in `occupiedBy` (KAN-579). 300 of them measured 69,302 chars, which is why this is windowed rather than exempt outright; `occupiedBy` is null on the overwhelming majority of rows and adds nothing to that figure where it is.'
   },
   preemptedAgents: {
     kind: 'disclosure',

@@ -538,6 +538,55 @@ function ambiguityFields(
 }
 
 /**
+ * Something the census reports as live in a {@link MissingAgent}'s own
+ * `workDir`, under a name this daemon did not derive.
+ *
+ * **This is the row's own disproof, carried on the row** (KAN-579). The census
+ * is keyed by name and `missingAgents` compares names, so an agent restarted by
+ * something that spells panes differently — CrabCast's
+ * `crabcast-kan-373-075e5405edda3743`, against Butchr's
+ * `butchr-task-kan-373` — is absent from `agents` by construction and looks
+ * exactly like a death. The directory is the one identity both spellings share,
+ * so it is what the question gets asked in.
+ */
+interface MissingAgentOccupant {
+  /** The name the runtime knows it by — not one {@link agentNameFor} produces. */
+  agentName: string;
+  /** The runtime behind the pane, or `null` for a workspace that expects none. */
+  agentRuntime: string | null;
+  herdrStatus: HerdrAgentStatus;
+}
+
+/**
+ * What the census could establish about the directory, as three answers that
+ * cannot be confused for one another (KAN-579).
+ *
+ * **The defect this type exists to make unrepresentable** is a `reason` string
+ * asserting *"It is not running."* off a premise that only ever checked a
+ * **name**. That sentence is a claim about the agent; `alive.has(agentName)` is
+ * a fact about the spelling, and an agent alive under a name Butchr did not
+ * derive satisfies the premise and falsifies the conclusion.
+ *
+ * So the conclusion is not writable by hand at the call site any more. Only
+ * {@link reasonForMissingAgent} composes one, and only its `clear` arm carries
+ * the sentence — which is an invariant about *what this code is able to say*,
+ * and therefore the type's job rather than an assertion's
+ * (`verify-missing-agent-name-vs-agent.mjs` holds the assertion as well).
+ *
+ * - `occupied`     — something live is in that directory under another name.
+ *                    The row must not deny it is running.
+ * - `clear`        — the census was taken, it was whole, and nothing in that
+ *                    directory is live. The **only** state in which the
+ *                    original sentence is earned.
+ * - `indeterminate` — the census could not answer. Not evidence of death, and
+ *                    not evidence of life.
+ */
+type WorkDirLiveness =
+  | { kind: 'occupied'; occupants: MissingAgentOccupant[] }
+  | { kind: 'clear' }
+  | { kind: 'indeterminate'; because: string };
+
+/**
  * An agent the registry says should be running that herdr does not have.
  *
  * This is the whole of the detectability half of KAN-21, as data. On the day
@@ -546,6 +595,12 @@ function ambiguityFields(
  * The registry is what makes the question answerable without asking — it holds
  * the *intended* fleet, and anything in it that herdr cannot show is a loss,
  * reported on every `list_agents` poll rather than written to a log.
+ *
+ * ⚠ **A row is a loss of a NAME, and since KAN-579 it says which of the three
+ * that makes it.** Read {@link occupiedBy} before acting: the remedy this
+ * category invites — stand it down, or re-activate it, which *resumes a
+ * conversation* — is destructive, and it was being invited for agents that were
+ * working at the time.
  */
 interface MissingAgent {
   agentName: string;
@@ -557,12 +612,212 @@ interface MissingAgent {
   since: string;
   reason: string;
   /**
+   * What the census found live in this row's `workDir` under some other name
+   * (KAN-579), or `null` when it found nothing there and could say so.
+   *
+   * **`null` and `[]` would have been the same field with two spellings**, so
+   * there is no empty array: a non-null value means at least one occupant, and
+   * `null` means the row is not disproved by this leg. Whether that is because
+   * the directory is genuinely clear or because the census could not answer is
+   * in {@link reason}, which names the two separately and never collapses the
+   * second into the first.
+   *
+   * Present-with-`null` rather than omitted, for the reason
+   * {@link ListedAgent} gives at length: over JSON an absent field reads as
+   * *"not answered"*, and an older daemon that cannot answer this is exactly
+   * the population that must stay distinguishable from one answering *"nothing
+   * there"*.
+   */
+  occupiedBy: MissingAgentOccupant[] | null;
+  /**
    * Who activated it, from the same record that says it should be running.
    * Carried here for the same reason as on {@link ListedAgent}: a loss is
    * owed to whoever staffed the work, and the tree that shows it has to be
    * able to put the row under that agent.
    */
   activatedBy: SupervisorOfRecord | null;
+}
+
+/**
+ * One census, turned into the question `missingAgents` asks of it (KAN-579).
+ *
+ * Built once per call rather than once per row: the Agents page polls
+ * `list_agents` every 2s, and 300 missing rows against a fleet-sized census is
+ * a product. It also puts the whole reading in one value, so a row's verdict
+ * cannot be assembled out of two censuses taken a moment apart — the same
+ * one-reading-in-one-reading-out discipline `surveyAgents` carries `census` for.
+ */
+interface CensusWorkDirIndex {
+  /** Whether the census could be TAKEN. Never a claim about what it found. */
+  reachable: boolean;
+  /** Rows the source could not read, or `null` for no disclosure at all. */
+  unreadableRecordsTotal: number | null;
+  /** Live rows by normalised directory. A key present always has occupants. */
+  liveByWorkDir: Map<string, MissingAgentOccupant[]>;
+  /**
+   * Live rows that named no directory. **Counted rather than dropped**: such a
+   * row could be in any directory, so it is exactly as much of a reason not to
+   * conclude `clear` as an unreadable one is.
+   */
+  liveRowsWithNoWorkDir: number;
+}
+
+/**
+ * What the census can establish about one missing row's directory (KAN-579).
+ *
+ * **Why the directory and not the name:** the name is the thing that has
+ * already failed. `agentNameFor` spells a pane `butchr-<type>-<key>`, and an
+ * agent restarted by a runtime that spells them otherwise — the observed case
+ * is CrabCast's `crabcast-kan-373-075e5405edda3743` — is dropped from `agents`
+ * outright, because `surveyAgents` discards any census row
+ * `addressFromAgentName` cannot parse. **So it is not merely absent from the
+ * comparison, it is absent by construction**, and no amount of comparing names
+ * will ever find it. The `workDir` is the one identity both spellings agree on,
+ * and the raw census keeps rows this daemon could not name.
+ *
+ * **Every branch that cannot see is `indeterminate` rather than `clear`**, and
+ * that asymmetry is the whole point: this function's failure mode is *asserting
+ * a death it did not observe*, so silence must never round toward the confident
+ * answer. An unreachable census, a partially-read one, a live row that names no
+ * directory, and a registry row that names none itself are four different ways
+ * of not knowing, and all four say so.
+ */
+function workDirLiveness(
+  agentName: string,
+  workDir: string,
+  index: CensusWorkDirIndex
+): WorkDirLiveness {
+  // A census that could not be taken is not a census that found nothing — the
+  // distinction `CensusReading.reachable` exists for, applied here rather than
+  // quietly dropped.
+  if (!index.reachable) {
+    return {
+      kind: 'indeterminate',
+      because: 'the census could not be taken at all, so nothing was searched'
+    };
+  }
+
+  const wanted = normaliseWorkDir(workDir);
+  if (!wanted) {
+    return {
+      kind: 'indeterminate',
+      because:
+        "this agent's own registry record names no workDir, so there was nothing to compare " +
+        'the census against'
+    };
+  }
+
+  // Its own name is what the caller already established is absent, so a row
+  // under it cannot disprove its own loss. Filtered here rather than out of the
+  // index, because the index is shared across every row and this exclusion is
+  // one row's own.
+  const occupants = (index.liveByWorkDir.get(wanted) ?? []).filter(
+    (o) => o.agentName !== agentName
+  );
+
+  // A positive finding stands whatever else the census could not read: rows it
+  // missed could only ever have added more occupants.
+  if (occupants.length > 0) return { kind: 'occupied', occupants };
+
+  const unread = index.unreadableRecordsTotal;
+  if (unread === null) {
+    return {
+      kind: 'indeterminate',
+      because:
+        'the census disclosed no count of rows it could not read, so whether the search covered ' +
+        'the whole fleet is unknown'
+    };
+  }
+  if (unread > 0) {
+    return {
+      kind: 'indeterminate',
+      because:
+        `the census could not read ${unread} row${unread === 1 ? '' : 's'}, and the agent may be ` +
+        'in one of them'
+    };
+  }
+  const nameless = index.liveRowsWithNoWorkDir;
+  if (nameless > 0) {
+    return {
+      kind: 'indeterminate',
+      because:
+        `${nameless} live census row${nameless === 1 ? '' : 's'} name${nameless === 1 ? 's' : ''} ` +
+        `no workDir, so ${nameless === 1 ? 'it' : 'any of them'} could be this directory`
+    };
+  }
+
+  return { kind: 'clear' };
+}
+
+/**
+ * One directory, spelled one way, so two sources naming the same place compare
+ * equal (KAN-579).
+ *
+ * Trailing separators only. **Deliberately not `realpath`**: this runs inside a
+ * synchronous list handler over every missing row, resolving a symlink is a
+ * filesystem call that can throw or block, and a directory that has since been
+ * deleted would resolve differently from the identical string that is still
+ * live — which would turn a comparison into a guess. Two different spellings of
+ * one path therefore read as two directories, and the cost of that is an
+ * occupant this check fails to find. **That failure is toward
+ * `indeterminate`/`clear`, never toward inventing an occupant**, and it is the
+ * direction to keep: a false `occupied` would suppress a real loss.
+ *
+ * Returns `null` for anything that names no directory, which the caller must
+ * treat as *unknown* rather than as *no match* — those are the two answers this
+ * whole ticket is about not confusing.
+ */
+function normaliseWorkDir(workDir: string | null | undefined): string | null {
+  if (typeof workDir !== 'string') return null;
+  const trimmed = workDir.trim().replace(/\/+$/, '');
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * The one composer of a {@link MissingAgent.reason}, and the only place the
+ * sentence *"It is not running."* is written (KAN-579).
+ *
+ * Every arm states the premise the same way — herdr has no agent by that name,
+ * which is true in all three — and then differs on exactly what follows from
+ * it. The `clear` arm is the only one that concludes anything about the agent,
+ * because it is the only one that looked anywhere other than the name.
+ *
+ * `witnessed` distinguishes the two deaths the original code already
+ * distinguished and is unchanged in meaning: a session of ours that outlived
+ * its agent is a crash we held the handle for.
+ */
+function reasonForMissingAgent(liveness: WorkDirLiveness, witnessed: boolean): string {
+  const premise = witnessed
+    ? 'The registry records this agent as active and this daemon still holds a session for it, ' +
+      'but herdr has no agent by that name: it started and then died.'
+    : 'The registry records this agent as active, but herdr has no agent by that name and this ' +
+      'daemon holds no session for it.';
+
+  switch (liveness.kind) {
+    case 'occupied': {
+      const names = liveness.occupants.map((o) => `\`${o.agentName}\``).join(', ');
+      return (
+        `${premise} It IS NOT SAFE to read that as "it is not running": the census reports ` +
+        `${liveness.occupants.length === 1 ? 'something' : 'things'} live in this agent's own ` +
+        `workDir under ${liveness.occupants.length === 1 ? 'a name' : 'names'} this daemon did ` +
+        `not derive (${names}) — see occupiedBy. Standing this down or re-activating it would ` +
+        'act on work that is very likely still in progress, and re-activation resumes a ' +
+        'conversation. Establish what is in that directory before you do either.'
+      );
+    }
+    case 'clear':
+      return (
+        `${premise} Nothing is live in its workDir under any other name either, so this is a ` +
+        'loss of the agent and not only of the name. It is not running.'
+      );
+    case 'indeterminate':
+      return (
+        `${premise} Whether it is nonetheless alive under a name this daemon did not derive ` +
+        `could not be established, because ${liveness.because}. That is a fact about this ` +
+        'check, not about the agent: do NOT read it as "it is not running", and confirm the ' +
+        'directory is idle before standing it down or re-activating it.'
+      );
+  }
 }
 
 /**
@@ -4977,7 +5232,11 @@ export class MessageRouter {
 
     // Agents that should be here and are not. Computed from the same census the
     // list is built from, so the two can never disagree about what is running.
-    const missingAgents = this.missingAgents(agents, staleSessions);
+    //
+    // The RAW census goes in as well as the derived rows (KAN-579): `agents`
+    // has already had every row this daemon could not name dropped from it, and
+    // those are precisely the rows that can disprove a loss.
+    const missingAgents = this.missingAgents(agents, census, staleSessions);
 
     // Agents a person switched off. From the same census for the same reason:
     // an agent that is running must never be offered an On button.
@@ -5453,15 +5712,28 @@ export class MessageRouter {
    * nonetheless perfectly alive, and calling it missing would be the same
    * false alarm KAN-9 and KAN-28 already fixed at other layers.
    */
-  private missingAgents(agents: ListedAgent[], staleSessions?: Set<string>): MissingAgent[] {
+  private missingAgents(
+    agents: ListedAgent[],
+    census: CensusReading,
+    staleSessions?: Set<string>
+  ): MissingAgent[] {
     if (!this.agentRegistry) return [];
 
     const alive = new Set(agents.map((a) => a.agentName));
     const missing: MissingAgent[] = [];
 
+    // Built once, not once per row: `list_agents` is polled every 2s by the
+    // Agents page, and 300 missing rows against a fleet-sized census is a
+    // product rather than a sum.
+    const index = this.indexCensusByWorkDir(census);
+
     for (const [agentName, intent] of this.agentRegistry.intents()) {
       if (intent.event !== 'activated') continue;
       if (alive.has(agentName)) continue;
+
+      // ⚠ The loop above compared NAMES, and that is all it compared. Ask the
+      // directory before concluding anything about the agent (KAN-579).
+      const liveness = workDirLiveness(agentName, intent.record.workDir, index);
 
       missing.push({
         agentName,
@@ -5471,20 +5743,90 @@ export class MessageRouter {
         url: intent.record.url ?? null,
         activatedBy: intent.record.activatedBy ?? null,
         since: intent.at,
-        // Both cases are "not running", but they are not the same event and a
-        // reader acting on this deserves the difference: an agent that never
-        // came back, versus one that was running under this daemon and died
-        // while we held its session. The second is a crash we witnessed.
-        reason: staleSessions?.has(agentName)
-          ? 'The registry records this agent as active and this daemon still holds a session ' +
-            'for it, but herdr has no agent by that name: it started and then died. ' +
-            'It is not running.'
-          : 'The registry records this agent as active, but herdr has no agent by that name ' +
-            'and this daemon holds no session for it. It is not running.'
+        occupiedBy: liveness.kind === 'occupied' ? liveness.occupants : null,
+        // Composed rather than written here, so that the conclusion cannot be
+        // attached to a premise that does not carry it. The two deaths the
+        // original code told apart — never came back, versus died while we held
+        // its session — are `witnessed` and are unchanged.
+        reason: reasonForMissingAgent(liveness, staleSessions?.has(agentName) ?? false)
       });
     }
 
     return missing;
+  }
+
+  /**
+   * What the census can establish about a missing row's directory (KAN-579).
+   *
+   * **Why the directory and not the name:** the name is the thing that has
+   * already failed. `agentNameFor` spells a pane `butchr-<type>-<key>`, and an
+   * agent restarted by a runtime that spells them otherwise — the observed case
+   * is CrabCast's `crabcast-kan-373-075e5405edda3743` — is dropped from
+   * `agents` outright, because `surveyAgents` discards any census row
+   * `addressFromAgentName` cannot parse. **So it is not merely absent from the
+   * comparison, it is absent by construction**, and no amount of comparing
+   * names will ever find it. The `workDir` is the one identity both spellings
+   * agree on, and the raw census keeps rows this daemon could not name.
+   *
+   * **What counts as live is the survey's own rule, read off
+   * {@link expectsRuntime}, deliberately not a second one.** A pane with no
+   * runtime is dead everywhere except a `shell` workspace, where a bare prompt
+   * is the delivered product — the identical test `surveyAgents` applies when
+   * it decides a session is stale. Two spellings of one rule is the KAN-145
+   * defect shape, so there is one.
+   *
+   * **Every branch that cannot see is `indeterminate` rather than `clear`**,
+   * and that asymmetry is the whole point: this function's failure mode is
+   * *asserting a death it did not observe*, so silence must never round toward
+   * the confident answer. An unreachable census, a partially-read one, a live
+   * row that names no directory, and a registry row that names none itself are
+   * four different ways of not knowing, and all four say so.
+   */
+  private indexCensusByWorkDir(census: CensusReading): CensusWorkDirIndex {
+    const liveByWorkDir = new Map<string, MissingAgentOccupant[]>();
+    let liveRowsWithNoWorkDir = 0;
+
+    if (census.reachable) {
+      for (const record of census.agents) {
+        if (!this.isLiveCensusRecord(record)) continue;
+
+        const where = normaliseWorkDir(record.workDir);
+        if (!where) {
+          liveRowsWithNoWorkDir++;
+          continue;
+        }
+        const at = liveByWorkDir.get(where);
+        const occupant: MissingAgentOccupant = {
+          agentName: record.name,
+          agentRuntime: record.agentRuntime,
+          herdrStatus: record.herdrStatus
+        };
+        if (at) at.push(occupant);
+        else liveByWorkDir.set(where, [occupant]);
+      }
+    }
+
+    return {
+      reachable: census.reachable,
+      unreadableRecordsTotal: census.unreadableRecordsTotal,
+      liveByWorkDir,
+      liveRowsWithNoWorkDir
+    };
+  }
+
+  /**
+   * Whether a raw census row is something running, by the survey's own rule.
+   *
+   * The rule is `surveyAgents`'s `dead` test read the other way up: a pane with
+   * an agent runtime is alive, and one without is alive only where nothing was
+   * expected behind it. {@link expectsRuntime} keys on the registry record for
+   * the name, so a census row this daemon never registered — the whole
+   * population this check exists for — takes its `!== 'shell'` default and is
+   * assumed to want a runtime. That is the safe direction here: such a row
+   * counts as an occupant only when it actually has one.
+   */
+  private isLiveCensusRecord(record: HerdrAgentRecord): boolean {
+    return record.agentRuntime !== null || !this.expectsRuntime(record.name);
   }
 
   /**
@@ -5624,8 +5966,12 @@ export class MessageRouter {
    * happened.
    */
   public surveyFleet(): { agents: ListedAgent[]; missing: MissingAgent[] } {
-    const { agents, staleSessions } = this.surveyAgents();
-    return { agents, missing: this.missingAgents(agents, staleSessions) };
+    const { agents, staleSessions, census } = this.surveyAgents();
+    // Same census, same instant — including the rows `agents` dropped for being
+    // unnameable, which is where a survivor under another spelling hides
+    // (KAN-579). The sweep is the caller whose remedy is destructive, so it is
+    // the one that most needs the row to know the difference.
+    return { agents, missing: this.missingAgents(agents, census, staleSessions) };
   }
 
   /**
