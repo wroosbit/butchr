@@ -71,16 +71,44 @@ export function MissingAgentsBanner({
               : `${missingAgents.length} agents are missing`}
           </div>
           {/* The consequence, not just the fact. A ticket left In Progress with
-              nothing behind it is the expensive part of this failure. */}
+              nothing behind it is the expensive part of this failure.
+
+              ⚠ KAN-579 narrowed this sentence, and the narrowing is the point.
+              It used to read "no agent is running for them. Whatever they were
+              working on has stopped" — a claim about the AGENTS, off a check
+              that only ever compared NAMES. An agent restarted under a name the
+              daemon did not derive lands in this list while working, and the
+              banner then said it had stopped directly above a button that
+              RESUMES ITS CONVERSATION. The row now says which of the three it
+              is; this sentence is not allowed to overrule it. */}
           <div style={{ color: PALETTE.fg, fontSize: '12px', marginTop: '4px', lineHeight: 1.45 }}>
-            These were activated and are recorded as active, but no agent is running for them.
-            Whatever they were working on has stopped, and their tickets will still read as though
-            it had not.
+            These were activated and are recorded as active, but the daemon has no agent under the
+            name it expects. Read each row before restoring one — where something is running in the
+            agent's own directory under another name, it is flagged below and restoring it would
+            interrupt work that is still going on.
           </div>
 
           <ul style={{ margin: '12px 0 0', padding: 0 }}>
             {missingAgents.map((agent) => {
               const ago = since(agent.since);
+              // KAN-579: the row's own disproof. Non-null means the daemon
+              // found something LIVE in this agent's workDir under a name it
+              // did not derive, so "missing" is a fact about the name only.
+              //
+              // An older daemon omits the key entirely, and that reads as
+              // `undefined` — not as an occupant, which is the safe direction:
+              // such a row renders exactly as it did before this change rather
+              // than growing a warning nobody can substantiate.
+              //
+              // The `length` test is for the SAME reason and is not redundant
+              // with it: today's daemon never sends `[]` — null is the one
+              // spelling of "nothing found", which `MissingAgent.occupiedBy`
+              // states and the proof's §5 asserts — but this component reads a
+              // wire format, not that type, and a bare `[]` is truthy. Without
+              // it a daemon that ever sent one would suppress Restore and
+              // render "occupied by" followed by nothing.
+              const occupied = Array.isArray(agent.occupiedBy) && agent.occupiedBy.length > 0;
+              const occupants = occupied ? agent.occupiedBy : null;
               return (
                 <li key={agent.agentName} style={{ marginBottom: '10px', listStyle: 'none' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
@@ -120,8 +148,16 @@ export function MissingAgentsBanner({
                     {/* The banner already told the reader to re-activate it.
                         Before KAN-38 that was advice with nowhere to follow it
                         — the agent is not on any list that has a switch, which
-                        is what being missing means. */}
-                    {onTurnOn ? (
+                        is what being missing means.
+
+                        ⚠ KAN-579: not offered where something is live in the
+                        agent's own directory. Restore RESUMES A CONVERSATION,
+                        so on an occupied row it is not a recovery, it is an
+                        interruption of work in progress — and the button was
+                        being offered for exactly that case with a red banner
+                        above it agreeing. The occupant is named instead, which
+                        is what a person needs in order to go and look. */}
+                    {onTurnOn && !occupants ? (
                       <TurnOnButton
                         candidate={agent}
                         pending={pending?.[agent.agentName]}
@@ -131,14 +167,34 @@ export function MissingAgentsBanner({
                       />
                     ) : null}
                   </div>
+                  {occupants ? (
+                    <div
+                      style={{
+                        color: '#fde68a',
+                        backgroundColor: 'rgba(120, 53, 15, 0.35)',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '6px',
+                        padding: '6px 8px',
+                        fontSize: '11px',
+                        marginTop: '6px',
+                        lineHeight: 1.45
+                      }}
+                    >
+                      ⚠ Probably still running. This directory is occupied by{' '}
+                      {occupants.map((o) => o.agentName).join(', ')} — a name Butchr did not derive,
+                      so it is absent from the agent list without being gone. Restoring it would
+                      resume a conversation that is still going, so it is not offered here; look at
+                      that pane before doing anything to this row.
+                    </div>
+                  ) : null}
                   {renderRefusal ? renderRefusal(agent.agentName) : null}
                 </li>
               );
             })}
             <li style={{ listStyle: 'none', color: '#94a3b8', fontSize: '11px', marginTop: '4px' }}>
-              Agents are restored automatically when the daemon starts. One listed here was lost
-              after that, or could not be restored — re-activate it, or reset the workspace if the
-              work is finished with.
+              Agents are restored automatically when the daemon starts. An unflagged row here was
+              lost after that, or could not be restored — re-activate it, or reset the workspace if
+              the work is finished with. A flagged one has not been shown to be lost at all.
             </li>
           </ul>
         </div>
