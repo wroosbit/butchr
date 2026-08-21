@@ -296,6 +296,70 @@ function emitMarkdown() {
   out.push('`verify-ci-partition-is-enforced.mjs` §6 goes red when the two disagree, in');
   out.push('either direction.');
   out.push('');
+  // KAN-590. This section is FIRST after the regenerate block because of where
+  // its reader is standing: they have just been told
+  // `CONFLICT (content): Merge conflict in daemon/scripts/ci-partition.md` and
+  // have opened the file. The conflict markers land in the table below — the
+  // header is identical on both sides and always survives — so the top of the
+  // file is what they meet, and this is the only place the resolution can be
+  // that does not have to be looked for.
+  //
+  // The fenced block below is EXECUTED, not merely displayed:
+  // `verify-ci-partition-conflict-recipe.mjs` extracts these exact lines from
+  // the generated document and runs them against a real two-branch conflict.
+  // Editing the recipe here changes what that guard runs. That is the point —
+  // the procedure lived in commit messages for three collisions in one day and
+  // had acquired two unnecessary steps by the time it was written down.
+  out.push('## If you got here from a merge conflict');
+  out.push('');
+  out.push('**Regenerate this file. Never hand-merge it.** Two pull requests that each add');
+  out.push('a `verify-*` script both regenerate it, so they collide here and usually');
+  out.push('nowhere else. KAN-590 measured three such collisions on 2026-08-21, and in one');
+  out.push('of them the only conflicted file was this one while the code that was actually');
+  out.push('under review auto-merged clean.');
+  out.push('');
+  out.push('Run this from the repository root, with the conflict still in the tree:');
+  out.push('');
+  out.push('```bash');
+  out.push('node daemon/scripts/run-ci-verify-set.mjs --markdown > daemon/scripts/ci-partition.md');
+  out.push('git add daemon/scripts/ci-partition.md');
+  out.push('node daemon/scripts/verify-ci-partition-is-enforced.mjs');
+  out.push('```');
+  out.push('');
+  out.push('The redirect overwrites the conflict markers whole, and the generator reads the');
+  out.push("scripts in the merged tree — which already contain BOTH sides' new scripts,");
+  out.push('because those auto-merged. Check both appear in the result; the third line is');
+  out.push('that check, and it is a separate command so that its verdict is its own.');
+  out.push('');
+  out.push('**Two steps you may have seen are not needed.** The version of this recipe that');
+  out.push('circulated in commit messages opened with `git checkout origin/main --` on this');
+  out.push('file and a `cd daemon && npm run build`. Neither is required: the redirect');
+  out.push('replaces the file regardless of its conflicted state, and `--markdown` returns');
+  out.push('before the generator looks for `dist` — measured on a worktree carrying no');
+  out.push('`daemon/dist` directory at all, emitting a byte-identical document.');
+  out.push('');
+  out.push('**Why no merge driver does this for you.** Measured on that conflict, four');
+  out.push('arms, a separate clone each so that no arm inherited the merge of another:');
+  out.push('');
+  out.push('| arm | merge | this file afterwards |');
+  out.push('| --- | --- | --- |');
+  out.push('| no `.gitattributes` — today | conflict | both rows, with markers |');
+  out.push('| `merge=ours`, driver not configured | **conflict — the attribute is a silent no-op** | both rows, with markers |');
+  out.push('| `merge=ours`, `merge.ours.driver` configured | clean | **the incoming row is silently dropped** |');
+  out.push('| `merge=union` | clean | both rows, summary wrong |');
+  out.push('');
+  out.push("`ours` is **not** one of git's built-in merge drivers — `text`, `binary` and");
+  out.push('`union` are the whole list — so a `.gitattributes` line naming it does nothing');
+  out.push('until `merge.ours.driver` is configured, which lives in the config of a clone');
+  out.push('and cannot be carried by the repository. `git check-attr` reports `merge: ours`');
+  out.push('the whole time, so the no-op is silent.');
+  out.push('');
+  out.push('And every arm still ends here: `verify-ci-partition-is-enforced.mjs` was red in');
+  out.push('**all four**, because a driver resolves *text* and cannot know what the');
+  out.push('generator would emit. A driver would not remove the regenerate — it would only');
+  out.push('move the discovery from merge time, with the file open in front of you, to CI');
+  out.push('time.');
+  out.push('');
   out.push('## Why this file exists');
   out.push('');
   out.push('KAN-295. On 2026-08-11 this repository held 76 `verify-*` scripts and CI');

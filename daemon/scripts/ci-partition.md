@@ -12,6 +12,56 @@ file is a view of those lines and nothing more.
 `verify-ci-partition-is-enforced.mjs` §6 goes red when the two disagree, in
 either direction.
 
+## If you got here from a merge conflict
+
+**Regenerate this file. Never hand-merge it.** Two pull requests that each add
+a `verify-*` script both regenerate it, so they collide here and usually
+nowhere else. KAN-590 measured three such collisions on 2026-08-21, and in one
+of them the only conflicted file was this one while the code that was actually
+under review auto-merged clean.
+
+Run this from the repository root, with the conflict still in the tree:
+
+```bash
+node daemon/scripts/run-ci-verify-set.mjs --markdown > daemon/scripts/ci-partition.md
+git add daemon/scripts/ci-partition.md
+node daemon/scripts/verify-ci-partition-is-enforced.mjs
+```
+
+The redirect overwrites the conflict markers whole, and the generator reads the
+scripts in the merged tree — which already contain BOTH sides' new scripts,
+because those auto-merged. Check both appear in the result; the third line is
+that check, and it is a separate command so that its verdict is its own.
+
+**Two steps you may have seen are not needed.** The version of this recipe that
+circulated in commit messages opened with `git checkout origin/main --` on this
+file and a `cd daemon && npm run build`. Neither is required: the redirect
+replaces the file regardless of its conflicted state, and `--markdown` returns
+before the generator looks for `dist` — measured on a worktree carrying no
+`daemon/dist` directory at all, emitting a byte-identical document.
+
+**Why no merge driver does this for you.** Measured on that conflict, four
+arms, a separate clone each so that no arm inherited the merge of another:
+
+| arm | merge | this file afterwards |
+| --- | --- | --- |
+| no `.gitattributes` — today | conflict | both rows, with markers |
+| `merge=ours`, driver not configured | **conflict — the attribute is a silent no-op** | both rows, with markers |
+| `merge=ours`, `merge.ours.driver` configured | clean | **the incoming row is silently dropped** |
+| `merge=union` | clean | both rows, summary wrong |
+
+`ours` is **not** one of git's built-in merge drivers — `text`, `binary` and
+`union` are the whole list — so a `.gitattributes` line naming it does nothing
+until `merge.ours.driver` is configured, which lives in the config of a clone
+and cannot be carried by the repository. `git check-attr` reports `merge: ours`
+the whole time, so the no-op is silent.
+
+And every arm still ends here: `verify-ci-partition-is-enforced.mjs` was red in
+**all four**, because a driver resolves *text* and cannot know what the
+generator would emit. A driver would not remove the regenerate — it would only
+move the discovery from merge time, with the file open in front of you, to CI
+time.
+
 ## Why this file exists
 
 KAN-295. On 2026-08-11 this repository held 76 `verify-*` scripts and CI
@@ -38,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 136 |
+| `yes` | 137 |
 | `partial` | 18 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **180** |
+| **total** | **181** |
 
-**154 of 180** run on every pull request.
+**155 of 181** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -88,6 +138,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-channel-selfcheck` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-spawn-verdict` | yes | imports the built daemon modules, stages its own $HOME and its own unix socket in temporary directories, and needs no herdr, no pty, no network and no CrabCast. Section 3 creates and removes two probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-channel-startup-supervision` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-ci-partition-conflict-recipe` | yes | builds a repository-shaped fixture under `os.tmpdir()` from the files of this checkout, drives `git` on it, and spawns the generator and the enforcement guard as node children; node builtins and the `git` binary only, no build, no `npm install`, no daemon, no herdr, no credential, no network, no wall clock. |
 | `verify-ci-partition-is-enforced` | yes | builds its fixtures in a temporary directory, reads `ci.yml` and the script headers off the checkout, and spawns the generator's own `--markdown` mode as a node child; node builtins only, no build, no daemon, no herdr, no credential, no network. |
 | `verify-ci-set-guards-tree-writes` | yes | it builds a throwaway git repository under `os.tmpdir()` and spawns the copied runner in it. No live daemon, no herdr, no credential, no peer, no terminal, no network; the only external binary is `git`, which the checkout already requires. It does not run this repository's own verify set, so it does not run the set from inside the set. |
 | `verify-clip-recipes-are-executable` | yes | imports the built modules in process and reads two captured fixtures; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
