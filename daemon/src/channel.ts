@@ -512,12 +512,31 @@ export function carrierFor(opts: {
       transport: 'composer',
       refusal: 'channel-not-loaded',
       detail:
-        'this agent was spawned by a runtime that cannot put ' +
-        '--dangerously-load-development-channels on its client\'s command line, so its client ' +
-        'discards notifications/claude/channel in silence — the frame would be written, ' +
-        'reported delivered, and never reach a model (KAN-495, measured both directions by ' +
-        'daemon/scripts/probe-channel-reaches-model.mjs). Nothing is written; the composer is ' +
-        'the carrier that actually reaches it'
+        // ⚠ THE SENTENCE NO LONGER NAMES A CAUSE, AND THAT IS KAN-319 (it read
+        // "was spawned by a runtime that cannot put the flag on its client's
+        // command line" until then). That was true of the only case KAN-495
+        // knew — a runtime whose spawn shape carries no argv — and FALSE of the
+        // case that took the fleet down: four panes herdr restored itself as
+        // `claude --resume <uuid>`, on a runtime that carries the flag
+        // perfectly well for everything it actually spawns. A refusal that
+        // asserts the wrong cause sends an operator to the wrong repository, so
+        // this one states what is true of both and stops there.
+        'this agent\'s client was not started with --dangerously-load-development-channels for ' +
+        'this server, so it discards notifications/claude/channel in silence — the frame would ' +
+        'be written, reported delivered, and never reach a model (KAN-495, measured both ' +
+        'directions by daemon/scripts/probe-channel-reaches-model.mjs). Nothing is written; the ' +
+        'composer is the carrier that actually reaches it. ' +
+        // NAMED AS AN OPERATOR'S DECISION, at `task/KAN-552`'s request and with
+        // its reasoning: argv is fixed at process start, so the only thing that
+        // restores channel delivery is a re-spawn, and a re-spawn costs the
+        // agent its conversation. That is a trade for a person to make and
+        // never for a daemon loop — "an automatic repair that destroys context
+        // to restore a carrier is a bad trade even when it works". So this says
+        // what it would cost and leaves it there.
+        'RESTORING CHANNEL DELIVERY TO THIS AGENT NEEDS A RE-SPAWN, which costs it its ' +
+        'conversation — argv is fixed at process start, so nothing short of restarting the ' +
+        'client changes this. That is an operator\'s trade to make; the daemon will not make it, ' +
+        'and steering keeps working over the composer meanwhile'
     };
   }
 
