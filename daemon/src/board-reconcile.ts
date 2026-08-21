@@ -910,6 +910,32 @@ export interface ActivateOutcome {
 export interface DeactivateOutcome {
   success: boolean;
   error?: string;
+  /**
+   * Which route the runtime took, straight from `deactivate_response`'s
+   * `standDownRoute`. `'workspace'` means this daemon held no session and
+   * addressed the agent by its path.
+   *
+   * ⚠ THIS FIELD EXISTS BECAUSE ITS ABSENCE MADE AN HONEST RESULT DISHONEST
+   * (KAN-552). On the workspace route `closeAgentByWorkspace` returns
+   * `success: true` meaning **asked, not stopped** — it says so itself, and its
+   * own log line spells out the caveat: *"the slot is released when CrabCast
+   * actually stops it, which the next census tick shows."*
+   *
+   * The board then rendered that as the flat past tense `[board] stood down
+   * <agent>`, which states the OUTCOME the runtime had just said it could not
+   * guarantee. `epic/KAN-203` measured eight agents holding 8 of 10 slots while
+   * that line was emitted every cycle for three cycles, 48 times in 60k of log,
+   * with nothing reaped — and was misled twice in five minutes by it, once into
+   * "the reconciler is stuck" and once into the opposite.
+   *
+   * **The information was never missing.** The router already put
+   * `standDownRoute` on the wire; this interface had no field to receive it, so
+   * `daemon.ts`'s adapter dropped it and the board could not have told the
+   * difference if it wanted to. A truth the seam cannot express is one the
+   * layer above cannot report — which is why the repair is a field and not a
+   * better sentence.
+   */
+  standDownRoute?: string;
 }
 
 /** What one cycle did, so the daemon can log it and a proof can assert on it. */
@@ -1835,10 +1861,20 @@ export class BoardReconciler {
       // incident: this is the line that appears when the agent is already gone,
       // so it is where an operator starts. It carried the same unconditional
       // sentence as the line above and was wrong in exactly the same way.
+      // ⚠ THE PAST TENSE IS RESERVED FOR THE ROUTE THAT EARNS IT (KAN-552).
+      // On the workspace route the runtime returns "asked", not "stopped", and
+      // says so; flattening that into `stood down` was where an honest runtime
+      // result became a dishonest board result. The two sentences now differ,
+      // and the one that cannot promise the outcome does not claim it.
       this.opts.log(
-        stood.success
-          ? `[board] stood down ${address(agent)}: ${reason.detail}.`
-          : `[board] could not stand down ${address(agent)}: ${stood.error ?? 'no reason given'}`
+        !stood.success
+          ? `[board] could not stand down ${address(agent)}: ${stood.error ?? 'no reason given'}`
+          : stood.standDownRoute === 'workspace'
+            ? `[board] ASKED the runtime to stand down ${address(agent)} by workspace path — ` +
+              `this daemon held no session for it, so this is a request and not a completion: ` +
+              `the slot is released only when the runtime actually stops the agent, which the ` +
+              `next census tick shows. ${reason.detail}.`
+            : `[board] stood down ${address(agent)}: ${reason.detail}.`
       );
     }
 

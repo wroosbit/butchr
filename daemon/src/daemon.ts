@@ -2071,9 +2071,17 @@ const boardReconciler = new BoardReconciler({
         response = msg;
       }
     );
+    // `standDownRoute` is carried through rather than dropped (KAN-552): the
+    // router already puts it on `deactivate_response`, and without it the board
+    // cannot tell "stopped" from "asked by path" — which is how an honest
+    // runtime result was rendered as a completed stand-down for agents that
+    // were still running three cycles later.
     return {
       success: response?.success === true,
-      ...(response?.error ? { error: response.error } : {})
+      ...(response?.error ? { error: response.error } : {}),
+      ...(typeof response?.standDownRoute === 'string'
+        ? { standDownRoute: response.standDownRoute }
+        : {})
     };
   },
   mode: boardReconcileMode,

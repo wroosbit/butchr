@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 135 |
+| `yes` | 136 |
 | `partial` | 18 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **179** |
+| **total** | **180** |
 
-**153 of 179** run on every pull request.
+**154 of 180** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -74,6 +74,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-atlassian-proxy-read-surface` | yes | imports the built daemon modules and asserts against them in process, and reads `atlassian-proxy.ts` and `router.ts` off the checkout; no live daemon, no herdr, no credential, no peer, no terminal, no network. The half that needs real Atlassian is deliberately not here — it is `probe-atlassian-proxy-read-surface.mjs`, which is a `probe-` precisely because CI cannot run it. |
 | `verify-atlassian-proxy-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-atlassian-proxy-write-scope` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-board-asked-is-not-stopped` | yes | imports the built `board-reconcile.js` and drives it with in-process stubs. It points `HOME` at a temp dir and touches nothing else: no herdr, no CrabCast, no PTY, no network, no Jira, no wall clock. |
 | `verify-board-reconciler-guard` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-brief-location` | yes | §1 and §2 read `daemon/src/*.ts` as text; §3 and §4 import the built daemon modules and call them over values this script constructs. It needs no peer, no herdr, no PTY, no credential and no network, and it writes nothing. The `--static-only` flag below is for a human running this against a build that just failed, not for CI, which builds first. |
 | `verify-cap-claims-match-the-chain` | yes | imports the built daemon modules, reads source files off the checkout, and builds its red-drive fixtures in memory. No live daemon, no herdr, no credential, no peer, no terminal, no network. |
