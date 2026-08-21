@@ -89,12 +89,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 138 |
-| `partial` | 18 |
+| `partial` | 19 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **182** |
+| **total** | **183** |
 
-**156 of 182** run on every pull request.
+**157 of 183** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -258,6 +258,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
 | `verify-pty-init-rejects-unknown-session` | partial | the rejection path asserts in CI. The regression stage needs herdr to start a real agent and prints `SKIPPED: no herdr to start an agent with` instead. |
+| `verify-setup-shell-portability` | partial | §1–§3 read `docs/SETUP.md` as TEXT and assert in full on any runner: they parse its fenced `bash` blocks, refuse a bare `$?` outside a `bash -c` wrapper, and prove the detector fires on a synthetic hazard it was never told about. Node builtins only — no build, no daemon, no herdr, no credential, no network, no wall clock. §4 runs the hazard against a REAL `fish` to show that it executes the preceding command and then withholds the exit code; a runner without `fish` on PATH announces that section SKIPPED, and a skip is printed as a skip and never counted as a pass. It is not mocked: the whole value of §4 is that the parse error is fish's own. |
 | `verify-shared-clone-is-not-grafted` | partial | sections 1 and 2 build their own git repositories in a temp dir and need nothing but `git`, node and a built `dist`, so they assert in full on a runner. Section 3 classifies the real shared clone at ~/code/wroosbit/butchr, which no CI runner has; it skips loudly and does not fail, and it is the only section that observes a clone this script did not create. |
 | `verify-skip-is-not-a-pass` | partial | §1 and §2 need no peer, no herdr, no PTY, no credential and no network; they read this repository's own helper and spawn `node`. §3 needs `daemon/dist` and SKIPS without it, which makes THIS script exit 2 rather than 0 — the contract under test applied to itself, and deliberate. `run-ci-verify-set.mjs` builds before it runs, so §3 executes there; the `verify-script-sweep` job does not build, and that step passes `--allow-skipped` to say so out loud. |
 | `verify-supervisor-cost-exclusion` | partial | the exclusion arithmetic (1-4), the enablement predicate (5b), the unmarked-tree discriminator (5c) and the falsifier (6) all assert in CI. Section 5 reads the live fleet through /proc and is skipped on a runner, which has no agent trees. KAN-537 is why its unmarked arm no longer fails on a tree that holds no MCP server at all. |
