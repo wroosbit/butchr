@@ -323,6 +323,47 @@ export type BuildResult =
   | { error: string };
 
 /**
+ * What the DAEMON knows about itself, handed to {@link ProxyOperationBase.build}
+ * as a second argument (KAN-577).
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NOT AN ARGUMENT, AND WHY THAT IS THE WHOLE POINT
+ * ---------------------------------------------------------------------------
+ *
+ * `atlassian_create_issue` has to put an assignee on every ticket it files,
+ * and the only value that works is **the account this proxy authenticates
+ * as** — because the board reconciler's query is
+ * `assignee = currentUser() AND status IN ("In Progress", "In Review")` and
+ * `currentUser()` resolves to exactly that account. An agent cannot supply it:
+ * it does not know it, every agent on the machine would supply the same one,
+ * and a caller-supplied assignee is a caller-supplied grant — it would let one
+ * agent file work into somebody else's queue, which is the thing
+ * {@link WriteScope} exists to prevent.
+ *
+ * So it arrives here rather than in `args`. `args` is what the caller sent and
+ * is validated against a regex; this is what the daemon resolved and the caller
+ * cannot reach.
+ *
+ * **`selfAccountId` is nullable and the null branch is real.** It is resolved
+ * only for operations that declare {@link ProxyOperationBase.needsSelfAccountId},
+ * and only from `/rest/api/3/myself` — the endpoint `atlassian_get_user_info`
+ * already reads under the `read:jira-user` scope this table already declares, so
+ * nothing here widens the grant. A credential that cannot answer that question
+ * leaves this null, and an operation that needs it must **refuse**: see
+ * `atlassian_create_issue`'s `build`, and see KAN-577 for why refusing beats
+ * defaulting. A ticket filed with an empty assignee is invisible to the thing
+ * that starts work, silently and permanently, and it reads exactly like a ticket
+ * nobody has triaged.
+ */
+export interface ProxyBuildContext {
+  /**
+   * The Atlassian account id the daemon's own credential belongs to — or null
+   * when the operation did not ask for it, or asked and could not be told.
+   */
+  selfAccountId: string | null;
+}
+
+/**
  * One concrete request an operation has decided to make.
  *
  * Nearly every operation makes exactly one and returns the `{ path }` shape
@@ -398,8 +439,28 @@ interface ProxyOperationBase {
   description: string;
   /** JSON Schema for the tool's arguments, as MCP wants it. */
   inputSchema: Record<string, unknown>;
-  /** Build the concrete path and body, or refuse. Never throws. */
-  build(args: Record<string, any>): BuildResult;
+  /**
+   * Build the concrete path and body, or refuse. Never throws.
+   *
+   * The second argument is {@link ProxyBuildContext} — what the daemon knows
+   * and the caller cannot supply. Nearly every operation ignores it, and the
+   * signature is written so that they can: an implementation declared as
+   * `build(args)` still satisfies this type, so KAN-577 added a parameter to
+   * one operation without touching the other thirty-one.
+   */
+  build(args: Record<string, any>, context: ProxyBuildContext): BuildResult;
+  /**
+   * Whether this operation's {@link build} needs the daemon's own account id,
+   * and therefore whether `router.ts` resolves one before calling it.
+   *
+   * Declared here rather than inferred, for the reason every other field in
+   * this table is declared: the resolution costs a request the first time, and
+   * an operation that silently acquired the need would silently acquire the
+   * request. A `true` here is also what makes the refusal reachable — an
+   * operation that needs the id and does not say so gets `null` and must handle
+   * it, which is the branch a proof drives (KAN-577).
+   */
+  needsSelfAccountId?: true;
   /**
    * Reshape what Atlassian returned before the agent sees it, or combine the
    * answers of a fan-out into one (KAN-292).
@@ -761,6 +822,40 @@ function projectKey(args: Record<string, any>): { key: string } | { error: strin
     };
   }
   return { key: raw.toUpperCase() };
+}
+
+/**
+ * The `fields` object `atlassian_create_issue` sends, with `assignee` required.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A TYPE AND NOT AN ASSERTION (KAN-577)
+ * ---------------------------------------------------------------------------
+ *
+ * This object was a `Record<string, unknown>` and the defect was a field that
+ * was **not there**. That is the one shape a free-form record cannot notice:
+ * every key is optional, so omitting the one that makes a ticket staffable
+ * type-checks, reviews clean, reads as finished, and produces a ticket the
+ * board reconciler can never see. 104 of them accumulated before anybody asked
+ * why a filed ticket had not started.
+ *
+ * Declaring `assignee` required moves that from *a thing to remember* to *a
+ * thing the compiler refuses*. An assertion would have been equally correct and
+ * strictly weaker: a later author deleting the assignee line would delete the
+ * assertion with it and the build would still pass. Here the deletion is a
+ * compile error, which is the mutation `verify-create-issue-staffable.mjs`
+ * drives to prove this paragraph is not decoration.
+ *
+ * `description` and `parent` stay optional because they genuinely are — a
+ * ticket with no description is a ticket, and an epic has no parent.
+ */
+interface StaffableIssueFields {
+  project: { key: string };
+  issuetype: { name: string };
+  summary: string;
+  /** The daemon's own account. Never a caller's choice — see {@link ProxyBuildContext}. */
+  assignee: { accountId: string };
+  description?: unknown;
+  parent?: { key: string };
 }
 
 /**
@@ -2673,7 +2768,12 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     method: 'POST',
     pathShape: '/rest/api/3/issue',
     bodyShape:
-      '{"fields":{"project":{"key":…},"issuetype":{"name":…},"summary":…,"description":{ADF}?,"parent":{"key":…}?}}',
+      '{"fields":{"project":{"key":…},"issuetype":{"name":…},"summary":…,' +
+      '"assignee":{"accountId":…},"description":{ADF}?,"parent":{"key":…}?}}',
+    // KAN-577. `assignee` is not in `inputSchema` and never will be: it is the
+    // daemon's own account id, from `ProxyBuildContext`, and a caller cannot
+    // choose it. See `build` below for what happens when it cannot be resolved.
+    needsSelfAccountId: true,
     description:
       "File a new Jira issue, using the Butchr daemon's own credential. YOU MAY ONLY CREATE " +
       "IN YOUR OWN PROJECT — the project is taken from your own ticket's key and a call " +
@@ -2681,8 +2781,14 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       "ticket is invisible in its epic's org chart and names nobody as its approver. Read " +
       "your own ticket's parent with atlassian_get_issue and copy it; the parent is the EPIC " +
       'and never a Story, because Story and Task sit at the same hierarchy level and Jira ' +
-      'refuses that write. The description is Markdown converted to ADF by Butchr. A failure ' +
-      'is loud.',
+      'refuses that write. The description is Markdown converted to ADF by Butchr. ' +
+      'THE ASSIGNEE IS SET FOR YOU AND YOU CANNOT CHOOSE IT: every ticket filed here is ' +
+      "assigned to the daemon's own Atlassian account, because the board reconciler starts " +
+      'an agent only for a ticket that is `assignee = currentUser()` AND In Progress or In ' +
+      'Review — so a ticket filed with an empty assignee can never be staffed, reads exactly ' +
+      'like one nobody has triaged, and nothing surfaces the difference (KAN-577). If the ' +
+      'daemon cannot establish which account it is, this call is REFUSED and nothing is ' +
+      'filed, rather than filing a ticket that could never start. A failure is loud.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2700,7 +2806,16 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       },
       required: ['projectKey', 'issueType', 'summary']
     },
-    build(args) {
+    // `context` is DEFAULTED rather than required, and the default is the
+    // refusing one. Every caller in `daemon/scripts` is JavaScript and passes
+    // one argument, so a required parameter throws `Cannot read properties of
+    // undefined` at them — which is what it did, reddening two proxy proofs
+    // that had nothing to do with this change. That is KAN-493's finding
+    // exactly: a seam gains a parameter, and the `.mjs` mirrors no compiler
+    // checks fall off it. Defaulting to `{ selfAccountId: null }` makes a
+    // one-argument call take the refusal branch below — fails closed, and
+    // loudly, rather than throwing or filing an unassigned ticket.
+    build(args, context = { selfAccountId: null }) {
       const project = projectKey(args);
       if ('error' in project) return project;
       const type = typeName(args, 'issueType', 'a Jira issue type', 'Task');
@@ -2710,10 +2825,37 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       const description = markdownBody(args, 'description', 'the issue description', 'jira', false);
       if ('error' in description) return description;
 
-      const fields: Record<string, unknown> = {
+      // KAN-577, AND IT IS A REFUSAL RATHER THAN A DEFAULT ON PURPOSE.
+      //
+      // There is no assignee this could fall back to. `-1` means "the project's
+      // default assignee", which is a configuration this fleet does not control
+      // and which resolves to nobody on a project set to leave issues
+      // unassigned; omitting the field is precisely the defect. Both fallbacks
+      // file a ticket that looks filed and can never start, which is the state
+      // that cost KAN-568 a night — so the only honest branch is to send
+      // nothing and say why.
+      if (!context.selfAccountId) {
+        return {
+          error:
+            'Cannot file an issue: the daemon could not establish which Atlassian account it ' +
+            'authenticates as, and every ticket filed here has to be assigned to that account ' +
+            'to be staffable at all. Nothing was sent. `/rest/api/3/myself` is what was asked ' +
+            'and it did not answer — check the credential with atlassian_get_user_info, which ' +
+            'reads the same endpoint. Filing an unassigned ticket instead is what KAN-577 ' +
+            'exists to stop: it would look filed, and the board reconciler could never see it.'
+        };
+      }
+
+      // Typed, rather than `Record<string, unknown>`, so that `assignee` cannot
+      // be dropped by a later edit without the build failing. This is the type
+      // standing in for an assertion a later author could delete — the defect
+      // being guarded is a field's ABSENCE, which is exactly the shape a
+      // free-form record cannot notice (KAN-527's rule, KAN-577's instance).
+      const fields: StaffableIssueFields = {
         project: { key: project.key },
         issuetype: { name: type.value },
-        summary: summary.value
+        summary: summary.value,
+        assignee: { accountId: context.selfAccountId }
       };
       if (!('absent' in description)) fields.description = description.doc;
 
