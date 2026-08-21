@@ -1042,12 +1042,41 @@ happens if the refusal is bypassed.)
   forcing anything.
 - **Who:** the driver.
 
-### 5c.5 — Tell it what it lost
+### 5c.5 — Tell it what it lost, because it cannot tell on its own
+
+⚠ **A NEW AGENT MAY BE UNABLE TO ESTABLISH THAT IT IS NEW, AND MAY ARGUE THAT
+IT IS NOT.** This is not a hedge — it was measured on this ticket, on the
+supervisor that approved this section. `epic/KAN-39` was re-spawned at 2026-08-21T20:41Z
+and **could not detect it from the inside**: it published a correction claiming
+continuity, citing `sessionless: true` and a batch of held notifications as
+evidence that it was the same process. **Both facts pointed the other way** —
+the notifications had accumulated *because* the old process was gone. It was
+refuted from outside, on the daemon log, the pid and the pane id.
+
+So 5c.0's *"the agent that comes back is competent but new"* is a measurement
+rather than an argument, and it has a sharper form: **continuity is establishable
+only from outside.** An agent asked *"are you the same one?"* answers from a
+transcript that looks continuous to it, so its answer cannot discriminate.
+
+⚠ **THAT IS ONE INSTANCE, AND IT IS NOT A LAW — the distinction matters in a
+document about claims outrunning their evidence.** What it establishes is that
+an agent **can** fail to detect its own re-spawn and **can** argue confidently
+against it; it does not establish that this happens every time, and nobody
+should cite it as though it did. **The remedy is unchanged either way**, which
+is why the weaker claim is enough: checking from outside costs nothing on the
+occasions when the agent happens to be right, and is the only thing that works
+on the occasions when it is not. *(Raised by `epic/KAN-39` in approving this
+section — which, being the agent in the measurement, is a limit it was better
+placed than anyone to name.)*
 
 - **Action:** point the new agent at the comment written in 5c.2. It has no
-  memory of having written it.
+  memory of having written it, **and it may not believe that.**
 - **Check:** it can restate what it is holding without being fed it a second
-  time.
+  time. ⚠ **Do not check continuity by asking it.** The daemon log, the pid and
+  the pane id are the instruments; the agent's own account is not one, however
+  confidently it is given.
+- **Abort:** none — but if the agent disputes that it was re-spawned, that is
+  the expected behaviour recorded above and not evidence that the drain failed.
 - **Who:** the driver.
 
 ### What this runbook is not
