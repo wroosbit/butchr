@@ -900,6 +900,39 @@ function plainText(node: AdfNode): string {
 export class AdfConversionError extends Error {}
 
 /**
+ * A seam for PROVING the completeness guard, and for nothing else.
+ *
+ * KAN-335 measured that the guard below could be disabled with `if (false)`
+ * and `verify-adf-conversion.mjs` stayed green: the proof asserted the throw
+ * by reading this file as text, which establishes that the throw *exists*, not
+ * that it is *reachable*. To show it is reachable a proof needs a document the
+ * converter has genuinely lost content from — and the converter being correct,
+ * no input produces one. So the proof is handed a way to damage the document
+ * itself, between the moment it is final and the moment it is measured.
+ *
+ * **Why this cannot disarm the guard:** the seam is called *before* the
+ * completeness comparison, on the document that comparison then reads. It can
+ * remove content, and the guard will refuse; it can leave the document alone,
+ * and the guard will pass exactly as it did without a seam. There is no
+ * position in this function from which it could skip the comparison, and no
+ * value it could return that would soften one — it returns nothing. Compare a
+ * `strict?: boolean` option, which would be the opposite design: a flag the
+ * guard reads is a flag the guard can be turned off with, and
+ * `verify-adf-conversion.mjs` §5 refuses that shape by name.
+ *
+ * Production never passes one. `atlassian-proxy.ts` calls with two arguments,
+ * and the proof's own source-text check holds that to be so.
+ */
+export interface AdfCompletenessSeam {
+  /**
+   * Damage `doc` in place. Whatever this removes, the guard must then name in
+   * its refusal — that agreement, judged by the proof's own independent count,
+   * is what the seam exists to demonstrate.
+   */
+  mutilateBeforeCompletenessCheck(doc: AdfDoc): void;
+}
+
+/**
  * Markdown → an ADF document, with nothing dropped.
  *
  * Throws {@link AdfConversionError} when the input cannot be represented
@@ -919,7 +952,11 @@ export class AdfConversionError extends Error {}
  * caller is about to POST this document, and a partial write to a page is
  * indistinguishable afterwards from a page somebody edited.
  */
-export function markdownToAdf(markdown: string, target: AdfTarget = 'confluence'): AdfConversion {
+export function markdownToAdf(
+  markdown: string,
+  target: AdfTarget = 'confluence',
+  seam?: AdfCompletenessSeam
+): AdfConversion {
   const outer = pendingCoercions;
   const outerTarget = currentTarget;
   pendingCoercions = [];
@@ -935,6 +972,12 @@ export function markdownToAdf(markdown: string, target: AdfTarget = 'confluence'
     // Before the completeness check, never after: what that check measures has
     // to be the document that will actually be sent. See `normaliseMarks`.
     for (const block of doc.content) normaliseMarks(block, target);
+
+    // The test seam runs HERE — after the document is final and BEFORE it is
+    // measured — and nowhere else. See `AdfCompletenessSeam` for why that
+    // position is the whole of its safety: a seam applied above this line can
+    // only ever give the guard more to refuse.
+    seam?.mutilateBeforeCompletenessCheck(doc);
 
     const produced = new Set(tokensOf(doc.content.map(plainText).join(' ')));
     const missing = [...new Set(contentTokens(markdown))].filter((token) => !produced.has(token));
