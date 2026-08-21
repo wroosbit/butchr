@@ -182,6 +182,21 @@ works, but nothing goes looking: a backfill re-parented 74 tickets on
 2026-08-07 and four more were filed unparented within the day, by four different
 agents, because a backfill does not reach the next agent that files something.
 
+⚠ **File through `atlassian_create_issue` on the Butchr proxy where you have it,
+and reach for the official server's `createJiraIssue` only where you do not.**
+Two doors into the same site, and **only one of them assigns the ticket**: the
+proxy sets the assignee from the daemon's own account and refuses when it
+cannot, while the official tool's `assignee_account_id` is optional, undefaulted
+and unwarned. An unassigned ticket **can never be staffed** — `BOARD_JQL` is
+`assignee = currentUser() AND status IN ("In Progress", "In Review")` — and it
+reads exactly like one nobody has triaged. 104 had accumulated by 2026-08-21,
+and three more were born unassigned in the ninety minutes after the proxy was
+fixed, by an agent that knew the rule. **The rule is not the mechanism**:
+`boardControl.health.unstaffable` on `butchr_list_agents` reports every open
+unassigned ticket whichever door it came through (KAN-597). Where you must use
+the official server — a cross-ticket write is the case, since the proxy writes
+only to your own ticket — set `assignee_account_id` and read the ticket back.
+
 **The parent is the epic, never the story.** Jira refuses `parent: {{KEY}}` on a
 Task — both sit at `hierarchyLevel 0` — and an agent that tries it and stops
 there has produced an orphan. Seven were produced that way on 2026-08-07, three

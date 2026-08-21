@@ -397,6 +397,68 @@ means only "filed before 2026-08-21, or by a route that is not the proxy, or
 cleared by hand", and `boardControl.health.unstaffable` on `butchr_list_agents`
 is where that shows up.
 
+### 🚪 The guard is on one door of three, so the invariant lives at the board
+
+**KAN-597.** *"A KAN ticket is never unassigned"* cannot be enforced on the
+create path, because there is more than one create path and only one of them is
+this daemon's. The proxy is guarded. The **official Atlassian MCP server** —
+which `prompts/task.md` routes agents to by name — reaches the same site under
+its own credential and never traverses `atlassian-proxy.ts`; so does the web UI.
+A server-side default applies to the calls that reach the server applying it,
+and the coverage is inverted from where the traffic is.
+
+**Measured, and the measurement is what makes this a design position rather than
+a worry.** Three tickets were born unassigned in the ninety minutes *after* the
+guard deployed. KAN-590's changelog is the discriminator: created `14:45:45Z`,
+first `assignee` change at `14:51:33Z` with `from: null` — not assigned and then
+cleared, **born** unassigned. The daemon's audit log rules out the proxy for all
+three: parsed on `fields.assignee` rather than by text match, every proxy create
+after the deploy carries one and none of those three appears in the log at all,
+with three creates known to have gone through it as the positive control.
+
+**So the invariant is enforced where every door is visible: the board
+reconciler.** `BOARD_UNSTAFFABLE_JQL` — `assignee IS EMPTY AND statusCategory !=
+Done` — runs once a cycle, and its rows land on
+`boardControl.health.unstaffable`. It does not care which door a ticket came
+through, because it reads the board rather than the call.
+
+**It reports and it does not repair, and that is the decision rather than an
+unfinished half.** Three reasons, in order of weight:
+
+  1. **The assignee field is the cross-fleet partition.** `BOARD_JQL` is
+     `assignee = currentUser()`, and every machine authenticates as its own
+     account. A reconciler that assigned every unassigned ticket in its fleet's
+     projects to itself would be *claiming* work, not repairing it — and would
+     do so silently, once a minute, on somebody else's board.
+  2. **This loop holds no Jira write and gains none here.** A reporting fault
+     that could mutate the board is a strictly worse daemon than one that could
+     not, and the whole safety argument for the second and third queries is that
+     they are incapable of acting.
+  3. **The deficit was never repair capacity.** `epic/KAN-203` repaired KAN-590
+     by hand within six minutes of *seeing* it. What nothing did was show it.
+
+**And it is a third query rather than a widening of the second, which is the
+part that looks like duplication and is not.** `BOARD_DIAGNOSTIC_JQL` feeds
+`explainAbsence`, which reads a returned status as evidence about *intent* — so
+a To Do row reaching it is a stand-down. The rows of the third query are typed
+`UnstaffableIssue`, which carries no assignee fields and is therefore not
+assignable to the `JiraBoardIssue[]` that `explainAbsence`, `computeBoardDiff`,
+`deriveAccountId` and `findNearMisses` all take. **Passing them to any of the
+four is a compile error**, which is the property a comment saying *"do not do
+this"* does not have.
+
+**What this does not close, stated because a report that oversells itself is the
+defect this epic keeps re-finding.** The second door stays open and is
+load-bearing: the proxy permits a write only to the caller's own ticket, so the
+official server is the only cross-ticket write a supervisor has. A ticket filed
+through it is still born unassigned; what changed is that it is now **visible
+within one cycle** instead of being found by a supervisor reading changelogs by
+hand. `prompts/task.md` also stopped naming the unguarded tool bare — that lowers
+the rate and is not the mechanism, for the reason `task/KAN-552` established
+first-hand: they had read the staffing rule at activation, filed two unassigned
+tickets hours apart anyway, and wrote *"knowing the rule did not help, which is
+the argument for the default rather than for more care."*
+
 <!-- constant-pin: BOARD_JQL
      src: daemon/src/board-reconcile.ts
      sha256: 8d6e23d84e19

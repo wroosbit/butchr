@@ -89,12 +89,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 138 |
-| `partial` | 19 |
+| `partial` | 20 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **183** |
+| **total** | **184** |
 
-**157 of 183** run on every pull request.
+**158 of 184** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -262,6 +262,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-shared-clone-is-not-grafted` | partial | sections 1 and 2 build their own git repositories in a temp dir and need nothing but `git`, node and a built `dist`, so they assert in full on a runner. Section 3 classifies the real shared clone at ~/code/wroosbit/butchr, which no CI runner has; it skips loudly and does not fail, and it is the only section that observes a clone this script did not create. |
 | `verify-skip-is-not-a-pass` | partial | §1 and §2 need no peer, no herdr, no PTY, no credential and no network; they read this repository's own helper and spawn `node`. §3 needs `daemon/dist` and SKIPS without it, which makes THIS script exit 2 rather than 0 — the contract under test applied to itself, and deliberate. `run-ci-verify-set.mjs` builds before it runs, so §3 executes there; the `verify-script-sweep` job does not build, and that step passes `--allow-skipped` to say so out loud. |
 | `verify-supervisor-cost-exclusion` | partial | the exclusion arithmetic (1-4), the enablement predicate (5b), the unmarked-tree discriminator (5c) and the falsifier (6) all assert in CI. Section 5 reads the live fleet through /proc and is skipped on a runner, which has no agent trees. KAN-537 is why its unmarked arm no longer fails on a tree that holds no MCP server at all. |
+| `verify-unstaffable-covers-every-door` | partial | sections 1-5 run in process against the built modules and section 3 shells the repo's own tsc: no daemon, no credential, no network, so CI reaches all five. Section 6 files real Jira tickets through a door that is NOT this daemon's proxy, which is the only thing that can demonstrate the acceptance criterion, and it is SKIPPED (loudly) without `--live`. A run that skips it says so in its verdict rather than reporting a clean sweep. |
 
 ## `quarantined` — CI-runnable but currently RED — excluded loudly, with a reason and a ticket
 

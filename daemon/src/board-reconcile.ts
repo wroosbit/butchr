@@ -671,6 +671,170 @@ export function scopedDiagnosticJql(base: string, projects: Set<string>): string
 }
 
 /**
+ * The unstaffable query: every **open** ticket with nobody assigned, whatever
+ * its status.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A THIRD QUERY EXISTS, AND WHY WIDENING THE SECOND WAS NOT AN OPTION
+ * ---------------------------------------------------------------------------
+ *
+ * KAN-597. KAN-577 assigned every ticket the **proxy** files, and that guard is
+ * real and is verified against the deployed build. It sits on one of at least
+ * three doors into this Jira site: the proxy, the official Atlassian MCP server
+ * that `prompts/task.md` routes agents to by name, and the web UI. A default
+ * applied server-side only applies to calls that reach the server applying it,
+ * so the guard is on the door with the least traffic — measured, three tickets
+ * were born unassigned in the ninety minutes **after** it deployed, none of
+ * them through the proxy, and the daemon's own audit log is what establishes
+ * that they did not traverse it.
+ *
+ * **The reconciler is the one component that sees all three**, because it does
+ * not care how a row got onto the board. That is the whole argument for putting
+ * the report here rather than on a create path.
+ *
+ * ⚠ **And it is a separate query rather than a widening of
+ * {@link BOARD_DIAGNOSTIC_JQL}, which was the obvious move and is a
+ * stand-down.** The diagnostic feeds {@link explainAbsence}, and
+ * `explainAbsence` reads a status the diagnostic returned as *evidence about
+ * intent*: a running agent whose key comes back In Progress under somebody
+ * else's name is `assigned-elsewhere`, which {@link isIntent} calls a decision,
+ * which stops a pane. Hand that function a To Do row and it is being asked a
+ * question its branches were never written for. KAN-577 declined to make that
+ * trade for the sake of a report and was right to; this makes the report
+ * without making the trade, by never letting these rows reach it.
+ *
+ * **`statusCategory != Done` rather than a status list**, because the list is
+ * the thing that goes stale: a workflow that gains a status gains it here for
+ * free, and the one property that matters — the ticket is still open, so an
+ * empty assignee still costs somebody — is exactly what the category expresses.
+ *
+ * ⚠ **The known degradation, named because it is foreseeable and permanent
+ * rather than transient.** This population is bounded by *everything untriaged*
+ * rather than by *work in flight*, so on an account holding more than
+ * {@link BOARD_MAX_RESULTS} such tickets outside this fleet's projects, an
+ * unscoped run returns a partial page — which `searchBoard` correctly calls a
+ * failed read, and which surfaces as `answered: false` with Jira's own words,
+ * every cycle, rather than as a clean board. The scope is what prevents it:
+ * see {@link scopedDiagnosticJql}, which this query is asked through, and whose
+ * empty-set rule leaves it unscoped exactly when there is no fleet and nothing
+ * at stake.
+ */
+export const BOARD_UNSTAFFABLE_JQL = 'assignee IS EMPTY AND statusCategory != Done';
+
+/**
+ * A ticket from {@link BOARD_UNSTAFFABLE_JQL}, in a type nothing else accepts.
+ *
+ * ---------------------------------------------------------------------------
+ * THE `from` FIELD IS THE GUARD, AND IT IS A TYPE RATHER THAN AN ASSERTION
+ * ---------------------------------------------------------------------------
+ *
+ * The containment argument above — *these rows must never reach
+ * {@link explainAbsence}* — is the kind of thing a comment states and a later
+ * author deletes without ever seeing what it cost. So it is not stated, it is
+ * made **unrepresentable**: this shape carries `from` and carries neither
+ * `assigneeAccountId` nor `assigneeDisplayName`, so an `UnstaffableIssue[]` is
+ * not assignable to the `JiraBoardIssue[]` that {@link explainAbsence},
+ * {@link computeBoardDiff}, {@link deriveAccountId} and {@link findNearMisses}
+ * all take. Passing these rows to any of the four is a **compile error**, in
+ * four places, without anybody having written a check.
+ *
+ * The relation is one-way on purpose: a `JiraBoardIssue` is missing `from` and
+ * so cannot be smuggled in here either, which is what stops the diagnostic's
+ * own rows being reported as though they had come from the wider query.
+ *
+ * `assignee` is dropped rather than carried as a null because there is nothing
+ * for it to say: every row here failed `assignee IS EMPTY` server-side and
+ * {@link toUnstaffableIssues} re-checks the field, so a field that could only
+ * ever hold null is a field a reader has to think about for no return.
+ */
+export interface UnstaffableIssue {
+  /** Discriminates this shape from {@link JiraBoardIssue}. Never read. */
+  readonly from: 'unstaffable-query';
+  key: string;
+  /** `To Do`, `In Progress`, … or null when the row carried no status. */
+  statusName: string | null;
+  /** `Task`, `Story`, `Epic`, … as Jira spells it, or null when absent. */
+  issueTypeName: string | null;
+}
+
+/**
+ * The only route from a board row into {@link UnstaffableIssue}.
+ *
+ * Two filters, and the second is not redundant with the first:
+ *
+ *   - **The project scope**, for the reason {@link fleetProjects} gives at
+ *     length. Jira's own `SAM1` sample project holds four permanently
+ *     unassigned tickets, and a report that names them once a minute forever is
+ *     not a safety feature, it is what trains its reader to skim.
+ *   - **The assignee field itself**, re-read client-side. The JQL is a *claim*
+ *     about what was asked for; the field is what came back. An edit that
+ *     dropped `assignee IS EMPTY` from the query string would otherwise turn
+ *     this report into a list of every open ticket on the board — a change that
+ *     fails loudly here and would fail silently in the direction of noise.
+ *     It cannot mask the opposite defect, which is why
+ *     `verify-unstaffable-covers-every-door.mjs` asserts the query string too.
+ */
+export function toUnstaffableIssues(
+  rows: JiraBoardIssue[],
+  projects: Set<string>
+): UnstaffableIssue[] {
+  const tickets: UnstaffableIssue[] = [];
+  for (const row of rows) {
+    if (row.assigneeAccountId) continue;
+    const key = row.key.trim();
+    if (!key) continue;
+    if (!projects.has(projectOf(key))) continue;
+    tickets.push({
+      from: 'unstaffable-query',
+      key,
+      statusName: row.statusName,
+      issueTypeName: row.issueTypeName
+    });
+  }
+  return tickets;
+}
+
+/**
+ * What the last cycle could establish about the tickets nobody can staff.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS A UNION AND NOT AN ARRAY-OR-NULL (KAN-597)
+ * ---------------------------------------------------------------------------
+ *
+ * `unstaffable` was `BoardNearMiss[] | null`, where `[]` meant *the query ran
+ * and the board is clean* and `null` meant *nobody looked*. Both the field's own
+ * docblock and the `butchr_list_agents` description had to spend a sentence
+ * saying so, which is the tell: a contract that needs explaining is one a reader
+ * can get wrong, and the wrong reading — `null` as a clean board — is the
+ * comfortable one.
+ *
+ * Splitting on `answered` makes it **unconstructible**. There is no empty array
+ * on the failing branch to be mistaken for a clean board, and no `detail` on
+ * the answering branch to go stale. It is the same trade
+ * {@link BoardDiagnosticHealth} makes, deliberately spelled the same way so the
+ * two read as one idiom rather than as two conventions.
+ *
+ * `consecutiveFailures: 0` is a literal type on the answering branch, so a
+ * cycle cannot report tickets and a failure streak together.
+ */
+export type UnstaffableReport =
+  | {
+      answered: true;
+      consecutiveFailures: 0;
+      /** Empty is an ordinary answer and means the board is clean. */
+      tickets: UnstaffableIssue[];
+    }
+  | {
+      answered: false;
+      /** Cycles in a row, ending with the most recent, whose query did not answer. */
+      consecutiveFailures: number;
+      /** ISO timestamp of the first cycle in the current run of failures. */
+      failingSince: string;
+      /** `searchBoard`'s own words, so a partial page is distinguishable from a 503. */
+      detail: string;
+    };
+
+/**
  * How long between cycles.
  *
  * Sixty seconds, matching jira-poll.ts, and the acceptance criteria are written
@@ -976,6 +1140,16 @@ export interface BoardCycle {
    */
   nearMisses: BoardNearMiss[] | null;
   /**
+   * Every **open** ticket with an empty assignee, from
+   * {@link BOARD_UNSTAFFABLE_JQL} (KAN-597). Null when that query did not
+   * answer, on the same rule as {@link BoardCycle.nearMisses} directly above.
+   *
+   * A superset of `nearMisses`, and deliberately not a replacement for it: the
+   * two come from different queries, and a cycle where one answered and the
+   * other did not is a real state that a single field could not describe.
+   */
+  unstaffable: UnstaffableIssue[] | null;
+  /**
    * Why the partitioned query did not return each stand-down candidate — one
    * entry per agent in `diff.toStop`, in the same order, whether or not the
    * loop was allowed to act on it.
@@ -1065,8 +1239,8 @@ export interface BoardHealth {
   /** Empty is an ordinary answer and means the loop withheld nothing. */
   agents: WithheldStandDown[];
   /**
-   * Tickets that cannot be staffed — In Progress or In Review with an empty
-   * assignee, so {@link BOARD_JQL} can never return them (KAN-577).
+   * Tickets that cannot be staffed — **open, with an empty assignee**, so
+   * {@link BOARD_JQL} can never return them (KAN-577, widened by KAN-597).
    *
    * ---------------------------------------------------------------------------
    * WHY THIS IS PUBLISHED AND NOT MERELY LOGGED, WHICH IS THE ENTIRE ADDITION
@@ -1087,21 +1261,27 @@ export interface BoardHealth {
    * {@link BOARD_DIAGNOSTIC_JQL} for the containment argument that still holds
    * unaltered.
    *
-   * **Null and empty are different answers**, exactly as on
-   * {@link BoardCycle.nearMisses}: `[]` means the diagnostic ran and found none,
-   * `null` means nobody looked. A reader that collapses them reads a cycle whose
-   * query failed as a clean board.
+   * **A failed read and a clean board are different answers, and since KAN-597
+   * they are different shapes** rather than `null` and `[]` — see
+   * {@link UnstaffableReport} for why the distinction was moved into the type.
+   * A reader that collapsed them read a cycle whose query failed as a clean
+   * board, and `null` was the comfortable half of that mistake.
    *
-   * ⚠ **It is In Progress and In Review only, and it is not the whole
-   * population.** A ticket sitting in To Do with an empty assignee is equally
-   * unstaffable and is **not** here — the diagnostic query does not ask about To
-   * Do, and widening it would feed {@link explainAbsence} a status it reads as
-   * intent, which is a stand-down. KAN-577 deliberately did not make that trade
-   * for a report: it fixed the creation path so the population stops growing,
-   * and swept the backlog once. What this catches is the regression — a ticket
-   * that loses its assignee, or one filed by a route that is not the proxy.
+   * ⚠ **It covered In Progress and In Review only until KAN-597, and now covers
+   * every open status.** The old field was fed by {@link BOARD_DIAGNOSTIC_JQL},
+   * which does not ask about To Do — so a ticket born unassigned in To Do, which
+   * is what every one of the measured occurrences actually was, appeared
+   * nowhere. It is now fed by {@link BOARD_UNSTAFFABLE_JQL}, a query of its own,
+   * whose rows are {@link UnstaffableIssue} and therefore cannot reach
+   * {@link explainAbsence}. That is the containment KAN-577 declined to risk,
+   * bought with a third query instead of with a wider second one.
+   *
+   * **What it catches is what no create-path guard can:** a ticket filed through
+   * the official Atlassian MCP server, through the web UI, or through anything
+   * else that is not this daemon's proxy — and a ticket that simply lost its
+   * assignee later.
    */
-  unstaffable: BoardNearMiss[] | null;
+  unstaffable: UnstaffableReport;
   /** ISO timestamp of the cycle this describes. */
   at: string;
 }
@@ -1121,6 +1301,8 @@ export interface BoardReconcilerOptions {
   jql?: string;
   /** The reporting-only query of {@link BOARD_DIAGNOSTIC_JQL}. */
   diagnosticJql?: string;
+  /** The reporting-only query of {@link BOARD_UNSTAFFABLE_JQL} (KAN-597). */
+  unstaffableJql?: string;
   maxResults?: number;
   intervalMs?: number;
   startStaggerMs?: number;
@@ -1601,6 +1783,7 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 export class BoardReconciler {
   private readonly jql: string;
   private readonly diagnosticJql: string;
+  private readonly unstaffableJql: string;
   private readonly maxResults: number;
   private readonly intervalMs: number;
   private readonly startStaggerMs: number;
@@ -1622,6 +1805,21 @@ export class BoardReconciler {
   private diagnosticFailures = 0;
   /** When the current run of failures began. Null exactly when the count is 0. */
   private diagnosticFailingSince: string | null = null;
+  /**
+   * The same three fields for {@link BOARD_UNSTAFFABLE_JQL} (KAN-597), kept
+   * apart from the diagnostic's rather than shared with them.
+   *
+   * They are two queries with two failure modes and they fail independently:
+   * the diagnostic asks about work in flight and the unstaffable query asks
+   * about everything open, so the second can be returning partial pages
+   * permanently — see {@link BOARD_UNSTAFFABLE_JQL}'s last paragraph — while the
+   * first answers every cycle. One shared streak would report that as
+   * stand-downs being broken, which would be a false alarm about the one thing
+   * on this loop nobody can afford a false alarm about.
+   */
+  private unstaffableFailures = 0;
+  /** When the current run of unstaffable-query failures began. Null exactly when the count is 0. */
+  private unstaffableFailingSince: string | null = null;
 
   /**
    * Per-agent count of consecutive cycles this loop has ASKED for a stand-down
@@ -1651,6 +1849,7 @@ export class BoardReconciler {
   constructor(private readonly opts: BoardReconcilerOptions) {
     this.jql = opts.jql ?? BOARD_JQL;
     this.diagnosticJql = opts.diagnosticJql ?? BOARD_DIAGNOSTIC_JQL;
+    this.unstaffableJql = opts.unstaffableJql ?? BOARD_UNSTAFFABLE_JQL;
     this.maxResults = opts.maxResults ?? BOARD_MAX_RESULTS;
     this.intervalMs = opts.intervalMs ?? BOARD_CYCLE_MS;
     this.startStaggerMs = opts.startStaggerMs ?? START_STAGGER_MS;
@@ -1736,6 +1935,7 @@ export class BoardReconciler {
       stopped: [],
       converged: false,
       nearMisses: null,
+      unstaffable: null,
       absences: [],
       spared: []
     };
@@ -1855,6 +2055,41 @@ export class BoardReconciler {
     }
     this.noteDiagnostic(diagnosticFailure);
 
+    // ---------------------------------------------------- the unstaffable read --
+    //
+    // KAN-597. Reporting only, exactly as the diagnostic above is, and wrapped
+    // for the same reason: an exception here would be caught by `tick()` one
+    // level up and end the cycle having converged nothing, which is a reporting
+    // fault acquiring the power to stand the fleet still.
+    //
+    // ⚠ IT IS A SEPARATE BLOCK RATHER THAN A SECOND READ INSIDE THE ONE ABOVE,
+    // AND THAT IS THE CONTAINMENT ARGUMENT MADE STRUCTURAL. Nothing computed
+    // here is in scope where `explainAbsence` is called; the rows never share a
+    // variable with `diagnostic`, and their type could not be passed to it if
+    // they did. A diagnostic that threw leaves this report intact and vice
+    // versa — two independent reports, neither able to take the other down, and
+    // neither able to reach the diff.
+    let unstaffableFailure: string | null = null;
+    try {
+      // Recomputed rather than carried across from the block above: the two
+      // blocks are independent by design, and a value threaded between them
+      // would be exactly the shared fate this separation exists to avoid.
+      const projects = fleetProjects(outcome.issues, running);
+      const read = await this.readUnstaffable(projects);
+      if ('issues' in read) cycle.unstaffable = toUnstaffableIssues(read.issues, projects);
+      else unstaffableFailure = read.failure;
+    } catch (e: any) {
+      cycle.unstaffable = null;
+      unstaffableFailure = `the unstaffable report threw: ${e?.message ?? String(e)}`;
+      this.opts.log(
+        `[board] the unstaffable report failed: ${e?.message ?? String(e)}. Convergence is ` +
+        `unaffected and stand-downs are unaffected — this query feeds neither — but no ticket ` +
+        `can be reported as unstaffable this cycle, and boardControl.health.unstaffable will ` +
+        `say answered: false rather than showing a clean board.`
+      );
+    }
+    this.noteUnstaffable(unstaffableFailure);
+
     // ------------------------------------------------------ absence or intent --
     //
     // KAN-342. `diff.toStop` is every running agent whose ADDRESS the
@@ -1880,11 +2115,12 @@ export class BoardReconciler {
         key: renderedKey(agent.key),
         condition: reason.condition
       })),
-      // KAN-577. The same rows the near-miss log line is written from, carried
-      // to a surface a supervisor reads. `cycle.nearMisses` is already null when
-      // the diagnostic did not answer, and that null is passed through rather
-      // than flattened — see {@link BoardHealth.unstaffable}.
-      unstaffable: cycle.nearMisses,
+      // KAN-577, widened by KAN-597: the whole open population rather than the
+      // near-miss subset, from a query of its own. `cycle.unstaffable` is
+      // already null when that query did not answer, and `unstaffableReport`
+      // turns the null into the failing branch rather than into an empty list —
+      // see {@link UnstaffableReport} for why the two are different shapes.
+      unstaffable: this.unstaffableReport(cycle.unstaffable),
       at: new Date().toISOString()
     };
 
@@ -2036,6 +2272,88 @@ export class BoardReconciler {
       );
       return { failure: detail };
     }
+  }
+
+  /**
+   * The unstaffable query, whose failure is not an event either (KAN-597).
+   *
+   * Same asymmetry as {@link BoardReconciler.readDiagnostic}, and one step
+   * further from the diff than that one is: the diagnostic at least decides what
+   * a stand-down sentence says, while this decides only what a supervision sweep
+   * is shown. A read that did not answer therefore costs a report and nothing
+   * else — no refusal, no branch, no effect on convergence.
+   *
+   * Asked through {@link scopedDiagnosticJql}, whose parameter is a base rather
+   * than the diagnostic specifically. One scoping rule for both reporting
+   * queries, so the server-side filter and {@link toUnstaffableIssues}'s
+   * client-side one are provably the same set rather than two rules kept in
+   * step by hand.
+   */
+  private async readUnstaffable(
+    projects: Set<string>
+  ): Promise<{ issues: JiraBoardIssue[] } | { failure: string }> {
+    const jql = scopedDiagnosticJql(this.unstaffableJql, projects);
+    try {
+      const outcome = await this.opts.jira.searchBoard(jql, this.maxResults);
+      if (outcome.ok) return { issues: outcome.issues };
+      this.opts.log(
+        `[board] the unstaffable query could not be read: ${outcome.error}. Convergence and ` +
+        `stand-downs are unaffected — this query starts, stops and explains nothing — but no ` +
+        `ticket can be reported as unstaffable this cycle. A partial page counts as a failed ` +
+        `read here, and on an account holding more than ${this.maxResults} unassigned open ` +
+        `tickets outside this fleet's projects it will keep counting as one; the project scope ` +
+        `is what fixes that. Query: ${jql}`
+      );
+      return { failure: outcome.error };
+    } catch (e: any) {
+      const detail = e?.message ?? String(e);
+      this.opts.log(
+        `[board] the unstaffable query threw: ${detail}. Convergence and stand-downs are ` +
+        `unaffected; boardControl.health.unstaffable will report answered: false this cycle.`
+      );
+      return { failure: detail };
+    }
+  }
+
+  /** The last unstaffable-query failure's own words; only read while a streak is live. */
+  private lastUnstaffableDetail = '';
+
+  /**
+   * Advance the unstaffable streak by one cycle's outcome. Mirrors
+   * {@link BoardReconciler.noteDiagnostic}, over its own three fields.
+   */
+  private noteUnstaffable(detail: string | null): void {
+    if (detail === null) {
+      this.unstaffableFailures = 0;
+      this.unstaffableFailingSince = null;
+      return;
+    }
+    if (this.unstaffableFailures === 0) this.unstaffableFailingSince = new Date().toISOString();
+    this.unstaffableFailures++;
+    this.lastUnstaffableDetail = detail;
+  }
+
+  /**
+   * Turn this cycle's rows into the published report.
+   *
+   * ⚠ **The branch is taken on the rows themselves, never on the counter**, and
+   * that is what makes `answered: true` mean *"I am holding the evidence"*
+   * rather than *"a counter I also maintain happens to read zero"*. The two
+   * cannot disagree — {@link BoardReconciler.noteUnstaffable} has already run
+   * for this cycle, so a null here implies a non-zero count — but only one of
+   * them is the thing being asserted, and driving off the other would leave a
+   * refactor free to publish a clean board out of a cycle that read nothing.
+   */
+  private unstaffableReport(tickets: UnstaffableIssue[] | null): UnstaffableReport {
+    if (tickets) return { answered: true, consecutiveFailures: 0, tickets };
+    return {
+      answered: false,
+      consecutiveFailures: this.unstaffableFailures,
+      // Non-null whenever the count is non-zero, by `noteUnstaffable`'s own
+      // arithmetic — the two move together and nothing else writes either.
+      failingSince: this.unstaffableFailingSince ?? new Date().toISOString(),
+      detail: this.lastUnstaffableDetail
+    };
   }
 
   /**
@@ -2201,6 +2519,33 @@ export class BoardReconciler {
         `if an agent for it is running it will be stood down. Assign it to this machine's Jira ` +
         `account to staff it. (KAN-256; this line is a report, not an action — nothing about ` +
         `this ticket has been started or stopped.)`
+      );
+    }
+
+    // KAN-597. The wider population, minus the rows the near-miss lines above
+    // have already named. Subtracted rather than printed in full **because a
+    // report that says the same thing twice a minute is the thing that teaches
+    // its reader to skim** — the same argument `fleetProjects` makes about
+    // SAM1, one query over. The near-miss line stays the loud one for a ticket
+    // whose agent is affected right now; this line is for the rest, which is
+    // where every measured occurrence actually sat.
+    const alreadyNamed = new Set((cycle.nearMisses ?? []).map((miss) => miss.key));
+    const alsoUnstaffable = (cycle.unstaffable ?? []).filter(
+      (ticket) => !alreadyNamed.has(ticket.key)
+    );
+    if (alsoUnstaffable.length) {
+      this.opts.log(
+        `[board] ${alsoUnstaffable.length} further open ticket(s) have NO ASSIGNEE and can ` +
+        `therefore never be staffed by this machine, in statuses the near-miss lines above do ` +
+        `not cover: ` +
+        alsoUnstaffable
+          .map((t) => `${t.key} (${t.statusName ?? 'status unreported'})`)
+          .join(', ') +
+        `. This is what a create path that is not this daemon's proxy leaves behind — the ` +
+        `official Atlassian MCP server and the web UI both reach this site without passing ` +
+        `the assignee guard (KAN-597). Assign each to this machine's Jira account. Reported ` +
+        `on butchr_list_agents as boardControl.health.unstaffable; this line is a report, and ` +
+        `nothing has been started, stopped or written to Jira.`
       );
     }
 
