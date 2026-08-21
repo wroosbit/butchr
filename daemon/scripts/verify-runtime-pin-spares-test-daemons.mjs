@@ -126,13 +126,27 @@ let checks = 0;
 /**
  * Every failed check's name, kept so the VERDICT can name them.
  *
- * ⚠ **`run-ci-verify-set.mjs` prints only the last 25 lines of a failing
- * script** (`out.split('\n').slice(-25)`), and this script's output is roughly
- * twice that. So a §1 or §2 failure scrolled off the top and CI reported the
- * name of no assertion at all — the run said `1 FAILURE(S)` and which one was
- * unrecoverable from the log. That is not the harness being unhelpful: a proof
- * whose failure cannot reach its reader has not reported it, and the fix
- * belongs here, in the last thing printed.
+ * This began as a workaround, and KAN-576 has since removed the thing it worked
+ * around — so read it as belt to the harness's braces rather than as the only
+ * thing standing between a §2 failure and a silent CI red.
+ *
+ * WHAT IT WORKED AROUND: `run-ci-verify-set.mjs` used to print only the last 25
+ * lines of a failing script (`out.split('\n').slice(-25)`), and this script's
+ * output is roughly twice that. A §1 or §2 failure therefore scrolled off the
+ * top and CI reported the name of no assertion at all — the run said
+ * `1 FAILURE(S)` and which one was unrecoverable from the log (run
+ * 32456060343). Naming the failures HERE, in the last thing printed, put them
+ * inside the window.
+ *
+ * WHY IT STAYS ANYWAY. The repair above was a convention no other script
+ * followed and nothing enforced, which is why KAN-576 was filed rather than the
+ * fix being left here: the harness now lifts failure-marked lines out of the
+ * region it drops and says how many lines it dropped, for every script in the
+ * set including the ones nobody has written yet. That covers this script
+ * already. The verdict block is kept because a proof that names its own
+ * failures in its own last line is better than one relying on a reducer's
+ * vocabulary to guess which lines mattered — and because deleting it would
+ * leave the harness's rescue as the only cover, which is a heuristic.
  */
 const failed = [];
 
