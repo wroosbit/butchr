@@ -3093,11 +3093,26 @@ export class MessageRouter {
               herdrStatus: verdict.record.herdrStatus,
               workDir: verdict.record.workDir,
               standDownRecorded: true,
+              // ⚠ "the runtime census" WAS TOO BROAD A NAME FOR WHAT THIS READ
+              // (KAN-552). This joins on `census.agents`, which under CrabCast
+              // is built from `[...rows, ...foreign]` with no state filter — so
+              // it answers *is anything running at this address*. The refusal
+              // that may arrive in the same response searched a deliberately
+              // NARROWER set (`rows` only, `state === 'running'`) because it is
+              // asking *may I stand this down*, and standing down a foreign
+              // pane reaches a terminal somebody else owns.
+              //
+              // Both sentences were true and they read as a contradiction, with
+              // opposite remedies, on `task/KAN-497`. Neither claim is weakened
+              // here; each now says which rows it counted.
               detail:
                 'The stand-down was RECORDED but the agent was NOT stopped: this daemon holds ' +
-                'no session for it, and the runtime census still reports it running. Under ' +
-                'CrabCast a slot stays charged until the agent actually stops, so this ' +
-                'workspace is still counted against the cap.',
+                'no session for it, and a row for it is present in the runtime census — the ' +
+                'read that counts every pane at this address, including panes this runtime does ' +
+                'not own and rows that are not `state: running`. Under CrabCast a slot stays ' +
+                'charged until the agent actually stops, so this workspace is still counted ' +
+                'against the cap. If an `error` beside this says no running row was found, both ' +
+                'are true: that search was narrower, and it says so.',
               stopItWith: verdict.record.workDir
                 ? `crabcast deactivate ${verdict.record.workDir}`
                 : 'crabcast deactivate <the agent\'s workspace path>'
