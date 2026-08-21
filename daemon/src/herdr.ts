@@ -602,6 +602,153 @@ export type ButchrAgentName = string & {
 };
 
 /**
+ * **herdr's own constraint on an agent name, stated once (KAN-541).**
+ *
+ * This is not Butchr's rule and Butchr cannot relax it: it is what herdr's
+ * `agent start` accepts, and a name outside it is refused by herdr's argument
+ * parsing before any pane exists. Measured on **0.7.5**, which reports it as:
+ *
+ * ```
+ * agent name must start with a lowercase letter and contain only lowercase
+ * letters, digits, '-' or '_' (1-32 characters)
+ * ```
+ *
+ * **The number lives here and nowhere else.** Every message that quotes it —
+ * {@link agentNameProblem}'s, the board reconciler's `unresolved` reason —
+ * interpolates these two constants rather than restating them, so a herdr that
+ * moves the cap is a one-line change here and not a hunt through prose. That is
+ * KAN-541 AC3, and `verify-agent-name-fits-herdr.mjs` §4 is what holds it: it
+ * refuses a second literal `32` written into a name-length check anywhere in
+ * `daemon/src`.
+ *
+ * ⚠ **This is the rule the binary on this machine applies TODAY, and that is a
+ * reading with a date on it rather than a fact about a release.** `herdr
+ * --version` reported **0.8.2** on 2026-08-20, and that binary carries both
+ * halves — a doc string reading ``Names must match `[a-z][a-z0-9_-]{0,31}` ``
+ * and the `invalid_agent_name` error above. Do not re-derive the number from a
+ * version: `verify-agent-name-fits-herdr.mjs --against-herdr` asks the running
+ * binary, in both directions, and prints the version beside its verdict.
+ *
+ * ⚠ **Whether 0.6.4 had the cap is UNESTABLISHED, and an earlier draft of this
+ * comment claimed otherwise.** It said *"0.6.4 had no such rule"* on two legs,
+ * and both are withdrawn rather than softened: the `strings` sweep cannot be
+ * re-run because that binary is gone, and the other leg read four
+ * 33-character `crabcast-*` strings out of `herdr agent list` — which sit in
+ * each row's **`agent`** field, the agent KIND, not the validated **`name`**
+ * (a Butchr-started pane reads `"agent":"claude"` beside
+ * `"name":"butchr-epic-kan-39"`). It was a well-formed answer to a question
+ * nobody had asked. Nothing here depends on settling it.
+ */
+export const HERDR_AGENT_NAME_MAX_LENGTH = 32;
+
+/**
+ * The character class herdr accepts, the second half of the same message.
+ *
+ * **This is the nearer miss of the two and it is worth saying why.** Reaching
+ * the length cap needs a Jira project key of 17-20 characters; reaching this
+ * needs one character herdr dislikes anywhere in the key. `agentNameFor`
+ * lower-cases the key, so the *case* half is satisfied by construction — but
+ * nothing lower-cases a `type`, and nothing anywhere strips a space, a dot or a
+ * slash out of a key. A `confluence` workspace is keyed by a page id and a
+ * `shell` one by whatever it was given, so "keys are Jira-shaped" is not a
+ * property this repository holds.
+ */
+export const HERDR_AGENT_NAME_PATTERN = /^[a-z][a-z0-9_-]*$/;
+
+/**
+ * **How a Butchr agent name is spelled — the one place it is spelled.**
+ *
+ * Extracted because KAN-541 added a second and a third reader of the same
+ * template, and `butchr-${type}-${key.toLowerCase()}` written out a second time
+ * is a second derivation of the name: precisely the defect KAN-346 and KAN-397
+ * each fixed once, one function apart, and the reason `agentNameFor` is
+ * described everywhere in this file as *the one producer*. Three callers now
+ * need the string — the producer, the caller that wants to ask rather than be
+ * thrown at, and the error that quotes it — and none of them writes it out.
+ *
+ * Deliberately **not exported**: it answers "what would this be called", which
+ * is a question only the three below are entitled to ask. Everyone else wants
+ * {@link agentNameFor}, or {@link assertAgentNameFitsHerdr} when the name is
+ * about to become a real agent.
+ *
+ * ⚠ **The one `as ButchrAgentName` in this file lives here, and that is where
+ * it belongs** (KAN-406, and `verify-agent-name-brands-have-one-home.mjs`
+ * enforces it). The brand means *a transform ran*; this is the transform. It
+ * used to sit in `agentNameFor`, one caller up, which was fine while that was
+ * the only producer — KAN-541 added two more, and a cast per producer would
+ * have been three assertions of the same conversion instead of one.
+ */
+function spellAgentName(type: string, key: string): ButchrAgentName {
+  return `butchr-${type}-${key.toLowerCase()}` as ButchrAgentName;
+}
+
+/**
+ * Why a candidate name is unusable, or `null` when it is fine.
+ *
+ * Separate from {@link agentNameFor} because the two questions are different:
+ * this one is *askable*, and the producer is not. A caller that is sweeping a
+ * fleet — the board reconciler is the one that matters — needs to route a bad
+ * row into its own report and carry on, and a caller that must not continue
+ * wants the throw. Both read the same rule from here.
+ */
+export function agentNameProblem(candidate: string): string | null {
+  if (candidate.length > HERDR_AGENT_NAME_MAX_LENGTH) {
+    return (
+      `is ${candidate.length} characters and herdr accepts at most ` +
+      `${HERDR_AGENT_NAME_MAX_LENGTH}`
+    );
+  }
+  if (!candidate.length) return 'is empty and herdr requires at least one character';
+  if (!HERDR_AGENT_NAME_PATTERN.test(candidate)) {
+    return (
+      'must start with a lowercase letter and contain only lowercase letters, ' +
+      "digits, '-' or '_'"
+    );
+  }
+  return null;
+}
+
+/** A name `agentNameFor` refused to mint, because herdr would have refused it. */
+export class InvalidAgentNameError extends Error {
+  constructor(
+    readonly agentName: string,
+    readonly type: string,
+    readonly key: string,
+    readonly problem: string
+  ) {
+    // The budget is spelled out because the caller's lever is the KEY, and the
+    // arithmetic between "the name is 34 characters" and "your key has three
+    // characters too many" is exactly the step a reader at 3am gets wrong.
+    //
+    // Measured off the spelling rather than off a literal prefix, so a change
+    // to how a name is built moves this number with it. A hand-written
+    // `butchr-${type}-` here would be the drift this ticket's AC3 is about,
+    // one line below the constant it is about.
+    //
+    // ⚠ AND IT IS SAID ONLY WHEN IT IS THE ANSWER. Both halves of herdr's rule
+    // arrive here, and a character-class failure has no budget to report: a key
+    // with a space in it is not one character too long, and telling its author
+    // how many characters they have left sends them to shorten a key that was
+    // never the wrong length. The comparison reads the same constant the rule
+    // does, so there is no second cap here — see AC3.
+    const overLong = agentName.length > HERDR_AGENT_NAME_MAX_LENGTH;
+    const budget = HERDR_AGENT_NAME_MAX_LENGTH - spellAgentName(type, '').length;
+    super(
+      `Butchr cannot name an agent for ${type}/${key}: the name it builds, ` +
+      `'${agentName}', ${problem}. ` +
+      (overLong
+        ? `Butchr spells an agent name butchr-<type>-<key>, so type '${type}' ` +
+          `leaves ${budget} characters for the key and '${key}' is ` +
+          `${key.length}. herdr would refuse this name at activation; refusing ` +
+          `it here names the limit instead.`
+        : `herdr would refuse this name at activation; refusing it here names ` +
+          `the rule instead.`)
+    );
+    this.name = 'InvalidAgentNameError';
+  }
+}
+
+/**
  * The herdr agent a Butchr session drives. Sessions are keyed by workspace.
  *
  * **The signature is unchanged at runtime and must stay that way**: seventeen
@@ -609,9 +756,132 @@ export type ButchrAgentName = string & {
  * `tsc` never sees them (KAN-406). Branding the return type is invisible to
  * them — brands erase — but a rename or a re-signature would break all
  * seventeen with nothing to report it.
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠ IT SPELLS, IT DOES NOT VALIDATE — AND KAN-541 TRIED IT THE OTHER WAY ROUND
+ * ---------------------------------------------------------------------------
+ *
+ * KAN-541 asks for a name herdr would refuse to be caught *"before herdr is
+ * called"*, and the obvious reading of that is to make this function throw. It
+ * was written that way, and **CI refuted it**: five existing proofs went red,
+ * on a branch whose production code was otherwise correct. The failures are
+ * worth naming, because each is a different way the reading is wrong:
+ *
+ *   * `reset_by_key` on `KAN-9005-NO-SUCH-WORKSPACE` stopped broadcasting
+ *     `agent_reset_event`. Nothing there was going to ask herdr anything — the
+ *     name is computed to *say what was reset* — and the throw turned a working
+ *     recovery operation into an error. ⚠ **That is the sharp end of it: an
+ *     over-long key would have become UNRESETTABLE**, so the refusal would have
+ *     blocked the very operation you would reach for to clear it.
+ *   * `CrabCastRuntime`'s spawn-failure handler logs `spawn failed for
+ *     ${agentNameFor(...)}`. The spawn had *already* failed; the throw was in
+ *     the error path, replacing a diagnostic with a second error.
+ *   * `describeAgent` spells `butchr-?-<key>` for an address whose type it
+ *     could not resolve, and `?` is outside herdr's class — so the one caller
+ *     that exists for an unresolvable type was the one the throw hit.
+ *
+ * The common shape: **this function has ~35 callers and almost all of them are
+ * lookup, comparison or display.** They ask *"what would this be called"*, and
+ * that question has an answer for a name herdr would not accept. So the answer
+ * is given, and the refusal lives where the name is about to become a real
+ * agent — {@link assertAgentNameFitsHerdr} at the herdr boundary, and
+ * `computeBoardDiff` where the fleet decides what to start.
+ *
+ * **`before herdr is called` is still satisfied, and more precisely than the
+ * throw satisfied it**: the check sits inside `startAgentInOwnTab`, which is
+ * the function that builds the `agent start` argv, so nothing can reach herdr
+ * around it. `verify-agent-name-fits-herdr.mjs` §5 is what holds that — it
+ * refuses an `'agent', 'start'` argv in a function that has not asked.
  */
 export function agentNameFor(type: string, key: string): ButchrAgentName {
-  return `butchr-${type}-${key.toLowerCase()}` as ButchrAgentName;
+  return spellAgentName(type, key);
+}
+
+/**
+ * The same name, **refused** rather than returned when herdr would not take it.
+ *
+ * This is the half of KAN-541 that stops an activation, and it is deliberately
+ * a *different function* from {@link agentNameFor} rather than a flag on it:
+ * the two answer different questions, and the ticket's own framing collapsed
+ * them. What would this be called, and give me one I can hand to herdr.
+ *
+ * ---------------------------------------------------------------------------
+ * IT REFUSES RATHER THAN TRUNCATES, AND THAT IS A DECISION WITH A REASON
+ * ---------------------------------------------------------------------------
+ *
+ * KAN-541 left the choice open: refuse, and the ticket is unstaffable; or
+ * truncate with a stable hash, and *"it keeps working at the cost of a name a
+ * human cannot read back to a ticket"*. **The second half of that sentence is
+ * the part that turned out to be wrong — truncating does not keep it working**,
+ * and the evidence is in this file rather than in anybody's taste:
+ *
+ *   * {@link typeFromAgentName} recovers the type by `endsWith('-' + key)`. A
+ *     hashed tail does not end with the key, so it returns `undefined` and the
+ *     herdr-list fallback stops being able to name what it found.
+ *   * `resolveAgentName` (below) already **refuses** a name *"not spelled the
+ *     way agentNameFor spells one"* rather than guessing at it. A truncating
+ *     producer would be manufacturing exactly the input that refusal exists to
+ *     reject.
+ *   * `butchrNameForCensusRow` in `crabcast-runtime.ts` derives the Butchr name
+ *     from a census row's **path**. That derivation stays self-consistent under
+ *     truncation, which is the trap: the join keeps working while the name
+ *     stops carrying the key, so the failure surfaces somewhere else entirely.
+ *
+ * So truncation trades one loud failure at activation for several quiet ones
+ * spread across the census, the poller and the registry — the shape this epic
+ * keeps paying for. Refusing is the honest outcome: the ticket cannot be
+ * staffed, and it says so, once, at the one place that knows why.
+ *
+ * **Refusing does not mean going quiet.** The board reconciler catches this and
+ * reports the key as `unresolved` every cycle, which both starts nothing for it
+ * *and* spares anything already running on that key — so an over-long key is
+ * visible in the board log rather than being a ticket that mysteriously never
+ * gets picked up.
+ *
+ * ⚠ **This throws, and the two callers entitled to be thrown at are the two
+ * that create agents.** `startAgentInOwnTab` is one, and it is where the throw
+ * belongs: it is the function that builds the `agent start` argv, the pane has
+ * not been created yet when it runs, and `spawnSession` reports the refusal on
+ * the `spawnError` channel every other spawn failure already uses. The other is
+ * the fleet-wide loop, which must NOT throw — it uses {@link tryAgentNameFor}
+ * and reports, for the reason written at that call site.
+ */
+export function assertAgentNameFitsHerdr(type: string, key: string): ButchrAgentName {
+  const attempt = tryAgentNameFor(type, key);
+  if (attempt.problem !== undefined) {
+    throw new InvalidAgentNameError(attempt.candidate, type, key, attempt.problem);
+  }
+  return attempt.agentName;
+}
+
+/**
+ * What an address would be called, **or** why it cannot be called anything.
+ *
+ * ⚠ **A discriminated union rather than `ButchrAgentName | null`, and the
+ * difference is the whole point.** A nullable return is checkable and
+ * skippable: `agentNameFor(type, key)!` compiles, and so does a caller that
+ * reads the name and never asks about the failure. This shape has no
+ * `agentName` to read until the caller has narrowed on `problem`, so *forgetting
+ * to handle the refusal is a compile error* rather than a review catch. That is
+ * this repository's standing preference — the type over the assertion — applied
+ * to the one call site where getting it wrong is expensive: the board
+ * reconciler sweeps every row the board returned, and an unhandled refusal
+ * there stops the whole cycle rather than one ticket.
+ *
+ * `candidate` is carried on the failing arm because the caller wants to *quote*
+ * the name it could not have — a message that says only "too long" leaves the
+ * reader to rebuild the string themselves, and rebuilding it is how a second
+ * spelling gets written.
+ */
+export type AgentNameAttempt =
+  | { readonly agentName: ButchrAgentName; readonly problem?: undefined }
+  | { readonly agentName?: undefined; readonly problem: string; readonly candidate: string };
+
+export function tryAgentNameFor(type: string, key: string): AgentNameAttempt {
+  const candidate = spellAgentName(type, key);
+  const problem = agentNameProblem(candidate);
+  if (problem !== null) return { problem, candidate };
+  return { agentName: candidate };
 }
 
 /**
@@ -1391,11 +1661,31 @@ export class HerdrBridge implements AgentRuntime {
    * `spawnError` channel everything else does.
    */
   private startAgentInOwnTab(
-    agentName: string,
+    address: { type: string; key: string },
     workDir: string,
     launch: LaunchCommand,
     env: Record<string, string>
   ): void {
+    // ⚠ KAN-541. THE CHOKE POINT, AND IT TAKES THE ADDRESS RATHER THAN THE NAME
+    // FOR THAT REASON. This is the function that builds the `agent start` argv
+    // below — and the `pane report-agent` + `agent rename` pair on the no-kind
+    // route, which herdr validates identically — so a name that gets past here
+    // is a name herdr is about to be handed. Taking `(type, key)` means the
+    // check cannot be skipped by a caller that already has a string: there is
+    // no name to pass in, only an address to have one minted from.
+    //
+    // It throws, and `spawnSession` above catches it onto the `spawnError`
+    // channel every other spawn failure already uses, so an unnameable key
+    // refuses its activation with the limit named instead of herdr's getopt
+    // failing later and less clearly. Nothing has been created at this point —
+    // the pane is made on the next line.
+    //
+    // ⚠ It is NOT in `agentNameFor`, and that was tried: see that function's
+    // docblock for the five CI failures that refuted it. The short version is
+    // that ~35 callers ask what a name would be for lookup, comparison and
+    // logging, and one of them is `reset_by_key` — so a throwing producer made
+    // an over-long key UNRESETTABLE.
+    const agentName = assertAgentNameFitsHerdr(address.type, address.key);
     const pane = this.createAgentPane(agentName, workDir, env);
 
     if (launch.kind) {
@@ -1850,7 +2140,7 @@ export class HerdrBridge implements AgentRuntime {
           hasConversation: hasRestorableConversation(session.workDir)
         });
         const { command, channelEnabled } = launch;
-        this.startAgentInOwnTab(agentName, session.workDir, launch, {
+        this.startAgentInOwnTab({ type: session.type, key: session.key }, session.workDir, launch, {
           // The pane inherits the herdr *server's* environment, and that server
           // is typically started at login with a thin PATH (no nvm). Passed as
           // tab-level env — 0.7's `tab create --env`, which is what replaced the
