@@ -92,7 +92,11 @@
 import type { AgentAddress, AgentConnectionRegistry } from './agent-connections.js';
 import { describeAddress } from './agent-connections.js';
 import { CHANNEL_SWITCH_PATH } from './channel.js';
-import { classifyStartupDialog, type DevChannelsConfirmation } from './startup-dialog.js';
+import {
+  classifyStartupDialog,
+  frameShowsLiveSession,
+  type DevChannelsConfirmation
+} from './startup-dialog.js';
 
 /**
  * The dialog, as it appears on the pane.
@@ -119,18 +123,27 @@ export const DEV_CHANNELS_DIALOG_PATTERN =
   /Loading development channels|I am using this for local development/;
 
 /**
- * A Claude Code session sitting at its prompt, as it appears on the pane.
+ * THE PROMPT TEST LIVES IN `startup-dialog.ts` NOW, AND SO DOES THE OTHER ONE
+ * (KAN-543).
  *
- * The status line under the composer, which is present for as long as the
- * session is and absent while it is booting, showing a dialog, or exiting. These
- * are the alternatives KAN-217's probe used as its own readiness pattern.
+ * `SESSION_PROMPT_PATTERN` was declared here and tested here, and `nudge.ts` kept
+ * a second, looser list of its own that also accepted the bare caret. One fact,
+ * two implementations, disagreeing — the KAN-145 shape. The caret is what every
+ * dialog in `startup-dialog.ts` paints over its selected option, so the loose
+ * definition reported a pane at the development-channels dialog READY and a nudge
+ * was typed at a box waiting for a keystroke.
  *
- * **A false negative here is loud and a false positive is silent**, which is the
- * right way round: if Claude Code restyles this line, every channel-enabled
- * activation reports `no-prompt` and says so in the log, rather than quietly
- * declaring ready over a session that is not there.
+ * Both definitions are now in `startup-dialog.ts`, side by side, with the reason
+ * they differ written between them — see `frameShowsLiveSession` (this module's,
+ * the footer only) and `frameShowsInputLine` (`nudge.ts`'s, footer or caret).
+ *
+ * **This module's behaviour is unchanged**: `frameShowsLiveSession` tests exactly
+ * the pattern that was here, on exactly the frames this file already restricted
+ * it to. What changed is that the restriction is now carried by the type — it
+ * takes a `DialogFreeFrame`, which only a `none` verdict produces — instead of by
+ * this file remembering to put the test in the right branch. `nudge.ts` was the
+ * file that did not remember.
  */
-export const SESSION_PROMPT_PATTERN = /for shortcuts|[Bb]ypass(?:ing)? [Pp]ermissions/;
 
 /**
  * How many Enters this will ever send at one agent.
@@ -392,9 +405,13 @@ export async function superviseChannelStartup(opts: {
         await world.sleep(DIALOG_SETTLE_MS);
         continue;
       }
-    } else {
+    } else if (dialog !== null && dialog.kind === 'none') {
       dialogOnScreen = false;
-      atPrompt = SESSION_PROMPT_PATTERN.test(pane);
+      // `dialog.frame` rather than `pane`, and that is the KAN-543 half: the
+      // prompt test takes a frame a classification produced, so it cannot be
+      // asked about a pane nobody has classified. This branch is where it always
+      // was; what is new is that there is nowhere else it could be put.
+      atPrompt = frameShowsLiveSession(dialog.frame);
       // ALL THREE, IN THIS PASS. See the header for the live run that put the
       // prompt test here: a fresh workspace's `claude --continue` spawns its MCP
       // servers and only then discovers it has no conversation, so a connection
@@ -794,14 +811,14 @@ export async function superviseAdoptedStartup(opts: {
         await world.sleep(DIALOG_SETTLE_MS);
         continue;
       }
-    } else {
+    } else if (dialog !== null && dialog.kind === 'none') {
       dialogOnScreen = false;
       // THE PROMPT IS THE WHOLE TERMINAL CONDITION HERE, and that is the
       // difference from the spawn watcher rather than a weaker version of it.
       // There, a prompt without a fresh connection is a session seconds from
       // exiting; here there is no spawn to be fresh against, so the connection
       // is not evidence this function is entitled to read. See the header.
-      if (SESSION_PROMPT_PATTERN.test(pane)) {
+      if (frameShowsLiveSession(dialog.frame)) {
         const waited = world.now() - startedAt;
         const outcome: AdoptedStartupOutcome =
           dialogsAnswered > 0 ? 'dialog-answered' : 'at-prompt';

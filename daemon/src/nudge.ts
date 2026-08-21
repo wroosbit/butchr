@@ -5,6 +5,11 @@ import { SupervisorOfRecord } from './agent-registry.js';
 import { ResumeCause, resumeNudge } from './resume.js';
 import { NotifyFn, refuseWithoutCarrier } from './notify.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
+import {
+  classifyStartupDialog,
+  frameShowsInputLine,
+  type StartupDialogVerdict
+} from './startup-dialog.js';
 
 /**
  * Telling a restored agent to carry on.
@@ -27,15 +32,50 @@ const AGENT_READY_TIMEOUT_MS = 120_000;
 const AGENT_READY_POLL_MS = 2_000;
 
 /**
- * Evidence that Claude Code has finished starting and is listening.
+ * ---------------------------------------------------------------------------
+ * WHERE `AGENT_READY_MARKERS` WENT, AND WHY IT WAS WRONG (KAN-543)
+ * ---------------------------------------------------------------------------
  *
- * Read off the pane rather than asked of herdr because herdr's `agent_status`
- * reports what its hooks last told it, which on a freshly spawned agent is
- * nothing. These are the two things Claude Code puts on screen once its input
- * box exists — the permission-mode footer and the prompt caret — and a nudge
- * typed before either appears would go to the bash that is still starting it.
+ * This module used to keep its own readiness list:
+ *
+ *     const AGENT_READY_MARKERS = ['bypass permissions', 'for shortcuts', '❯'];
+ *
+ * Read off the pane rather than asked of herdr, for a reason that is unchanged
+ * and still right: herdr's `agent_status` reports what its hooks last told it,
+ * which on a freshly spawned agent is nothing.
+ *
+ * **The list was wrong about the third entry, and only about the third entry.**
+ * Every startup dialog `startup-dialog.ts` knows about paints the caret over its
+ * selected option —
+ *
+ *       ❯ 1. I am using this for local development
+ *         2. Exit
+ *       Enter to confirm · Esc to cancel
+ *
+ * — so `waitForAgentReady` returned `true` for a pane that has no prompt at all
+ * and never will without a keystroke, and the nudge went out at it. That is the
+ * one pane state where typing is most dangerous rather than merely useless: a
+ * composer send at a live dialog **answers the dialog** with whatever option is
+ * highlighted, and `task/KAN-375` reproduced that terminating an agent on
+ * *"No, exit"*.
+ *
+ * **It also explains a log line that reads as somebody else's fault.** With
+ * readiness wrongly `true`, the truthful branch below — *"never reached a prompt
+ * within Ns; not typing at it"* — was skipped, the send went to a client with no
+ * prompt, and its timeout surfaced as
+ * `refused by crabcast-daemon: no answer to send_to_agent within 10000ms`. KAN-538
+ * recorded that as reading like a socket or CrabCast fault. It was neither: the
+ * daemon already knew how to say the true thing and was routed past it.
+ *
+ * **The caret is kept**, because a narrow pane can show the composer's caret with
+ * the status footer wrapped off the tail, and losing that costs a nudge to an
+ * agent that is genuinely idle. What is added is the question the caret alone
+ * cannot answer, and it is asked FIRST: see {@link awaitAgentReadiness}.
+ *
+ * Both readiness definitions — this one and `channel-startup.ts`'s, which never
+ * accepted the caret — now live in `startup-dialog.ts`, adjacent, with the reason
+ * they differ written between them. `frameShowsInputLine` is this module's.
  */
-const AGENT_READY_MARKERS = ['bypass permissions', 'for shortcuts', '❯'];
 
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -64,25 +104,180 @@ export function monotonicNow(): number {
 }
 
 /**
+ * Why a pane is not being typed at — or that it may be.
+ *
+ * A union rather than a `false`, because the three not-ready states send an
+ * operator to three different places and the old boolean sent them nowhere. A
+ * pane parked at a **foreign** dialog needs a human to answer a box; a pane that
+ * never painted anything is a client that did not start; and a pane that could
+ * not be read at all is a herdr problem and not an agent problem.
+ */
+export type AgentReadiness =
+  /** An input line is on screen and no dialog is waiting for a key. */
+  | { kind: 'ready' }
+  /**
+   * A dialog is waiting for a keystroke. **Typing here answers it**, which is
+   * why this is a distinct arm and not a flavour of `no-prompt`.
+   */
+  | { kind: 'parked-at-dialog'; dialog: string }
+  /** No dialog and no input line: still booting, or gone. */
+  | { kind: 'no-prompt' }
+  /** The pane could not be read on the last attempt. */
+  | { kind: 'unreadable'; error?: string };
+
+/** How a not-ready verdict reads in the log, in the second half of a sentence. */
+export function describeReadiness(readiness: AgentReadiness): string {
+  switch (readiness.kind) {
+    case 'ready':
+      return 'it is at an input line with no dialog waiting for a key';
+    case 'parked-at-dialog':
+      return (
+        `it is parked at ${readiness.dialog}, which is waiting for a keystroke — ` +
+        `typing at it would ANSWER the dialog rather than reach the agent`
+      );
+    case 'no-prompt':
+      return 'it never painted an input line';
+    case 'unreadable':
+      return `its pane could not be read${readiness.error ? `: ${readiness.error}` : ''}`;
+  }
+}
+
+/** How a live dialog reads in that sentence. Never called for a `none` verdict. */
+function nameLiveDialog(verdict: StartupDialogVerdict): string {
+  switch (verdict.kind) {
+    case 'dev-channels':
+      return 'the development-channels dialog';
+    case 'foreign':
+      return (
+        `the ${verdict.dialog} dialog` +
+        (verdict.measured ? '' : ' (matched on unmeasured wording — see startup-dialog.ts)')
+      );
+    case 'ambiguous':
+      return `a frame carrying markers for ${verdict.dialogs.join(' and ')}`;
+    case 'undelimited':
+      return (
+        'a frame carrying the development-channels prose with no confirm line to delimit it, ' +
+        'so which dialog is live cannot be decided'
+      );
+    case 'none':
+      return 'no dialog';
+  }
+}
+
+/**
+ * How long the waiting below is allowed to take, so that a proof can drive it.
+ *
+ * **A seam rather than a constant (KAN-543).** The budget is two minutes of real
+ * time and the poll is two seconds of it, so a script that wanted to watch the
+ * parked branch fire had to sit through 120 seconds per case — which is why
+ * nothing ever watched it, and why the branch was skipped for weeks with nobody
+ * noticing. A check that is too slow to run is a check that does not run.
+ *
+ * ⚠ **THE CLOCK IS DELIBERATELY NOT PART OF THIS SEAM, AND THAT IS A CORRECTION
+ * RATHER THAN AN OVERSIGHT.** A first cut also took `now` and `sleep`, which made
+ * the proof instant and quietly deleted an invariant: with the clock injectable,
+ * a caller can hand these waits a **wall clock**, and a wall-clock deadline is
+ * the KAN-21 defect — the laptop suspended 1.5s into a restore and woke 5h40m
+ * later, the budget had expired without a single poll, and a restored agent was
+ * written off as *"never reached a prompt"* and never nudged. `performance.now()`
+ * is CLOCK_MONOTONIC and excludes suspended time; nothing may substitute for it.
+ * `verify-agent-resumption.mjs` §7 counts the monotonic deadlines in `dist` and
+ * **went red on that first cut**, which is the guard working exactly as written.
+ *
+ * So only the two durations are settable. A shorter budget is still a real wait
+ * on the real clock — the proof measures elapsed monotonic time to say so — and
+ * the deadline arithmetic is unchanged and unreachable from outside.
+ *
+ * Both fields are optional and both defaults are the production values, so
+ * nothing on the shipped path passes this and nothing on the shipped path
+ * changes. Only `verify-nudge-refuses-a-dialog-pane.mjs` supplies one.
+ */
+export interface ReadinessBudget {
+  /** Total monotonic budget. Default {@link AGENT_READY_TIMEOUT_MS}. */
+  timeoutMs?: number;
+  /** Gap between pane reads. Default {@link AGENT_READY_POLL_MS}. */
+  pollMs?: number;
+}
+
+/**
+ * Wait until an agent's pane is one it is safe to type at, and say why if it
+ * never becomes one.
+ *
+ * **THE ORDER IS THE FIX (KAN-543), AND IT IS ENFORCED BY THE TYPE.** What is on
+ * the pane is decided first, by `classifyStartupDialog` — the same call and the
+ * same module `channel-startup.ts` has branched on since KAN-340. Only its `none`
+ * verdict yields a `DialogFreeFrame`, and only a `DialogFreeFrame` can be handed
+ * to `frameShowsInputLine`. So there is no edit to this file that tests for a
+ * prompt on an unclassified pane, because there is no way to spell one; it is a
+ * compile error rather than a review comment. The pane is read **once per pass**
+ * and both questions are answered from that one frame, for the reason
+ * `superviseChannelStartup` gives at the same place — asking twice would allow a
+ * pass to disagree with itself.
+ *
+ * ⚠ **THE KNOWN FALSE NEGATIVE, NAMED RATHER THAN LEFT TO BE DISCOVERED.** A
+ * dialog's prose can outlive the dialog: if an answered dev-channels dialog is
+ * still in the 40-line tail when the session paints its prompt below it, the
+ * live region still names a dialog and this returns `parked-at-dialog` for a pane
+ * that is genuinely idle. That costs one nudge and a loud log line. It is
+ * accepted deliberately, on two grounds. **It is the safe direction** — the other
+ * one answers a trust dialog. And `superviseChannelStartup` has had exactly this
+ * property since KAN-340 and reaches `ready` on every channel-enabled spawn, so
+ * the repaint does clear it in practice; making this file smarter than that one
+ * would re-open the divergence KAN-543 closed. If it is ever seen in the wild,
+ * fix it in `startup-dialog.ts` for both callers and not here for one.
+ *
+ * Never throws. The deadline is `AGENT_READY_TIMEOUT_MS` of monotonic time.
+ */
+export async function awaitAgentReadiness(
+  herdrBridge: AgentRuntime,
+  key: string,
+  type: string,
+  budget: ReadinessBudget = {}
+): Promise<AgentReadiness> {
+  const pollMs = budget.pollMs ?? AGENT_READY_POLL_MS;
+  const timeoutMs = budget.timeoutMs ?? AGENT_READY_TIMEOUT_MS;
+  const deadline = monotonicNow() + timeoutMs;
+  let last: AgentReadiness = { kind: 'no-prompt' };
+  for (;;) {
+    const tail = await herdrBridge.tailAgent(key, type, 40);
+    if (!tail.success || typeof tail.text !== 'string') {
+      last = { kind: 'unreadable', ...(tail.error ? { error: tail.error } : {}) };
+    } else {
+      // ONE FRAME, CLASSIFIED FIRST. See the docblock: the prompt test below is
+      // reachable only through `verdict.frame`, which only `none` carries.
+      const verdict = classifyStartupDialog(tail.text);
+      last =
+        verdict.kind !== 'none'
+          ? { kind: 'parked-at-dialog', dialog: nameLiveDialog(verdict) }
+          : frameShowsInputLine(verdict.frame)
+            ? { kind: 'ready' }
+            : { kind: 'no-prompt' };
+      if (last.kind === 'ready') return last;
+    }
+    if (monotonicNow() >= deadline) return last;
+    await delay(pollMs);
+  }
+}
+
+/**
  * Wait until an agent's pane looks like a prompt rather than a launching shell.
  * Returns false on timeout, which is a reason not to type at it rather than a
  * reason to fail the restore — the agent is up either way.
+ *
+ * **Kept as a boolean over {@link awaitAgentReadiness}, deliberately.** Three
+ * `verify-` scripts spawn real agents and read this as `ready.every(Boolean)`;
+ * widening the return type to the union would make every one of them pass
+ * unconditionally, because every object is truthy. That is a silent false green
+ * in three proofs to save one adapter, so the adapter stays. Callers that want to
+ * say *why* — this module's own nudge does — call `awaitAgentReadiness`.
  */
 export async function waitForAgentReady(
   herdrBridge: AgentRuntime,
   key: string,
-  type: string
+  type: string,
+  budget: ReadinessBudget = {}
 ): Promise<boolean> {
-  const deadline = monotonicNow() + AGENT_READY_TIMEOUT_MS;
-  for (;;) {
-    const tail = await herdrBridge.tailAgent(key, type, 40);
-    if (tail.success && typeof tail.text === 'string') {
-      const text = tail.text.toLowerCase();
-      if (AGENT_READY_MARKERS.some((marker) => text.includes(marker.toLowerCase()))) return true;
-    }
-    if (monotonicNow() >= deadline) return false;
-    await delay(AGENT_READY_POLL_MS);
-  }
+  return (await awaitAgentReadiness(herdrBridge, key, type, budget)).kind === 'ready';
 }
 
 /** What the nudge did, for the log and for the caller's outcome record. */
@@ -117,12 +312,23 @@ export interface NudgeResult {
  *
  * **What makes the composer safe here — and only here — is that the interrupt
  * cannot land on work.** The cost of a Ctrl+C is the turn it cancels, and
- * `waitForAgentReady` above has just established, by reading the pane, that this
+ * `awaitAgentReadiness` above has just established, by reading the pane, that this
  * agent is sitting at a prompt with no turn to cancel. That is a much stronger
  * position than any other caller is in: `butchr_tail_agent`'s own contract warns
  * that a failed read must not be read as an idle agent, and every notification
  * path was guessing. This one waits for positive evidence and declines to type
  * when it does not get it.
+ *
+ * ⚠ **That paragraph was overstating its own guarantee until KAN-543, and the
+ * gap is worth keeping written down rather than quietly closing.** *"Sitting at a
+ * prompt"* was read off a marker list that accepted the bare caret, which every
+ * startup dialog paints over its selected option — so the positive evidence
+ * included a pane with no prompt on it and a box waiting for a key. The interrupt
+ * could not land on *work* there, which is what this paragraph claimed; it landed
+ * on a **dialog**, and a composer send at a live dialog answers it with whatever
+ * option is highlighted (`task/KAN-375` terminated an agent on *"No, exit"*).
+ * The claim is true as written now because the readiness check asks what the pane
+ * is showing before it asks whether it looks like a prompt.
  *
  * So the practice is dropped as a *default* and as a *fallback*, which is what
  * the ticket asked for, and retained for the single case where it is the only
@@ -136,9 +342,13 @@ export async function nudgeResumedAgent(opts: {
   cause: ResumeCause;
   /** Which launcher started it. Only `claude` restores a conversation. */
   defaultAgent?: string;
+  /** Test seam; production passes nothing. See {@link ReadinessBudget}. */
+  readiness?: ReadinessBudget;
   log: (...args: any[]) => void;
 }): Promise<NudgeResult> {
   const { herdrBridge, type, key, cause, defaultAgent, log } = opts;
+  const budget = opts.readiness ?? {};
+  const timeoutMs = budget.timeoutMs ?? AGENT_READY_TIMEOUT_MS;
   const label = `${type}/${key}`;
 
   if (defaultAgent !== 'claude') {
@@ -147,12 +357,26 @@ export async function nudgeResumedAgent(opts: {
   }
 
   try {
-    if (!(await waitForAgentReady(herdrBridge, key, type))) {
+    // THE TRUTHFUL BRANCH, AND IT IS ONLY REACHABLE BECAUSE READINESS IS HONEST
+    // (KAN-543). It existed before and was routed past: readiness returned `true`
+    // for a pane at a dialog, so a parked agent produced a `send_to_agent`
+    // timeout wearing a socket fault's clothes instead of this line.
+    const readiness = await awaitAgentReadiness(herdrBridge, key, type, budget);
+    if (readiness.kind !== 'ready') {
+      // The budget is read back rather than assumed, so an overridden one cannot
+      // put a number in the log that nothing waited for.
       log(
         `[nudge] ${label} restored its conversation but never reached a prompt within ` +
-        `${AGENT_READY_TIMEOUT_MS / 1000}s; not typing at it. It will sit idle until nudged.`
+        `${timeoutMs / 1000}s; not typing at it — ${describeReadiness(readiness)}. ` +
+        `It will sit idle until nudged.`
       );
-      return { nudged: false, error: 'agent did not reach a prompt in time' };
+      return {
+        nudged: false,
+        error:
+          readiness.kind === 'parked-at-dialog'
+            ? `agent is parked at ${readiness.dialog}`
+            : 'agent did not reach a prompt in time'
+      };
     }
 
     // The brief's location is asked of the runtime rather than assumed here

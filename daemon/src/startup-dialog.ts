@@ -82,6 +82,25 @@
  * anything else that already has one. It answers a question nobody was asking:
  * *which* dialog is this. See KAN-145 for why a fact with two implementations is
  * worse than an awkward single one.
+ *
+ * ---------------------------------------------------------------------------
+ * AND SINCE KAN-543 IT ALSO OWNS "IS THIS PANE AT A PROMPT", FOR BOTH READERS
+ * ---------------------------------------------------------------------------
+ *
+ * That question used to have two implementations in two files, and they
+ * disagreed — the KAN-145 shape, in the file whose header cites KAN-145.
+ * `channel-startup.ts` tested {@link SESSION_PROMPT_PATTERN} and would not accept
+ * a bare caret; `nudge.ts` kept its own `AGENT_READY_MARKERS` list and would.
+ * The caret is what a *dialog* paints over its selected option, so the loose
+ * definition called a pane at the development-channels dialog READY and a nudge
+ * was typed at it. See {@link frameShowsInputLine} for the whole of that story.
+ *
+ * Both definitions live here now, adjacent, and both take a
+ * {@link DialogFreeFrame} — a value only {@link classifyStartupDialog} can mint,
+ * and only for a frame with no dialog waiting for a key on it. So the ordering
+ * that was forgotten is no longer possible to forget: there is no way to spell a
+ * prompt test against an unclassified pane, exactly as there is no way to spell a
+ * keystroke at one. Same construction, second question.
  */
 
 /**
@@ -177,6 +196,104 @@ export interface DevChannelsConfirmation {
 }
 
 /**
+ * The brand that makes "no dialog is waiting for a key on this frame" unforgeable
+ * outside this module.
+ *
+ * The same mechanism as {@link CONFIRMED_DEV_CHANNELS} above and for the same
+ * reason: a `unique symbol` no other file can name is a property no other file
+ * can set, so {@link DialogFreeFrame} has exactly one producer — the `none` arm
+ * of {@link classifyStartupDialog} — however many consumers it grows.
+ */
+const NO_LIVE_DIALOG: unique symbol = Symbol('butchr.no-live-dialog');
+
+/**
+ * A pane frame that has been classified and carries no live dialog.
+ *
+ * Permission to ask the *second* question about a pane — whether it is at a
+ * prompt — and the reason that permission has to be carried by a value rather
+ * than remembered by a caller is KAN-543. `nudge.ts` asked the second question
+ * without asking the first, matched the caret a dialog paints over its selected
+ * option, and called a pane at the development-channels dialog READY.
+ *
+ * Carries the pane text so the predicates below have something to test; that the
+ * text is only reachable through a classification is the whole point.
+ */
+export interface DialogFreeFrame {
+  readonly [NO_LIVE_DIALOG]: true;
+  /** The frame that classified `none`. */
+  readonly pane: string;
+}
+
+/**
+ * A Claude Code session sitting at its prompt, as it appears on the pane.
+ *
+ * The status line under the composer, which is present for as long as the session
+ * is and absent while it is booting, showing a dialog, or exiting. These are the
+ * alternatives KAN-217's probe used as its own readiness pattern.
+ *
+ * **A false negative here is loud and a false positive is silent**, which is the
+ * right way round: if Claude Code restyles this line, every channel-enabled
+ * activation reports `no-prompt` and says so in the log, rather than quietly
+ * declaring ready over a session that is not there.
+ *
+ * Moved here from `channel-startup.ts` by KAN-543 so that it and the caret sit in
+ * one file rather than in two that disagreed. Nothing outside this module tests
+ * it directly — {@link frameShowsLiveSession} and {@link frameShowsInputLine} are
+ * what callers reach for, because those take a {@link DialogFreeFrame}.
+ */
+const SESSION_PROMPT_PATTERN = /for shortcuts|[Bb]ypass(?:ing)? [Pp]ermissions/;
+
+/**
+ * The prompt caret, which is the loose half of the readiness question.
+ *
+ * **This glyph is not evidence of a prompt on its own, and that is the finding
+ * KAN-543 exists for.** Every dialog in this file paints it over its selected
+ * option — `❯ 1. I am using this for local development`, `❯ 1. Yes, I trust this
+ * folder` — so a matcher that accepted it without first asking what the pane was
+ * showing returned READY for a box waiting on a keystroke. It is kept rather than
+ * deleted because a narrow pane can show the composer's caret with the status
+ * footer wrapped off the read, and losing that costs a nudge to an agent that is
+ * genuinely idle. What changed is that it is now only ever tested behind a
+ * {@link DialogFreeFrame}.
+ */
+const PROMPT_CARET = '❯';
+
+/**
+ * ---------------------------------------------------------------------------
+ * TWO READINESS DEFINITIONS, ADJACENT, WITH THE DIFFERENCE STATED (KAN-543 AC4)
+ * ---------------------------------------------------------------------------
+ *
+ * They are not a strict and a sloppy version of one question. They answer two
+ * different questions, and the answers are allowed to differ:
+ *
+ * * {@link frameShowsLiveSession} — *is a Claude Code session up on this pane?*
+ *   Asked by `channel-startup.ts` to decide whether an activation may be reported
+ *   `ready`. Getting it wrong in the yes direction declares a channel usable over
+ *   a session that is seconds from exiting, and nothing downstream re-checks. So
+ *   it takes the footer and nothing else.
+ *
+ * * {@link frameShowsInputLine} — *is there an input line here to type at?*
+ *   Asked by `nudge.ts` to decide whether typing is safe. Getting it wrong in the
+ *   NO direction costs one nudge and logs loudly; a narrow pane whose footer has
+ *   wrapped off the tail is a real frame, and it is the case the caret is kept
+ *   for. So it takes the footer OR the caret.
+ *
+ * Both are gated on the same thing — a {@link DialogFreeFrame} — and that gate is
+ * the half that was missing rather than the patterns. The caret was never the
+ * defect; asking about the caret before asking what the pane was showing was.
+ */
+
+/** Whether a dialog-free frame shows a live session's status footer. */
+export function frameShowsLiveSession(frame: DialogFreeFrame): boolean {
+  return SESSION_PROMPT_PATTERN.test(frame.pane);
+}
+
+/** Whether a dialog-free frame shows an input line — the footer, or a caret. */
+export function frameShowsInputLine(frame: DialogFreeFrame): boolean {
+  return frameShowsLiveSession(frame) || frame.pane.includes(PROMPT_CARET);
+}
+
+/**
  * What the live dialog on a pane is.
  *
  * Four cases, and `none` is not `foreign`: a pane with no dialog on it is the
@@ -211,7 +328,18 @@ export type StartupDialogVerdict =
    * deadline is what separates them.
    */
   | { kind: 'undelimited' }
-  | { kind: 'none' };
+  /**
+   * Nothing is waiting for a key on this frame — the ordinary state of a healthy
+   * session, and of a pane that is still booting.
+   *
+   * **It carries the frame, and that is what makes the prompt test reachable
+   * (KAN-543).** This arm is the only producer of a {@link DialogFreeFrame}, so
+   * `frame` here is the sole route by which any caller can get a pane text into
+   * {@link frameShowsLiveSession} or {@link frameShowsInputLine}. A caller that
+   * wants to know whether a pane is at a prompt must first have been told that
+   * no dialog is on it.
+   */
+  | { kind: 'none'; frame: DialogFreeFrame };
 
 /**
  * The body of the dialog currently waiting for a key, or `null` if none is.
@@ -283,6 +411,17 @@ function identifyDialogs(region: string): DialogCount {
   return { count: 'many', dialogs: found };
 }
 
+/**
+ * Mint the permission to ask whether a pane is at a prompt.
+ *
+ * Private, and called only from the two `none` returns below — which is what
+ * makes {@link DialogFreeFrame} mean "classified, and nothing is waiting for a
+ * key" rather than "somebody had a string".
+ */
+function dialogFree(pane: string): DialogFreeFrame {
+  return { [NO_LIVE_DIALOG]: true, pane };
+}
+
 /** Unreachable-by-type marker; see the `switch` below. */
 function assertNever(value: never): never {
   throw new Error(`unreachable dialog count: ${JSON.stringify(value)}`);
@@ -303,13 +442,15 @@ export function classifyStartupDialog(pane: string): StartupDialogVerdict {
     // No confirm line anywhere. If our own prose is nonetheless on the pane,
     // that is the one case this file can get wrong in the wedging direction, and
     // it says so rather than answering `none`. See StartupDialogVerdict.
-    return DEV_CHANNELS_MARKERS.test(pane) ? { kind: 'undelimited' } : { kind: 'none' };
+    return DEV_CHANNELS_MARKERS.test(pane)
+      ? { kind: 'undelimited' }
+      : { kind: 'none', frame: dialogFree(pane) };
   }
 
   const identified = identifyDialogs(region);
   switch (identified.count) {
     case 'none':
-      return { kind: 'none' };
+      return { kind: 'none', frame: dialogFree(pane) };
 
     case 'one': {
       const dialog = identified.dialog;
