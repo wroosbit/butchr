@@ -9,6 +9,20 @@ import { PromptSourceKeeper } from './prompt-source.js';
 import { HerdrBridge, agentNameFor } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { createAgentRuntime, type RuntimeSwitchReport } from './runtime-switch.js';
+import { RUNTIME_ENV_VAR } from './runtime-switch.js';
+import {
+  REFUSED_UNPINNED,
+  LOST_TO_CONFIGURED,
+  LOST_TO_UNCONFIGURED,
+  announceToJournal,
+  daemonProvenanceReport,
+  describeRefusal,
+  describeThisProcess,
+  incumbentIsConfigured,
+  queryDaemonUnit,
+  runtimePinVerdict,
+  type DaemonProvenanceReport
+} from './daemon-provenance.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
@@ -23,7 +37,14 @@ import { createAtlassianIntegration } from './integrations/atlassian-integration
 // import, so a re-import is a diff a reviewer sees rather than a line that
 // blends in. `verify-channel-spawn-verdict.mjs` §4 asserts the absence.
 import { coreMcpServerDefinitions } from './launchers.js';
-import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
+import {
+  BUTCHR_DIR,
+  DAEMON_UNIT,
+  SOCKET_PATH,
+  ensureButchrDir,
+  onJsonLines,
+  writeJsonLine
+} from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport, RECONNECT_SETTLE_MS } from './staleness.js';
 import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
@@ -139,6 +160,51 @@ if (daemonLog.repair.repaired) {
   );
 } else if (daemonLog.repair.error) {
   log(`WARNING: could not repair daemon.log: ${daemonLog.repair.error}`);
+}
+
+// ── KAN-550, AC3: a runtime this machine pins cannot be dropped in silence ──
+//
+// This runs before anything else the daemon does, and before the socket, so a
+// daemon that is not the one the operator configured never becomes the one
+// serving the fleet. `announceToJournal` rather than `log` because the whole
+// criterion is *"in the journal"* — see its docblock for why `console.error`
+// is not that.
+const bootUnit = queryDaemonUnit();
+const bootSelf = describeThisProcess();
+const bootPin = runtimePinVerdict(bootUnit, process.env);
+switch (bootPin.kind) {
+  case 'lost':
+    announceToJournal(describeRefusal(bootPin), log);
+    process.exit(REFUSED_UNPINNED);
+    break;
+  case 'lost-acknowledged':
+    // Served, but never quietly. The override is a decision, and a decision
+    // that leaves no line is indistinguishable from the accident it permits.
+    announceToJournal(describeRefusal(bootPin), log);
+    break;
+  case 'cannot-tell':
+    // Not "fine". We asked and could not be answered, so the pin is unknown
+    // rather than absent, and the difference is said out loud rather than
+    // resolved toward the comfortable reading.
+    announceToJournal(
+      [
+        `butchr: could not ask systemd what this machine pins (${bootPin.detail}).`,
+        `  Serving with ${RUNTIME_ENV_VAR}=${bootSelf.runtime.rawValue ?? '(not set)'} ` +
+          `— runtime ${bootSelf.runtime.mode}, from the ${bootSelf.runtime.source}.`,
+        `  This is UNKNOWN, not verified: nothing here has checked it against a unit.`
+      ],
+      log
+    );
+    break;
+  case 'nothing-pinned':
+    log(
+      `runtime pin: nothing pinned on this machine (${bootPin.because}); ` +
+        `runtime ${bootSelf.runtime.mode}, from the ${bootSelf.runtime.source}`
+    );
+    break;
+  case 'carried':
+    log(`runtime pin: carrying ${RUNTIME_ENV_VAR}=${bootPin.value} as ${DAEMON_UNIT} declares it`);
+    break;
 }
 
 process.on('uncaughtException', (err) => {
@@ -671,6 +737,28 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         connectionId: connection.id,
         workspaceType: connection.address.type,
         workspaceKey: connection.address.key
+      });
+      return true;
+    }
+    case 'daemon_provenance': {
+      // KAN-550, AC2. "Which daemon is actually serving, and where did its
+      // configuration come from?" — answered here beside `hello` for the reason
+      // this whole layer exists: it is a question about *which socket this is*,
+      // and the router has no socket.
+      //
+      // **It is answered over the socket rather than out of a file on purpose.**
+      // Whoever replies to this is the process serving the socket; that cannot
+      // be stale, and a pidfile can. A confident record of a daemon that is not
+      // the one running is the exact artifact KAN-550 is about — it is what
+      // `systemctl is-active` was for two minutes on 2026-08-20.
+      //
+      // The unit is re-read per request rather than cached from boot: a drop-in
+      // added after the daemon started changes what this machine pins, and an
+      // operator asking this question at that moment wants today's answer.
+      reply({
+        action: 'daemon_provenance_response',
+        success: true,
+        provenance: daemonProvenanceReport(queryDaemonUnit(), describeThisProcess())
       });
       return true;
     }
@@ -1397,6 +1485,51 @@ const server = net.createServer((socket) => {
   });
 });
 
+/**
+ * Ask the daemon on the other end of an open socket to describe itself.
+ *
+ * Used by the loser of the singleton race, which is the one moment where the
+ * question *"who is serving?"* has an answer nothing else can supply: the
+ * incumbent is right there on the other end of a connected socket, and it is by
+ * construction the process that holds it.
+ *
+ * **Every way this can go wrong ends in `null`, and the caller reads `null` as
+ * NOT configured.** A daemon built before this action existed will answer with
+ * an error, a wedged one will answer with nothing, and a truncated line will
+ * not parse — and all three mean *nobody has established that the right daemon
+ * is serving*, which is the reading that keeps the failure loud. The timeout
+ * exists because a hung incumbent must not hang the unit that is trying to
+ * start: it would turn a diagnosable failure into a `Type=simple` service that
+ * never finishes starting.
+ */
+const askIncumbent = (
+  socket: net.Socket,
+  done: (report: DaemonProvenanceReport | null) => void
+): void => {
+  let settled = false;
+  const finish = (report: DaemonProvenanceReport | null) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    try {
+      socket.end();
+    } catch {}
+    done(report);
+  };
+  const timer = setTimeout(() => finish(null), 2000);
+  onJsonLines(
+    socket,
+    (msg: any) => {
+      if (msg?.action !== 'daemon_provenance_response') return;
+      finish(msg.success === true && msg.provenance ? (msg.provenance as DaemonProvenanceReport) : null);
+    },
+    () => finish(null)
+  );
+  socket.once('error', () => finish(null));
+  socket.once('close', () => finish(null));
+  if (!writeJsonLine(socket, { action: 'daemon_provenance' })) finish(null);
+};
+
 let retriedStaleSocket = false;
 server.on('error', (err: any) => {
   if (err.code !== 'EADDRINUSE') {
@@ -1406,9 +1539,50 @@ server.on('error', (err: any) => {
   // Socket file exists: either a live daemon owns it, or it's stale from a crash.
   const probe = net.connect(SOCKET_PATH);
   probe.once('connect', () => {
-    probe.end();
-    log('Another daemon is already running; exiting.');
-    process.exit(0);
+    // ── KAN-550, AC1: losing the race is only a no-op if the WINNER is right ─
+    //
+    // This used to `log(...)` and `process.exit(0)` unconditionally, and the
+    // unit file argued for it: losing to a daemon a client already started is
+    // "a correct no-op", and `Restart=always` would crash-loop the loser.
+    // That reasoning holds exactly while the winner is a daemon the operator
+    // would have chosen. On 2026-08-20 it was a child of Chrome carrying no
+    // BUTCHR_* at all, and the clean exit is precisely what left `Restart=`
+    // with nothing to act on — `systemctl start` reported success, left
+    // nothing running, and the unit sat `inactive` while the fleet ran on an
+    // unpinned runtime and a doubled cap.
+    //
+    // So ask the winner who it is, and let the answer choose the exit code.
+    askIncumbent(probe, (report) => {
+      const configured = incumbentIsConfigured(report);
+      const who =
+        report === null
+          ? 'it did not answer a provenance request (too old to know the action, or wedged)'
+          : report.summary;
+      if (configured) {
+        // The ordinary, correct case: systemd's own daemon is already up, or a
+        // deliberate restart raced itself. Still a no-op, and still exit 0.
+        log(`Another daemon is already running and is configured; exiting. It says: ${who}`);
+        process.exit(LOST_TO_CONFIGURED);
+      }
+      announceToJournal(
+        [
+          `butchr: LOST THE SOCKET TO A DAEMON THAT IS NOT THE CONFIGURED ONE.`,
+          `  The process holding ${SOCKET_PATH} ${who}`,
+          ``,
+          `  Exiting ${LOST_TO_UNCONFIGURED} rather than 0 SO THAT Restart= CAN SEE THIS.`,
+          `  A clean exit here is why ${DAEMON_UNIT} could read \`inactive\` for two`,
+          `  minutes on 2026-08-20 while an unconfigured daemon served the fleet:`,
+          `  systemd does not retry a success, and every status check agreed with it.`,
+          ``,
+          `  To take the socket back:`,
+          `    kill the pid above, then systemctl --user start ${DAEMON_UNIT}`,
+          `  To see who is serving at any time:`,
+          `    node daemon/scripts/butchr-doctor.mjs`
+        ],
+        log
+      );
+      process.exit(LOST_TO_UNCONFIGURED);
+    });
   });
   probe.once('error', () => {
     if (retriedStaleSocket) {
