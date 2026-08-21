@@ -59,6 +59,7 @@ import { licenceFor, sealClaims, sealComposerClaims } from './message-claims.js'
 import {
   beginBuildCoercions,
   operationByTool,
+  ProxyBuildContext,
   ProxyCaller,
   proxyReport,
   refuseProxyCall,
@@ -4350,12 +4351,25 @@ export class MessageRouter {
     // Non-null by construction: `refuseProxyCall` returns a refusal for every
     // tool it cannot find, so reaching here means it found this one.
     const operation = operationByTool(tool)!;
+
+    // KAN-577: what the DAEMON knows and the caller cannot supply. Resolved
+    // here, before `build`, and only for the operations that declared they need
+    // it — so the request this costs is paid by `atlassian_create_issue` and by
+    // nothing else. It is awaited *outside* the `beginBuildCoercions()` window
+    // below on purpose: that window's whole safety argument is that `build` is
+    // synchronous and therefore cannot interleave with another request, and an
+    // `await` inside it would quietly delete that argument.
+    const selfAccountId = operation.needsSelfAccountId
+      ? await this.jira.selfAccountId()
+      : null;
+    const context: ProxyBuildContext = { selfAccountId };
+
     // KAN-502: what the markdown→ADF conversion had to change about the agent's
     // content, collected across every body this operation converts. `build` is
     // synchronous, so the reset and the read below cannot interleave with
     // another request — see `beginBuildCoercions`.
     beginBuildCoercions();
-    const built = operation.build(args);
+    const built = operation.build(args, context);
     const coercions = takeBuildCoercions();
     if ('error' in built) {
       fail(built.error, { reason: 'bad-arguments' });
