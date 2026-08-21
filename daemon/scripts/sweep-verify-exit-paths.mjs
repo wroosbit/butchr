@@ -366,8 +366,80 @@ function consultedTallies(entry, regions, tallies) {
  * A condition naming BOTH (`if (failures || skipped)`) is a failure verdict:
  * the failure arm is the loudest true statement about it, which is the same
  * precedence `lib/verdict-exit.mjs` gives 1 over 2.
+ *
+ * ⚠ THE OVERRIDE IS APPLIED LAST, AND ONLY OVER A NON-VERDICT, WHICH IS NOT A
+ * TIDINESS CHOICE — it is the fix for a defect this change introduced and a
+ * measurement caught. Written as an early branch it fires on the CONDITION
+ * alone, and two shapes go wrong in opposite directions:
+ *
+ *   if (skipped > 0) process.exit(failures ? 1 : 0);   // a FAILURE verdict
+ *   if (skipped > 0) process.exitCode = 2;             // NOT a failure verdict
+ *
+ * The first is a real verdict that happens to sit under a skip condition, and
+ * demoting it reports a script that CAN fail as one that cannot — a fresh false
+ * positive on a required check, which is this ticket's own defect committed by
+ * its fix. The second was scored a failure verdict by the `exitCode` branch
+ * below on the strength of the leading `if (` alone, so before this override
+ * existed the fix turned it from RED to GREEN for a script that asserts nothing
+ * — KAN-119 gutted through the one exit kind the early branch did not cover.
+ * Measured on both sweeps rather than reasoned about; §9 of
+ * `verify-exit-path-skip-consultation.mjs` is that measurement, kept.
+ *
+ * So the rule is: **the exit's own argument decides whether it speaks about
+ * failures, and the governing condition only gets to speak when the argument
+ * does not.** Both kinds are covered, `exit` and `exitCode` alike.
  */
 function classify(entry, source, regions) {
+  return skipOverride(classifyRaw(entry, source, regions), entry, regions);
+}
+
+/**
+ * An expression that speaks about FAILURES on its own — a counter named in it,
+ * or a value computed from one. Where this holds, the governing condition does
+ * not get to reclassify the exit, whichever way `classifyRaw` scored it.
+ *
+ * `references` strips object keys for the reason it always does: a tally
+ * SPELLED as a key has not been read.
+ */
+function expressionSpeaksOfFailure(expr) {
+  return (
+    COUNTER.test(references(expr)) || /\?/.test(expr) || /^process\.exitCode/.test(references(expr))
+  );
+}
+
+/**
+ * Convert an exit governed by a skip tally — and by nothing that names a
+ * failure counter — into a SKIP verdict.
+ *
+ * ⚠ IT MUST BE ABLE TO DEMOTE A `verdict: true`, and that is not an oversight
+ * to tidy away. `if (skipped > 0) process.exitCode = 2` is scored a failure
+ * verdict by the `exitCode` branch on the strength of its leading `if (` alone,
+ * with nothing having looked at what the condition says. An override that
+ * refused to touch a verdict would leave exactly that shape credited as proof
+ * the script can fail — a script that asserts nothing, passing the required
+ * check. The argument test above is what keeps the demotion narrow.
+ */
+function skipOverride(result, entry, regions) {
+  if (entry.kind !== 'exit' && entry.kind !== 'exitCode') return result;
+  if (expressionSpeaksOfFailure(entry.expr)) return result;
+  if (governingConditionMatching(regions, entry.index, COUNTER) !== null) return result;
+  const skipCondition = governingConditionMatching(regions, entry.index, SKIP_COUNTER);
+  if (skipCondition === null) return result;
+  return {
+    verdict: false,
+    skipVerdict: true,
+    why:
+      `reached only when \`${renderCondition(skipCondition)}\` — a SKIP verdict: it lets ` +
+      'the tally reach the exit code, and it is not a failure verdict'
+  };
+}
+
+/**
+ * The failure-verdict question alone: KAN-119's classifier as it stood, with
+ * KAN-540's containment. Every answer it gives is about FAILURES; skips are
+ * `skipOverride`'s, applied to what this returns.
+ */
+function classifyRaw(entry, source, regions) {
   const { kind, expr, text, index } = entry;
 
   // A literal exit INSIDE the body of a check on accumulated failures is a
@@ -377,19 +449,9 @@ function classify(entry, source, regions) {
     return { verdict: true, why: `reached only when \`${renderCondition(condition)}\`` };
   }
 
-  // KAN-561. Checked AFTER the counter condition, so `if (failures || skipped)`
-  // stays a failure verdict; see the precedence note above.
-  const skipCondition =
-    kind === 'exit' ? governingConditionMatching(regions, index, SKIP_COUNTER) : null;
-  if (skipCondition !== null) {
-    return {
-      verdict: false,
-      skipVerdict: true,
-      why:
-        `reached only when \`${renderCondition(skipCondition)}\` — a SKIP verdict: it lets ` +
-        'the tally reach the exit code, and it is not a failure verdict'
-    };
-  }
+  // KAN-561's skip classification is NOT here. It is `skipOverride`, applied to
+  // this function's answer — the ordering argument is on `classify` above, and
+  // the two shapes that go wrong when it is an early branch are named there.
 
   // reportAndExit(<expr>) — a verdict iff the TALLIES are what it is handed.
   // `references` is what stops `{ failures: 0 }` counting: a tally has to be

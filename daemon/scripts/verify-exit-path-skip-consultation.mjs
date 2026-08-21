@@ -318,6 +318,37 @@ const SKIP_IF_GOVERNS_NOTHING =
   `}\n` +
   `process.exit(failures ? 1 : 0);\n`;
 
+// §9 THE `exitCode` KIND, WHICH THE FIRST CUT OF THIS FIX DID NOT COVER — and
+// the defect it left is a RED TURNED GREEN, so it is the dangerous direction.
+// `if (skipped > 0) process.exitCode = 2` is scored a failure verdict by the
+// sweep's `exitCode` branch on the strength of its leading `if (` alone, with
+// nothing having looked at what the condition says. On `main` that shape was
+// red anyway, for the unrelated reason that the tally reached no expression;
+// teaching the sweep to read conditions removed that second red and left the
+// script passing while asserting nothing. It asserts nothing: there is no
+// failure counter in it at all.
+const SKIP_GOVERNED_EXITCODE =
+  HEADER('a skip-governed `process.exitCode` is not proof the script can fail') +
+  `let skipped = 0;\n` +
+  `if (!peerIsUp()) skipped += 1;\n` +
+  `if (skipped > 0) process.exitCode = 2;\n` +
+  `console.log('done');\n`;
+
+// §10 THE OPPOSITE BOUNDARY. A REAL failure verdict that happens to sit under a
+// skip condition. Demoting it would report a script that CAN fail as one that
+// cannot — a fresh false positive on a required check, which is this ticket's
+// own defect committed by its fix. The exit's own argument is what saves it.
+const FAILURE_VERDICT_UNDER_A_SKIP_CONDITION =
+  HEADER('a failure verdict nested under a skip condition stays a failure verdict') +
+  `let failures = 0;\n` +
+  `let skipped = 0;\n` +
+  `if (!peerIsUp()) skipped += 1;\n` +
+  `if (skipped > 0) {\n` +
+  `  console.log('reporting early because sections did not run');\n` +
+  `  process.exit(failures ? 1 : 0);\n` +
+  `}\n` +
+  `process.exit(failures ? 1 : 0);\n`;
+
 /**
  * §8's mutation: the shipped sweep's `consultedTallies` rewritten to read the
  * exit's EXPRESSION alone, which is what KAN-373 shipped and what this ticket
@@ -576,6 +607,57 @@ try {
       `the mutated sweep goes red for it (exited ${run.code})`,
       run.code === 1,
       'the required check stayed green under the mutation, so something other than the condition read is holding §1'
+    );
+  }
+  // -------------------------------------------------------------------------
+  console.log('§9 a skip-governed `process.exitCode` is not a failure verdict either');
+  {
+    const tree = treeWith({ 'verify-skip-governed-exitcode.mjs': SKIP_GOVERNED_EXITCODE });
+    cleanup.push(tree.root);
+    const run = runSweep(tree.sweep);
+    if (verbose) console.log(run.stdout);
+    const r = parseReport(run.stdout).get('verify-skip-governed-exitcode');
+    check('the fixture produces a row', !!r, `no row in:\n${run.stdout}`);
+    check(
+      `it has NO failure verdict (found ${r ? r.verdictCount : 'no row'})`,
+      !!r && r.verdictCount === 0,
+      'the `exitCode` branch credited a skip-governed assignment as proof the script can fail — a script asserting nothing passes the required check'
+    );
+    check(
+      `the assignment is scored a skip verdict (found ${r ? r.skips.length : 'no row'})`,
+      !!r && r.skips.length === 1,
+      `skips: ${JSON.stringify(r ? r.skips.map((s) => s.text) : [])}`
+    );
+    check(
+      'the tally is still counted as consulted — this is a canFail failure, not a skip one',
+      blindScripts(run.stdout).length === 0,
+      `named: ${JSON.stringify(blindScripts(run.stdout))}`
+    );
+    check(
+      `the sweep exits non-zero for it (exited ${run.code})`,
+      run.code === 1,
+      'a script with no failure counter in it at all passed the required check'
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('§10 a REAL failure verdict under a skip condition is not demoted');
+  {
+    const tree = treeWith({ 'verify-verdict-under-skip.mjs': FAILURE_VERDICT_UNDER_A_SKIP_CONDITION });
+    cleanup.push(tree.root);
+    const run = runSweep(tree.sweep);
+    if (verbose) console.log(run.stdout);
+    const r = parseReport(run.stdout).get('verify-verdict-under-skip');
+    check('the fixture produces a row', !!r, `no row in:\n${run.stdout}`);
+    check(
+      `both exits stay failure verdicts (verdicts ${r ? r.verdictCount : '-'}, skips ${r ? r.skips.length : '-'})`,
+      !!r && r.verdictCount === 2 && r.skips.length === 0,
+      'the skip override demoted a real verdict — a script that CAN fail is reported as one that cannot, which is this ticket\'s defect committed by its fix'
+    );
+    check(
+      `the sweep is green for it (exited ${run.code})`,
+      run.code === 0,
+      'a correct script was failed by the check — the false positive, in a new place'
     );
   }
 } finally {
