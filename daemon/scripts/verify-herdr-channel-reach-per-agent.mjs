@@ -264,12 +264,29 @@ try {
   // ═════════════════════════════════════════════════════════════════════════
   rule('§2  the composition in daemon.ts — record first, runtime second');
   // ═════════════════════════════════════════════════════════════════════════
+  // ⚠ THE SPELLING MOVED UNDER KAN-319, AND THE CLAIM DID NOT. This asserted a
+  // literal `channelSpawnReach.get(address) ?? herdrBridge.channelReach` until a
+  // THIRD source went in front of both — the client's own argv, measured off the
+  // connection the frame is about to go down, for panes herdr restored behind
+  // the daemon's back and which no Butchr spawn ever described. The composition
+  // now lives in `reachForRoute` (channel-client-reach.ts), where KAN-319's own
+  // proof drives it directly rather than reading it as text.
+  //
+  // **What this section still owns is KAN-497's half of it**, and it is asserted
+  // rather than assumed: that the per-agent record is consulted FOR THIS ADDRESS
+  // and ahead of the runtime. A refactor that dropped `spawn:` entirely, or that
+  // fed it the runtime's answer, would pass KAN-319's proof and fail here.
+  const channelReachClosure = daemonCode.match(
+    /const channelReach = \(address: \{ type: string; key: string \}\): ChannelReach =>[\s\S]{0,600}?\}\);/
+  )?.[0];
   check(
-    /const channelReach = \(address: \{ type: string; key: string \}\): ChannelReach =>\s*\n\s*channelSpawnReach\.get\(address\) \?\? herdrBridge\.channelReach;/.test(
-      daemonCode
-    ),
+    Boolean(channelReachClosure) &&
+      /reachForRoute\(\{/.test(channelReachClosure) &&
+      channelReachClosure.indexOf('spawn: channelSpawnReach.get(address)') > -1 &&
+      channelReachClosure.indexOf('runtime: herdrBridge.channelReach') >
+        channelReachClosure.indexOf('spawn: channelSpawnReach.get(address)'),
     'channelReach(address) reads the per-agent record FIRST and the runtime second',
-    daemonCode.split('\n').filter((l) => l.includes('channelReach =')).join('\n')
+    channelReachClosure ?? daemonCode.split('\n').filter((l) => l.includes('channelReach =')).join('\n')
   );
 
   // ⚠ THE TRAP, ASSERTED RATHER THAN WRITTEN DOWN. An agent with no record must
