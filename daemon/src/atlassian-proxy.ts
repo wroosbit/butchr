@@ -2788,7 +2788,20 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       'Review — so a ticket filed with an empty assignee can never be staffed, reads exactly ' +
       'like one nobody has triaged, and nothing surfaces the difference (KAN-577). If the ' +
       'daemon cannot establish which account it is, this call is REFUSED and nothing is ' +
-      'filed, rather than filing a ticket that could never start. A failure is loud.',
+      'filed, rather than filing a ticket that could never start. A failure is loud. ' +
+      '⚠ READ THE `stamped` BLOCK ON THE ANSWER, WHICH IS ALWAYS THERE (KAN-646): it names ' +
+      'the account the ticket actually landed on, read back from Jira rather than assumed, ' +
+      'and `stamped.verified: false` means the confirming read could not be made — never ' +
+      'that it agreed. `matchesCredential: false` means the assignee this daemon sent and ' +
+      'the creator Jira recorded name DIFFERENT accounts, which can only happen if the ' +
+      'stamp did not come from the live credential; the ticket is filed and pointing at the ' +
+      'wrong account, so say so on it rather than repairing it silently. ' +
+      '⚠ AND MATCHING IS NOT THE SAME AS CORRECT: this daemon holds one credential and can ' +
+      "name one account, so it stamps its OWN, and it cannot know whether that is the " +
+      'account the ticket belonged on. A supervisor filing a Task on one machine for work ' +
+      'meant to run on another gets a consistent stamp that is still wrong, and no surface ' +
+      'anywhere catches that yet — read `stamped.assignee.displayName` and check it is who ' +
+      'you meant (KAN-646 want 2, undecided).',
     inputSchema: {
       type: 'object',
       properties: {
