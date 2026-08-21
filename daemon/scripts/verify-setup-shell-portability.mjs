@@ -4,13 +4,39 @@
 // WHAT FAILURE THIS WOULD CATCH: step 1's keyring probe, written for six months
 // as `secret-tool lookup service butchr account jira; echo "exit=$?"`. That line
 // is a hard parse error under `fish` — and `fish` is the login shell on the
-// second machine KAN-568 was rehearsed against. The expensive part is not the
-// error: fish runs the command BEFORE the `$?` and only then refuses, so the
-// reader sees the lookup's output, sees no `exit=` line, and has been handed a
-// step whose entire content is the exit code with the exit code missing.
-// Measured on both shells at the time of writing: bare, bash prints `exit=127`
-// and fish prints no `exit=` line at all; wrapped in `bash -c '...'`, both print
-// `exit=127`.
+// second machine KAN-568 was rehearsed against. A step whose entire content is
+// the exit code is handed to the reader with the exit code missing.
+//
+// KAN-602 CORRECTED WHAT HAPPENS AROUND THAT LINE, and the correction is the
+// reason §5 exists. The unit fish refuses is the whole PARSE UNIT, not the one
+// line, so a `$?` anywhere in a FILE discards that file entire — including the
+// steps ABOVE the offending line, which never run. Exit 127. Measured on 3.7.0
+// and independently on 3.3.1 in review: the file case does NOT vary.
+//
+// ⚠ THE ONE-LINE CASE DOES VARY BY VERSION, AND THAT IS WHY §4 ASSERTS SO
+// LITTLE. Two measurements of `fish -c 'echo FIRST_RAN; echo "exit=$?"'`:
+//
+//   fish 3.7.0 -> stdout ""            exit 127   the whole unit is refused
+//   fish 3.3.1 -> stdout "FIRST_RAN"   exit 121   the first command DOES run
+//
+// INVARIANT across both: no `exit=` line, and a non-zero exit. That is the
+// hazard, and it is all §4 asserts. Whether the preceding command's output
+// survives is REPORTED by §4 and never asserted.
+//
+// This bullet has now been wrong in BOTH directions, which is the reason for
+// the care. The original header said the command before the `$?` always runs,
+// and §4 was written to REQUIRE `FIRST_RAN` — false on 3.7.0. KAN-602's first
+// attempt corrected it to require FIRST_RAN's ABSENCE — false on 3.3.1, caught
+// by the reviewer running the proof on their own machine. A version-dependent
+// assertion here is the worst shape available: see the CI note below.
+//
+// ⚠ CI CANNOT CATCH EITHER ERROR, AND THAT IS STRUCTURAL. §4 and §5 skip when
+// `fish` is absent, and the runner has no fish — so `verify-runnable-set` went
+// green on a head whose §4 failed on two different maintainers' machines for
+// two opposite reasons. A wrong assertion in these sections is invisible to CI
+// forever and red only on somebody's laptop. Keeping §4's claim narrow is the
+// mitigation; actually running these sections in CI is not done and is not
+// covered by anything.
 //
 // It catches the general case rather than that one line: any NEW `$?` added to a
 // fenced `bash` block in SETUP.md that is not inside an explicit `bash -c`
@@ -22,10 +48,13 @@
 // a `bash -c` wrapper, and prove the detector fires on a synthetic hazard it was
 // never told about. Node builtins only — no build, no daemon, no herdr, no
 // credential, no network, no wall clock. §4 runs the hazard against a REAL
-// `fish` to show that it executes the preceding command and then withholds the
-// exit code; a runner without `fish` on PATH announces that section SKIPPED, and
-// a skip is printed as a skip and never counted as a pass. It is not mocked: the
-// whole value of §4 is that the parse error is fish's own.
+// `fish` to show that a single parse unit is refused ENTIRE -- the command before
+// the `$?` does not run either; a runner without `fish` on PATH announces that
+// section SKIPPED, and a skip is printed as a skip and never counted as a pass.
+// It is not mocked: the whole value of §4 is that the parse error is fish's own.
+// §5 does the same for FILE mode — it writes a four-step fixture with a `$?` on
+// line 3 and shows that none of the four ran, steps 1 and 2 above it included —
+// and skips identically.
 //
 // READS SOURCE AS TEXT, NOT `dist`. This script imports nothing from
 // `daemon/dist`, so a failed build does not invalidate its verdict — it read
@@ -42,11 +71,25 @@
 // currently appear in SETUP.md and a check with no subject cannot go red:
 // `[[ ]]`, `<<<`, `$(( ))`, arrays, and `VAR=x cmd` prefix assignment.
 //
-// §4 below runs the hazard against a real `fish` when one is present. That is
-// the only section that observes the world rather than the text; where `fish` is
-// absent it SKIPS, and a skip is not a pass. Nobody covers the fish behaviour on
+// §4 and §5 run the hazard against a real `fish` when one is present. They are
+// the only sections that observe the world rather than the text; where `fish` is
+// absent they SKIP, and a skip is not a pass. Nobody covers the fish behaviour on
 // a runner without fish installed, and this header is the edge of what is
 // claimed.
+//
+// §5 SUPPLIES ITS OWN INPUT — it writes the fixture it then asserts on — so per
+// KAN-145 it proves that fish refuses such a file, NEVER that any line in
+// `docs/SETUP.md` is such a file. §2 covers that second question, statically and
+// over the real document. Neither executes SETUP.md's own blocks, and nothing
+// does: no section here would notice a step that is portable but wrong. That
+// gap is the clean-install rehearsal's (KAN-568), not this script's.
+//
+// §5 RUNS ITS POSITIVE CONTROL FIRST, and the order is load-bearing rather than
+// tidy: its finding is that NO marker file was created, and an empty directory
+// is equally what a typo in the fixture would produce. The control writes the
+// same fixture with the `$?` removed and requires all three markers, so a §5
+// that cannot create a marker at all reports a failed control instead of
+// reporting the abort it was hoping for.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -155,12 +198,15 @@ console.log('\n§3 the detector fires on a hazard it was never told about');
   }
 }
 
-console.log('\n§4 live: the hazard against a real fish (skips where fish is absent)');
+console.log('\n§4 live: ONE parse unit -- the hazard under `fish -c` (skips where fish is absent)');
+let fishUsable = false;
 {
   const probe = spawnSync('fish', ['--version'], { encoding: 'utf8' });
   if (probe.error || probe.status !== 0) {
     console.log('  SKIP  no usable `fish` on PATH -- the class is unobserved here, which is not a pass.');
   } else {
+    fishUsable = true;
+    const version = (probe.stdout || 'fish, version unknown').trim();
     const script = 'echo FIRST_RAN; echo "exit=$?"';
     const bare = spawnSync('fish', ['-c', script], { encoding: 'utf8' });
     const wrapped = spawnSync('fish', ['-c', `bash -c '${script}'`], { encoding: 'utf8' });
@@ -172,18 +218,110 @@ console.log('\n§4 live: the hazard against a real fish (skips where fish is abs
     // was being written.
     const answered = (out) => out.split('\n').some((l) => l.startsWith('exit='));
 
-    if (bare.stdout.includes('FIRST_RAN') && !answered(bare.stdout)) {
-      ok('bare `$?`: fish runs the first command and withholds the exit code -- the silent half is real');
+    // ASSERT ONLY THE LEG THAT DOES NOT VARY BY VERSION. Two measurements, and
+    // they disagree about the OTHER leg:
+    //   fish 3.7.0 -- stdout "",           exit 127: the whole unit is refused
+    //   fish 3.3.1 -- stdout "FIRST_RAN",  exit 121: the first command DOES run
+    // What both do is withhold the exit code, and that is the hazard the
+    // document is about. Whether the preceding command's output survives is
+    // not, so it is reported below rather than asserted -- an assertion on it
+    // is red on one maintainer's laptop and green on another's, in a section
+    // CI always skips. Both wordings this replaces got that wrong in opposite
+    // directions: the original REQUIRED `FIRST_RAN`, and KAN-602's first
+    // attempt required its ABSENCE.
+    if (!answered(bare.stdout)) {
+      ok('bare `$?`: fish withholds the exit code -- the hazard, and it holds on every fish measured');
     } else {
-      fail(`bare \`$?\` under fish did not reproduce the documented behaviour. stdout: ${JSON.stringify(bare.stdout)}`);
+      fail(`bare \`$?\` under \`fish -c\` yielded an exit code, so the hazard is absent here. stdout: ${JSON.stringify(bare.stdout)}`);
     }
 
+    if (bare.status !== 0) {
+      ok(`bare \`$?\`: fish exits ${bare.status} rather than succeeding`);
+    } else {
+      fail('bare `$?` under `fish -c` exited 0 -- fish did not refuse the construct at all.');
+    }
+
+    // REPORTED, NEVER ASSERTED -- see above.
+    const precedingRan = bare.stdout.includes('FIRST_RAN');
+    console.log(`  note  ${version}: the command before the \`$?\` ${precedingRan ? 'DID' : 'did NOT'} run, exit ${bare.status}. Version-dependent; not asserted.`);
+
+    // Also the POSITIVE CONTROL for the assertion above: it proves this harness
+    // can observe an `exit=` line at all, so its absence up there is evidence.
     if (answered(wrapped.stdout)) {
-      ok('`bash -c`-wrapped: fish yields the exit code, same as bash');
+      ok('`bash -c`-wrapped: fish yields the exit code, same as bash -- positive control for the assertion above');
     } else {
       fail(`\`bash -c\` wrapper did not restore the exit code under fish. stdout: ${JSON.stringify(wrapped.stdout)}`);
     }
   }
+}
+
+console.log('\n\u00a75 live: FILE mode -- a `$?` anywhere discards the WHOLE file (skips where fish is absent)');
+if (!fishUsable) {
+  console.log('  SKIP  no usable `fish` on PATH -- the class is unobserved here, which is not a pass.');
+} else {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kan602-setup-portability-'));
+  const NAMES = ['step1', 'step2', 'step4'];
+  const at = (name) => path.join(dir, name);
+  const ran = () => NAMES.filter((name) => fs.existsSync(at(name)));
+  const clear = () => { for (const name of NAMES) fs.rmSync(at(name), { force: true }); };
+
+  // Side effects rather than stdout: a marker file says a line RAN, where
+  // absent stdout is also what a redirect or a quiet command would look like.
+  // The probe sits on line 3, BELOW two steps, because the finding this section
+  // exists for is that the steps ABOVE it do not run either.
+  const fixture = (probeLine) => [
+    `touch '${at('step1')}'`,
+    `touch '${at('step2')}'`,
+    probeLine,
+    `touch '${at('step4')}'`,
+    '',
+  ].join('\n');
+
+  // POSITIVE CONTROL FIRST. \u00a75's finding is that no marker exists, and an empty
+  // directory is exactly what a broken fixture would also produce -- so prove
+  // this fixture can create markers before reading their absence as evidence.
+  clear();
+  const controlPath = at('control.fish');
+  fs.writeFileSync(controlPath, fixture('echo "exit=ok"'));
+  const control = spawnSync('fish', [controlPath], { encoding: 'utf8' });
+  const controlRan = ran();
+  if (control.status === 0 && controlRan.length === NAMES.length) {
+    ok(`positive control: the same fixture without a \`$?\` runs all ${NAMES.length} steps and exits 0`);
+  } else {
+    fail(`positive control did not run -- an absence measured below would prove nothing. exit=${control.status}, ran=${JSON.stringify(controlRan)}, stderr=${JSON.stringify(control.stderr)}`);
+  }
+
+  clear();
+  const hazardPath = at('hazard.fish');
+  fs.writeFileSync(hazardPath, fixture('echo "exit=$?"'));
+  const hazard = spawnSync('fish', [hazardPath], { encoding: 'utf8' });
+  const hazardRan = ran();
+
+  if (hazardRan.length === 0) {
+    ok('file mode: a `$?` on line 3 discards the whole file -- steps 1 and 2, ABOVE it, never ran');
+  } else {
+    fail(`file mode ran ${hazardRan.length} step(s) where none was expected: ${JSON.stringify(hazardRan)}`);
+  }
+
+  if (hazard.status !== 0) {
+    ok(`file mode exits ${hazard.status} -- the reader is not told the file succeeded`);
+  } else {
+    fail('file mode exited 0 on a file fish refused to read -- the abort would be silent.');
+  }
+
+  // The wrapped form is what SETUP.md ships, and it must survive file mode.
+  clear();
+  const wrappedPath = at('wrapped.fish');
+  fs.writeFileSync(wrappedPath, fixture(`bash -c 'echo "exit=$?"'`));
+  const wrapped = spawnSync('fish', [wrappedPath], { encoding: 'utf8' });
+  const wrappedRan = ran();
+  if (wrapped.status === 0 && wrappedRan.length === NAMES.length) {
+    ok('`bash -c`-wrapped: the same file runs end to end under fish, which is why the wrapper is load-bearing');
+  } else {
+    fail(`\`bash -c\` wrapper did not survive file mode. exit=${wrapped.status}, ran=${JSON.stringify(wrappedRan)}`);
+  }
+
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 console.log('');
