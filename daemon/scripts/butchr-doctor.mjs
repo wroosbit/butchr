@@ -18,6 +18,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+// KAN-598. A source import, not a built one: this script's contract is that it
+// runs against a clone nobody has built yet, and `lib/` is plain .mjs for
+// exactly that reason.
+import { readJournal, describeJournalReading } from './lib/journal-reading.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const BUTCHR_DIR = path.join(os.homedir(), '.local', 'share', 'butchr');
@@ -292,6 +296,53 @@ if (tryExec('systemctl', ['--user', 'show-environment']) !== null) {
   }
 } else {
   warn('daemon autostart', 'no systemd --user manager here; the daemon must be started by hand.');
+}
+
+// --- 6b. does journalctl actually carry the daemon's decisions? ----------
+//
+// KAN-598. `StandardOutput=journal` told every operator that
+// `journalctl --user -u butchr-daemon.service` is where this daemon's output
+// goes, and until KAN-598 not one line of it went there: `daemon.ts` sent every
+// record to a file, so the journal held systemd's own lifecycle entries alone.
+//
+// ⚠ THAT STATE IS WHY THIS CHECK IS PHRASED THE WAY IT IS. It is not an error
+// and not an empty read — the command returns real, timestamped, well-formed
+// records, and the honest conclusion from them is "the daemon is running and
+// quiet". On 2026-08-21 an operator grepped that output for a stand-down,
+// matched nothing, and was one sentence from reporting that none had been
+// attempted; the daemon had logged 65, one per minute. So the question asked
+// here is whether a DECISION RECORD is present, never whether the unit has
+// journal output — the second was true throughout the defect.
+
+if (tryExec('systemctl', ['--user', 'show-environment']) !== null) {
+  const loadState = tryExec('systemctl', [
+    '--user', 'show', 'butchr-daemon.service', '-p', 'LoadState', '--value'
+  ]);
+  if (loadState !== 'loaded') {
+    // Not a finding. There is no unit here, so there is no journal to judge —
+    // and section 6 has already said so.
+    pass('daemon journal', 'no butchr-daemon.service on this machine; nothing to read a journal for.');
+  } else {
+    const journal = tryExec('journalctl', [
+      '--user', '-u', 'butchr-daemon.service', '--since', '-6h', '--no-pager'
+    ]);
+    if (journal === null) {
+      warn('daemon journal', 'journalctl did not answer, so what the journal holds is unknown.');
+    } else {
+      const reading = readJournal(journal);
+      if (reading.kind === 'carries-decisions') {
+        pass('daemon journal', `last 6h: ${describeJournalReading(reading)}`);
+      } else {
+        warn(
+          'daemon journal',
+          `${describeJournalReading(reading)}\n` +
+          `The full log is always at ${path.join(BUTCHR_DIR, 'daemon.log')} — start there.\n` +
+          'If this daemon predates KAN-598 it has no mirror to run; deploy and\n' +
+          'restart it: systemctl --user restart butchr-daemon.service'
+        );
+      }
+    }
+  }
 }
 
 // --- 7. can anything actually reach the daemon, and WHICH daemon is it? --
