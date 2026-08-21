@@ -67,5 +67,17 @@ LimitNOFILE=65536:1048576
 
 SyslogIdentifier=butchr-daemon
 
+# KAN-598. Spelled out rather than inherited from systemd's
+# DefaultStandardOutput, for two reasons. It is a promise this unit makes to
+# every operator who reads it — `journalctl --user -u butchr-daemon.service` is
+# the documented route to this daemon's output — and until KAN-598 that promise
+# was false: `daemon.ts` sent every log line to a file and fd 1 received
+# nothing, so the journal held systemd's lifecycle records ALONE. That reads
+# like a healthy, quiet daemon and is not one. The daemon now mirrors its
+# decision log to fd 1 when fd 1 really is the journal; this line is the half
+# of that contract systemd owns, and a distro changing its default must not be
+# able to take it away silently.
+StandardOutput=journal
+
 [Install]
 WantedBy=default.target

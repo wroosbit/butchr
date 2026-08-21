@@ -124,6 +124,7 @@ import {
   type MeasurementGap
 } from './cost-sampler-policy.js';
 import { DaemonLog } from './log-file.js';
+import { journalStreamVerdict, journalSignpost } from './journal-stream.js';
 import { execFileSync } from 'child_process';
 
 // The single long-lived Butchr daemon. Owns all sessions, PTYs, and the
@@ -141,15 +142,84 @@ ensureButchrDir();
 // behind as the lost tail of an append — makes every such search answer "no
 // matches" for lines that are present. See daemon/src/log-file.ts; KAN-422.
 const daemonLog = DaemonLog.open(path.join(BUTCHR_DIR, 'daemon.log'));
+
+// ── KAN-598: make `StandardOutput=journal` true rather than nominal ─────────
+//
+// The unit says the daemon's output goes to the journal. Until now none of it
+// did: the two assignments below send every module's `console` call to the file
+// appender, so fd 1 received nothing for the whole life of this service and
+// `journalctl --user -u butchr-daemon.service` answered with systemd's own
+// lifecycle records alone — 72 lines a day, `[board]` records ever: 0.
+//
+// ⚠ That is a FALSE GREEN and not a missing feature. The command does not
+// error and does not come back empty; it returns real, timestamped, well-formed
+// output, from which the honest conclusion is "the daemon is running and
+// quiet". On 2026-08-21 an operator grepped that output for a stand-down,
+// matched nothing, and was one sentence from publishing "no stand-down was
+// attempted" — while `daemon.log` held 65 of them, one per minute.
+//
+// So the same bytes now go to both places. Which descriptor, and why it is
+// asked rather than assumed:
+//
+//   fd 1, NOT fd 2. `announceToJournal` writes to fd 2 because that is where a
+//   raw-spawned daemon's stderr is captured (`ipc.ts` opens `daemon-spawn.err`
+//   for it) — right for the handful of lines that report a refusal, and exactly
+//   wrong for the whole log, which would bury the load-time crash evidence that
+//   file exists to hold. On a raw spawn fd 1 is `ignore`, so the mirror lands
+//   in /dev/null and costs nothing.
+//
+//   And it is gated on the descriptor actually BEING the journal, not on
+//   `JOURNAL_STREAM` being set: that variable is inherited by every descendant
+//   of the unit, so a verify script's daemon child would see it too and stream
+//   the log into a pipe nobody drains. See `journalStreamVerdict` — it is the
+//   `INVOCATION_ID` trap of KAN-550, refused here by construction.
+const journalStream = journalStreamVerdict(process.env);
+const mirrorToJournal =
+  journalStream.kind === 'journal'
+    ? (entry: string) => {
+        try {
+          process.stdout.write(entry);
+        } catch {
+          // fd 1 can be closed or replaced under a detached process. Losing the
+          // journal copy must never cost the daemon.log copy, and must never
+          // take the daemon down: this is a diagnostic path, and throwing here
+          // would replace the log with a crash.
+        }
+      }
+    : (_entry: string) => {};
+
+/**
+ * Append to `daemon.log` and to nothing else.
+ *
+ * This is what `announceToJournal` is handed, and the reason it exists: that
+ * function puts its lines on fd 2 itself, and under systemd fd 2 is the journal
+ * too — so passing it the mirroring `log` below would print every refusal
+ * twice. A duplicated diagnostic reads as an event that happened twice, which
+ * on the paths that use it is precisely the wrong thing to tell an operator.
+ */
+const logToFileOnly = (line: string) => {
+  daemonLog.append(`[${new Date().toISOString()}] ${line}\n`);
+};
+
 const log = (...args: any[]) => {
   const line = args
     .map((a) => (a instanceof Error ? a.stack : typeof a === 'string' ? a : JSON.stringify(a)))
     .join(' ');
-  daemonLog.append(`[${new Date().toISOString()}] ${line}\n`);
+  const entry = `[${new Date().toISOString()}] ${line}\n`;
+  daemonLog.append(entry);
+  mirrorToJournal(entry);
 };
 // The daemon normally runs detached; shared modules log via console.
 console.log = log;
 console.error = log;
+
+// One line naming the file, for the reader who arrives in the journal. It is
+// not the fix — a startup line is invisible to `--since -60min` six hours
+// later, which is the command that found the defect — but the journal's
+// retention window is not the log's, and this says where the rest is.
+if (journalStream.kind === 'journal') {
+  log(journalSignpost(path.join(BUTCHR_DIR, 'daemon.log')));
+}
 
 // Said out loud rather than healed in silence: the repair is evidence that
 // bytes were lost, and a reader who greps this file wants to know which run
@@ -176,13 +246,13 @@ const bootSelf = describeThisProcess();
 const bootPin = runtimePinVerdict(bootUnit, process.env);
 switch (bootPin.kind) {
   case 'lost':
-    announceToJournal(describeRefusal(bootPin), log);
+    announceToJournal(describeRefusal(bootPin), logToFileOnly);
     process.exit(REFUSED_UNPINNED);
     break;
   case 'lost-acknowledged':
     // Served, but never quietly. The override is a decision, and a decision
     // that leaves no line is indistinguishable from the accident it permits.
-    announceToJournal(describeRefusal(bootPin), log);
+    announceToJournal(describeRefusal(bootPin), logToFileOnly);
     break;
   case 'cannot-tell':
     // Not "fine". We asked and could not be answered, so the pin is unknown
@@ -195,7 +265,7 @@ switch (bootPin.kind) {
           `— runtime ${bootSelf.runtime.mode}, from the ${bootSelf.runtime.source}.`,
         `  This is UNKNOWN, not verified: nothing here has checked it against a unit.`
       ],
-      log
+      logToFileOnly
     );
     break;
   case 'nothing-pinned':
@@ -1634,7 +1704,7 @@ server.on('error', (err: any) => {
           `  To see who is serving at any time:`,
           `    node daemon/scripts/butchr-doctor.mjs`
         ],
-        log
+        logToFileOnly
       );
       process.exit(LOST_TO_UNCONFIGURED);
     });
