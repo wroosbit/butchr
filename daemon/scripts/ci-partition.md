@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 133 |
+| `yes` | 135 |
 | `partial` | 17 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **176** |
+| **total** | **178** |
 
-**150 of 176** run on every pull request.
+**152 of 178** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -109,6 +109,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-env-knobs-documented` | yes | reads `daemon/src/**/*.ts` and `docs/env-knobs.md` off the checkout and matches regexes; node builtins only, no build, no daemon, no herdr, no credential, no network, no terminal, no wall clock. |
 | `verify-exit-path-classifier` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
 | `verify-exit-path-containment` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
+| `verify-exit-path-skip-consultation` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
 | `verify-failure-excerpt-names-the-assertion` | yes | KAN-576. Pure arithmetic over strings, plus one fixture repository built in a temp directory. Needs no daemon, no herdr and no peer. |
 | `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -136,6 +137,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-list-agents-survives-restart` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-mcp-server-build-staleness` | yes | no live daemon, no herdr, no credential, no network. It spawns the built `dist/mcp.js` against a stub socket in a temp HOME, and drives the real registry and the real staleness report in process. |
 | `verify-message-provenance` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-missing-agent-name-vs-agent` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-mjs-stub-arity-matches-seam` | yes | reads `daemon/src/agent-runtime.ts` and the `.mjs` files as TEXT; no build, no socket, no peer, no credential, no network. Unaffected by a failed build, so its verdict is about what you wrote rather than what last compiled. |
 | `verify-never-clipped-exemption-is-bounded` | yes | imports the built module in process and reads one source file as text. No live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-no-build-output-is-committed` | yes | reads `git ls-files` off the checkout and the bytes of the files it names, and builds its fixtures under `os.tmpdir()`; node builtins and `git` only, no build, no daemon, no herdr, no credential, no peer, no network, no terminal, no wall clock. |

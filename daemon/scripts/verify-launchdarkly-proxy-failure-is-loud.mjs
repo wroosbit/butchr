@@ -20,6 +20,26 @@
 // stub under a temporary $HOME; no herdr, no real credential, no peer, no
 // terminal, no network beyond 127.0.0.1.
 //
+// ── HOW THIS SCRIPT READS THE DAEMON LOG, AND WHY IT IS NOT ONE readFileSync ─
+//
+// KAN-571. Sections 4 and 6 assert on lines in `daemon.log`, and until
+// 2026-08-21 each took one `readFileSync` the moment its call returned. That
+// read is ahead of the write by construction: `DaemonLog` holds the file open
+// with a buffered `fs.createWriteStream` (daemon/src/log-file.ts), and the
+// daemon logs its audit line *before* it answers the caller. On CI run
+// 32433221528 this script lost that race and went red on `main`-quality code,
+// printing a line cut off at an opening quote as its evidence — a string no
+// assertion can produce and only a read racing a write can.
+//
+// Both sections now wait for the lines they assert on, through
+// `lib/settled-log.mjs`, which also holds the unfinished trailing fragment
+// apart from the text the positive assertions match against. **No assertion
+// was weakened to do it**: a daemon that never writes these lines still fails,
+// 15 seconds later than before, and the failure now says which of "the log was
+// still being written" and "the audit line is missing" it was, because those
+// two send the reader to different files. Section 6's fixed `sleep(1800)` was
+// deleted rather than lengthened — a longer sleep moves a race.
+//
 // ── THE POSITIVE CONTROL, AND WHY IT IS SECTION 2 ───────────────────────────
 //
 // Section 4's finding is "the call fails, loudly". A broken instrument produces
@@ -77,6 +97,7 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { awaitSettledLog, describeSettledLog } from './lib/settled-log.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
@@ -107,14 +128,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * that tails the child's stdout sees an empty string and every assertion about
  * the log passes vacuously. This script's first run did exactly that: "nothing
  * in the log carries the token" was green against a log it had never read.
+ *
+ * KAN-571: it is also written by a buffered `fs.createWriteStream`, so reading
+ * it the moment the MCP call returns races the flush. See
+ * `lib/settled-log.mjs` for the measurement and for why the trailing fragment
+ * is held apart from the text assertions match on. Section 4 now waits for the
+ * audit line rather than reading once and blaming the daemon.
  */
-function daemonLog() {
-  try {
-    return fs.readFileSync(path.join(butchrDir, 'daemon.log'), 'utf8');
-  } catch {
-    return '';
-  }
-}
+const daemonLogPath = () => path.join(butchrDir, 'daemon.log');
 
 // A setup guard, not a verdict: `process.exit(1)` here says the instrument was
 // never assembled, which is a different thing from a check failing.
@@ -517,33 +538,67 @@ check(
     !revokedText.includes(FAKE_TOKEN.slice(0, 16)),
   revokedText.slice(0, 400)
 );
-// The log, read off disk. A positive control first: if `daemonLog()` returned
-// an empty string the two assertions below would both pass for the wrong
-// reason, which is exactly what this script's first run did.
-const logText = daemonLog();
+// The log, read off disk. A positive control first: if the read returned an
+// empty string the two assertions below would both pass for the wrong reason,
+// which is exactly what this script's first run did.
+//
+// KAN-571: WAIT for the audit line instead of reading once. Both lines this
+// section asserts on are written by the daemon *before* it answers the call
+// that unblocked this script, so the one-shot read that used to sit here was
+// ahead of the flush by construction — it lost that race on CI run
+// 32433221528 and reported a truncated line as a missing one. The wait is on
+// the line's ARRIVAL and changes no assertion: a daemon that never logs the
+// refusal still fails, up to `timeoutMs` later. What it removes is the
+// third-party verdict, and `describeSettledLog` prints which of the three
+// outcomes this run actually had.
+const REFUSAL_AUDIT = /launchdarkly-proxy: task\/KAN-298 → launchdarkly_get_feature_flag GET \S+ → FAILED 401/;
+const SUCCESS_AUDIT = /launchdarkly-proxy: task\/KAN-298 → launchdarkly_list_feature_flags GET \S+ → 200/;
+
+const logWait = await awaitSettledLog(
+  daemonLogPath(),
+  // Both lines, so the wait does not end on the first of the two and then
+  // judge the second against a log the writer is still inside.
+  (settled) => REFUSAL_AUDIT.test(settled) && SUCCESS_AUDIT.test(settled),
+  { timeoutMs: 15_000 }
+);
+console.log(`         (${describeSettledLog(logWait, daemonLogPath())})`);
+
+// POSITIVE assertions read `settled` — whole lines only, so a half-written line
+// can never satisfy one. The NEGATIVE assertion below reads `raw`, which
+// includes the unfinished fragment, because a secret hiding in the tail must
+// still be caught. See lib/settled-log.mjs.
+const logText = logWait.settled;
+
 check(
   'the daemon log was actually read — the checks below are not vacuous',
   /launchdarkly-proxy:/.test(logText),
-  `no launchdarkly-proxy lines in ${path.join(butchrDir, 'daemon.log')}; ` +
-    `the log is ${logText.length} bytes and its stdout said: ${on.log.join('').slice(0, 300)}`
+  `no launchdarkly-proxy lines in ${daemonLogPath()}; ` +
+    `the log is ${logWait.raw.length} bytes (${logText.length} settled) and its stdout said: ` +
+    `${on.log.join('').slice(0, 300)}`
 );
 check(
   "and the log carries no token, in any encoding",
-  !logText.includes(FAKE_TOKEN) &&
-    !logText.includes(encodeURIComponent(FAKE_TOKEN)) &&
-    !logText.includes(Buffer.from(FAKE_TOKEN).toString('base64')) &&
-    !logText.includes(FAKE_TOKEN.slice(0, 16)),
-  logText.split('\n').filter((l) => l.includes('launchdarkly')).slice(-4).join('\n')
+  // `raw`, deliberately: every byte that reached the disk, fragment included.
+  !logWait.raw.includes(FAKE_TOKEN) &&
+    !logWait.raw.includes(encodeURIComponent(FAKE_TOKEN)) &&
+    !logWait.raw.includes(Buffer.from(FAKE_TOKEN).toString('base64')) &&
+    !logWait.raw.includes(FAKE_TOKEN.slice(0, 16)),
+  logWait.raw.split('\n').filter((l) => l.includes('launchdarkly')).slice(-4).join('\n')
 );
 check(
   'the audit line records the refusal as well as the successes',
-  /launchdarkly-proxy: task\/KAN-298 → launchdarkly_get_feature_flag GET \S+ → FAILED 401/.test(logText),
-  logText.split('\n').filter((l) => l.includes('launchdarkly-proxy')).slice(-4).join('\n')
+  REFUSAL_AUDIT.test(logText),
+  // KAN-571: say WHICH failure this is. "still being written" sends the reader
+  // to the read; "missing" sends them to the proxy. Reporting the second when
+  // it was the first is the defect this ticket was filed for.
+  `${describeSettledLog(logWait, daemonLogPath())}\n` +
+    logText.split('\n').filter((l) => l.includes('launchdarkly-proxy')).slice(-4).join('\n')
 );
 check(
   'and it recorded the successful reads too, so the log can answer "what has this credential done"',
-  /launchdarkly-proxy: task\/KAN-298 → launchdarkly_list_feature_flags GET \S+ → 200/.test(logText),
-  logText.split('\n').filter((l) => l.includes('launchdarkly-proxy')).slice(0, 4).join('\n')
+  SUCCESS_AUDIT.test(logText),
+  `${describeSettledLog(logWait, daemonLogPath())}\n` +
+    logText.split('\n').filter((l) => l.includes('launchdarkly-proxy')).slice(0, 4).join('\n')
 );
 
 credentialAccepted = true;
@@ -603,17 +658,36 @@ const hijack = startDaemon({
   BUTCHR_LAUNCHDARKLY_API_ORIGIN: 'https://evil.example.invalid'
 });
 daemon = hijack.child;
-await sleep(1800);
-const hijackLog = daemonLog();
+
+// KAN-571: this read had the same shape as section 4's — a fixed `sleep(1800)`
+// and then one `readFileSync`. A fixed sleep is not a fix for a race, it is a
+// bet on how long a flush takes on the busiest runner that will ever run this,
+// and the bet is invisible when it loses. Wait for the two lines instead; the
+// sleep is gone rather than lengthened.
+const CLAMP_REFUSAL = /is not a loopback address — REFUSED/;
+const CLAMP_KEPT = /using https:\/\/app\.launchdarkly\.com/;
+
+const hijackWait = await awaitSettledLog(
+  daemonLogPath(),
+  (settled) => CLAMP_REFUSAL.test(settled) && CLAMP_KEPT.test(settled),
+  { timeoutMs: 15_000 }
+);
+console.log(`         (${describeSettledLog(hijackWait, daemonLogPath())})`);
+const hijackLog = hijackWait.settled;
+
 check(
   'a non-loopback origin override is REFUSED and says so',
-  /is not a loopback address — REFUSED/.test(hijackLog),
-  hijackLog.split('\n').filter((l) => l.includes('REFUSED') || l.includes('loopback')).slice(-4).join('\n')
+  CLAMP_REFUSAL.test(hijackLog),
+  `${describeSettledLog(hijackWait, daemonLogPath())}\n` +
+    hijackLog.split('\n').filter((l) => l.includes('REFUSED') || l.includes('loopback')).slice(-4).join('\n')
 );
 check(
   'and the real LaunchDarkly origin is kept rather than the attacker-supplied one',
-  /using https:\/\/app\.launchdarkly\.com/.test(hijackLog) && !hijackLog.includes('evil.example.invalid — OK'),
-  hijackLog.split('\n').filter((l) => l.includes('launchdarkly:')).slice(-4).join('\n')
+  // The positive half reads settled; the negative half reads `raw`, so an
+  // attacker-supplied origin sitting in a not-yet-finished line still fails it.
+  CLAMP_KEPT.test(hijackLog) && !hijackWait.raw.includes('evil.example.invalid — OK'),
+  `${describeSettledLog(hijackWait, daemonLogPath())}\n` +
+    hijackLog.split('\n').filter((l) => l.includes('launchdarkly:')).slice(-4).join('\n')
 );
 
 // ── verdict ────────────────────────────────────────────────────────────────
