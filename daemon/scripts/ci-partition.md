@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 127 |
+| `yes` | 128 |
 | `partial` | 17 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **170** |
+| **total** | **171** |
 
-**144 of 170** run on every pull request.
+**145 of 171** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -62,6 +62,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Every section that ASSERTS derives from stated facts, so no verdict here moves with the load, the disk pressure or the free memory of the host. |
 | `verify-agent-connection-identity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-name-brands-have-one-home` | yes | reads `daemon/src/**/*.ts` as TEXT and asserts against it in process. No build, no `dist`, no live daemon, no herdr, no credential, no peer, no terminal, no network, and it writes nothing: the red-drive flags rewrite an in-memory copy of the source rather than the tree. |
+| `verify-agent-name-fits-herdr` | yes | imports `daemon/dist` and reads `daemon/src` as text, both in process. No live daemon, no herdr, no credential, no network, no terminal, no peer, and it writes nothing outside memory. §1-§3 exercise pure exported functions (`agentNameProblem`, `assertAgentNameFitsHerdr`, `computeBoardDiff`); §4 and §5 read the tree; none of them spawns anything. §6 DOES shell out to herdr and is therefore behind `--against-herdr`, which CI never passes and which is not a default: without the flag it prints SKIP and asserts nothing, so the classification above is a claim about the run CI performs. |
 | `verify-agent-power-controls` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-preemption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-resumption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
