@@ -359,15 +359,24 @@ console.log('\n6. an unstaffable ticket is visible on BoardHealth, not just in t
     assigneeDisplayName: assigneeAccountId ? 'Wroos Bit' : null
   });
 
-  // The partitioned query returns one properly assigned ticket; the diagnostic
-  // returns that one AND an unassigned one the partitioned query can never see.
-  const make = (diagnosticOutcome) =>
+  // The partitioned query returns one properly assigned ticket; the reporting
+  // queries return that one AND an unassigned one the partitioned query can
+  // never see.
+  //
+  // ⚠ THREE QUERIES SINCE KAN-597, AND THE ROUTING IS BY JQL RATHER THAN BY
+  // CALL ORDER. `assignee IS EMPTY AND statusCategory != Done` is the one whose
+  // rows reach `health.unstaffable`; the diagnostic still feeds `explainAbsence`
+  // and `nearMisses` and is deliberately left on the same stubbed outcome here,
+  // because what this section is asserting is the *published* field. A stub that
+  // matched on anything but the query string would silently start answering a
+  // different question the next time a query is added.
+  const make = (reportingOutcome) =>
     new BoardReconciler({
       jira: {
         searchBoard: async (jql) =>
           jql.includes('assignee = currentUser()')
             ? { ok: true, issues: [row('KAN-100', 'In Progress', ACCOUNT)] }
-            : diagnosticOutcome
+            : reportingOutcome
       },
       runningAgents: () => [],
       activate: async () => ({ success: true }),
@@ -387,28 +396,42 @@ console.log('\n6. an unstaffable ticket is visible on BoardHealth, not just in t
   });
   await seen.reconcileOnce();
   const health = seen.health();
-  const listed = (health?.unstaffable ?? []).map((m) => m.key);
-  console.log(`    health.unstaffable: ${JSON.stringify(health?.unstaffable)}`);
-  if (!listed.includes('KAN-568')) {
+  const report = health?.unstaffable;
+  // Read `answered` before the tickets, which is the same discipline the field
+  // now forces on every reader: since KAN-597 the failing branch has no ticket
+  // list at all, so `report.tickets` is `undefined` rather than `[]` and a
+  // reader that went straight for it would be handed the comfortable answer.
+  const listed = report?.answered === true ? report.tickets.map((m) => m.key) : null;
+  console.log(`    health.unstaffable: ${JSON.stringify(report)}`);
+  if (listed === null) {
+    fail('6', `the unstaffable report did not answer: ${JSON.stringify(report)}`);
+  } else if (!listed.includes('KAN-568')) {
     fail('6', `the unassigned In Progress ticket is not on BoardHealth: ${JSON.stringify(listed)}`);
   } else if (listed.includes('KAN-100')) {
     fail('6', 'a properly assigned ticket was reported as unstaffable');
   } else {
-    pass('6', 'the unassigned ticket is named on health.unstaffable and the assigned one is not');
+    pass('6', 'the unassigned ticket is named on health.unstaffable.tickets and the assigned one is not');
   }
 
-  // The red arm: a diagnostic that did not answer must not read as a clean
+  // The red arm: a reporting query that did not answer must not read as a clean
   // board. This is the assertion that can go false — and the one that matters,
-  // because `[]` is the comfortable answer.
+  // because "there are none" is the comfortable answer. KAN-597 moved the
+  // distinction from `[] versus null` into the shape, so what is checked here is
+  // that the failing branch carries no ticket list to be mistaken for one.
   const blind = make({ ok: false, backOff: false, error: 'Atlassian said 503' });
   await blind.reconcileOnce();
-  const blindHealth = blind.health();
-  console.log(`    health.unstaffable (diagnostic failed): ${JSON.stringify(blindHealth?.unstaffable)}`);
-  if (blindHealth?.unstaffable !== null) {
-    fail('6', `a failed diagnostic reported ${JSON.stringify(blindHealth?.unstaffable)} ` +
-      'rather than null — "nobody looked" is being reported as "there are none"');
+  const blindReport = blind.health()?.unstaffable;
+  console.log(`    health.unstaffable (reporting query failed): ${JSON.stringify(blindReport)}`);
+  if (blindReport?.answered !== false) {
+    fail('6', `a failed reporting query reported ${JSON.stringify(blindReport)} ` +
+      'rather than answered: false — "nobody looked" is being reported as "there are none"');
+  } else if ('tickets' in blindReport) {
+    fail('6', 'the failing branch carries a `tickets` key, which is the value a reader ' +
+      'can mistake for a clean board — the shape is supposed to make that unconstructible');
+  } else if (typeof blindReport.detail !== 'string' || !blindReport.detail) {
+    fail('6', `the failing branch carries no detail: ${JSON.stringify(blindReport)}`);
   } else {
-    pass('6', 'a failed diagnostic reports null, so a blind cycle cannot read as a clean board');
+    pass('6', 'a failed reporting query reports answered: false with no ticket list at all');
   }
 }
 

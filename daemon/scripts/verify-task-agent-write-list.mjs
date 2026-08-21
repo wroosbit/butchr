@@ -302,7 +302,15 @@ const SERVED = [
   ['claim the ticket by assigning it', 'assign **{{KEY}}** to yourself', 'atlassian_edit_issue'],
   ['move it to In Progress and In Review', 'transition it to **In Progress**', 'atlassian_transition_issue'],
   ['comment on its own ticket', 'Post progress updates or completion status back to the Jira issue', 'atlassian_add_comment'],
-  ['file a parented follow-up', '`createJiraIssue` takes a `parent` field', 'atlassian_create_issue'],
+  // KAN-597 rewrote this needle, and the reason is the point rather than
+  // maintenance. It used to be "`createJiraIssue` takes a `parent` field" —
+  // which pinned the mandate to the name of the ONE create tool whose door has
+  // no assignee guard, so satisfying this check required the brief to keep
+  // naming it. The mandate is unchanged and the brief still carries it; what it
+  // no longer does is name that tool as the way to meet it. The needle is now
+  // the mandate itself, which is tool-neutral and cannot be satisfied by naming
+  // a tool at all.
+  ['file a parented follow-up', 'carries a parent epic, and you set it at creation', 'atlassian_create_issue'],
   ['link that follow-up to its own ticket', 'link it `Relates` to **{{KEY}}**', 'atlassian_create_issue_link']
 ];
 

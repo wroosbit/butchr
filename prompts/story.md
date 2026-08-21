@@ -192,6 +192,27 @@ works, but nothing goes looking: a backfill re-parented 74 tickets on
 2026-08-07 and four more were filed unparented within the day, by four different
 agents, because a backfill does not reach the next agent that files something.
 
+⚠ **File through `atlassian_create_issue` on the `butchr` server, which is the
+only create tool your workspace has while the proxy is on** — and know why,
+because the reason outlives the arrangement. More than one door reaches this
+site and **only one of them assigns the ticket**: the proxy sets the assignee
+from the daemon's own account and refuses when it cannot, while the official
+server's `assignee_account_id` is optional, undefaulted and unwarned, and the
+web UI assigns nothing either. An unassigned ticket **can never be staffed** —
+`BOARD_JQL` is `assignee = currentUser() AND status IN ("In Progress", "In
+Review")` — and it reads exactly like one nobody has triaged. 104 had
+accumulated by 2026-08-21, and three more were born unassigned in the ninety
+minutes after the proxy's create path was fixed, by an agent that knew the rule.
+
+⚠ **KAN-603 narrowed that to one door and did not close the class**: the
+official server is not provisioned while the proxy is on, but the gate is the
+proxy mode, an install with it `off` still gets that server as its only route,
+and nothing gates the web UI. **So the rule is not the mechanism**:
+`boardControl.health.unstaffable` on `butchr_list_agents` reports every open
+unassigned ticket whichever door it came through (KAN-597), because the
+reconciler reads the board rather than the call. If you ever file by a route
+that is not the proxy, set the assignee yourself and read the ticket back.
+
 **The parent is the epic, never the story.** Jira refuses `parent: {{KEY}}` on a
 Task — both sit at `hierarchyLevel 0` — and an agent that tries it and stops
 there has produced an orphan. Seven were produced that way on 2026-08-07, three

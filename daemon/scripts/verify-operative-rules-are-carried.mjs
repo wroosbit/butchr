@@ -1834,6 +1834,43 @@ const RULES = [
       ],
     },
   },
+  {
+    // KAN-597. The bullet this pins is the one that used to name
+    // `createJiraIssue` bare, and naming it bare is how three tickets were born
+    // unassigned in the ninety minutes after the proxy's assignee guard
+    // deployed. All three prompts that file tickets carry it, because a caution
+    // on one prompt while two others route agents to the unguarded tool is the
+    // same defect this ticket is about, one level up.
+    //
+    // ⚠ THE LAST PATTERN IS THE LOAD-BEARING ONE AND IS NOT DECORATION. It
+    // requires each prompt to say the rule is NOT the mechanism and to name the
+    // field that is. `task/KAN-552` had read the staffing rule at activation
+    // and filed two unassigned tickets hours apart anyway — *"knowing the rule
+    // did not help, which is the argument for the default rather than for more
+    // care."* A prompt caution that presented itself as the fix would be this
+    // sweep enforcing precisely the belief that evidence refutes, so the sweep
+    // requires the disclaimer rather than merely tolerating it.
+    id: 'H-32',
+    title:
+      'the assignee guard is on the proxy door only — prefer it when filing, and read `boardControl.health.unstaffable` rather than trusting the rule',
+    carriedBy: Object.fromEntries(
+      ['prompts/task.md', 'prompts/story.md', 'prompts/epic.md'].map((f) => [
+        f,
+        [
+          /atlassian_create_issue/,
+          /only one of them assigns the ticket/i,
+          /can never be staffed/i,
+          /assignee_account_id/,
+          // Deliberately tolerant of a qualifier between the noun and the verb
+          // ("the rule above is not the mechanism"): what must be present is the
+          // disclaimer, and pinning its exact word order makes this entry a
+          // style check that goes red on a rewrite that says the same thing.
+          /(rule|bullet)[^.]{0,24}\bis not the mechanism/i,
+          /boardControl\.health\.unstaffable/,
+        ],
+      ])
+    ),
+  },
 ];
 
 /**
