@@ -295,7 +295,7 @@ const { IntegrationStateStore } = await import(
 const { PRIORITY_EPIC, PRIORITY_STORY, PRIORITY_TASK } = await import(
   pathToFileURL(path.join(distDir, 'priority.js'))
 );
-const { buildConfigureAgentPayload } = await import(
+const { buildConfigureAgentPayload, CRABCAST_OWNER } = await import(
   pathToFileURL(path.join(distDir, 'crabcast-runtime.js'))
 );
 const { CrabCastLink, defaultCrabCastSocket } = await import(
@@ -339,6 +339,21 @@ for (const rank of RANKS) {
   payloads.push({ ...rank, workDir, payload, resolved });
 }
 console.log('');
+// ── KAN-552: `owner` rides the same payload, and the same round trip ────────
+// CrabCast's `owner` is how an application finds its own agents WITHOUT parsing
+// their names — their README's words. It shipped in their contract v11 and was
+// set on 0 of 235 rows until this change, so "we send it" and "they store it"
+// are two different claims and this script is the only place that separates
+// them. Asserted against the exported constant rather than a literal `'butchr'`
+// here, so a rename cannot leave the check passing against a stale copy.
+for (const p of payloads) {
+  check(
+    p.payload.owner === CRABCAST_OWNER,
+    `the payload for a ${p.type} agent declares owner "${CRABCAST_OWNER}"`,
+    `got ${JSON.stringify(p.payload.owner)}`
+  );
+}
+
 for (const p of payloads) {
   check(
     p.payload.priority === p.expect,
@@ -419,6 +434,18 @@ if (!fs.existsSync(socketPath)) {
       p.status?.config?.priority === p.payload.priority,
       `agent_status reports config.priority ${p.payload.priority} for ${p.type} — IT ROUND-TRIPPED`,
       `reported ${JSON.stringify(p.status?.config?.priority)}`
+    );
+    // ── KAN-552: the same question asked of `owner` ──────────────────────────
+    // This is the assertion that separates "Butchr sends it" from "CrabCast
+    // keeps it", and it is not hypothetical for this field: `owner` was set on
+    // 0 of 235 rows before this change, so nothing on either side had ever
+    // exercised the path. A field their contract accepts and discards answers
+    // `success: true` exactly as one it stores — KAN-294's defect, which is why
+    // §6 exists at all.
+    check(
+      p.status?.config?.owner === CRABCAST_OWNER,
+      `agent_status reports config.owner "${CRABCAST_OWNER}" for ${p.type} — OWNER ROUND-TRIPPED`,
+      `reported ${JSON.stringify(p.status?.config?.owner)}`
     );
   }
 

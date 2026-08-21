@@ -357,12 +357,30 @@ if (payload) {
   // and no directory history. `claude --continue` would be a resume, and this
   // file's neighbouring check is what refuses it: the resume guard reads the
   // payload for resume-shaped values and is not widened here.
+  // KAN-552 ADDED `owner`, AND I RE-READ §1 RATHER THAN APPENDING TO THIS LIST.
+  // The claim §1 makes is that at the flip an agent starts FRESH: there is no
+  // `--continue` on the activate path, Butchr sends no resume, and CrabCast's
+  // durable record holds no entry for any workspace on this machine.
+  //
+  // `owner` is the literal string `butchr`, declaring which application owns the
+  // agent. It is CrabCast's own field (their contract v11), opaque to them,
+  // matched exactly and never interpreted. It names no conversation, no
+  // transcript, no session id and no directory history, so it cannot carry a
+  // resume — the same test `args` was admitted under.
+  //
+  // The other half of §1's claim is about whether a RECORD EXISTS, and `owner`
+  // does not touch that either: `configure_agent` already creates the record and
+  // this is one more field on it. It changes what the record SAYS, never whether
+  // there is one, so no workspace becomes resumable that was not before.
+  //
+  // Checked and stated in the pull request, which is what this trigger asks for.
   const KNOWN = [
     'action',
     'args',
     'chargeable',
     'launcher',
     'mcpServers',
+    'owner',
     'path',
     'preemptable',
     'priority',
