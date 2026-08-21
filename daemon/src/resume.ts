@@ -59,8 +59,8 @@ export const RESUME_ENV: Record<string, string> = {
  * The CLI keys history on the cwd with every non-alphanumeric character
  * replaced by a dash — verified against the directories this machine has
  * already accumulated, e.g.
- * `/home/brooswit/.local/share/butchr/workspaces/task/kan-21` →
- * `-home-brooswit--local-share-butchr-workspaces-task-kan-21` (the doubled
+ * `/home/alex/.local/share/butchr/workspaces/task/kan-21` →
+ * `-home-alex--local-share-butchr-workspaces-task-kan-21` (the doubled
  * dash is the `/` and the `.` of `/.local`).
  *
  * This is knowledge of another program's internals, so it is isolated here and
