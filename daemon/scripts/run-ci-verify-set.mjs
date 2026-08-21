@@ -98,6 +98,7 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import { readPartition, partitionProblems, REPO_ROOT, RUNS_IN_CI, CLASSES, summaryParts } from './lib/ci-partition.mjs';
 import { EXIT_INCOMPLETE } from './lib/verdict-exit.mjs';
+import { failureExcerpt } from './lib/failure-excerpt.mjs';
 
 const verbose = process.argv.includes('--verbose');
 const listOnly = process.argv.includes('--list');
@@ -262,9 +263,17 @@ for (const r of set) {
   }
   if (sandbox) fs.rmSync(home, { recursive: true, force: true });
   if (!ok || verbose) {
-    const out = `${run.stdout ?? ''}${run.stderr ?? ''}`.trimEnd();
-    const tail = out.split('\n').slice(verbose && ok ? -3 : -25).join('\n');
-    console.log(tail.replace(/^/gm, '      '));
+    // KAN-576: a window, and one that says so. `.slice(-25)` printed the tail
+    // and nothing else, so a proof failing anywhere but at its end produced a
+    // red naming no assertion — see `lib/failure-excerpt.mjs` for the measured
+    // case. The notices are inside the returned lines, so this call cannot
+    // print the excerpt without printing that it is one.
+    const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+    // `rescue: !ok` because a child that PASSED has no failure to lift: hunting
+    // its output for the word would only pull prose into `--verbose`'s 3-line
+    // summary. The notice still applies to it — a 3-line window is a window.
+    const excerpt = failureExcerpt(out, { tail: verbose && ok ? 3 : 25, rescue: !ok });
+    console.log(excerpt.lines.join('\n').replace(/^/gm, '      '));
     if (timedOut) console.log(`      (killed at the ${TIMEOUT_MS / 1000}s ceiling)`);
     console.log('');
   }

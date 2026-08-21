@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 134 |
+| `yes` | 135 |
 | `partial` | 17 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **177** |
+| **total** | **178** |
 
-**151 of 177** run on every pull request.
+**152 of 178** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -110,6 +110,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-exit-path-classifier` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
 | `verify-exit-path-containment` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
 | `verify-exit-path-skip-consultation` | yes | writes fixture trees under `os.tmpdir()` and runs the shipped sweep against them as a child process. Node builtins only: no build, no daemon, no herdr, no credential, no network, no terminal. |
+| `verify-failure-excerpt-names-the-assertion` | yes | KAN-576. Pure arithmetic over strings, plus one fixture repository built in a temp directory. Needs no daemon, no herdr and no peer. |
 | `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
