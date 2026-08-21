@@ -302,11 +302,23 @@ rule('§4  The spawn listener fires, carrying BUTCHR’s verdict');
 // PREMISE 3. `daemon.ts` gates supervision on `spawn.channelEnabled !== true`,
 // and that field must mean "did this spawn carry OUR flag".
 
+// ⚠ NO LONGER ANCHORED ON THE GUARD BEING THE LISTENER'S FIRST STATEMENT
+// (KAN-497). It was, and this regex required it, until KAN-497 put the
+// spawn-reach record above the guard — deliberately, because `channelEnabled:
+// false` is the verdict most worth keeping and a listener that returns first
+// drops it. The premise this section rests on is unchanged and is what is
+// asserted now: supervision is gated on the spawn's own verdict, on `!== true`,
+// with no other conditional ahead of it. Comments are stripped first so that
+// prose in the block above the guard can neither satisfy nor defeat the match.
+const daemonCode = daemonSrc
+  .split('\n')
+  .filter((l) => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
+  .join('\n');
 check(
-  /setAgentSpawnedListener\(\(session, spawnedAt, spawn\) => \{\s*\n\s*if \(spawn\.channelEnabled !== true\) return;/.test(
-    daemonSrc
+  /setAgentSpawnedListener\(\(session, spawnedAt, spawn\) => \{(?:(?!\bif\b)[\s\S])*?if \(spawn\.channelEnabled !== true\) return;/.test(
+    daemonCode
   ),
-  "daemon.ts's listener still gates on spawn.channelEnabled !== true",
+  "daemon.ts's listener still gates on spawn.channelEnabled !== true, and on nothing before it",
   daemonSrc.split('\n').filter((l) => l.includes('channelEnabled')).join('\n')
 );
 check(

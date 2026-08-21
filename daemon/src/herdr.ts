@@ -1094,17 +1094,34 @@ export class HerdrBridge implements AgentRuntime {
    * `developmentChannelFlags()`, which reads the kill switch. So `'not-loaded'`
    * would be wrong here and `'loaded'` would be a lie.
    *
-   * ⚠ **What is missing is a PER-AGENT record, and the reason is worth
-   * carrying.** The launch decision is taken once, at spawn; the emission
-   * decision is taken per message. An agent spawned while the switch was off
-   * has no flag and keeps none for its whole life, while the daemon will
-   * happily resolve it and write frames its client discards — launchers.ts has
-   * said so in prose since KAN-246 and nothing has ever been able to answer it
-   * for a particular agent. `AgentSpawn.channelEnabled` is exactly that fact
-   * and it crosses `setAgentSpawnedListener` already; what does not exist is
-   * anywhere that keeps it. That is **KAN-497**, and until it lands this member
-   * must stay `'unknown'` — guessing `'not-loaded'` here would take a working
-   * fleet off channels for a fact nobody established.
+   * ---------------------------------------------------------------------------
+   * ⚠ WHAT KAN-497 CHANGED, AND WHY THIS MEMBER DID NOT MOVE
+   * ---------------------------------------------------------------------------
+   *
+   * This docblock used to end *"until KAN-497 lands this member must stay
+   * `'unknown'`"*, which read as a promise that the value would change. **It has
+   * landed and the value is still `'unknown'`, deliberately**, because the
+   * per-agent fact was never expressible here: this member answers about a
+   * runtime's SPAWN SHAPE, and the question *"did the pane serving `task/KAN-1`
+   * get the flag?"* is not a question about a shape. `AgentRuntime.channelReach`
+   * says so in as many words, and a per-address method here would have been a
+   * second answer to a question the record now owns — KAN-145's defect shape,
+   * one fact with two implementations.
+   *
+   * So the record lives where the address does. `AgentSpawn.channelEnabled` is
+   * the fact, taken at the one site that takes it and crossing
+   * `setAgentSpawnedListener` on every spawn; `channel-spawn-reach.ts` is what
+   * keeps it; and `daemon.ts`'s `channelReach(address)` reads the record first
+   * and falls through to **this member** where there is none.
+   *
+   * ⚠ **Which makes `'unknown'` load-bearing rather than residual, and it must
+   * not be sharpened.** It is now the answer for an agent with no record — one
+   * that outlived a daemon restart, since the store is in memory on purpose.
+   * Those agents are fine: they keep whatever argv they were started with, and
+   * `'unknown'` routes to them exactly as this daemon routed before KAN-495.
+   * Replacing it with `'not-loaded'` would take that whole population off
+   * channels for a fact nobody established, which is the collapse KAN-497 names
+   * as its trap and `ChannelReach` exists to prevent.
    */
   public readonly channelReach = 'unknown' as const;
 

@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 126 |
+| `yes` | 127 |
 | `partial` | 16 |
 | `quarantined` | 3 |
-| `no` | 22 |
-| **total** | **167** |
+| `no` | 23 |
+| **total** | **169** |
 
-**142 of 167** run on every pull request.
+**143 of 169** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -110,6 +110,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-herdr-channel-reach-per-agent` | yes | imports the built daemon modules and asserts against them in process, over unix sockets it creates under os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. EVERY section runs on a runner, which is why this is `yes` rather than `partial` and why it tallies no skips: the real-spawn proof is a separate file, `verify-herdr-channel-reach-live.mjs`, and a green here has never claimed anything about it. |
 | `verify-herdr-spawn-argv` | yes | reads `daemon/src/*.ts` as TEXT and imports the built daemon's `herdr-health.js`. No herdr binary, no server, no pane, no PTY. |
 | `verify-idle-fleet-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Section 1 reads this machine's real /proc for its machine facts and says so. |
 | `verify-integration-enablement` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -222,6 +223,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-crabcast-second-activation-resumes` | no | needs a real CrabCast daemon, real capacity for one agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
+| `verify-herdr-channel-reach-live` | no | it needs a real herdr on PATH, spawns two real `claude` panes and writes the fleet's own channel kill switch. None of those exist on a runner, and none of them can be mocked without destroying the only thing this script is for: that the `AgentSpawn` is the product's rather than one a harness built. |
 | `verify-message-provenance-live` | no | needs a real daemon, herdr, a pane and a live Claude Code agent — the provenance it checks is what a model actually received. |
 | `verify-no-attach-steal` | no | takes the key of a live agent as its argument and attaches to it; there is nothing to pass in CI. |
 | `verify-pretrust-survives-concurrency` | no | every stage needs a real spawn, and it refuses to run at all when herdr is absent rather than pretending otherwise. |
