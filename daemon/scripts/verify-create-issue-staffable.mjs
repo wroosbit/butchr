@@ -49,6 +49,28 @@
 // unstaffable report reaching `BoardHealth`, where `butchr_list_agents` shows
 // it, instead of only `daemon.log`.
 //
+// ---------------------------------------------------------------------------
+// ⚠ TWO THINGS THIS SCRIPT LEARNED BY MISSING THEM, RECORDED SO THE NEXT EDITOR
+// DOES NOT
+// ---------------------------------------------------------------------------
+//
+//  1. `handleAtlassianProxyCall`'s BODY IS LENGTH-SENSITIVE.
+//     `verify-atlassian-proxy-write-scope.mjs` reads it as text and requires
+//     `refuseWriteOutsideCaller(` within 3000 characters of the method's name.
+//     An inline comment block added here pushed it to 3372 and reddened that
+//     required check while the write policy was being applied exactly as
+//     before. That is why the account-id resolution lives in the
+//     `proxyBuildContext` helper. **Put explanation in the helper's docblock,
+//     never in the handler's body.**
+//
+//  2. `build`'s SECOND PARAMETER MUST STAY OPTIONAL. Every caller under
+//     `daemon/scripts` is JavaScript and passes one argument; a required
+//     parameter throws at all of them. §5 now drives that case.
+//
+// Neither was caught by this script when it was written — both were caught by
+// CI, on scripts this change was not about. The lesson is the one the sweep's
+// own output states: run `run-ci-verify-set.mjs` before pushing, not after.
+//
 // Usage:
 //   cd daemon && npm run build
 //   node scripts/verify-create-issue-staffable.mjs
@@ -266,13 +288,25 @@ console.log('\n5. every operation that declares the need refuses without it (and
   }
 
   const routerText = readFileSync(path.join(srcDir, 'router.ts'), 'utf8');
-  const resolves = /operation\.needsSelfAccountId[\s\S]{0,120}?this\.jira\.selfAccountId\(\)/.test(
-    routerText
-  );
+
+  // The resolution lives in `proxyBuildContext`, deliberately OUT of
+  // `handleAtlassianProxyCall`'s body — see that helper's docblock, and see the
+  // note at the head of this file about why the handler's body is
+  // length-sensitive. So this asserts the helper's two halves, not an inline
+  // block: it must gate on the declaration and it must ask the daemon.
+  const resolves =
+    /proxyBuildContext[\s\S]{0,600}?operation\.needsSelfAccountId[\s\S]{0,300}?selfAccountId\(\)/.test(
+      routerText
+    );
   if (!resolves) {
     fail('5', 'router.ts does not resolve selfAccountId for operations that declare the need');
   } else {
-    pass('5', 'router.ts resolves the account id from the daemon before building');
+    pass('5', 'router.ts resolves the account id from the daemon, gated on the declaration');
+  }
+  if (!/await this\.proxyBuildContext\(operation\)/.test(routerText)) {
+    fail('5', 'the proxy handler does not call proxyBuildContext');
+  } else {
+    pass('5', 'the proxy handler resolves a build context before building');
   }
   if (!/operation\.build\(args, context\)/.test(routerText)) {
     fail('5', 'router.ts does not pass the build context to operation.build');
@@ -281,12 +315,24 @@ console.log('\n5. every operation that declares the need refuses without it (and
   }
   // The resolve is an `await`, and the coercion window's safety argument is that
   // nothing awaits inside it. Order is the assertion.
-  const iResolve = routerText.indexOf('this.jira.selfAccountId()');
+  const iResolve = routerText.indexOf('await this.proxyBuildContext(operation)');
   const iBegin = routerText.indexOf('beginBuildCoercions();', iResolve);
   if (iResolve < 0 || iBegin < 0 || iResolve > iBegin) {
     fail('5', 'the account-id await is not outside the beginBuildCoercions window');
   } else {
     pass('5', 'the await sits before beginBuildCoercions, so the window stays synchronous');
+  }
+
+  // A one-argument call must REFUSE rather than throw. Every caller under
+  // `daemon/scripts` is JavaScript and passes one argument, so a required
+  // context parameter reddened two unrelated proxy proofs with
+  // `Cannot read properties of undefined` — KAN-493's shape, caught in CI
+  // rather than here because this script did not think to try it.
+  const oneArg = createIssue.build(ARGS);
+  if (!('error' in oneArg)) {
+    fail('5', `a one-argument build produced a request instead of refusing: ${JSON.stringify(oneArg)}`);
+  } else {
+    pass('5', 'a one-argument build refuses rather than throwing — the default fails closed');
   }
 }
 

@@ -4313,6 +4313,36 @@ export class MessageRouter {
    * written down is "any agent can read as far as the daemon can", and an
    * unattributed read makes that radius unobservable as well as wide.
    */
+  /**
+   * What the DAEMON knows about itself and the caller cannot supply (KAN-577).
+   *
+   * Resolved only for operations that declared {@link
+   * ProxyOperationBase.needsSelfAccountId}, so the request this costs is paid by
+   * `atlassian_create_issue` and by nothing else. `JiraIssueTypeService`
+   * caches it, so the happy path pays once per daemon.
+   *
+   * ⚠ **It is awaited HERE rather than beside `build`, and that is deliberate
+   * twice over.** `beginBuildCoercions()` opens a window whose entire safety
+   * argument is that `build` is synchronous and therefore cannot interleave
+   * with another request — an `await` inside it would quietly delete that
+   * argument. And keeping the await out of `handleAtlassianProxyCall`'s body
+   * keeps that body short, which `verify-atlassian-proxy-write-scope.mjs`
+   * depends on: it reads the handler as TEXT and looks for
+   * `refuseWriteOutsideCaller(` within a bounded window of the method's name.
+   * An inline block here pushed that call past the window and reddened a
+   * required check while the policy was still being applied exactly as before.
+   *
+   * A null answer is not a failure of this method — it is the credential
+   * declining to say who it is, and the operation's own `build` turns it into a
+   * loud refusal rather than an unassigned ticket.
+   */
+  private async proxyBuildContext(
+    operation: ReturnType<typeof operationByTool> & object
+  ): Promise<ProxyBuildContext> {
+    if (!operation.needsSelfAccountId) return { selfAccountId: null };
+    return { selfAccountId: await this.jira!.selfAccountId() };
+  }
+
   private async handleAtlassianProxyCall(data: any, respond: Respond) {
     const tool = typeof data?.tool === 'string' ? data.tool : '';
     const args = data?.args && typeof data.args === 'object' ? data.args : {};
@@ -4352,17 +4382,7 @@ export class MessageRouter {
     // tool it cannot find, so reaching here means it found this one.
     const operation = operationByTool(tool)!;
 
-    // KAN-577: what the DAEMON knows and the caller cannot supply. Resolved
-    // here, before `build`, and only for the operations that declared they need
-    // it — so the request this costs is paid by `atlassian_create_issue` and by
-    // nothing else. It is awaited *outside* the `beginBuildCoercions()` window
-    // below on purpose: that window's whole safety argument is that `build` is
-    // synchronous and therefore cannot interleave with another request, and an
-    // `await` inside it would quietly delete that argument.
-    const selfAccountId = operation.needsSelfAccountId
-      ? await this.jira.selfAccountId()
-      : null;
-    const context: ProxyBuildContext = { selfAccountId };
+    const context = await this.proxyBuildContext(operation);
 
     // KAN-502: what the markdown→ADF conversion had to change about the agent's
     // content, collected across every body this operation converts. `build` is

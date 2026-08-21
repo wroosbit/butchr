@@ -2806,7 +2806,16 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       },
       required: ['projectKey', 'issueType', 'summary']
     },
-    build(args, context) {
+    // `context` is DEFAULTED rather than required, and the default is the
+    // refusing one. Every caller in `daemon/scripts` is JavaScript and passes
+    // one argument, so a required parameter throws `Cannot read properties of
+    // undefined` at them — which is what it did, reddening two proxy proofs
+    // that had nothing to do with this change. That is KAN-493's finding
+    // exactly: a seam gains a parameter, and the `.mjs` mirrors no compiler
+    // checks fall off it. Defaulting to `{ selfAccountId: null }` makes a
+    // one-argument call take the refusal branch below — fails closed, and
+    // loudly, rather than throwing or filing an unassigned ticket.
+    build(args, context = { selfAccountId: null }) {
       const project = projectKey(args);
       if ('error' in project) return project;
       const type = typeName(args, 'issueType', 'a Jira issue type', 'Task');

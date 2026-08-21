@@ -349,9 +349,9 @@ carries no triage meaning, and it cannot.** KAN-577 was required to settle this
 rather than assume it, because the convenient answer and the correct one are
 different questions and only one of them was checked.
 
-**The mechanical meaning is the reconciler's partition.** `BOARD_JQL` is
-`assignee = currentUser() AND status IN ("In Progress", "In Review")`, and
-`currentUser()` is Jira's own resolution of the credential this daemon holds. A
+**The mechanical meaning is the reconciler's partition.** `BOARD_JQL` is `assignee = currentUser() AND status IN ("In Progress", "In Review")`, and `currentUser()` is Jira's own resolution of the credential this daemon holds.
+
+A
 ticket that fails the assignee half is not merely unprioritised — it is
 **unreachable**: it is never started, and if an agent for it is somehow running
 it is spared rather than stood down (KAN-342). Every machine authenticates as its
@@ -396,6 +396,11 @@ assigned. An empty assignee no longer means "untriaged" and never did — it now
 means only "filed before 2026-08-21, or by a route that is not the proxy, or
 cleared by hand", and `boardControl.health.unstaffable` on `butchr_list_agents`
 is where that shows up.
+
+<!-- constant-pin: BOARD_JQL
+     src: daemon/src/board-reconcile.ts
+     sha256: 8d6e23d84e19
+     says: `BOARD_JQL` is `assignee = currentUser() AND status IN ("In Progress", "In Review")`, and `currentUser()` is Jira's own resolution of the credential this daemon holds. -->
 
 ### 🔎 Why Jira types need a lookup
 
