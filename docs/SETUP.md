@@ -379,6 +379,14 @@ quietly `inactive`. And a daemon that would have come up without the `BUTCHR_AGE
 at all — it exits `4`, printing what it expected and what it got. Set
 `BUTCHR_ALLOW_UNPINNED_RUNTIME=1` if you mean it.
 
+**That refusal is scoped to the daemon this machine's agents actually talk to**
+(KAN-574). A `verify-` script spawns a real daemon into a throwaway `$HOME`, so
+it claims a socket of its own and cannot displace the fleet — the pin does not
+apply to it, and running the suite on a machine with the unit installed needs no
+knob set. Until KAN-574 it did: nine CI-runnable scripts failed on every
+developer machine and passed on every runner, because a runner has no unit for
+the guard to disagree with.
+
 If the sidepanel reports it cannot reach the daemon, the order to check things
 in is: `butchr-doctor` first, then `~/.local/share/butchr/daemon.log`, then
 `/tmp/native-host-sh.log` (which records which `node` Chrome's minimal
