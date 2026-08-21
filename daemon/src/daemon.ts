@@ -9,6 +9,20 @@ import { PromptSourceKeeper } from './prompt-source.js';
 import { HerdrBridge, agentNameFor } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { createAgentRuntime, type RuntimeSwitchReport } from './runtime-switch.js';
+import { RUNTIME_ENV_VAR } from './runtime-switch.js';
+import {
+  REFUSED_UNPINNED,
+  LOST_TO_CONFIGURED,
+  LOST_TO_UNCONFIGURED,
+  announceToJournal,
+  daemonProvenanceReport,
+  describeRefusal,
+  describeThisProcess,
+  incumbentIsConfigured,
+  queryDaemonUnit,
+  runtimePinVerdict,
+  type DaemonProvenanceReport
+} from './daemon-provenance.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
@@ -23,7 +37,14 @@ import { createAtlassianIntegration } from './integrations/atlassian-integration
 // import, so a re-import is a diff a reviewer sees rather than a line that
 // blends in. `verify-channel-spawn-verdict.mjs` §4 asserts the absence.
 import { coreMcpServerDefinitions } from './launchers.js';
-import { BUTCHR_DIR, SOCKET_PATH, ensureButchrDir, onJsonLines, writeJsonLine } from './ipc.js';
+import {
+  BUTCHR_DIR,
+  DAEMON_UNIT,
+  SOCKET_PATH,
+  ensureButchrDir,
+  onJsonLines,
+  writeJsonLine
+} from './ipc.js';
 import { resolveUserPath, which } from './env.js';
 import { getStalenessReport, formatStalenessReport, RECONNECT_SETTLE_MS } from './staleness.js';
 import { readFdUsage, isFdCeilingUnraised, describeFdCeiling, checkHerdrVersion } from './herdr-health.js';
@@ -42,6 +63,7 @@ import {
   routeChannelMessage,
   writeChannelSwitch
 } from './channel.js';
+import type { ChannelReach } from './channel.js';
 import {
   freshConnectionFrom,
   oneWatcherPerAddress,
@@ -55,6 +77,7 @@ import {
   ChannelSelfCheckStore,
   runChannelSelfCheck
 } from './channel-selfcheck.js';
+import { ChannelSpawnReachStore } from './channel-spawn-reach.js';
 import { ChannelLivenessProbe } from './channel-liveness.js';
 import {
   GuardianPoker,
@@ -137,6 +160,51 @@ if (daemonLog.repair.repaired) {
   );
 } else if (daemonLog.repair.error) {
   log(`WARNING: could not repair daemon.log: ${daemonLog.repair.error}`);
+}
+
+// ── KAN-550, AC3: a runtime this machine pins cannot be dropped in silence ──
+//
+// This runs before anything else the daemon does, and before the socket, so a
+// daemon that is not the one the operator configured never becomes the one
+// serving the fleet. `announceToJournal` rather than `log` because the whole
+// criterion is *"in the journal"* — see its docblock for why `console.error`
+// is not that.
+const bootUnit = queryDaemonUnit();
+const bootSelf = describeThisProcess();
+const bootPin = runtimePinVerdict(bootUnit, process.env);
+switch (bootPin.kind) {
+  case 'lost':
+    announceToJournal(describeRefusal(bootPin), log);
+    process.exit(REFUSED_UNPINNED);
+    break;
+  case 'lost-acknowledged':
+    // Served, but never quietly. The override is a decision, and a decision
+    // that leaves no line is indistinguishable from the accident it permits.
+    announceToJournal(describeRefusal(bootPin), log);
+    break;
+  case 'cannot-tell':
+    // Not "fine". We asked and could not be answered, so the pin is unknown
+    // rather than absent, and the difference is said out loud rather than
+    // resolved toward the comfortable reading.
+    announceToJournal(
+      [
+        `butchr: could not ask systemd what this machine pins (${bootPin.detail}).`,
+        `  Serving with ${RUNTIME_ENV_VAR}=${bootSelf.runtime.rawValue ?? '(not set)'} ` +
+          `— runtime ${bootSelf.runtime.mode}, from the ${bootSelf.runtime.source}.`,
+        `  This is UNKNOWN, not verified: nothing here has checked it against a unit.`
+      ],
+      log
+    );
+    break;
+  case 'nothing-pinned':
+    log(
+      `runtime pin: nothing pinned on this machine (${bootPin.because}); ` +
+        `runtime ${bootSelf.runtime.mode}, from the ${bootSelf.runtime.source}`
+    );
+    break;
+  case 'carried':
+    log(`runtime pin: carrying ${RUNTIME_ENV_VAR}=${bootPin.value} as ${DAEMON_UNIT} declares it`);
+    break;
 }
 
 process.on('uncaughtException', (err) => {
@@ -294,14 +362,25 @@ promptSourceKeeper.start();
 const { runtime: herdrBridge, report: agentRuntimeReport } = createAgentRuntime({ log });
 
 /**
- * Whether the runtime in service can put a channel frame in front of a model
- * (KAN-495).
+ * What each spawn decided about its own agent's channel (KAN-497).
+ *
+ * Written by the `setAgentSpawnedListener` closure further down — the one
+ * writer — and read only through {@link channelReach}. See
+ * `channel-spawn-reach.ts` for why it is a store of its own rather than a field
+ * on {@link channelSelfChecks}, which is where KAN-497's sketch proposed
+ * putting it: the shape is identical and the lifetime is not.
+ */
+const channelSpawnReach = new ChannelSpawnReachStore();
+
+/**
+ * Whether a channel frame written to THIS agent can reach a model (KAN-495,
+ * KAN-497).
  *
  * ONE READER, consulted by every route, for the reason channel.ts gives about
  * the kill switch and KAN-145 gives about everything: a fact with two
  * implementations is a fact with a wrong copy, and the copy nobody exercises is
- * the wrong one. A thunk rather than a captured value so it is read per send —
- * the runtime is chosen once at boot and a cutover is exactly when a value
+ * the wrong one. A function rather than a captured value so it is read per send
+ * — the runtime is chosen once at boot and a cutover is exactly when a value
  * captured then is wrong.
  *
  * **What it is asserting at each route, said once here rather than five times.**
@@ -312,8 +391,37 @@ const { runtime: herdrBridge, report: agentRuntimeReport } = createAgentRuntime(
  * `routeChannelMessage` call site below passes this, and the listing carrier
  * asks it too — KAN-274 made those one function precisely so a row cannot
  * report a carrier the next send will not take.
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠ TWO SOURCES, AND THE ORDER BETWEEN THEM IS THE WHOLE OF KAN-497
+ * ---------------------------------------------------------------------------
+ *
+ * It took no argument until KAN-497 and answered `herdrBridge.channelReach` for
+ * every agent alike. That is the right answer for a runtime whose spawn shape
+ * decides it — CrabCast derives its own from the argv it sends (KAN-496) — and
+ * it is not answerable that way for herdr, whose spawns **can** carry the flag:
+ * whether one did depends on the kill switch as it stood when that pane
+ * started, and agents outlive switch flips. So `HerdrBridge.channelReach`
+ * answered `'unknown'` for the entire fleet, honestly and uselessly.
+ *
+ * **The per-agent record wins where there is one, and the runtime answers where
+ * there is not.** Both halves are load-bearing:
+ *
+ * - The record first, because it is about *this pane's argv*, which is the
+ *   thing that actually decides whether the client renders the frame. It is
+ *   written at the spawn, from the same call that composed the command line.
+ * - ⚠ The runtime second, and **never `'not-loaded'` as a default**. An agent
+ *   with no record is one that outlived a daemon restart, not one that cannot
+ *   hear us — the record is in memory on purpose. Falling back to
+ *   `'not-loaded'` would take a working fleet off channels for a fact nobody
+ *   established, which is the collapse `ChannelReach` exists to prevent and the
+ *   one KAN-497 names as its trap. Under herdr the fall-through is `'unknown'`,
+ *   which routes exactly as this daemon routed before KAN-495; under CrabCast
+ *   it is that runtime's own derived answer, which is better than a shrug and
+ *   is untouched by this.
  */
-const channelReach = () => herdrBridge.channelReach;
+const channelReach = (address: { type: string; key: string }): ChannelReach =>
+  channelSpawnReach.get(address) ?? herdrBridge.channelReach;
 
 // The one piece of state that outlives the machine. Everything else here —
 // the session map, herdr's panes, the extension's view — dies in a power cut,
@@ -629,6 +737,28 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
         connectionId: connection.id,
         workspaceType: connection.address.type,
         workspaceKey: connection.address.key
+      });
+      return true;
+    }
+    case 'daemon_provenance': {
+      // KAN-550, AC2. "Which daemon is actually serving, and where did its
+      // configuration come from?" — answered here beside `hello` for the reason
+      // this whole layer exists: it is a question about *which socket this is*,
+      // and the router has no socket.
+      //
+      // **It is answered over the socket rather than out of a file on purpose.**
+      // Whoever replies to this is the process serving the socket; that cannot
+      // be stale, and a pidfile can. A confident record of a daemon that is not
+      // the one running is the exact artifact KAN-550 is about — it is what
+      // `systemctl is-active` was for two minutes on 2026-08-20.
+      //
+      // The unit is re-read per request rather than cached from boot: a drop-in
+      // added after the daemon started changes what this machine pins, and an
+      // operator asking this question at that moment wants today's answer.
+      reply({
+        action: 'daemon_provenance_response',
+        success: true,
+        provenance: daemonProvenanceReport(queryDaemonUnit(), describeThisProcess())
       });
       return true;
     }
@@ -989,9 +1119,33 @@ const handleConnectionAction = (socket: net.Socket, msg: any): boolean => {
 // with `?? false` would be green on every agent anybody tests with and wrong on
 // exactly the population the third state exists for. See AgentSpawn.
 herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {
+  const address = { type: session.type, key: session.key };
+
+  // ⚠ KEPT BEFORE THE RETURN, AND THE PLACEMENT IS THE ENTIRE TICKET (KAN-497).
+  //
+  // The guard below is about SUPERVISION — whether there is a channel startup
+  // worth watching — and it is correct that a non-channel spawn needs none. But
+  // the verdict itself is worth exactly as much on the `false` branch as on the
+  // `true` one, and more: `false` is what says *do not write frames to this
+  // agent*, which is the answer KAN-495 spent 75 unsupervised minutes not
+  // having. Recording only the `true` case would keep the fact for the agents
+  // that never needed it and drop it for the ones that did.
+  //
+  // `record` is handed the raw three-state verdict rather than a boolean this
+  // line derives, so the `null` that means "no spawn decided this" stays
+  // distinguishable from the `false` that means "decided, and no channel" —
+  // see `reachFromSpawnVerdict`, which stores nothing for `null` on purpose.
+  // Anything that collapsed them here would be green on every agent anybody
+  // tests with and wrong on exactly the population the third state exists for.
+  const recorded = channelSpawnReach.record(address, spawn.channelEnabled);
+  log(
+    `channel reach for ${describeAddress(address)}: ` +
+      (recorded ?? "unrecorded (the spawn decided nothing — 'null' is not 'false')") +
+      ` — spawn said channelEnabled=${JSON.stringify(spawn.channelEnabled)}`
+  );
+
   if (spawn.channelEnabled !== true) return;
 
-  const address = { type: session.type, key: session.key };
   // THIS AGENT IS BEING RE-SPAWNED, SO WHATEVER WAS KNOWN ABOUT ITS CHANNEL IS
   // NO LONGER KNOWN (KAN-248). Dropped before the new check rather than
   // overwritten after it: a verdict that never held a connection is released by
@@ -1239,7 +1393,15 @@ const server = net.createServer((socket) => {
           // KAN-495, and the row must ask it because the route does: KAN-274
           // made these one function precisely so a listing cannot report a
           // carrier the next send will not take.
-          reach: channelReach(),
+          //
+          // ⚠ ASKED ABOUT **THIS** ADDRESS SINCE KAN-497. It used to be called
+          // with no argument, which made every row in the listing carry one
+          // fleet-wide answer — and under herdr that answer was `'unknown'` for
+          // everybody, so the row could not tell an agent that hears us from one
+          // that cannot. The route reads the same function with the same
+          // address, so the property KAN-274 bought is unchanged: a row still
+          // cannot report a carrier the next send will not take.
+          reach: channelReach(address),
           switchPath: CHANNEL_SWITCH_PATH
         });
       },
@@ -1323,6 +1485,51 @@ const server = net.createServer((socket) => {
   });
 });
 
+/**
+ * Ask the daemon on the other end of an open socket to describe itself.
+ *
+ * Used by the loser of the singleton race, which is the one moment where the
+ * question *"who is serving?"* has an answer nothing else can supply: the
+ * incumbent is right there on the other end of a connected socket, and it is by
+ * construction the process that holds it.
+ *
+ * **Every way this can go wrong ends in `null`, and the caller reads `null` as
+ * NOT configured.** A daemon built before this action existed will answer with
+ * an error, a wedged one will answer with nothing, and a truncated line will
+ * not parse — and all three mean *nobody has established that the right daemon
+ * is serving*, which is the reading that keeps the failure loud. The timeout
+ * exists because a hung incumbent must not hang the unit that is trying to
+ * start: it would turn a diagnosable failure into a `Type=simple` service that
+ * never finishes starting.
+ */
+const askIncumbent = (
+  socket: net.Socket,
+  done: (report: DaemonProvenanceReport | null) => void
+): void => {
+  let settled = false;
+  const finish = (report: DaemonProvenanceReport | null) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    try {
+      socket.end();
+    } catch {}
+    done(report);
+  };
+  const timer = setTimeout(() => finish(null), 2000);
+  onJsonLines(
+    socket,
+    (msg: any) => {
+      if (msg?.action !== 'daemon_provenance_response') return;
+      finish(msg.success === true && msg.provenance ? (msg.provenance as DaemonProvenanceReport) : null);
+    },
+    () => finish(null)
+  );
+  socket.once('error', () => finish(null));
+  socket.once('close', () => finish(null));
+  if (!writeJsonLine(socket, { action: 'daemon_provenance' })) finish(null);
+};
+
 let retriedStaleSocket = false;
 server.on('error', (err: any) => {
   if (err.code !== 'EADDRINUSE') {
@@ -1332,9 +1539,50 @@ server.on('error', (err: any) => {
   // Socket file exists: either a live daemon owns it, or it's stale from a crash.
   const probe = net.connect(SOCKET_PATH);
   probe.once('connect', () => {
-    probe.end();
-    log('Another daemon is already running; exiting.');
-    process.exit(0);
+    // ── KAN-550, AC1: losing the race is only a no-op if the WINNER is right ─
+    //
+    // This used to `log(...)` and `process.exit(0)` unconditionally, and the
+    // unit file argued for it: losing to a daemon a client already started is
+    // "a correct no-op", and `Restart=always` would crash-loop the loser.
+    // That reasoning holds exactly while the winner is a daemon the operator
+    // would have chosen. On 2026-08-20 it was a child of Chrome carrying no
+    // BUTCHR_* at all, and the clean exit is precisely what left `Restart=`
+    // with nothing to act on — `systemctl start` reported success, left
+    // nothing running, and the unit sat `inactive` while the fleet ran on an
+    // unpinned runtime and a doubled cap.
+    //
+    // So ask the winner who it is, and let the answer choose the exit code.
+    askIncumbent(probe, (report) => {
+      const configured = incumbentIsConfigured(report);
+      const who =
+        report === null
+          ? 'it did not answer a provenance request (too old to know the action, or wedged)'
+          : report.summary;
+      if (configured) {
+        // The ordinary, correct case: systemd's own daemon is already up, or a
+        // deliberate restart raced itself. Still a no-op, and still exit 0.
+        log(`Another daemon is already running and is configured; exiting. It says: ${who}`);
+        process.exit(LOST_TO_CONFIGURED);
+      }
+      announceToJournal(
+        [
+          `butchr: LOST THE SOCKET TO A DAEMON THAT IS NOT THE CONFIGURED ONE.`,
+          `  The process holding ${SOCKET_PATH} ${who}`,
+          ``,
+          `  Exiting ${LOST_TO_UNCONFIGURED} rather than 0 SO THAT Restart= CAN SEE THIS.`,
+          `  A clean exit here is why ${DAEMON_UNIT} could read \`inactive\` for two`,
+          `  minutes on 2026-08-20 while an unconfigured daemon served the fleet:`,
+          `  systemd does not retry a success, and every status check agreed with it.`,
+          ``,
+          `  To take the socket back:`,
+          `    kill the pid above, then systemctl --user start ${DAEMON_UNIT}`,
+          `  To see who is serving at any time:`,
+          `    node daemon/scripts/butchr-doctor.mjs`
+        ],
+        log
+      );
+      process.exit(LOST_TO_UNCONFIGURED);
+    });
   });
   probe.once('error', () => {
     if (retriedStaleSocket) {

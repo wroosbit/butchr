@@ -158,10 +158,18 @@ if (collapseTristate) {
 if (restoreSniff) {
   const copy = path.join(scratch, 'daemon.ts');
   const source = readFileSync(daemonSourceUnderTest, 'utf8');
+  // THE GUARD LINE ALONE, NOT THE LISTENER'S FIRST TWO LINES (KAN-497).
+  // This used to anchor on `setAgentSpawnedListener(...) => {` immediately
+  // followed by the guard, which held only while the guard was the listener's
+  // first statement. KAN-497 put the spawn-reach record above it — deliberately,
+  // because the record is worth more on the `false` branch than on the `true`
+  // one — so the anchor stopped matching and this mode exited 2 with "it has
+  // moved". It had not moved; something was added in front of it. The literal
+  // below is unique in the file (one occurrence, asserted by the exit-2 branch
+  // that follows), and it is the line this mode actually needs to replace.
   const patched = source.replace(
-    'herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {\n  if (spawn.channelEnabled !== true) return;',
-    'herdrBridge.setAgentSpawnedListener((session, spawnedAt, spawn) => {\n' +
-      '  if (!String(spawn.command).includes(DEV_CHANNELS_FLAG)) return;'
+    '  if (spawn.channelEnabled !== true) return;',
+    '  if (!String(spawn.command).includes(DEV_CHANNELS_FLAG)) return;'
   );
   if (patched === source) {
     console.error('--restore-sniff could not find the listener to patch; it has moved.');
@@ -486,12 +494,24 @@ check(
   'and no code line searches a command for it',
   codeLines.filter((l) => l.includes('DEV_CHANNELS_FLAG')).join('\n')
 );
+// ⚠ THE ANCHOR MOVED AND THE ASSERTION DID NOT (KAN-497). This required the
+// guard to be the listener's FIRST statement, which it was — until KAN-497 put
+// the spawn-reach record above it, on purpose: `channelEnabled: false` is
+// exactly the verdict worth keeping, and a listener that returns before
+// recording keeps the fact for the agents that never needed it. Re-anchoring on
+// "first statement" would have deleted that, so what is asserted instead is the
+// thing this check was always about: **the guard is a branch on the spawn's own
+// verdict, on `!== true`, and it is the FIRST conditional in the listener** —
+// so nothing has slipped a second, differently-derived gate in front of it.
+// Matched against the comment-stripped `code`, so prose in the block above the
+// guard cannot satisfy or defeat it.
 check(
-  /setAgentSpawnedListener\(\(session, spawnedAt, spawn\) => \{\s*\n\s*if \(spawn\.channelEnabled !== true\) return;/.test(
-    daemonSrc
+  /setAgentSpawnedListener\(\(session, spawnedAt, spawn\) => \{(?:(?!\bif\b)[\s\S])*?if \(spawn\.channelEnabled !== true\) return;/.test(
+    code
   ),
-  'the listener branches on the spawn verdict, and on `!== true`',
-  'the guard is not `if (spawn.channelEnabled !== true) return;` — see AgentSpawn on why `=== false` is wrong'
+  'the listener branches on the spawn verdict, on `!== true`, and on nothing before it',
+  'the guard is not `if (spawn.channelEnabled !== true) return;`, or something conditional ' +
+    'now runs ahead of it — see AgentSpawn on why `=== false` is wrong'
 );
 check(
   !/spawn\.channelEnabled\s*(\?\?|\|\|)\s*false/.test(code) &&

@@ -26,6 +26,17 @@
 //       reachable ONLY when the socket is absent — a socket that is present and
 //       refuses FAILS instead.
 //
+// KAN-373 — AND THE EXIT CODE NOW CARRIES THAT SENTENCE. It did not. This
+// script ended `process.exit(failures ? 1 : 0)`, which consults the skip
+// tally not at all, so those SKIPPED sections exited 0 on a runner and a
+// caller reading the exit code could not tell a proved peer from an absent
+// one. The prose above was true of the PRINTING and false of the process.
+// Now: 0 every section ran and passed; 1 something failed; 2 nothing failed
+// and something did not run. `--allow-skipped` asserts that an incomplete
+// run is acceptable to THIS caller and gets 0 back, and `--static-only`
+// already makes that assertion in this script's own vocabulary.
+// See `lib/verdict-exit.mjs`.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 // WHAT THIS SCRIPT SUPPLIES ITSELF, AND WHAT THAT LEAVES UNCOVERED
 //
@@ -123,6 +134,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { reportAndExit } from './lib/verdict-exit.mjs';
 
 const staticOnly = process.argv.includes('--static-only');
 
@@ -350,9 +362,12 @@ for (const flag of GATE_FLAGS) {
 }
 
 if (staticOnly) {
-  console.log(`\n--static-only: §5–§8 not run.\n`);
-  console.log(`${failures ? 'FAILURES: ' + failures : 'all static sections passed'}`);
-  process.exit(failures ? 1 : 0);
+  // KAN-373: `--static-only` is the caller ASSERTING that an incomplete run is
+  // what it wants, so this exits 0 on a clean static pass — but the unrun
+  // sections are now tallied and named rather than vanishing, and the headline
+  // says "did not run" instead of "all static sections passed".
+  skip('§5–§8', 'not run: --static-only was passed, so nothing here drove a real peer.');
+  reportAndExit({ failures, skipped, allowSkipped: true });
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -811,10 +826,8 @@ for (const p of probes) fs.rmSync(p.workDir, { recursive: true, force: true });
 
 // ───────────────────────────────────────────────────────────────────────────
 console.log(`\n${'='.repeat(78)}`);
-console.log(
-  failures
-    ? `RED — ${failures} assertion(s) failed${skipped ? `, ${skipped} skipped` : ''}.`
-    : `GREEN — every assertion passed${skipped ? `, ${skipped} section(s) skipped` : ''}.`
-);
+// KAN-373: was `process.exit(failures ? 1 : 0)`, and "GREEN — every assertion
+// passed, 1 section(s) skipped" was a green with a hole in it printed as a
+// green. See `lib/verdict-exit.mjs` for why a skip now exits 2.
 console.log('='.repeat(78));
-process.exit(failures ? 1 : 0);
+reportAndExit({ failures, skipped });

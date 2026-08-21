@@ -294,23 +294,148 @@ if (tryExec('systemctl', ['--user', 'show-environment']) !== null) {
   warn('daemon autostart', 'no systemd --user manager here; the daemon must be started by hand.');
 }
 
-// --- 7. can anything actually reach the daemon? -------------------------
+// --- 7. can anything actually reach the daemon, and WHICH daemon is it? --
+//
+// KAN-550, AC2. Connecting was the whole of this check until 2026-08-20, when
+// a socket that accepted connections perfectly was being served by a daemon
+// nobody had configured — a child of Chrome with no BUTCHR_* at all, while
+// `systemctl is-active` read `inactive` throughout. Both readings were correct
+// and the pair was unresolvable from the tools, because no tool reported the
+// process actually holding the socket.
+//
+// So the socket is asked who it is. `daemon_provenance` is answered by the
+// serving process itself, which is why the answer cannot be stale the way a
+// pidfile can: whoever replies IS the daemon in question.
 
-await new Promise((resolve) => {
+const provenance = await new Promise((resolve) => {
   const socket = net.connect(SOCKET_PATH);
-  const done = (fn, ...args) => { socket.destroy(); fn(...args); resolve(); };
+  let buffer = '';
+  let settled = false;
+  // Whether the CONNECTION happened is a different fact from whether the daemon
+  // ANSWERED, and collapsing them reports a reachable daemon as an unreachable
+  // socket. Caught by running this against the live fleet, whose daemon predates
+  // `daemon_provenance` and therefore says nothing back: the first draft printed
+  // `FAIL daemon socket — cannot connect`, which was false and would have been
+  // false on every machine that had not yet redeployed.
+  let connected = false;
+  const done = (value) => {
+    if (settled) return;
+    settled = true;
+    socket.destroy();
+    resolve(value);
+  };
   socket.setTimeout(3000);
-  socket.once('connect', () => done(pass, 'daemon socket', `${SOCKET_PATH} is accepting connections`));
-  socket.once('timeout', () => done(fail, 'daemon socket', `${SOCKET_PATH} accepted no connection within 3s`));
+  socket.once('connect', () => {
+    connected = true;
+    socket.write(JSON.stringify({ action: 'daemon_provenance' }) + '\n');
+  });
+  socket.on('data', (chunk) => {
+    buffer += chunk.toString('utf8');
+    let idx;
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (!line.trim()) continue;
+      let msg = null;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (msg && msg.action === 'daemon_provenance_response') {
+        done({ reached: true, provenance: msg.success === true ? msg.provenance : null });
+      }
+    }
+  });
+  socket.once('timeout', () =>
+    done(
+      connected
+        ? { reached: true, provenance: null }
+        : { reached: false, error: 'accepted no connection within 3s' }
+    )
+  );
   socket.once('error', (err) =>
     done(
-      fail,
-      'daemon socket',
-      `cannot connect to ${SOCKET_PATH}: ${err.code ?? err.message}\n` +
-      `The daemon is not running. Start it: systemctl --user start butchr-daemon.service\n` +
-      `(or node ${path.join(REPO, 'daemon/dist/daemon.js')}), then check ~/.local/share/butchr/daemon.log`
-    ));
+      connected
+        ? { reached: true, provenance: null }
+        : { reached: false, error: err.code ?? err.message }
+    )
+  );
+  socket.once('close', () =>
+    done(
+      connected
+        ? { reached: true, provenance: null }
+        : { reached: false, error: 'the socket closed before the connection was established' }
+    )
+  );
 });
+
+if (!provenance.reached) {
+  fail(
+    'daemon socket',
+    `cannot connect to ${SOCKET_PATH}: ${provenance.error}\n` +
+    `The daemon is not running. Start it: systemctl --user start butchr-daemon.service\n` +
+    `(or node ${path.join(REPO, 'daemon/dist/daemon.js')}), then check ~/.local/share/butchr/daemon.log`
+  );
+} else {
+  pass('daemon socket', `${SOCKET_PATH} is accepting connections`);
+
+  const p = provenance.provenance;
+  if (!p) {
+    // Reached, but it would not say. That is not a pass: an old daemon
+    // predating this action and a wedged one look identical from here, and
+    // both mean the question KAN-550 asks has no answer on this machine.
+    warn(
+      'serving daemon',
+      `something is serving ${SOCKET_PATH} but it did not answer \`daemon_provenance\`.\n` +
+      `That is a daemon built before KAN-550, or one too busy to reply. Which daemon is\n` +
+      `serving, and whether it carries this machine's pinned environment, is UNKNOWN --\n` +
+      `not fine. Rebuild and restart: npm --prefix daemon run build &&\n` +
+      `systemctl --user restart butchr-daemon.service`
+    );
+  } else {
+    const active = tryExec('systemctl', ['--user', 'is-active', 'butchr-daemon.service']);
+    const mainPid = tryExec('systemctl', ['--user', 'show', 'butchr-daemon.service', '-p', 'ExecMainPID', '--value']);
+    const drift = Array.isArray(p.pinDrift) ? p.pinDrift : [];
+    const detail =
+      `${p.summary}\n` +
+      `pid ${p.pid}, parent ${p.parentComm ?? 'unknown'} (pid ${p.ppid}); ` +
+      `is the unit's own main process: ${p.isUnitMainProcess ? 'yes' : 'NO'}\n` +
+      `BUTCHR_* it carries: ${p.butchrEnvNames.length ? p.butchrEnvNames.join(', ') : '(none)'}\n` +
+      `systemctl is-active says: ${active ?? 'unknown'}; unit ExecMainPID: ${mainPid ?? 'unknown'}`;
+
+    if (drift.length > 0) {
+      fail(
+        'serving daemon',
+        `${detail}\n\n` +
+        `THIS IS THE KAN-550 SHAPE. The daemon serving the socket is NOT carrying\n` +
+        drift.map((d) => `  ${d.name}: unit declares ${d.declared}, serving daemon has ${d.running ?? '(not set)'}`).join('\n') + `\n` +
+        `Fix: kill ${p.pid}, then systemctl --user start butchr-daemon.service`
+      );
+    } else if (!p.isUnitMainProcess && p.unit.kind === 'loaded') {
+      warn(
+        'serving daemon',
+        `${detail}\n\n` +
+        `Nothing is missing from its environment, but this machine HAS a unit and this\n` +
+        `process is not its main one. So the unit will not restart it, and \`is-active\`\n` +
+        `is describing something other than the process serving the socket.`
+      );
+    } else if (p.isUnitMainProcess && active !== 'active') {
+      // Belt and braces on the contradiction itself: systemd naming this pid as
+      // the unit's main process while also reporting the unit is not active is a
+      // disagreement between two readings, and quoting either one alone is how
+      // the 2026-08-20 reading was lost.
+      fail(
+        'serving daemon',
+        `${detail}\n\n` +
+        `CONTRADICTION: systemd names pid ${p.pid} as this unit's ExecMainPID, and also\n` +
+        `reports the unit is ${active ?? 'unknown'}. One of these is wrong; do not act on either alone.`
+      );
+    } else {
+      pass('serving daemon', detail);
+    }
+  }
+}
 
 // --- 8. where a Jira token would be stored ------------------------------
 // Not a pass/fail — the credential is optional. It is reported because which

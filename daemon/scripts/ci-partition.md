@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 126 |
-| `partial` | 15 |
+| `yes` | 129 |
+| `partial` | 17 |
 | `quarantined` | 3 |
-| `no` | 22 |
-| **total** | **166** |
+| `no` | 23 |
+| **total** | **172** |
 
-**141 of 166** run on every pull request.
+**146 of 172** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -62,6 +62,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Every section that ASSERTS derives from stated facts, so no verdict here moves with the load, the disk pressure or the free memory of the host. |
 | `verify-agent-connection-identity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-name-brands-have-one-home` | yes | reads `daemon/src/**/*.ts` as TEXT and asserts against it in process. No build, no `dist`, no live daemon, no herdr, no credential, no peer, no terminal, no network, and it writes nothing: the red-drive flags rewrite an in-memory copy of the source rather than the tree. |
+| `verify-agent-name-fits-herdr` | yes | imports `daemon/dist` and reads `daemon/src` as text, both in process. No live daemon, no herdr, no credential, no network, no terminal, no peer, and it writes nothing outside memory. §1-§3 exercise pure exported functions (`agentNameProblem`, `assertAgentNameFitsHerdr`, `computeBoardDiff`); §4 and §5 read the tree; none of them spawns anything. §6 DOES shell out to herdr and is therefore behind `--against-herdr`, which CI never passes and which is not a default: without the flag it prints SKIP and asserts nothing, so the classification above is a claim about the run CI performs. |
 | `verify-agent-power-controls` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-preemption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-agent-resumption` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -110,6 +111,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-gate-register-schema` | yes | reads Markdown off the checkout and matches on it. No build, no `npm install`, no daemon, no herdr, no PTY, no network, no credential, no peer, no wall clock. It imports only node builtins. |
 | `verify-guardian-board-display` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-guardian-poke` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-herdr-channel-reach-per-agent` | yes | imports the built daemon modules and asserts against them in process, over unix sockets it creates under os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. EVERY section runs on a runner, which is why this is `yes` rather than `partial` and why it tallies no skips: the real-spawn proof is a separate file, `verify-herdr-channel-reach-live.mjs`, and a green here has never claimed anything about it. |
 | `verify-herdr-spawn-argv` | yes | reads `daemon/src/*.ts` as TEXT and imports the built daemon's `herdr-health.js`. No herdr binary, no server, no pane, no PTY. |
 | `verify-idle-fleet-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Section 1 reads this machine's real /proc for its machine facts and says so. |
 | `verify-integration-enablement` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -133,6 +135,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-mcp-server-build-staleness` | yes | no live daemon, no herdr, no credential, no network. It spawns the built `dist/mcp.js` against a stub socket in a temp HOME, and drives the real registry and the real staleness report in process. |
 | `verify-message-provenance` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-mjs-stub-arity-matches-seam` | yes | reads `daemon/src/agent-runtime.ts` and the `.mjs` files as TEXT; no build, no socket, no peer, no credential, no network. Unaffected by a failed build, so its verdict is about what you wrote rather than what last compiled. |
+| `verify-never-clipped-exemption-is-bounded` | yes | imports the built module in process and reads one source file as text. No live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-no-build-output-is-committed` | yes | reads `git ls-files` off the checkout and the bytes of the files it names, and builds its fixtures under `os.tmpdir()`; node builtins and `git` only, no build, no daemon, no herdr, no credential, no peer, no network, no terminal, no wall clock. |
 | `verify-notifications-never-type` | yes | imports the built daemon modules and asserts against them in process, over Unix sockets it creates under a private $HOME in os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-nudge-refuses-a-dialog-pane` | yes | imports the built daemon modules and drives the real `awaitAgentReadiness` and `nudgeResumedAgent` against a scripted runtime stub. No live daemon, no herdr, no terminal, no network, no credential, no Jira. It spends real monotonic time, deliberately and about a second of it: every call passes a `ReadinessBudget` shortening the 120s budget to tens of milliseconds. KAN-543 added that seam for this script, and it is why the parked branch is watchable at all. The CLOCK is not part of the seam — see §6, and see `ReadinessBudget`'s docblock for the invariant that decided it. |
@@ -190,11 +193,13 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-session-restore` | partial | sections 1-4 assert in CI. They stand up their own Unix socket and their own agent registry under os.tmpdir(), and need no peer, no herdr, no PTY, no credential and no network. Section 5 needs a live CrabCast daemon and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-standing` | partial | sections 1-5 assert in CI. They import the built daemon modules and run over frames this script constructs and two committed captures, and need no peer, no herdr, no PTY, no credential and no network. Section 6 reads a live CrabCast socket and SKIPS without one; a skip is printed as a skip and never counted as a pass. |
 | `verify-crabcast-supervisor-exemption` | partial | §1–§4 read `daemon/src/*.ts` as TEXT and §5 imports `daemon/dist`, and all five assert in full on a runner. §6–§8 need a LIVE CrabCast daemon on this machine's socket, which CI has not got, so they announce themselves SKIPPED there. They are not mocked: the whole value of §6 is that the echo is CrabCast's and of §7 that the refusal is CrabCast's gate, so a reproduction would prove nothing. The skip is reachable ONLY when the socket is absent — a socket that is present and refuses FAILS instead. |
+| `verify-daemon-provenance-is-loud` | partial | §1-§4 are pure and need nothing. §6 and §7 need `daemon/dist` and spawn real node processes with a stubbed `systemctl`; they SKIP without a build. §5 needs a reachable `systemctl --user` and SKIPS on a runner, which makes this script exit 2 there rather than 0 (KAN-373's contract). `run-ci-verify-set.mjs` builds first, so §6 and §7 execute there. |
 | `verify-jira-nudge-coalescing` | partial | the coalescing assertions run in CI. The CONTROL leg needs an `--unfixed` build to show the defect it prevents, and AC3d needs `--live`; both are skipped without them and both are named in the run output. |
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
 | `verify-pty-init-rejects-unknown-session` | partial | the rejection path asserts in CI. The regression stage needs herdr to start a real agent and prints `SKIPPED: no herdr to start an agent with` instead. |
 | `verify-shared-clone-is-not-grafted` | partial | sections 1 and 2 build their own git repositories in a temp dir and need nothing but `git`, node and a built `dist`, so they assert in full on a runner. Section 3 classifies the real shared clone at ~/code/wroosbit/butchr, which no CI runner has; it skips loudly and does not fail, and it is the only section that observes a clone this script did not create. |
+| `verify-skip-is-not-a-pass` | partial | §1 and §2 need no peer, no herdr, no PTY, no credential and no network; they read this repository's own helper and spawn `node`. §3 needs `daemon/dist` and SKIPS without it, which makes THIS script exit 2 rather than 0 — the contract under test applied to itself, and deliberate. `run-ci-verify-set.mjs` builds before it runs, so §3 executes there; the `verify-script-sweep` job does not build, and that step passes `--allow-skipped` to say so out loud. |
 | `verify-supervisor-cost-exclusion` | partial | the exclusion arithmetic (1-4), the enablement predicate (5b), the unmarked-tree discriminator (5c) and the falsifier (6) all assert in CI. Section 5 reads the live fleet through /proc and is skipped on a runner, which has no agent trees. KAN-537 is why its unmarked arm no longer fails on a tree that holds no MCP server at all. |
 
 ## `quarantined` — CI-runnable but currently RED — excluded loudly, with a reason and a ticket
@@ -221,6 +226,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-runtime-live` | no | needs a real CrabCast daemon at `BUTCHR_CRABCAST_SOCKET`; it attempts nothing without one. |
 | `verify-crabcast-second-activation-resumes` | no | needs a real CrabCast daemon, real capacity for one agent, and it starts a real `claude` process that spends real tokens. |
 | `verify-fleet-switch-live` | no | starts a real daemon from a built dist and needs herdr to spawn the fleet whose runtime it switches. |
+| `verify-herdr-channel-reach-live` | no | it needs a real herdr on PATH, spawns two real `claude` panes and writes the fleet's own channel kill switch. None of those exist on a runner, and none of them can be mocked without destroying the only thing this script is for: that the `AgentSpawn` is the product's rather than one a harness built. |
 | `verify-message-provenance-live` | no | needs a real daemon, herdr, a pane and a live Claude Code agent — the provenance it checks is what a model actually received. |
 | `verify-no-attach-steal` | no | takes the key of a live agent as its argument and attaches to it; there is nothing to pass in CI. |
 | `verify-pretrust-survives-concurrency` | no | every stage needs a real spawn, and it refuses to run at all when herdr is absent rather than pretending otherwise. |

@@ -1883,7 +1883,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'A name or email fragment to search for, e.g. "wroosbit".'
+          description: 'A name or email fragment to search for, e.g. "ada" or "ada@example.com".'
         },
         limit: {
           type: 'number',
@@ -1893,7 +1893,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       required: ['query']
     },
     build(args) {
-      const q = freeText(args, 'query', '"wroosbit"', 200);
+      const q = freeText(args, 'query', '"ada"', 200);
       if ('error' in q) return q;
       return {
         path:

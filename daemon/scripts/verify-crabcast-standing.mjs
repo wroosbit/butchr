@@ -17,6 +17,19 @@
 // Section 6 reads a live CrabCast socket and SKIPS without one; a skip is
 // printed as a skip and never counted as a pass.
 //
+// KAN-373 — AND THE EXIT CODE NOW CARRIES THAT SENTENCE. It did not. This
+// script ended `process.exit(failures ? 1 : 0)`, which consults the skip
+// tally not at all, so a skipped live section exited 0 and a caller reading
+// the exit code could not tell a proved peer from an absent one. The prose
+// above was true of the PRINTING and false of the process. Now:
+//
+//   0  every section ran, and every assertion passed
+//   1  at least one assertion failed
+//   2  nothing failed, and something did not run
+//
+// Pass `--allow-skipped` to assert that an incomplete run is acceptable to
+// THIS caller and get 0 back. See `lib/verdict-exit.mjs`.
+//
 // ── THE SECTIONS ARE NOT ALL PROVED THE SAME WAY ───────────────────────────
 //
 // This is the honest scope, stated here rather than left to a reader to infer,
@@ -127,6 +140,7 @@ import net from 'net';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { reportAndExit, EXIT_INCOMPLETE } from './lib/verdict-exit.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -137,9 +151,18 @@ const verbose = process.argv.includes('--verbose');
 // build`, and reporting that as a verdict would say the code is wrong when
 // nothing has been measured. A guard, not a verdict — see the sweep's own
 // distinction in sweep-verify-exit-paths.mjs.
+//
+// KAN-373 gave 2 a name — EXIT_INCOMPLETE, "this run did not prove what a 0
+// would claim" — and this guard is spelled with it rather than as a literal.
+// The two uses AGREE: a missing build measured nothing, a skipped section
+// measured part, and a caller's correct response to either is the same, which
+// is to decline to treat the run as cover. That agreement was accidental until
+// this line named it, and an accidental agreement is one refactor from being a
+// silent collision. It stays a GUARD for the sweep's purposes — its value is a
+// constant reached before anything is measured, not a verdict.
 if (!fs.existsSync(path.join(distDir, 'crabcast-runtime.js'))) {
   console.error('daemon/dist is missing — run `npm run build` in daemon/ first.');
-  process.exit(2);
+  process.exit(EXIT_INCOMPLETE);
 }
 
 const { readUnreadableDisclosure } = await import(path.join(distDir, 'crabcast-runtime.js'));
@@ -803,13 +826,21 @@ section('6. THE LIVE WIRE — re-read now, so a drifted fixture is visible');
 // =============================================================================
 console.log(`\n${'─'.repeat(74)}\nVerdict\n${'─'.repeat(74)}`);
 if (skipped) console.log(`   ${skipped} section(s) skipped for want of a live peer.`);
-console.log(
-  failures
-    ? `   ${failures} failure(s).`
-    : '   standing is read behind the version door, joined on claimsPath, and a tombstone is\n' +
+// KAN-373: guarded on `skipped` as well as `failures`. This paragraph asserts
+// that the LIVE tombstone reads `retired` — a claim only the live section can
+// make — and it was printed on runs where that section had skipped for want of
+// a peer. The exit code was the loud half of this defect; the prose was the
+// quiet half, and both said the peer had been read when nothing had read it.
+if (failures === 0 && skipped === 0) {
+  console.log(
+    '   standing is read behind the version door, joined on claimsPath, and a tombstone is\n' +
       '   distinguishable from a lost agent — now against REAL BYTES on both sides of the door.\n' +
       '   The live tombstone reads `retired`, so KAN-357\'s permanently-1 count is answered.\n' +
       '   NOT PROVED HERE: the `claims-an-agent` and `matched` arms, which no real wire has ever\n' +
       '   carried. See the header — that gap needs a registry fault nobody can schedule.'
-);
-process.exit(failures ? 1 : 0);
+  );
+}
+// KAN-373: was `process.exit(failures ? 1 : 0)`, which read a skipped live
+// section as a pass — and the prose above it claimed the live tombstone had
+// been read, on a run where no peer was there to read it from.
+reportAndExit({ failures, skipped });

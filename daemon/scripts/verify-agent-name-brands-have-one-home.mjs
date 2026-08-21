@@ -51,7 +51,7 @@
 // brace-matching the stripped source, and the function must be the one named.
 //
 // The homes are DISCOVERED, not hardcoded to a file: the declarations of
-// `readCensus`, `agentNameFor` and `butchrNameForCensusRow` are located by
+// `readCensus`, `spellAgentName` and `butchrNameForCensusRow` are located by
 // sweeping the whole of `daemon/src`, so moving one to another module keeps
 // this script working rather than breaking it. What is specified here is the
 // FUNCTION a cast must live in, which is the property itself and not an
@@ -457,10 +457,22 @@ rule('§1  `as PaneName` — once, and in readCensus (the sole producer)');
 }
 
 // ── §2 ─────────────────────────────────────────────────────────────────────
-rule('§2  `as ButchrAgentName` — twice, and only in agentNameFor and butchrNameForCensusRow');
+rule('§2  `as ButchrAgentName` — twice, and only in spellAgentName and butchrNameForCensusRow');
 {
   const sites = castSites('ButchrAgentName');
-  const ALLOWED = ['agentNameFor', 'butchrNameForCensusRow'];
+  // KAN-541 MOVED THE FIRST HOME BY ONE FUNCTION, AND THAT IS A CORRECTION TO
+  // THIS LIST RATHER THAN A RELAXATION OF IT. `agentNameFor` was the only
+  // producer when this script was written; that ticket added two more —
+  // `assertAgentNameFitsHerdr`, which refuses at the herdr boundary, and
+  // `tryAgentNameFor`, which reports instead of throwing for the fleet-wide
+  // loop. All three delegate to `spellAgentName`, which is the function that
+  // performs the conversion the brand stands for.
+  //
+  // ⚠ A cast in each of the three would have satisfied a COUNT of three and
+  // deleted the property: the brand means "a transform ran", and three casts
+  // mean three places asserting it separately. One cast at the transform is the
+  // property; the count stays at two because it held.
+  const ALLOWED = ['spellAgentName', 'butchrNameForCensusRow'];
 
   for (const name of ALLOWED) {
     const homes = declarationsOf(name);

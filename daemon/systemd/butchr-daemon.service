@@ -32,11 +32,31 @@ ExecStart=@@NODE@@ @@REPO@@/daemon/dist/daemon.js
 
 # on-failure, deliberately not always. The daemon exits 0 in two situations
 # that must stay exited: a deliberate SIGTERM, and losing the race for the
-# socket to a daemon a Chrome native host already auto-spawned (see
-# connectToDaemon in daemon/src/ipc.ts — the loser detects the winner and
-# exits cleanly). Restart=always would relaunch that loser every RestartSec
-# until the start limit stopped the unit, turning a correct no-op into a
-# crash-looping service.
+# socket to a daemon that is ALREADY THE CONFIGURED ONE. Restart=always would
+# relaunch that loser every RestartSec until the start limit stopped the unit,
+# turning a correct no-op into a crash-looping service.
+#
+# KAN-550 narrowed the second case, and the narrowing is why on-failure is now
+# load-bearing rather than merely harmless. This comment used to say the loser
+# exits 0 whenever anything else holds the socket, and that was true and was
+# the defect: on 2026-08-20 the winner was an unconfigured child of Chrome
+# carrying no BUTCHR_* at all, so the runtime pin and the agent cap were
+# silently dropped — and because the loser exited CLEANLY, systemd had nothing
+# to retry, `systemctl start` reported success while leaving nothing running,
+# and this unit read `inactive` for two minutes while the fleet ran wrong.
+#
+# The loser now asks the winner who it is (`daemon_provenance` over the socket)
+# and exits on the answer:
+#
+#   0  the winner is systemd's and carries the pinned environment -> a no-op,
+#      exactly as before, and nothing here restarts.
+#   3  the winner is unconfigured, or would not say -> Restart=on-failure
+#      retries, and after StartLimitBurst above the unit lands in `failed`.
+#   4  this process itself would have come up without the runtime this machine
+#      pins, and refused to serve rather than do it silently.
+#
+# `failed` is the point. It is a state `is-active` can already show an
+# operator, and it is the one thing the 2026-08-20 incident could not produce.
 Restart=on-failure
 RestartSec=2
 
