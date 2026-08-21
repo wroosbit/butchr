@@ -14,6 +14,7 @@ import {
   discoverRepos,
   mergeabilityOf
 } from './github.js';
+import { declaresApprover } from './declared-approver.js';
 import { NotifyFn, refuseWithoutCarrier } from './notify.js';
 import { DAEMON_SENDER_TAG } from './provenance.js';
 import type { LiveAgent, NudgeRelation, ObservedState } from './jira-poll.js';
@@ -54,6 +55,15 @@ import type { LiveAgent, NudgeRelation, ObservedState } from './jira-poll.js';
  * `jira-poll.ts` computes, resolved off the same Jira snapshot the poller has
  * already read. {@link NudgeRelation} is imported from that module rather than
  * redeclared, so the two cannot drift.
+ *
+ * **With exactly one addition, made in KAN-600 and named rather than folded in:**
+ * {@link PrAudience} is those four plus `approver`, the agent a pull request's
+ * own body declares in its `BUTCHR-APPROVER:` line. That is not a relation the
+ * board can express and never will be — Jira has no field for it — and the
+ * measured consequence of pretending otherwise was that `green-idle`, the kind
+ * that exists to say *"green with nobody merging"*, was routed away from the one
+ * agent able to merge it. See {@link audienceHears} for the measurements and for
+ * what was deliberately not widened.
  *
  * **Not an actor.** It watches and it tells. Merging, approving and transitioning
  * stay with the governance in `prompts/task.md` — the approver approves, the task
@@ -569,6 +579,25 @@ export function describeObservedState(
   );
 }
 
+/**
+ * Who a notice is addressed as.
+ *
+ * The four board relations `jira-poll.ts` computes — imported rather than
+ * respelled, so the two cannot drift — plus **one this module adds and that
+ * module has no business knowing about** (KAN-600).
+ *
+ * `approver` is the agent a pull request's own body declares in its
+ * `BUTCHR-APPROVER:` line. It is not a board relation and cannot be made into
+ * one: nothing in Jira produces it, it is frequently an agent the board places
+ * somewhere else entirely, and it is sometimes an agent with no relation to the
+ * ticket at all. The class docblock's *"not a second audience model"* still
+ * binds for everything the board CAN express; this is the one thing it cannot,
+ * and it is added as a fifth label rather than smuggled in wearing a fourth
+ * one's, because a notice that says *"you activated the agent working KAN-518"*
+ * to explain a `green-idle` has told its reader the wrong reason.
+ */
+export type PrAudience = NudgeRelation | 'approver';
+
 /** What kind of news a pull request produced. One per row of the ticket's table. */
 export type PrEventKind =
   | 'merged'
@@ -647,12 +676,24 @@ export interface PrEvent {
    * optional field, makes the honest notice the one that remembered.
    */
   observation: NoticeObservation;
+  /**
+   * The approver the pull request's body declares, or null (KAN-600).
+   *
+   * **Required for the same reason `observation` is.** Routing reads it, so an
+   * event kind added later that forgot to carry it would be routed as though the
+   * pull request declared nobody — which is not an error anything would report,
+   * it is silently the pre-KAN-600 behaviour coming back for one kind. Spread
+   * from the same per-pull-request `base`, so it costs the one line that has it.
+   */
+  declaredApprover: string | null;
 }
 
 /** One notification the watcher decided to send. */
 export interface PrNotice {
   events: PrEvent[];
-  relation: NudgeRelation;
+  relation: PrAudience;
+  /** Which routing rule chose this audience (KAN-600). Printed on the log line. */
+  rule: PrRoutingRule;
   type: string;
   key: string;
   agentName: string;
@@ -705,7 +746,22 @@ export interface PrTick {
   unmatched: UnmatchedPr[];
   events: PrEvent[];
   notices: PrNotice[];
-  skipped: Array<{ event: PrEvent; relation: NudgeRelation; reason: string; agentName?: string }>;
+  /**
+   * Every event an audience was NOT told about, and why.
+   *
+   * `rule` is what makes this readable rather than merely present (KAN-600):
+   * `muted` is the watcher deciding this agent does not need telling, and
+   * `undeliverable` is the agent it decided to tell not being there. Those were
+   * one sentence until KAN-600 and they are two different worlds.
+   */
+  skipped: Array<{
+    event: PrEvent;
+    relation: PrAudience;
+    reason: string;
+    rule: PrRoutingRule;
+    disposition: 'muted' | 'undeliverable';
+    agentName?: string;
+  }>;
   /** Repositories whose read failed this tick, with why. */
   failures: Array<{ repo: string; error: string; backOff: boolean }>;
   degraded: boolean;
@@ -915,7 +971,7 @@ export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: numbe
  */
 export function prEventNoticeText(
   events: PrEvent[],
-  relation: NudgeRelation,
+  relation: PrAudience,
   now: number
 ): string {
   const first = events[0];
@@ -990,14 +1046,25 @@ export function prEventNoticeText(
     }
   };
 
-  // One sentence each, because four relations are four different reasons to be
+  // One sentence each, because five audiences are five different reasons to be
   // told and a recipient that cannot tell which applies cannot judge whether the
   // news is its business.
-  const whose: Record<NudgeRelation, string> = {
+  //
+  // `parent` no longer claims *"so you are its approver"* (KAN-600). It said so
+  // on every notice, to an agent the pull request may well not have named — and
+  // the pull request is where that is settled, so the sentence was asserting
+  // from the weaker of two available sources. It now says what the board says,
+  // which is where the recipient sits, and leaves the approver claim to the
+  // audience that actually carries a declaration.
+  const whose: Record<PrAudience, string> = {
     own: `It is the pull request for your own ticket ${first.issueKey}.`,
     supervisor: `You activated the agent working ${first.issueKey}.`,
-    parent: `${first.issueKey} sits under your ticket on the board, so you are its approver.`,
-    linked: `${first.issueKey} is linked to a ticket of yours.`
+    parent: `${first.issueKey} sits under your ticket on the board.`,
+    linked: `${first.issueKey} is linked to a ticket of yours.`,
+    approver:
+      `This pull request declares you its approver, in the \`BUTCHR-APPROVER: ` +
+      `${first.declaredApprover}\` line of its own body — which is the line the required ` +
+      '`approval-recorded` check reads, not a board relation.'
   };
 
   // AC4: a backfilled announcement says so, and says how big the hole was.
@@ -1098,6 +1165,27 @@ export class PrWatchState {
   /** Every row, for a proof that wants to read the memory back. */
   public entries(): Array<[string, PrMemory]> {
     return [...this.prs.entries()];
+  }
+
+  /**
+   * Every repository this memory holds ANY pull request for, open or not.
+   *
+   * The set that separates *a repository we have never looked at* from *a
+   * repository we have been watching*, which is what makes the first-sight rule
+   * below able to tell a forty-row backlog from a pull request that has just
+   * been opened under a daemon that was already running (KAN-600, task 3).
+   *
+   * Deliberately NOT {@link reposWithOpenPr}: a repository whose every pull
+   * request has merged is still one this watcher has seen, and demoting it to
+   * unknown would re-arm the backlog rule for the next PR opened in it.
+   */
+  public reposSeen(): Set<string> {
+    const repos = new Set<string>();
+    for (const id of this.prs.keys()) {
+      const repo = repoOfPrId(id);
+      if (repo) repos.add(repo);
+    }
+    return repos;
   }
 
   /**
@@ -1244,28 +1332,174 @@ export interface PrWatcherOptions {
   now?: () => number;
 }
 
-/** The kinds a given relation is told about. See the class docblock. */
-function relationHears(kind: PrEventKind, relation: NudgeRelation): boolean {
-  // `green-idle` is the approver's business and nobody else's. Telling the
-  // author "your PR is green and nobody has looked at it" tells it a thing it
-  // can do nothing about except merge without an approval, which is precisely
-  // what `task/KAN-226` did five minutes after CI went green and precisely what
-  // the governance forbids. So the one recipient is the one being waited on.
-  if (kind === 'green-idle') return relation === 'parent';
+/**
+ * ---------------------------------------------------------------------------
+ * WHICH RULE DECIDED THE AUDIENCE (KAN-600)
+ * ---------------------------------------------------------------------------
+ *
+ * Named, carried on every notice and every skip, and printed on the log line,
+ * because the ticket's third acceptance criterion is that a reader can tell
+ * **muted by rule** from **undeliverable**. Those are two different worlds — one
+ * says the watcher decided this agent does not need telling, the other says the
+ * agent it decided to tell is not running — and until this existed they shared
+ * a sentence.
+ */
+export type PrRoutingRule =
+  /**
+   * The pull request declares an approver and an agent of that name is live, so
+   * the approver events go to that agent whatever its board relation is.
+   */
+  | 'declared-approver'
+  /**
+   * It declares one and nobody is running under that name. The board relation
+   * decides, exactly as it did before this rule existed — a fallback rather
+   * than a silence — and the log says the declaration went undelivered.
+   */
+  | 'declared-approver-not-live'
+  /** It declares nobody, so the board relation decides. Pre-KAN-600 behaviour. */
+  | 'board-relation';
+
+/** One recipient of one pull request's events, with everything routing reads. */
+interface PrTarget {
+  agent: LiveAgent;
+  /** The label the notice is addressed under. Most specific wins. */
+  audience: PrAudience;
+  /** Whether this agent's own ticket is the one the head branch names. */
+  isOwn: boolean;
+  /** Whether the pull request body declares THIS agent its approver. */
+  isDeclaredApprover: boolean;
+}
+
+/**
+ * The mute matrix, and the one place it is decided.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS STOPPED BEING A FUNCTION OF THE RELATION ALONE (KAN-600)
+ * ---------------------------------------------------------------------------
+ *
+ * `green-idle` exists to say *"this pull request is green and nobody is merging
+ * it"* — KAN-304 named that scenario in the ticket that built the watcher. It
+ * was then routed to the ticket's **board parent**, on the reasoning that the
+ * board parent is the approver.
+ *
+ * **The board does not name the approver. The pull request body does**, in the
+ * `BUTCHR-APPROVER:` line `prompts/task.md` requires and the `approval-recorded`
+ * gate enforces, and it is *declared* rather than derived. Measured across the
+ * four pull requests open on 2026-08-21, the declaration landed on three
+ * different board relations — and two of the three were muted for exactly this
+ * kind:
+ *
+ *     b#266  KAN-552  -> epic/KAN-39    the ticket's parent epic
+ *     c#127  KAN-552  -> epic/KAN-39    a parent epic in a DIFFERENT repository
+ *     c#132  KAN-518  -> story/KAN-117  the SUPERVISOR, muted for green-idle
+ *     c#133  KAN-585  -> epic/KAN-59    the ticket's parent epic
+ *
+ * CrabCast#132 opened at 15:26:55Z, went green at 15:44Z, and its declared
+ * approver — `story/KAN-117`, live and idle at a bare prompt — was told nothing.
+ * The log for that tick reads, verbatim:
+ *
+ *     15:44:24  (green-idle): not telling story/KAN-117 (supervisor) — this
+ *                             relation does not hear this kind
+ *     15:44:24  (green-idle): telling epic/KAN-59 (parent)
+ *
+ * The one relation that WAS told is not the approver and could not have acted on
+ * it. The feature's own stated purpose, failing on its own stated case.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT CHANGED, AND WHAT DELIBERATELY DID NOT
+ * ---------------------------------------------------------------------------
+ *
+ * **Changed: `green-idle` and `approved` route by approver IDENTITY.** Where the
+ * body declares an approver that is live, `green-idle` goes to that agent and to
+ * nobody else, and `approved` is muted for that agent and nobody else. Both were
+ * previously written in terms of `parent`, which is a proxy for "the approver"
+ * that the measurements above refute.
+ *
+ * **Not changed: `green-idle` is still for one agent.** The alternative the
+ * ticket offers — route it to `own` and `supervisor` as well and accept the
+ * traffic — is refused, and the reason is not volume. The author of a pull
+ * request can do exactly one thing with *"it is green and nobody has looked"*,
+ * and that thing is press merge without an approval: `task/KAN-226` did it on
+ * #92 five minutes after CI went green, and it is the merge governance's
+ * central prohibition. Widening the audience does not add a second pair of
+ * hands, it adds the one pair the rule exists to keep off the button. What was
+ * wrong here was never the size of the audience — it was that the audience was
+ * computed from the wrong graph.
+ *
+ * **Not changed: `merged` still skips the pull request's own agent** — and it now
+ * skips it by identity rather than by label, so an agent that is both the
+ * author and (irregularly) the declared approver is still not told about its own
+ * merge.
+ *
+ * ---------------------------------------------------------------------------
+ * THE LIMIT, WHICH THIS DOES NOT CLOSE AND MUST NOT BE READ AS CLOSING
+ * ---------------------------------------------------------------------------
+ *
+ * **A declared approver that is not running is still told nothing**, because
+ * nothing here starts an agent and a channel is not a queue. Measured on this
+ * machine at 20:32:26Z on 2026-08-21, after this was written and against the
+ * shipped daemon: `wroosbit/butchr#271` went green, declares `epic/KAN-39`, and
+ * `epic/KAN-39` was not in the census — so this change routes that event to the
+ * same nobody the old rule did. What it does instead is *say so in those words*,
+ * which is the whole of the third acceptance criterion: the ticket remains the
+ * durable inbox, and the log now distinguishes an approver that was muted from
+ * an approver that was absent.
+ */
+function audienceHears(
+  kind: PrEventKind,
+  target: PrTarget,
+  rule: PrRoutingRule
+): { hears: boolean; why: string } {
+  const under = `under \`${rule}\``;
+
+  if (kind === 'green-idle') {
+    if (rule === 'declared-approver') {
+      return target.isDeclaredApprover
+        ? { hears: true, why: `the pull request declares this agent its approver, ${under}` }
+        : {
+            hears: false,
+            why:
+              `green-idle goes to the approver the pull request declares, and that is not this ` +
+              `agent ${under}`
+          };
+    }
+    // No declaration, or one nobody live answers to: the board relation decides,
+    // which is what this did before KAN-600.
+    return target.audience === 'parent'
+      ? { hears: true, why: `the board parent is taken to be the approver ${under}` }
+      : {
+          hears: false,
+          why: `green-idle goes to the board parent, and this agent is ${target.audience} ${under}`
+        };
+  }
 
   // In this fleet's governance the task agent is the one that presses merge, so
   // it is the one party guaranteed to know already. LIMIT, stated rather than
   // hidden: if somebody else merges the PR, its own agent learns from its Jira
   // ticket rather than from here. Attribution cannot close that gap — every
   // agent pushes as one shared GitHub identity, so `mergedBy` names the fleet.
-  if (kind === 'merged') return relation !== 'own';
+  if (kind === 'merged') {
+    return target.isOwn
+      ? { hears: false, why: 'this is the agent whose branch it is, and it merged it' }
+      : { hears: true, why: 'everybody but the agent that pressed merge is told' };
+  }
 
-  // Same guard, other direction: the board parent is the approver, so an
-  // approval is news it caused. "Never notify the agent whose action caused the
-  // event" is a storm guard in every agent's brief.
-  if (kind === 'approved' || kind === 'changes-requested') return relation !== 'parent';
+  // "Never notify the agent whose action caused the event" is a storm guard in
+  // every agent's brief, and an approval is news the approver caused. Before
+  // KAN-600 that agent was assumed to be the board parent; it is now the agent
+  // the pull request names, and where it names nobody the old assumption stands.
+  if (kind === 'approved' || kind === 'changes-requested') {
+    if (rule === 'declared-approver') {
+      return target.isDeclaredApprover
+        ? { hears: false, why: `this agent is the declared approver, so it caused this ${under}` }
+        : { hears: true, why: `everybody but the declared approver is told ${under}` };
+    }
+    return target.audience === 'parent'
+      ? { hears: false, why: `the board parent is taken to be the approver, so it caused this ${under}` }
+      : { hears: true, why: `everybody but the presumed approver is told ${under}` };
+  }
 
-  return true;
+  return { hears: true, why: 'every audience is told about this kind' };
 }
 
 /**
@@ -1460,6 +1694,14 @@ export class PrWatcher {
     let lastError: string | null = null;
     const pending: PrEvent[] = [];
 
+    // Taken ONCE, before any pull request is recorded (KAN-600). Asking the
+    // memory per pull request would answer `true` for the second row of a
+    // repository the first row had just added, so the first pull request of a
+    // brand-new repository would be treated as backlog and the other
+    // thirty-nine as news — the exact broadcast of history the first-sight rule
+    // exists to prevent, reintroduced by reading the set at the wrong moment.
+    const reposSeenBeforeThisTick = this.state.reposSeen();
+
     for (const { repo } of repos) {
       const outcome = await this.opts.github.listPullRequests(repo);
       if (!outcome.ok) {
@@ -1495,7 +1737,7 @@ export class PrWatcher {
           if (!byKey.has(issueKey)) tick.nobodyLive.push(`${pr.repo}#${pr.number}`);
         }
 
-        for (const event of this.recognise(pr, issueKey)) {
+        for (const event of this.recognise(pr, issueKey, reposSeenBeforeThisTick)) {
           pending.push(event);
           tick.events.push(event);
         }
@@ -1537,7 +1779,7 @@ export class PrWatcher {
     }
 
     for (const events of byPr.values()) {
-      await this.notify(events, byKey, running, tick);
+      await this.notify(events, byKey, running, tick, agents);
     }
 
     return tick;
@@ -1602,7 +1844,11 @@ export class PrWatcher {
    * what was recorded before the daemon went down, and something that happened
    * during the downtime is genuine news and is delivered.
    */
-  private recognise(pr: PullRequestSnapshot, issueKey: string): PrEvent[] {
+  private recognise(
+    pr: PullRequestSnapshot,
+    issueKey: string,
+    reposSeenBeforeThisTick: Set<string>
+  ): PrEvent[] {
     const id = `${pr.repo}#${pr.number}`;
     const seen = this.state.get(id);
     const seenAt = new Date(this.now()).toISOString();
@@ -1628,7 +1874,14 @@ export class PrWatcher {
       url: pr.url,
       issueKey,
       headRefName: pr.headRefName,
-      observation
+      observation,
+      // KAN-600. Read off the pull request on the tick that recognised the
+      // event, alongside everything else, so routing is never done against a
+      // declaration from an earlier head. It is not remembered in `PrMemory`
+      // for the same reason `title` is not: nothing here answers questions
+      // about a pull request, and a body edited between ticks should route the
+      // next event by what it says now.
+      declaredApprover: pr.declaredApprover
     };
 
     // Both of these read the SAME classifier the readiness answer reads, so
@@ -1657,6 +1910,40 @@ export class PrWatcher {
     const greenIdle = readiness.ready;
 
     if (!seen) {
+      // ---------------------------------------------------------------------
+      // FIRST SIGHT OF A PULL REQUEST IS SILENT. FIRST SIGHT OF A *REPOSITORY*
+      // IS WHY (KAN-600, task 3).
+      // ---------------------------------------------------------------------
+      //
+      // The no-replay guarantee is about a repository JOINING the watch set: the
+      // first read of one carries forty pull requests, thirty of them merged
+      // weeks ago, and announcing those would make every daemon start a
+      // broadcast of history. KAN-367 filed that as a defect and it was the
+      // right fix.
+      //
+      // It is not the same case as a pull request OPENING in a repository this
+      // watcher was already watching. There is no backlog there — there is one
+      // new row — and the ticket asked whether the silence is deliberate or
+      // incidental. **It is deliberate**, established by reading `recognise`
+      // rather than inferred from the log line's wording: the docblock above
+      // states the no-replay guarantee as the reason. What was never separately
+      // decided is whether it should extend to this second case.
+      //
+      // IT SHOULD NOT, AND THE COST OF IT DOING SO IS NARROW AND EXACT. Only one
+      // field of the memory is affected: `greenIdleSha` is armed as
+      // ALREADY-ANNOUNCED at first sight, so a pull request that is already
+      // ready the first time it is read will never produce a `green-idle` at
+      // that head — not on this tick and not on any later one, because the
+      // condition is armed per head sha and this head has been marked spent. On
+      // a repository joining the set that is right. On a pull request opened
+      // sixty seconds ago it deletes the one event the approver was waiting for.
+      //
+      // So the arming is now conditional on the repository being new, and
+      // nothing else about first sight changes: no event is emitted here in
+      // either case, and a `merged` or a `comment` that predates the memory is
+      // still never announced. The next tick composes the `green-idle` through
+      // the ordinary path, which is a delay of one interval and no new code.
+      const repoIsNew = !reposSeenBeforeThisTick.has(pr.repo);
       this.state.set(id, {
         state: pr.state,
         reviewDecision: pr.reviewDecision,
@@ -1665,14 +1952,18 @@ export class PrWatcher {
         headRefOid: pr.headRefOid,
         commentIds: pr.commentIds,
         approval: pr.approval,
-        // Armed as already-announced, so first sight of a PR that has been
-        // sitting green for an hour does not announce it as news.
-        greenIdleSha: greenIdle ? pr.headRefOid : '',
+        greenIdleSha: greenIdle && repoIsNew ? pr.headRefOid : '',
         seenAt
       });
       this.opts.log(
         `[pr-watch] ${id} (${issueKey}): first sight — recording ${pr.state}, checks ` +
-        `${pr.checks}, ${pr.commentIds.length} comment(s) without notifying anyone.`
+        `${pr.checks}, ${pr.commentIds.length} comment(s) without notifying anyone. ` +
+        (repoIsNew
+          ? `${pr.repo} is new to this watcher, so anything already true of this pull request ` +
+            'is backlog and is armed as already-announced.'
+          : `${pr.repo} was already being watched, so this pull request is NEW rather than ` +
+            'backlog: `green-idle` is left un-armed and will be announced from the next tick ' +
+            'if it is ready.')
       );
       return [];
     }
@@ -1861,7 +2152,17 @@ export class PrWatcher {
     events: PrEvent[],
     byKey: Map<string, LiveAgent[]>,
     running: Set<string>,
-    tick: PrTick
+    tick: PrTick,
+    /**
+     * The census this tick read, passed in rather than re-read (KAN-600).
+     *
+     * `byKey` is indexed by ticket and cannot answer "is there a live agent
+     * called `epic/KAN-39`?", which is the question a declared approver asks —
+     * so the flat list is needed here. Asking `liveAgents()` again would be a
+     * second census, in the middle of a tick, and two pull requests in one tick
+     * could then be routed against two different fleets.
+     */
+    agents: LiveAgent[]
   ): Promise<void> {
     const { log, herdrBridge, supervisorFor } = this.opts;
     const deliver = this.opts.deliver ?? refuseWithoutCarrier;
@@ -1871,15 +2172,48 @@ export class PrWatcher {
     const issueKey = first.issueKey.toUpperCase();
     const kinds = events.map((event) => event.kind).join('+');
 
-    // Most specific relation wins, so an agent that is both is told once in the
-    // terms that actually apply.
-    const targets = new Map<string, { agent: LiveAgent; relation: NudgeRelation }>();
-    const consider = (agent: LiveAgent, relation: NudgeRelation) => {
+    const own = byKey.get(issueKey) ?? [];
+    const ownNames = new Set(own.map((agent) => agent.agentName));
+
+    // WHICH RULE IS DECIDING THIS PULL REQUEST'S AUDIENCE (KAN-600).
+    //
+    // Resolved once, before any target is considered, because it is a property
+    // of the pull request rather than of a recipient — and because the answer
+    // has to be the same for every recipient or the mute matrix would be
+    // deciding a different question for each of them.
+    const declared = first.declaredApprover;
+    const declaredAgents = declared
+      ? agents.filter((agent) => running.has(agent.agentName) && declaresApprover(declared, agent))
+      : [];
+    const rule: PrRoutingRule = !declared
+      ? 'board-relation'
+      : declaredAgents.length
+        ? 'declared-approver'
+        : 'declared-approver-not-live';
+
+    // Most specific audience wins, so an agent that is several is told once in
+    // the terms that actually apply. `approver` is considered FIRST because it
+    // is the reason a recipient can act, where the other four are only ever the
+    // reason it is interested.
+    const targets = new Map<string, PrTarget>();
+    const consider = (agent: LiveAgent, audience: PrAudience) => {
       if (!running.has(agent.agentName)) return;
-      if (!targets.has(agent.agentName)) targets.set(agent.agentName, { agent, relation });
+      if (targets.has(agent.agentName)) return;
+      targets.set(agent.agentName, {
+        agent,
+        audience,
+        isOwn: ownNames.has(agent.agentName),
+        isDeclaredApprover: declaresApprover(declared, agent)
+      });
     };
 
-    const own = byKey.get(issueKey) ?? [];
+    // The declared approver is reachable through NO board relation in the
+    // general case — a story that is a task's supervisor is on one, an epic in
+    // another project is not — so it is added from the fleet census rather than
+    // from `byKey`, which is indexed by ticket. This is the only recipient in
+    // this module not derived from the board.
+    for (const agent of declaredAgents) consider(agent, 'approver');
+
     for (const agent of own) consider(agent, 'own');
 
     for (const agent of own) {
@@ -1898,17 +2232,24 @@ export class PrWatcher {
       if (!parents.length) {
         // Said out loud rather than folded into "nobody live to tell", which is
         // the line that made KAN-237's stall hard to diagnose: it cannot
-        // distinguish "this concerns nobody" from "the agent it most concerns —
-        // the approver — is switched off".
+        // distinguish "this concerns nobody" from "the agent it most concerns is
+        // switched off".
+        //
+        // It no longer calls the board parent "the approver" (KAN-600) — that
+        // was the assumption this ticket refutes, and on a pull request whose
+        // body names somebody else it made a true sentence about a live agent
+        // read as a false one about the approver.
         log(
-          `[pr-watch] ${id} (${kinds}): board parent ${parentKey} has no live agent, so the ` +
-          `approver was not told. ${issueKey} remains its inbox.`
+          `[pr-watch] ${id} (${kinds}): board parent ${parentKey} has no live agent. ` +
+          `${issueKey} remains its inbox.`
         );
         for (const event of events) {
           tick.skipped.push({
             event,
             relation: 'parent',
-            reason: "the ticket's board parent has no live agent"
+            reason: "the ticket's board parent has no live agent",
+            rule,
+            disposition: 'undeliverable'
           });
         }
       }
@@ -1919,26 +2260,46 @@ export class PrWatcher {
       for (const agent of byKey.get(linkedKey.toUpperCase()) ?? []) consider(agent, 'linked');
     }
 
+    // UNDELIVERABLE, and said in those words (KAN-600, AC3). The pull request
+    // names an approver and no agent of that name is running, so the one
+    // recipient `green-idle` exists for cannot be reached at all — which is a
+    // different fact from any relation being muted, and until this line existed
+    // the two were indistinguishable in the log.
+    //
+    // It is stated whatever the events are, because the reader diagnosing a
+    // stall is looking for the approver and not for a kind.
+    if (rule === 'declared-approver-not-live') {
+      log(
+        `[pr-watch] ${id} (${kinds}): UNDELIVERABLE — the pull request declares ` +
+        `\`${declared}\` its approver and no live agent answers to that name, so the audience ` +
+        `falls back to the board relation. ${issueKey} remains its inbox.`
+      );
+    }
+
     if (!targets.size) {
-      log(`[pr-watch] ${id} (${kinds}): nobody live to tell.`);
+      log(`[pr-watch] ${id} (${kinds}): nobody live to tell (routing rule: ${rule}).`);
       return;
     }
 
-    for (const { agent, relation } of targets.values()) {
+    for (const target of targets.values()) {
+      const { agent, audience } = target;
       const mine: PrEvent[] = [];
       for (const event of events) {
-        if (relationHears(event.kind, relation)) {
+        const { hears, why } = audienceHears(event.kind, target, rule);
+        if (hears) {
           mine.push(event);
           continue;
         }
         log(
           `[pr-watch] ${id} (${event.kind}): not telling ${agent.type}/${agent.key} ` +
-          `(${relation}) — this relation does not hear this kind.`
+          `(${audience}) — MUTED BY RULE: ${why}.`
         );
         tick.skipped.push({
           event,
-          relation,
-          reason: `a ${relation} is not told about a ${event.kind} event`,
+          relation: audience,
+          reason: why,
+          rule,
+          disposition: 'muted',
           agentName: agent.agentName
         });
       }
@@ -1946,18 +2307,19 @@ export class PrWatcher {
 
       log(
         `[pr-watch] ${id} (${mine.map((event) => event.kind).join('+')}): telling ` +
-        `${agent.type}/${agent.key} (${relation}).`
+        `${agent.type}/${agent.key} (${audience}) — routed by ${rule}.`
       );
       const outcome = await deliver({
         herdrBridge,
         type: agent.type,
         key: agent.key,
-        message: prEventNoticeText(mine, relation, this.now()),
+        message: prEventNoticeText(mine, audience, this.now()),
         log
       });
       tick.notices.push({
         events: mine,
-        relation,
+        relation: audience,
+        rule,
         type: agent.type,
         key: agent.key,
         agentName: agent.agentName,
