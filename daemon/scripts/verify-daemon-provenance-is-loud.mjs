@@ -95,6 +95,11 @@
 //      EADDRINUSE.                                            -> §7 red
 //   6. In `queryDaemonUnit`, drop the `LoadState` read and infer "absent"
 //      from an empty `Environment`.                           -> §1 red
+//   7. In `servesFleetSocket`, return `{ kind: 'fleet-socket' }` unconditionally
+//      — the pre-KAN-574 answer, where the pin governed every daemon including
+//      a test's.                                              -> §6 red
+//      (And the mirror of it: return `private-socket` unconditionally, which is
+//      the pin switching itself off.)                         -> §6 red
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -471,11 +476,56 @@ function sandbox() {
   return box;
 }
 
+/**
+ * A copy of `dist` that believes the MACHINE's home is this sandbox.
+ *
+ * ⚠ **KAN-574 made this necessary, and the reason is worth reading before you
+ * decide it is a cheat.** The runtime pin now governs only a daemon that would
+ * claim the socket the fleet talks to — `os.homedir()` (which `$HOME` moves)
+ * against `os.userInfo().homedir` (which nothing moves). That is right, and it
+ * is what stopped the pin from refusing every `verify-` script's daemon on
+ * every developer machine. But it also means **a sandbox isolated by `$HOME`
+ * alone is no longer a daemon the pin is about**, so §6's refusal arms would
+ * assert nothing while staying green — the worst outcome available.
+ *
+ * So those arms move the OTHER reference instead: `osHomeDir` is patched, in a
+ * COPY, to name the sandbox. The daemon is then the machine's own daemon as far
+ * as it can tell, and it takes the fleet branch and decides for itself. **The
+ * guard under test is untouched** — `servesFleetSocket`, `runtimePinVerdict`
+ * and the refusal in `daemon.ts` are the shipped code, running.
+ *
+ * What that leaves uncovered is the passwd lookup itself, and nothing here
+ * covers it: `verify-runtime-pin-spares-test-daemons.mjs` §2 does, by asking
+ * the live machine with nothing patched.
+ */
+function machineHomeDist(box) {
+  const root = path.join(box.dir, 'build', 'daemon');
+  const dist = path.join(root, 'dist');
+  if (fs.existsSync(dist)) return dist;
+  fs.mkdirSync(root, { recursive: true });
+  fs.cpSync(DIST, dist, { recursive: true });
+  fs.symlinkSync(path.join(REPO, 'daemon', 'node_modules'), path.join(root, 'node_modules'));
+  const file = path.join(dist, 'daemon-provenance.js');
+  const src = fs.readFileSync(file, 'utf8');
+  const anchor = 'export function osHomeDir() {';
+  // Asserted rather than assumed: a patch that silently missed would report a
+  // daemon that served, and "the refusal did not fire" is exactly the finding
+  // this arm exists to make. It must not be producible by a typo.
+  if (!src.includes(anchor)) {
+    throw new Error(`could not find ${anchor} in ${file} — the §6 patch would have missed`);
+  }
+  fs.writeFileSync(
+    file,
+    src.replace(anchor, `${anchor}\n    return ${JSON.stringify(box.dir)};`)
+  );
+  return dist;
+}
+
 /** Run a daemon to completion, or until it starts serving. Never the live one. */
-function startDaemon(box, extraEnv) {
+function startDaemon(box, extraEnv, dist = DIST) {
   const env = box.env(extraEnv);
   for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
-  const child = spawn(process.execPath, [path.join(DIST, 'daemon.js')], {
+  const child = spawn(process.execPath, [path.join(dist, 'daemon.js')], {
     env,
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -549,7 +599,9 @@ if (!distBuilt) {
   {
     const box = sandbox();
     box.setMode('loaded'); // the unit pins BUTCHR_AGENT_RUNTIME=crabcast
-    const run = startDaemon(box, {}); // ... and this daemon carries nothing
+    // ... this daemon carries nothing, and (KAN-574) it is the machine's own
+    // daemon rather than a test's, which is what makes the pin its business.
+    const run = startDaemon(box, {}, machineHomeDist(box));
     const { code } = await exitCodeOf(run);
     check(
       code === REFUSED_UNPINNED,
@@ -569,7 +621,9 @@ if (!distBuilt) {
   {
     const box = sandbox();
     box.setMode('loaded');
-    const run = startDaemon(box, { [RUNTIME_PIN_ACK_ENV]: '1' });
+    // Same reason as the arm above: the override is only reachable on a daemon
+    // the pin governs, so this one has to be the machine's own too (KAN-574).
+    const run = startDaemon(box, { [RUNTIME_PIN_ACK_ENV]: '1' }, machineHomeDist(box));
     const served = await waitForSocket(box, run);
     check(served, `${RUNTIME_PIN_ACK_ENV}=1 lets it serve anyway`, 'it refused despite the override');
     // Serving is not the whole criterion: an override that leaves no line is
@@ -592,6 +646,31 @@ if (!distBuilt) {
     check(
       !run.stderrSoFar().includes('REFUSING TO SERVE'),
       'and nothing is refused — the guard is scoped to a real disagreement'
+    );
+    run.child.kill('SIGTERM');
+    await exitCodeOf(run, 10_000);
+  }
+
+  {
+    // KAN-574, and the complement of the first arm: SAME unit, SAME missing
+    // BUTCHR_*, and the only difference is that this daemon is a test's rather
+    // than the machine's — no `machineHomeDist`, so `$HOME` is a throwaway and
+    // the socket it claims is its own. It must serve. Nine CI-runnable scripts
+    // failed on every developer machine for as long as this arm was missing,
+    // and CI could not see it: a runner has no unit to disagree with, so the
+    // first arm above passed there for the wrong reason.
+    const box = sandbox();
+    box.setMode('loaded');
+    const run = startDaemon(box, {});
+    const served = await waitForSocket(box, run);
+    check(
+      served,
+      'a TEST-spawned daemon serves though the unit pins a runtime it lacks',
+      'it refused — the pin is governing daemons that cannot reach the fleet (KAN-574)'
+    );
+    check(
+      !run.stderrSoFar().includes('REFUSING TO SERVE'),
+      'and it is not told it is refusing, because it is not'
     );
     run.child.kill('SIGTERM');
     await exitCodeOf(run, 10_000);

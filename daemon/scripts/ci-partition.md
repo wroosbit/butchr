@@ -38,13 +38,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 130 |
+| `yes` | 131 |
 | `partial` | 17 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **173** |
+| **total** | **174** |
 
-**147 of 173** run on every pull request.
+**148 of 174** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -60,7 +60,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-adf-refusal-names-the-construct` | yes | `explainProxyFailure` is a pure function from a status and a payload to a sentence, and it is called here directly; no live daemon, no herdr, no credential, no network, no terminal. |
 | `verify-adopted-pane-supervision` | yes | imports the built daemon modules and drives them in process, plus one source-text section; no live daemon, no herdr, no credential, no peer, no terminal, no real CrabCast socket (section 5 speaks CrabCast's wire protocol to a fake peer on a unix socket in a temp dir). |
 | `verify-agent-capacity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Every section that ASSERTS derives from stated facts, so no verdict here moves with the load, the disk pressure or the free memory of the host. |
-| `verify-agent-connection-identity` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-agent-connection-identity` | yes | it STARTS A REAL DAEMON from a copy of the build, plus a real `dist/mcp.js`, both isolated by a temp $HOME; no herdr, no credential, no peer, no terminal. This line read "no live daemon" until KAN-574 and that was wrong from the day it was written — §1 has always spawned `dist/daemon.js`, and the paragraph below about isolation-by-$HOME describes the daemon it spawns. The class is unchanged and correct: CI runs this and it passes. What was wrong was the REASON, which is the half `ci-partition.md` copies, so a reader deciding whether a change needs a live daemon was being told the opposite of the truth by a generated file. |
 | `verify-agent-name-brands-have-one-home` | yes | reads `daemon/src/**/*.ts` as TEXT and asserts against it in process. No build, no `dist`, no live daemon, no herdr, no credential, no peer, no terminal, no network, and it writes nothing: the red-drive flags rewrite an in-memory copy of the source rather than the tree. |
 | `verify-agent-name-fits-herdr` | yes | imports `daemon/dist` and reads `daemon/src` as text, both in process. No live daemon, no herdr, no credential, no network, no terminal, no peer, and it writes nothing outside memory. §1-§3 exercise pure exported functions (`agentNameProblem`, `assertAgentNameFitsHerdr`, `computeBoardDiff`); §4 and §5 read the tree; none of them spawns anything. §6 DOES shell out to herdr and is therefore behind `--against-herdr`, which CI never passes and which is not a default: without the flag it prints SKIP and asserts nothing, so the classification above is a claim about the run CI performs. |
 | `verify-agent-power-controls` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
@@ -156,6 +156,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-reclaim-bytes-are-freed-bytes` | yes | imports the built daemon module and builds its own filesystem fixture on tmpfs; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-resumed-conversation-nudge` | yes | imports the built daemon modules, stands up its own unix socket in a temporary directory, and needs no herdr, no pty, no network, no credential and no CrabCast. Sections 3 and 4 create and remove probe workspaces under the workspaces root, per path and never by reverting a directory. |
 | `verify-runtime-agnostic-census` | yes | imports the built daemon modules, stands a fake CrabCast peer on a Unix socket in a scratch $HOME, and asserts in process. No live daemon, no real CrabCast, no herdr, no credential, no terminal. |
+| `verify-runtime-pin-spares-test-daemons` | yes | it brings its own `systemctl` on PATH, so the installed unit that this defect needs is simulated rather than required, and the sections run identically on a runner and on a developer machine. That is the point rather than a convenience: the defect was invisible to CI *by construction*, and a proof that needed the unit to be really installed would have inherited exactly that blindness. |
 | `verify-same-key-other-type` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-search-keeps-every-issue` | yes | imports the built modules in process and reads one captured fixture; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-selfcheck-rechecks-replaced-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. §4 opens a Unix socket inside its own scratch directory. |

@@ -16,6 +16,7 @@ import {
   LOST_TO_UNCONFIGURED,
   announceToJournal,
   daemonProvenanceReport,
+  describeNotFleetDaemon,
   describeRefusal,
   describeThisProcess,
   incumbentIsConfigured,
@@ -205,6 +206,12 @@ switch (bootPin.kind) {
     break;
   case 'carried':
     log(`runtime pin: carrying ${RUNTIME_ENV_VAR}=${bootPin.value} as ${DAEMON_UNIT} declares it`);
+    break;
+  case 'not-fleet-daemon':
+    // KAN-574. Served, and recorded where a test daemon's own record goes —
+    // see `describeNotFleetDaemon` for why this one is NOT announced to the
+    // journal the way the refusal above is.
+    for (const line of describeNotFleetDaemon(bootPin)) log(line);
     break;
 }
 

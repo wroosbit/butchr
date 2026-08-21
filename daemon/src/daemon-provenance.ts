@@ -1,5 +1,7 @@
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { DAEMON_UNIT } from './ipc.js';
 import { RUNTIME_ENV_VAR, selectedRuntimeMode } from './runtime-switch.js';
 
@@ -351,6 +353,107 @@ export function pinDrift(unit: UnitQuery, env: NodeJS.ProcessEnv = process.env):
 }
 
 /**
+ * Where this daemon will serve, and where the machine's daemon serves.
+ *
+ * **`$HOME` is the whole of it.** `SOCKET_PATH` is built from `os.homedir()`
+ * (`ipc.ts`), and on POSIX `os.homedir()` returns `$HOME` when it is set and
+ * falls back to the passwd entry when it is not. So a process with a redirected
+ * `HOME` claims a *different socket*, and a process without one claims the
+ * machine's.
+ *
+ * `osHome` is the passwd answer, which {@link https://nodejs.org/api/os.html
+ * `os.userInfo()`} gives and **no environment variable can move**. That
+ * immovability is the point: it is the fixed reference the mutable one is
+ * compared against.
+ */
+export interface HomeIdentity {
+  /** What THIS process will build its socket path from. `$HOME` wins. */
+  processHome: string | null;
+  /** The OS's home for this user. Nothing in the environment changes it. */
+  osHome: string | null;
+}
+
+/** The passwd home, asked of the OS rather than the environment. */
+export function osHomeDir(): string | null {
+  try {
+    const h = os.userInfo().homedir;
+    return typeof h === 'string' && h.length > 0 ? h : null;
+  } catch {
+    // A uid with no passwd entry — a container running as a bare numeric user.
+    // "I could not ask" and not "there is no home"; the caller fails strict.
+    return null;
+  }
+}
+
+/**
+ * Read {@link HomeIdentity} off an environment, the way `os.homedir()` does.
+ *
+ * Taken from the passed `env` rather than by calling `os.homedir()` so that a
+ * proof can drive **both** branches without a second `HOME` on the machine —
+ * which is the same reason {@link CommandRunner} is injectable.
+ */
+export function homeIdentity(
+  env: NodeJS.ProcessEnv = process.env,
+  osHome: string | null = osHomeDir()
+): HomeIdentity {
+  const fromEnv = typeof env.HOME === 'string' && env.HOME.length > 0 ? env.HOME : null;
+  return { processHome: fromEnv ?? osHome, osHome };
+}
+
+/**
+ * Would this daemon claim the socket the machine's fleet talks to?
+ *
+ * **Three constructors and not a boolean, for the reason {@link UnitQuery}
+ * gives**: "it will not claim the fleet's socket" and "I could not work out
+ * which socket it will claim" lead to opposite conclusions, and a predicate
+ * returning `false` for both invites the caller to collapse them. Here the
+ * collapse would be the dangerous direction — an unanswerable question read as
+ * *"private, therefore exempt"* is the runtime pin switching itself off.
+ */
+export type FleetSocketVerdict =
+  /** This process will claim `~/.local/share/butchr/butchr.sock` — the fleet's. */
+  | { kind: 'fleet-socket' }
+  /** A redirected `HOME`, so a socket of its own that no agent connects to. */
+  | { kind: 'private-socket'; processHome: string; osHome: string }
+  /** Undetermined. NOT the same as private — the caller must treat it as fleet. */
+  | { kind: 'cannot-tell'; detail: string };
+
+export function servesFleetSocket(
+  id: HomeIdentity,
+  realpath: (p: string) => string = (p) => fs.realpathSync(p)
+): FleetSocketVerdict {
+  const { processHome, osHome } = id;
+  if (osHome === null || osHome.trim() === '') {
+    return { kind: 'cannot-tell', detail: 'the OS did not say where this user lives' };
+  }
+  if (processHome === null || processHome.trim() === '') {
+    return { kind: 'cannot-tell', detail: 'this process has no home directory to serve from' };
+  }
+
+  const mine = path.resolve(processHome);
+  const machine = path.resolve(osHome);
+  if (mine === machine) return { kind: 'fleet-socket' };
+
+  // Two names for one directory are ONE socket, so a `HOME` that is a symlink
+  // to the real home is the fleet's daemon however different the strings look.
+  // Checked in the strict direction on purpose: this is the branch that would
+  // otherwise hand an exemption to a daemon that really can displace the fleet.
+  let mineReal: string;
+  let machineReal: string;
+  try {
+    mineReal = realpath(mine);
+    machineReal = realpath(machine);
+  } catch (err: any) {
+    return {
+      kind: 'cannot-tell',
+      detail: `could not resolve ${mine} or ${machine}: ${err?.message ?? err}`
+    };
+  }
+  if (mineReal === machineReal) return { kind: 'fleet-socket' };
+  return { kind: 'private-socket', processHome: mine, osHome: machine };
+}
+
+/**
  * The runtime-pin question, answered as a verdict rather than a boolean.
  *
  * KAN-550's third acceptance criterion: *"The daemon refuses to serve, or logs
@@ -379,11 +482,36 @@ export type RuntimePinVerdict =
   /** The unit pins a runtime and this process does NOT carry it. Refuse. */
   | { kind: 'lost'; declared: string; running: string | null; drift: PinDrift[] }
   /** As `lost`, but an operator set {@link RUNTIME_PIN_ACK_ENV} on purpose. */
-  | { kind: 'lost-acknowledged'; declared: string; running: string | null; drift: PinDrift[] };
+  | { kind: 'lost-acknowledged'; declared: string; running: string | null; drift: PinDrift[] }
+  /**
+   * Unpinned, and serving a socket of its own — so not the fleet's daemon.
+   *
+   * **KAN-574.** A `verify-` script spawns a real daemon into a throwaway
+   * `HOME` and asserts against it. That daemon inherits the script's
+   * environment, which carries no `BUTCHR_*`, so on any machine with the unit
+   * installed it read as {@link RuntimePinVerdict `lost`} and refused — nine
+   * CI-runnable scripts, failing on every developer machine and **green on
+   * every runner**, because a runner has no unit to disagree with.
+   *
+   * The pin exists so that the daemon *the fleet talks to* is the one the
+   * operator configured. A daemon on a private socket cannot become that
+   * daemon, so it was never what the guard was about. Note which half is
+   * unchanged: the comparison against the unit is exact as ever, and the
+   * 2026-08-20 incident still refuses — Chrome's native host ran under the
+   * **real** `HOME` and claimed the **real** socket.
+   */
+  | {
+      kind: 'not-fleet-daemon';
+      declared: string;
+      running: string | null;
+      processHome: string;
+      osHome: string;
+    };
 
 export function runtimePinVerdict(
   unit: UnitQuery,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  home: HomeIdentity = homeIdentity(env)
 ): RuntimePinVerdict {
   if (unit.kind === 'unreachable') return { kind: 'cannot-tell', detail: unit.detail };
   if (unit.kind === 'absent') return { kind: 'nothing-pinned', because: 'no-unit' };
@@ -394,6 +522,23 @@ export function runtimePinVerdict(
   }
   const running = typeof env[RUNTIME_ENV_VAR] === 'string' ? (env[RUNTIME_ENV_VAR] as string) : null;
   if (running === declared) return { kind: 'carried', value: declared };
+
+  // ── KAN-574 ── Asked only on the branch that would otherwise REFUSE, so this
+  // is the single transition the ticket changes: `lost` → `not-fleet-daemon`,
+  // and only for a daemon that cannot reach the fleet. Every other branch above
+  // and below is untouched, which is what makes the change auditable — and
+  // `cannot-tell` deliberately falls through to the refusal below rather than
+  // to the exemption.
+  const socket = servesFleetSocket(home);
+  if (socket.kind === 'private-socket') {
+    return {
+      kind: 'not-fleet-daemon',
+      declared,
+      running,
+      processHome: socket.processHome,
+      osHome: socket.osHome
+    };
+  }
 
   const drift = pinDrift(unit, env);
   const ack = env[RUNTIME_PIN_ACK_ENV];
@@ -447,6 +592,33 @@ export function describeRefusal(verdict: RuntimePinVerdict, unit: string = DAEMO
       `below was overridden.`;
   }
   return lines;
+}
+
+/**
+ * The one line a private-socket daemon says about not being pinned.
+ *
+ * **One line, and not in the journal, and both are deliberate.** This is the
+ * ordinary state of every `verify-` script that spawns a daemon, so it happens
+ * many times a day on a developer machine and never once in production. Sending
+ * it to the journal beside {@link describeRefusal}'s block would put a routine,
+ * expected line where an operator goes to find out why a unit will not start —
+ * and a signal that cries every test run is a signal people learn to scroll
+ * past. That is the same defect KAN-550 was filed about, arriving from the
+ * opposite direction: there the incident was invisible, here it would be
+ * buried. It goes to `daemon.log`, which is where a *test* daemon's own record
+ * belongs.
+ */
+export function describeNotFleetDaemon(verdict: RuntimePinVerdict): string[] {
+  if (verdict.kind !== 'not-fleet-daemon') return [];
+  return [
+    `butchr: serving UNPINNED, and that is correct here — this daemon does not have ` +
+      `the fleet's socket.`,
+    `  ${DAEMON_UNIT} declares ${RUNTIME_ENV_VAR}=${verdict.declared}; this process has ` +
+      `${verdict.running === null ? '(not set)' : verdict.running}.`,
+    `  HOME is ${verdict.processHome}, not ${verdict.osHome}, so the socket it claims is ` +
+      `its own and no agent connects to it.`,
+    `  The pin governs the daemon the fleet talks to. This is not that daemon (KAN-574).`
+  ];
 }
 
 /**
