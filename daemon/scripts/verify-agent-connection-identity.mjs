@@ -70,6 +70,7 @@ import { tmpdir } from 'os';
 import net from 'net';
 import path from 'path';
 import { pathToFileURL, fileURLToPath } from 'url';
+import { awaitSettledLog, describeSettledLog } from './lib/settled-log.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const daemonDir = path.resolve(scriptDir, '..');
@@ -431,19 +432,47 @@ check('an identified client still receives broadcast events', Boolean(resetOf(li
 console.log('\n' + '='.repeat(78));
 console.log("6. what the daemon wrote in its own log");
 console.log('='.repeat(78));
-const logLines = readFileSync(logPath, 'utf8')
+// KAN-571: this was one `readFileSync` taken the moment the section was
+// reached. The daemon writes this log through a buffered `fs.createWriteStream`
+// from another process, so that read could land ahead of the flush, or inside
+// it — `verify-launchdarkly-proxy-failure-is-loud` lost exactly that race on CI
+// run 32433221528 and reported a half-written line as an absent one. Wait for
+// the lines instead. `lib/settled-log.mjs` also keeps the unfinished trailing
+// fragment away from the regexes below, so a line cut off at
+// `Connection conn-7 is task/KAN-90` can never satisfy one.
+//
+// ⚠ THE PREDICATE IS CONDITIONAL, and it has to be. Under `--break-removal`
+// this script patches the daemon so the removal line is NEVER written and then
+// requires the second check to fail — that is its red drive. Waiting for a line
+// the run has deliberately deleted would spend the whole deadline every time
+// and still, correctly, go red. So wait only for what this mode expects, and
+// let the assertions below stay exactly as they were.
+const REGISTRATION_LINE = /Connection conn-\d+ is task\/KAN-9001/;
+const REMOVAL_LINE = /task\/KAN-9001 unregistered/;
+
+const logWait = await awaitSettledLog(
+  logPath,
+  (settled) =>
+    REGISTRATION_LINE.test(settled) && (breakRemoval || REMOVAL_LINE.test(settled)),
+  { timeoutMs: 15_000 }
+);
+console.log(`  (${describeSettledLog(logWait, logPath)})`);
+
+const logLines = logWait.settled
   .split('\n')
   .filter((l) => /Connection conn-|unregistered|anonymous/.test(l));
 console.log(logLines.map((l) => `  ${l}`).join('\n') || '  (nothing)');
 check(
   'the daemon says in its log which agent each connection is',
-  logLines.some((l) => /Connection conn-\d+ is task\/KAN-9001/.test(l)),
-  'registration is legible to a human reading daemon.log'
+  logLines.some((l) => REGISTRATION_LINE.test(l)),
+  `${describeSettledLog(logWait, logPath)}; registration is legible to a human reading daemon.log`
 );
 check(
   'the daemon says in its log when an agent is unregistered',
-  logLines.some((l) => /task\/KAN-9001 unregistered/.test(l)),
-  breakRemoval ? 'expected to be missing under --break-removal' : 'removal is legible too'
+  logLines.some((l) => REMOVAL_LINE.test(l)),
+  breakRemoval
+    ? 'expected to be missing under --break-removal'
+    : `${describeSettledLog(logWait, logPath)}; removal is legible too`
 );
 
 console.log('\n' + '='.repeat(78));

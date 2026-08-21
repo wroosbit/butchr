@@ -66,6 +66,7 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { awaitSettledLog, describeSettledLog } from './lib/settled-log.mjs';
 
 import { JiraIssueTypeService } from '../dist/jira.js';
 
@@ -474,19 +475,44 @@ check(
 // ── 4. the audit line ──────────────────────────────────────────────────────
 rule('4. every proxied read is attributed in the daemon log — successes and refusals alike');
 
-await sleep(300);
 // The daemon redirects `console.log` to `~/.local/share/butchr/daemon.log` at
 // startup (daemon.ts), so its own stdout is empty by design — reading the child
 // pipe would report "nothing was logged" about a daemon logging perfectly, an
 // absence produced by the instrument rather than by the thing under test.
 // Whatever did reach stdout is kept in the failure detail so a crash during
 // module load, which happens *before* that redirect, is still visible.
+//
+// KAN-571: this was `await sleep(300)` and then one `readFileSync`. That log is
+// written by a buffered `fs.createWriteStream` in another process, and the
+// daemon writes its audit line *before* it answers the call that unblocked this
+// script — so 300ms was a bet on flush latency, not a wait for the write. Its
+// twin, `verify-launchdarkly-proxy-failure-is-loud`, lost the identical bet on
+// CI run 32433221528 and reported a half-written line as a missing one. Wait
+// for the lines instead; the sleep is deleted rather than lengthened, because a
+// longer sleep moves a race rather than removing one.
 const logPath = path.join(butchrDir, 'daemon.log');
-const daemonLog = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
+const SUCCESS_AUDIT =
+  /atlassian-proxy: task\/KAN-272 → atlassian_get_issue GET \/rest\/api\/3\/issue\/KAN-272\?fields=[^\s]* → 200/;
+const CREDENTIAL_AUDIT = /atlassian-proxy:.*FAILED 401.*credential fault/;
+const QUERY_AUDIT = /atlassian-proxy:.*KAN-9999.*FAILED 404.*query fault/;
+
+const logWait = await awaitSettledLog(
+  logPath,
+  (settled) => SUCCESS_AUDIT.test(settled) && CREDENTIAL_AUDIT.test(settled) && QUERY_AUDIT.test(settled),
+  { timeoutMs: 15_000 }
+);
+console.log(`         (${describeSettledLog(logWait, logPath)})`);
+
+// Positive assertions read `settled` — whole lines only, so a half-written line
+// can never satisfy one. The token check below reads `raw`, which includes any
+// unfinished fragment, because a secret in the tail must still be caught.
+const daemonLog = logWait.settled;
+
 check(
   'the daemon wrote a log at all — otherwise section 4 measures nothing',
   daemonLog.includes('atlassian-proxy'),
-  `no proxy lines in ${logPath}; the daemon's own stdout said: ${on.log.join('').slice(0, 400)}`
+  `no proxy lines in ${logPath}; ${describeSettledLog(logWait, logPath)}; ` +
+    `the daemon's own stdout said: ${on.log.join('').slice(0, 400)}`
 );
 if (verbose) {
   console.log(
@@ -499,24 +525,27 @@ if (verbose) {
 }
 check(
   'a successful read is logged with the caller, the tool and the status',
-  /atlassian-proxy: task\/KAN-272 → atlassian_get_issue GET \/rest\/api\/3\/issue\/KAN-272\?fields=[^\s]* → 200/.test(
-    daemonLog
-  ),
-  daemonLog.split('\n').filter((l) => l.includes('atlassian-proxy')).slice(0, 4).join('\n')
+  SUCCESS_AUDIT.test(daemonLog),
+  `${describeSettledLog(logWait, logPath)}\n` +
+    daemonLog.split('\n').filter((l) => l.includes('atlassian-proxy')).slice(0, 4).join('\n')
 );
 check(
   'a credential failure is logged as one, and named as affecting the fleet',
-  /atlassian-proxy:.*FAILED 401.*credential fault/.test(daemonLog),
-  daemonLog.split('\n').filter((l) => l.includes('FAILED')).join('\n')
+  CREDENTIAL_AUDIT.test(daemonLog),
+  `${describeSettledLog(logWait, logPath)}\n` +
+    daemonLog.split('\n').filter((l) => l.includes('FAILED')).join('\n')
 );
 check(
   'a query failure is logged as a query fault, not a credential one',
-  /atlassian-proxy:.*KAN-9999.*FAILED 404.*query fault/.test(daemonLog),
-  daemonLog.split('\n').filter((l) => l.includes('KAN-9999')).join('\n')
+  QUERY_AUDIT.test(daemonLog),
+  `${describeSettledLog(logWait, logPath)}\n` +
+    daemonLog.split('\n').filter((l) => l.includes('KAN-9999')).join('\n')
 );
 check(
   'the daemon log carries nothing token-shaped',
-  !daemonLog.includes(FAKE_TOKEN),
+  // `raw`, deliberately: every byte that reached the disk, unfinished tail
+  // included. A token in a half-written line is still a token in the log.
+  !logWait.raw.includes(FAKE_TOKEN),
   'the credential reached the log'
 );
 
