@@ -89,9 +89,15 @@ console.log('\n--- C. wiring (static, reads src as text) ---');
     /servingProcess: serving/.test(mcpSrc) && /describeOwnBuild\(\)/.test(mcpSrc)
   );
   check(
+    // `build[,)]` rather than `build)`: KAN-319 added a FOURTH argument — the
+    // client's measured channel reach — so the literal call shape moved while
+    // this assertion's claim did not. What is asserted is what KAN-526 cares
+    // about and all it ever cared about: the announced build is parsed, and it
+    // is handed to `register` as the third positional argument. A refactor that
+    // dropped it, reordered it, or passed something else there still fails.
     'daemon.ts parses the announced build and stores it on the connection',
     /buildFromAnnouncement\(msg\)/.test(daemonSrc) &&
-      /agentConnections\.register\(socket, address, build\)/.test(daemonSrc)
+      /agentConnections\.register\(socket, address, build[,)]/.test(daemonSrc)
   );
   check(
     'daemon.ts gives the staleness report a live view of connected servers',
