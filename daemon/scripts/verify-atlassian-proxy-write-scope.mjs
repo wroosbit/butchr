@@ -97,6 +97,67 @@ function check(label, ok, detail) {
 /** The one write this ticket authorises. Named once so §1 can assert the count. */
 const THE_WRITE = 'atlassian_transition_issue';
 
+/**
+ * The body of a method, from its opening brace to the matching close — KAN-587.
+ *
+ * WHY IT SCANS RATHER THAN COUNTS BRACES. A `{` inside a string, a template
+ * literal or a comment would close the body early, and an early close hands back
+ * a SHORT body: the assertions reading it would go red for a brace in a log
+ * message rather than for a missing policy call, which is the same false-red this
+ * function exists to remove. So line comments, block comments and the three
+ * quote characters are skipped, escapes included.
+ *
+ * Returns null when there is no such signature, or when the braces do not
+ * balance before the file ends. Null is NOT an empty body: the callers check for
+ * it explicitly and say a rename is what they found, because `''.includes(x)` is
+ * false for every x and would otherwise report a renamed method as a deleted
+ * policy call.
+ *
+ * @param {string} src   the module's source text
+ * @param {string} sig   a signature to find, e.g. 'private async handleFoo('
+ * @returns {string|null} the body INCLUDING its outer braces, or null
+ */
+function methodBody(src, sig) {
+  const at = src.indexOf(sig);
+  if (at === -1) return null;
+  const open = src.indexOf('{', at + sig.length);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (c === '/' && next === '/') {
+      i = src.indexOf('\n', i);
+      if (i === -1) return null;
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end === -1) return null;
+      i = end + 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      i++;
+      for (; i < src.length; i++) {
+        if (src[i] === '\\') {
+          i++;
+          continue;
+        }
+        if (src[i] === c) break;
+      }
+      if (i >= src.length) return null;
+      continue;
+    }
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  return null;
+}
+
 // ── 1. the write grant is one operation, and this is what it is ────────────
 rule('1. the grant — exactly one write, one verb, one scope');
 
@@ -649,28 +710,82 @@ check(
 const routerSrc = fs.readFileSync(path.join(daemonDir, 'src', 'router.ts'), 'utf8');
 const mcpSrc = fs.readFileSync(path.join(daemonDir, 'src', 'mcp.ts'), 'utf8');
 
+// KAN-587: THESE THREE READ THE METHOD'S OWN BODY, AND USED TO READ A CHARACTER
+// WINDOW. The window was `handleAtlassianProxyCall[\s\S]{0,3000}` and it was
+// wrong in both directions at once, which is why it is gone rather than widened.
+//
+//   * FALSE RED. The window measured *proximity of two strings*, and its failure
+//     message asserted *the policy is not applied*. Those are different claims
+//     and only the first was tested. KAN-577 added a resolution step and an
+//     explanatory comment inside the handler, above the policy call — the policy
+//     was still called, in the same place, with the same arguments — and this
+//     required check went red saying `any agent can write to any issue`. The
+//     margin at `origin/main` was then 346 characters, about four lines of
+//     comment.
+//   * FALSE GREEN, which is the worse half and was found while fixing the first.
+//     A regex is satisfied by ANY occurrence of the name, and `router.ts` holds
+//     three: the call site, a docblock, and the definition. The docblock is the
+//     one KAN-577 wrote to explain the false red above, and it names both
+//     `handleAtlassianProxyCall` and `refuseWriteOutsideCaller(` 174 characters
+//     apart — so the check matched PROSE. Measured on this branch: with the
+//     `refuseWriteOutsideCaller(...)` call DELETED OUTRIGHT from the handler
+//     body, the old assertion still read PASS. The exact defect its message
+//     names could not turn it red.
+//
+// Scoping to the body from its opening brace to the matching close removes the
+// arbitrary 3000 and both failures with it: a docblock sits outside the body, and
+// a comment added inside it moves nothing out. `methodBody` skips comments and
+// string literals rather than counting raw braces, because a brace inside either
+// would end the body early and hand back a fail-closed answer for the wrong
+// reason.
+const handlerBody = methodBody(routerSrc, 'private async handleAtlassianProxyCall(');
+// Fail-closed and SAID OUT LOUD, rather than an empty-string fallback that would
+// leave the three assertions below reading as ordinary failures of the property.
+// A rename is a different fact about the world than a deleted policy call.
+check(
+  'the handler is findable as a method, so the three below are reading its body',
+  handlerBody !== null,
+  'no `private async handleAtlassianProxyCall(` with a brace-matched body in router.ts — ' +
+    'the method was renamed or its signature changed, so the three assertions below have ' +
+    'not read the handler at all. They fail closed; fix the signature this script looks for.'
+);
 check(
   'router.ts applies the write policy on every proxied call',
-  /handleAtlassianProxyCall[\s\S]{0,3000}refuseWriteOutsideCaller\(/.test(routerSrc),
-  'the handler no longer consults the policy: any agent can write to any issue'
+  handlerBody !== null && handlerBody.includes('refuseWriteOutsideCaller('),
+  'no call to `refuseWriteOutsideCaller(` inside the body of `handleAtlassianProxyCall` — ' +
+    'IT MAY HAVE MOVED RATHER THAN GONE. What is measured is the call being lexically ' +
+    'inside that method, not the policy being unenforced: if it now runs from a helper the ' +
+    'handler awaits, the property can still hold and this assertion is what needs ' +
+    're-pointing. Check `refuseWriteOutsideCaller` is reached on the proxy path before ' +
+    'anything is sent BEFORE concluding any agent can write to any issue.'
 );
 check(
   'it passes the identity from the request, not a constant',
-  /refuseWriteOutsideCaller\(operation, args, callerIdentity\)/.test(routerSrc),
-  'a hard-coded caller would make the restriction always-pass or always-fail'
+  handlerBody !== null &&
+    handlerBody.includes('refuseWriteOutsideCaller(operation, args, callerIdentity)'),
+  'the call in the handler body does not read `refuseWriteOutsideCaller(operation, args, ' +
+    'callerIdentity)` — a hard-coded caller would make the restriction always-pass or ' +
+    'always-fail. This matches the argument list exactly, so a rename of any of the three ' +
+    'reddens it without the property having changed.'
 );
 // Ordering, and it is the whole of what "nothing was sent" is worth. A refusal
 // after the request has gone is not a refusal.
+//
+// This one read from the FIRST occurrence of the name to the end of the file —
+// that occurrence is the call site on the dispatch table, 105k characters above
+// the handler — so it was comparing two positions in the rest of the module and
+// not two positions in the handler. It happened to be right. Same body, now.
 check(
   'the refusal is decided BEFORE anything is sent to Atlassian',
   (() => {
-    const handler = routerSrc.slice(routerSrc.indexOf('handleAtlassianProxyCall'));
-    const refusal = handler.indexOf('refuseWriteOutsideCaller(operation');
-    const send = handler.indexOf('this.jira.proxyWrite(');
+    if (handlerBody === null) return false;
+    const refusal = handlerBody.indexOf('refuseWriteOutsideCaller(operation');
+    const send = handlerBody.indexOf('this.jira.proxyWrite(');
     return refusal !== -1 && send !== -1 && refusal < send;
   })(),
-  'the policy is consulted after the write has already gone out, which makes its ' +
-    '"nothing was sent to Atlassian" sentence false'
+  'inside the handler body, the policy is consulted after the write has already gone out ' +
+    '(or one of the two is not in the body at all), which makes its "nothing was sent to ' +
+    'Atlassian" sentence false'
 );
 // KAN-292 MOVED THE TEXT THESE TWO MATCH, AND THAT IS WHY THEY ARE WRITTEN OUT
 // AT LENGTH RATHER THAN QUIETLY UPDATED.

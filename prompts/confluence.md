@@ -86,8 +86,17 @@ what it is, say so, and then act accordingly.**
 
 ## 1. Read it first, and say what you think it is
 
-Before you do anything else, read **{{KEY}}** with the Atlassian MCP
-(`getConfluencePage`) — the whole body, not the summary — and post one short
+**Atlassian goes through the `butchr` MCP server and nothing else.** Every Jira
+and Confluence action you take here is one of that server's `atlassian_*` tools.
+**There is no official `atlassian` server in your workspace to fall back to, and
+its absence is deliberate rather than a fault** (KAN-603): it is a remote
+endpoint needing a browser OAuth flow per machine that nobody completes, the
+daemon's proxy carries every action the fleet performs without one, and a
+workspace is provisioned without it whenever the proxy is on. ⚠ **So if you find
+yourself waiting on an OAuth token, stop — nothing is going to deliver one.**
+
+Before you do anything else, read **{{KEY}}** with
+`atlassian_get_confluence_page` — the whole body, not the summary — and post one short
 statement of what you take the page to be and what you intend to do about it.
 Put it where the human will see it: a footer comment on the page.
 
@@ -156,10 +165,17 @@ yourself. A new use case is expected; a guessed one is not.
 
 ## 3. What you may do, and what you may not
 
-- **Page writes are yours.** You edit **{{KEY}}** with the Atlassian MCP
-  (`updateConfluencePage`, `createConfluenceFooterComment`). The daemon holds no
-  write scope, for Confluence or for anything else, and will never do this for
-  you. Edit deliberately: you are changing a document a human owns, so prefer
+- **Page writes are yours.** You edit **{{KEY}}** with
+  `atlassian_update_confluence_page` and `atlassian_create_confluence_footer_comment`.
+  **These reach Confluence through the daemon's own credential**, on the
+  `confluence-write` rung — and that rung is a genuinely wider grant than the
+  ones below it, because a Confluence page has no issue key to bound it to, so
+  any agent on it may write any page the credential can reach. *(This paragraph
+  said "the daemon holds no write scope, for Confluence or for anything else"
+  until KAN-603. That was true when written and stopped being true at KAN-291
+  and KAN-293; it is corrected here rather than softened, and `docs/SETUP.md` §8
+  carried the same stale sentence.)* Nothing writes the page for you. Edit
+  deliberately: you are changing a document a human owns, so prefer
   additions and corrections that can be read as a diff over rewrites that cannot.
 - **Verify every write, because `success` is a claim about the request, not
   about the page.** The recipe is below and it is not optional — this hazard is

@@ -902,6 +902,171 @@ goes wrong again.**
 
 ---
 
+## 5c. Repairing ONE mixed-runtime supervisor — not a cutover, and not a migration
+
+**This section is for a state the rest of this document does not cover: the flip
+has already happened, most of the fleet is CrabCast's, and one agent is still
+herdr-launched.** KAN-552 found three supervisors in exactly that state while
+every task agent was CrabCast's. §5 drains the whole fleet and then flips; here
+there is nothing to flip, the fleet is running, and the repair is to one agent
+while its neighbours keep working.
+
+**⚠ It is still not a migration.** Q2 settles that and nothing here softens it:
+an activation under CrabCast is a fresh start, for a supervisor exactly as for a
+task agent. What follows is a **drain and re-activation of one agent**. The
+conversation does not travel. Anyone reading this section hoping for a way to
+move a live supervisor across without losing its head should stop at Q2.
+
+### 5c.0 — The decision this runbook does NOT make
+
+**Whether to spend a working supervisor's context at all is not the drafter's
+call, and it is not the driver's either.** A supervisor mid-review holds things
+that are on no ticket: what it has already checked, what it was about to refuse,
+which of two readings it had settled. Draining it destroys that, and the agent
+that comes back is competent but new.
+
+So this runbook assumes the decision has been taken and recorded by whoever owns
+the fleet. **A mixed-runtime supervisor is not an emergency**; it is a partial
+management surface, and the honest options are two:
+
+- **Leave it, and know that you have.** Every CrabCast instrument is answering
+  about a subset. That is tolerable if it is *written down* — the failure KAN-552
+  documents is not the split, it is that nothing said so.
+- **Drain and re-activate it,** paying the context, at a moment chosen for the
+  work rather than for tidiness.
+
+**Doing nothing while believing the instruments is the one option that is not
+available.**
+
+### 5c.1 — Establish which runtime owns it, from an instrument that can see both
+
+**Do not ask CrabCast whether an agent is CrabCast's.** That is the question it
+cannot answer about an agent it does not own: the agent is simply absent, and
+absence reads as "no such agent" rather than "not mine".
+
+- **Action:** read the agent's parent chain and its pane handle directly.
+
+  ```bash
+  pid=<the agent's claude pid>
+  while [ "$pid" != "1" ]; do
+    echo "$pid $(cat /proc/$pid/comm) :: $(tr '\0' ' ' < /proc/$pid/cmdline | cut -c1-60)"
+    pid=$(awk '{print $4}' /proc/$pid/stat)
+  done
+  tr '\0' '\n' < /proc/<pid>/environ | grep -E '^HERDR_PANE_ID'
+  ```
+
+  A chain ending `claude ← fish ← herdr server` is herdr's. A CrabCast-launched
+  agent is descended from the daemon's PTY instead, and its pane is named
+  `crabcast-<key>-<hash>` where herdr's is `butchr-<type>-<key>`.
+
+- **Finding the pid at all takes an unfiltered scan.** KAN-552's own reporter
+  nearly closed a working approver's pane on a `pgrep -f 'claude
+  --permission-mode'` that matched zero because the real command carries its
+  flags in the other order. Walk `/proc/*/cwd` and filter on the **workspace
+  path**, never on a command-line pattern:
+
+  ```bash
+  WS=~/.local/share/butchr/workspaces
+  for p in /proc/[0-9]*; do
+    cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
+    case "$cwd" in "$WS"/*) ;; *) continue;; esac
+    argv0=$(tr '\0' '\n' < "$p/cmdline" 2>/dev/null | head -1)
+    case "$argv0" in *claude*) echo "${p#/proc/} ${cwd#$WS/}";; esac
+  done
+  ```
+
+- **Check:** the scan finds **your own agent** as well as the one under
+  investigation. A scan that cannot find a process you know is there has
+  measured its own pattern, not the machine.
+- **Abort:** the parent chain cannot be read. Nothing may be concluded about
+  ownership, and nothing may be closed on the strength of it.
+- **Who:** the driver.
+
+### 5c.2 — Get its state onto its ticket, and confirm it landed
+
+- **Precondition:** 5c.1 says herdr owns it, and the decision at 5c.0 is recorded.
+- **Action:** ask the agent — on its **Jira ticket**, not its pane — to write
+  down what it is holding: what it has reviewed, what it is waiting on, what it
+  was about to do, and anything it believes that is not already written
+  somewhere. This is the only step whose content nobody else can produce.
+- **⚠ Do not type into its pane to ask.** A composer send begins with Ctrl+C, it
+  destroys any tool call in flight, and if the agent is sitting at a selection
+  dialog the send answers the dialog with whatever is highlighted — which has
+  terminated an agent outright. A ticket comment reaches a live agent within a
+  minute and costs it nothing.
+- **Check:** **read the stored comment back and compare it.** A `200` is a claim
+  about the request. The park comment on KAN-552 came back with a table's
+  separator row missing, status 200 and no warning — content that reads as clean
+  prose while a section of it is gone.
+- **Abort:** the agent does not answer, or answers with nothing that was not
+  already on the ticket. **An unresponsive agent is not a licence to proceed** —
+  it is the case where the most is about to be lost.
+- **Who:** the agent itself; the driver confirms.
+
+### 5c.3 — Stand it down through the runtime that OWNS it
+
+**⚠ This is where KAN-552's second symptom bites.** `crabcast deactivate` on an
+agent CrabCast does not own **reports success and stops nothing**: it marks its
+own record, the live agent is herdr's, and the operator reads `deactivated … now
+standby` for three agents that are all still running. The load never falls and
+the reason is invisible in the output.
+
+- **Action:** close the **herdr** pane, because herdr is what is holding it.
+- **Check:** the agent is gone from the census **of the runtime that owned it**,
+  and the `/proc` scan from 5c.1 no longer finds the pid. **Two readings, and
+  they must not share a cause** — a CrabCast instrument agreeing that the agent
+  is absent is not a second opinion here, because it never saw the agent in the
+  first place. It could only ever have agreed.
+- **Abort:** the pane will not close, or the pid survives. Do not proceed to
+  5c.4: activating over a live pane is the state two-agents-in-one-directory
+  exists to prevent.
+- **Who:** the driver.
+
+### 5c.4 — Confirm the directory is free, then activate under CrabCast
+
+**⚠ The third symptom is a correct refusal wearing an unhelpful sentence.**
+While the herdr pane holds the directory, `crabcast activate` refuses
+`occupied` — rightly, since two agents in one directory overwrite each other —
+but it tells the operator only that the directory is occupied, not that the
+occupant is *the same logical agent under another runtime*, which is the one
+fact that would name the next move. (KAN-596 is that sentence; U-1 is what
+happens if the refusal is bypassed.)
+
+- **Action:** with the directory free, activate the agent under CrabCast.
+- **Check:** the new pane is named `crabcast-…`, the parent chain from 5c.1 no
+  longer ends at `herdr server`, and CrabCast's own census now reports the agent
+  — **which it can only do once the agent is genuinely its own.** This is the
+  first check in the sequence where a CrabCast instrument is the right
+  instrument, precisely because a positive answer is now meaningful.
+- **Abort:** it refuses `occupied` — 5c.3 did not finish; go back rather than
+  forcing anything.
+- **Who:** the driver.
+
+### 5c.5 — Tell it what it lost
+
+- **Action:** point the new agent at the comment written in 5c.2. It has no
+  memory of having written it.
+- **Check:** it can restate what it is holding without being fed it a second
+  time.
+- **Who:** the driver.
+
+### What this runbook is not
+
+- **It is not evidence that any of this works.** The sequence is derived from
+  KAN-552's four measured symptoms and from Q2's decision; **it has not been
+  rehearsed end to end on a live supervisor**, and the step most likely to
+  surprise is 5c.4, which is U-1 in §7 and unmeasured.
+- **It does not cover a supervisor that is also the guardian.** Draining that
+  agent leaves the fleet unswept for the duration — the same accounting §5's
+  step 6 makes, and it has to be made here too.
+- **It says nothing about which direction is correct.** A fleet running
+  uniformly on herdr is not in this state at all; a repair aimed at a split that
+  does not currently exist is churn. **Establish the split with 5c.1 before
+  spending anything on this section** — including the daemon's own
+  `BUTCHR_AGENT_RUNTIME`, whose absence means new agents come up on the default
+  runtime and there is no split to repair.
+
+---
 ## 6. Abort conditions, consolidated
 
 Stop and do not proceed if any of these is observed at any point:
