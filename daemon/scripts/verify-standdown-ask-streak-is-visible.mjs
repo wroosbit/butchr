@@ -126,6 +126,18 @@ console.log(`\n1. A REAP THAT NEVER TAKES BECOMES VISIBLE (threshold ${STAND_DOW
     'and it distinguishes "in progress" from "not happening", which is the whole defect',
     alarmed.slice(-1)[0]?.slice(0, 240)
   );
+  // ⚠ THE STAMP IS THE DISCLOSURE, SO IT IS ASSERTED (KAN-552). The streak is
+  // in memory and a daemon restart zeroes it — five restarts on the day this
+  // deployed. `since <stamp>` is what makes a post-restart "3" readable as a
+  // window rather than a lifetime; without it, a reset count and a genuine one
+  // are the same string. Dropping it would turn this alarm into the very thing
+  // it was built to end, so the assertion is here rather than the intent being
+  // left in a comment nobody runs.
+  check(
+    /since \d{4}-\d{2}-\d{2}T[\d:.]+Z/.test(alarmed.join('\n')),
+    'and it stamps WHEN the streak began — a restart zeroes the count, so the window is the honest part',
+    alarmed.slice(-1)[0]?.slice(0, 240)
+  );
 }
 
 console.log('\n2. ⚠ A HEALTHY STAND-DOWN NEVER ALARMS — the assertion that keeps this signal worth reading');
