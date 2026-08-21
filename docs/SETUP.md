@@ -28,13 +28,29 @@ per-step notes where a line is called out as shell-sensitive:
 bash        # then follow the rest of this document inside it
 ```
 
-⚠ **The one construct that is not portable is `$?`**, and its failure mode is
-the expensive kind. In fish, `echo "exit=$?"` is a hard parse error — but the
-command *before* it still runs, so you get output that looks like the step
-worked and **no exit code at all**. Where a step's whole content is the exit
-code (step 1's keyring probe is exactly that), fish gives you the setup and
-withholds the answer. That line is written portably below; this note is here
-because the next line somebody adds will not be.
+⚠ **The one construct that is not portable is `$?`**, and what it costs you
+depends on how much of this document fish was reading when it hit it — because
+**fish parses a whole unit before it runs any of that unit**, and a single `$?`
+anywhere inside one refuses the lot:
+
+- **Saved to a file and run** (`fish steps.fish`) — the parse unit is the
+  **entire file**, so **not one line of it runs**, *including the steps above
+  the offending one*. fish prints one diagnostic naming the line, then
+  `warning: Error while reading file`, and exits `127`.
+- **Pasted or typed as a single line** (`some-command; echo "exit=$?"`) — the
+  parse unit is that line, so again **nothing runs**, `some-command` included.
+- **Typed as two lines**, pressing Enter between them — now they are two parse
+  units. The first command runs, the second is refused, and you are left with
+  output that **looks like the step worked and no exit code at all**.
+
+**The third case is the quiet one; the first is the broad one.** Only the third
+hands you a plausible-looking partial result — the first is loud, but it
+discards every remaining step of a document you were working through, which is
+why running from a file is called out here rather than left to a per-step note.
+Where a step's whole content *is* the exit code (step 1's keyring probe is
+exactly that), every one of these leaves you without the answer the step exists
+to give. Measured on fish 3.7.0 (KAN-602). That line is written portably below;
+this note is here because the next line somebody adds will not be.
 
 ---
 
@@ -221,10 +237,13 @@ bash -c 'secret-tool lookup service butchr account jira; echo "exit=$?"'
 
 **The `bash -c` is load-bearing, not decoration** — it is what makes this line
 give the same answer in every shell. Written bare, the `$?` is a parse error in
-fish and you get the lookup's output with the exit code silently missing, which
-is the one thing this step is for. Measured on both shells: bare, bash prints
-`exit=127` and fish prints neither an `exit=` line nor a usable status; wrapped,
-both print `exit=127`.
+fish, and because the lookup and the `echo` are one line — one parse unit —
+fish refuses **both**: no `exit=` line — which is the one thing this step is
+for — *and* no lookup output either. Measured on both shells (fish 3.7.0):
+bare, bash prints `exit=127` while fish prints nothing at all on stdout and
+exits `127`; wrapped, both print `exit=127`. Put this line in a file with the
+rest of your steps and bare, fish runs **none** of that file — see the `$?`
+note at the top.
 
 Exit `0` or `1` means a working keyring. Anything else (including "command not
 found") means the file backend, at
