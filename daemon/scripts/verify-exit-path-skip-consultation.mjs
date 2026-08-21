@@ -255,7 +255,7 @@ const CONDITION_CONSULTED =
 // the six-script shape KAN-373 was filed for, and widening the check is exactly
 // how it would stop being caught.
 const GENUINELY_BLIND =
-  HEADER('a skip tally no exit names — KAN-373\\u2019s original defect') +
+  HEADER("a skip tally no exit names — KAN-373's original defect") +
   `let failures = 0;\n` +
   `let skipped = 0;\n` +
   `if (!peerIsUp()) {\n` +
