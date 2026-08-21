@@ -559,6 +559,23 @@ import { JIRA_KEY, renderedKey } from './keys.js';
  * machine authenticates as its own Atlassian account, so a ticket assigned to
  * somebody else is not this fleet's business however it is statused.
  */
+/**
+ * How many consecutive asks before a stand-down is reported as not happening
+ * rather than as in progress (KAN-552).
+ *
+ * **Three, and the reason is the promise being checked.** The line this guards
+ * says the slot is released *"which the next census tick shows"* — so one ask
+ * is a stand-down starting, and two is the next tick not having shown it yet on
+ * a busy fleet. By the third the loop has watched its own promise fail twice,
+ * which is the earliest point the claim is falsified rather than merely
+ * pending.
+ *
+ * Exported so a proof asserts against the constant instead of a copy of the
+ * number — the same reason `CRABCAST_OWNER` is exported, and the same failure
+ * it prevents: a check that keeps passing against its own stale duplicate.
+ */
+export const STAND_DOWN_ASKS_BEFORE_ALARM = 3;
+
 export const BOARD_JQL =
   'assignee = currentUser() AND status IN ("In Progress", "In Review")';
 
@@ -1606,6 +1623,31 @@ export class BoardReconciler {
   /** When the current run of failures began. Null exactly when the count is 0. */
   private diagnosticFailingSince: string | null = null;
 
+  /**
+   * Per-agent count of consecutive cycles this loop has ASKED for a stand-down
+   * and found the agent still running next cycle (KAN-552).
+   *
+   * ⚠ THIS EXISTS BECAUSE THE LOOP'S OWN PROMISE WAS NEVER CHECKED. On the
+   * workspace route the runtime returns *asked, not stopped*, and says the slot
+   * *"is released when CrabCast actually stops it, **which the next census tick
+   * shows**"*. That sentence is falsifiable and **nothing was falsifying it**:
+   * `epic/KAN-203` measured `task/KAN-577` asked 106 times over 65 minutes, one
+   * line per cycle, each identical, while the agent stayed up and its slot
+   * stayed charged. Three such agents held 3 of ~10 slots.
+   *
+   * **The loop was not wrong at any single cycle** — asking again is the right
+   * move when the previous ask may simply not have settled yet. What it could
+   * not do is notice that it had asked a hundred times, because it kept no
+   * memory between cycles. A retry that cannot count is indistinguishable from
+   * a retry that is working.
+   *
+   * Keyed by agent name, reset the moment an agent stops appearing in the
+   * running set — the streak is *consecutive*, exactly as
+   * {@link BoardReconciler.noteDiagnostic} argues for the diagnostic: the
+   * question is "is this reap working right now", not "has it ever failed".
+   */
+  private standDownAsks = new Map<string, { count: number; since: string }>();
+
   constructor(private readonly opts: BoardReconcilerOptions) {
     this.jql = opts.jql ?? BOARD_JQL;
     this.diagnosticJql = opts.diagnosticJql ?? BOARD_DIAGNOSTIC_JQL;
@@ -1741,6 +1783,12 @@ export class BoardReconciler {
       return cycle;
     }
 
+    // An agent that is no longer running had its stand-down take, however many
+    // cycles it needed — so its streak ends here rather than on any outcome
+    // report (KAN-552). Placed on the fleet read, which is the only reading
+    // that can say an agent has genuinely gone.
+    this.forgetSettledStandDowns(running);
+
     const diff = computeBoardDiff(outcome.issues, running);
     cycle.diff = diff;
 
@@ -1866,6 +1914,13 @@ export class BoardReconciler {
       // says so; flattening that into `stood down` was where an honest runtime
       // result became a dishonest board result. The two sentences now differ,
       // and the one that cannot promise the outcome does not claim it.
+      // ⚠ COUNT THE ASKS, SO A RETRY THAT IS NOT WORKING CANNOT LOOK LIKE ONE
+      // THAT IS (KAN-552). The line above promises the slot is released "which
+      // the next census tick shows". Nothing checked. `task/KAN-577` was asked
+      // 106 times across 65 minutes, one identical line per cycle, while its
+      // slot stayed charged — and every individual line was true.
+      const asks = this.noteStandDownAsk(agent.agentName);
+
       this.opts.log(
         !stood.success
           ? `[board] could not stand down ${address(agent)}: ${stood.error ?? 'no reason given'}`
@@ -1873,7 +1928,13 @@ export class BoardReconciler {
             ? `[board] ASKED the runtime to stand down ${address(agent)} by workspace path — ` +
               `this daemon held no session for it, so this is a request and not a completion: ` +
               `the slot is released only when the runtime actually stops the agent, which the ` +
-              `next census tick shows. ${reason.detail}.`
+              `next census tick shows. ${reason.detail}.` +
+              (asks.count >= STAND_DOWN_ASKS_BEFORE_ALARM
+                ? ` ⚠ THAT HAS NOW BEEN ASKED ${asks.count} TIMES since ${asks.since} and the ` +
+                  `agent is still in the running set, so the census tick this line promises has ` +
+                  `not arrived. The slot stays charged: this is not a stand-down in progress, ` +
+                  `it is one that is not happening.`
+                : '')
             : `[board] stood down ${address(agent)}: ${reason.detail}.`
       );
     }
@@ -1988,6 +2049,51 @@ export class BoardReconciler {
    * indistinguishable from one whose diagnostic has been dead since boot, which
    * is the distinction this field exists to draw.
    */
+  /**
+   * Record that this cycle asked for `agentName` to stand down, and answer how
+   * many consecutive cycles have now asked (KAN-552).
+   *
+   * The count is incremented on the ASK, not on a later observation, and that
+   * is deliberate: the reap is asynchronous, so the only thing this loop can
+   * observe is that it is being asked to stand the same agent down *again* —
+   * which it can only be if the previous ask did not take. An agent that
+   * actually goes leaves `toStop` and never reaches here, and
+   * {@link BoardReconciler.forgetSettledStandDowns} drops it.
+   *
+   * ⚠ So `count: 1` means nothing is wrong. The alarm is on repetition, not on
+   * the first ask, because the first ask is exactly what a healthy stand-down
+   * looks like.
+   */
+  private noteStandDownAsk(agentName: string): { count: number; since: string } {
+    const prior = this.standDownAsks.get(agentName);
+    const next = prior
+      ? { count: prior.count + 1, since: prior.since }
+      : { count: 1, since: new Date().toISOString() };
+    this.standDownAsks.set(agentName, next);
+    return next;
+  }
+
+  /**
+   * Drop the ask-streak for every agent that is no longer running (KAN-552).
+   *
+   * **This is what makes the count `consecutive` rather than a total**, and it
+   * is the same argument {@link BoardReconciler.noteDiagnostic} makes: a total
+   * that never comes down cannot distinguish an agent that took one extra cycle
+   * to settle from one that has been unreapable since boot, and the second is
+   * the only one worth an alarm.
+   *
+   * Keyed off the running set rather than off a stand-down outcome, because a
+   * stand-down that succeeded is exactly the case where no further outcome
+   * arrives — the agent simply stops being reported.
+   */
+  private forgetSettledStandDowns(running: RunningAgent[]): void {
+    if (this.standDownAsks.size === 0) return;
+    const live = new Set(running.map((a) => a.agentName));
+    for (const name of [...this.standDownAsks.keys()]) {
+      if (!live.has(name)) this.standDownAsks.delete(name);
+    }
+  }
+
   private noteDiagnostic(detail: string | null): void {
     if (detail === null) {
       this.diagnosticFailures = 0;
