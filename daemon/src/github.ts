@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { workspacesRoot } from './herdr.js';
+import { declaredApproverOf } from './declared-approver.js';
 
 /**
  * ---------------------------------------------------------------------------
@@ -89,7 +90,22 @@ export const PR_LIST_FIELDS = [
   'reviewDecision',
   'mergeStateStatus',
   'statusCheckRollup',
-  'comments'
+  'comments',
+  // KAN-600. The `BUTCHR-APPROVER:` line lives in the body and nowhere else, and
+  // it is the only thing that names the agent a `green-idle` notice is for.
+  //
+  // THE RATE-LIMIT CLAIM ABOVE SURVIVES THIS, MEASURED RATHER THAN ASSUMED.
+  // Four paired readings against the real repository on 2026-08-21, taking
+  // `gh api rate_limit --jq .resources.graphql.remaining` either side of each
+  // call: WITHOUT `body` cost 3, 1, 2, 1 points; WITH `body` cost 1, 2, 2, 1.
+  // No systematic difference, which is what GitHub's own model predicts — the
+  // cost is computed from the NODES a query walks, and `body` is a scalar on
+  // pull requests this read already walks. The claim it does move is the size
+  // one: the same 40-row read went from 437,599 to 889,584 bytes, against a
+  // GH_MAX_BUFFER of 16 MB, so the headroom is a factor of eighteen rather than
+  // a factor of thirty-six. Said out loud because the docblock above prices one
+  // read at "~1 MB" and it is now about two.
+  'body'
 ].join(',');
 
 /**
@@ -254,6 +270,22 @@ export interface PullRequestSnapshot {
   approval: ApprovalState;
   /** Every comment id on the PR, oldest first, as opaque strings. */
   commentIds: string[];
+  /**
+   * The agent this pull request's body DECLARES as its approver (KAN-600), as
+   * `<type>/<KEY>`, or null where it declares nobody.
+   *
+   * Parsed here rather than carried as a raw body, so the ~450 KB of Markdown
+   * one read of forty pull requests now costs is dropped at the boundary and
+   * never reaches the watcher's memory or a notice. See
+   * `declared-approver.ts` for the grammar and for why a body that merely SHOWS
+   * the line yields null.
+   *
+   * NOT AUTHENTICATION AND NOT A BOARD FACT. It is what the author wrote, which
+   * is the whole reason it is useful here: it is also what the required
+   * `approval-recorded` gate checks a marker against, so it is the fleet's own
+   * answer to "who approves this" rather than a second guess at it.
+   */
+  declaredApprover: string | null;
 }
 
 /**
@@ -691,7 +723,8 @@ export function snapshotFrom(repo: string, row: any): PullRequestSnapshot | null
     checks,
     failingChecks,
     approval,
-    commentIds
+    commentIds,
+    declaredApprover: declaredApproverOf(typeof row?.body === 'string' ? row.body : '')
   };
 }
 
