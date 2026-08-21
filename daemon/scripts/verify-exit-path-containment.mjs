@@ -351,9 +351,17 @@ try {
         `guards: ${JSON.stringify(r.guards.map((g) => g.text))}`
       );
     }
+    // KAN-561 replaced `all guards` with `none a failure verdict`, because a
+    // script whose exits are all SKIP verdicts has no guards and is still
+    // unable to fail — `all guards` was a true sentence about the only shape
+    // that existed when it was written. The old spelling stays in the
+    // alternation: this section is about CONTAINMENT, and a sweep older than
+    // KAN-561 answering correctly about §1's probe should read as a pass here
+    // rather than as a containment regression. §9 restores such a sweep on
+    // purpose.
     check(
       'the sweep names it as unable to fail',
-      /all guards|no exit path at all/.test(run.stdout),
+      /none a failure verdict|all guards|no exit path at all/.test(run.stdout),
       `the sweep said:\n${run.stdout}`
     );
     check(
