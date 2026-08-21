@@ -500,6 +500,31 @@ in is: `butchr-doctor` first, then `~/.local/share/butchr/daemon.log`, then
 environment resolved), then the extension's service-worker console at
 `chrome://extensions`.
 
+### Reading the daemon's log
+
+Two places hold it, and they are not equivalent:
+
+```bash
+journalctl --user -u butchr-daemon.service --since -60min   # this run, via systemd
+grep '\[board\]' ~/.local/share/butchr/daemon.log           # the full history
+```
+
+`daemon.log` is the complete record and is not subject to the journal's
+retention. The journal carries the same lines for a daemon systemd started, and
+**only** for one: a daemon a client auto-spawned has its stdout on `/dev/null`,
+so `journalctl` will show that unit's lifecycle records and none of its
+decisions.
+
+> ⚠ **A journal holding only `Started` / `Stopping` / `Consumed CPU time` is not
+> a quiet daemon.** Before KAN-598 that was the *only* thing this unit ever put
+> in the journal — the daemon sent every line to `daemon.log` and nothing to
+> stdout — and because the output was real and well-formed, the honest reading
+> of it was wrong. An operator grepped it for a stand-down, matched nothing, and
+> was one sentence from reporting that none had been attempted; the daemon had
+> logged 65, one per minute. `butchr-doctor` now names this state explicitly
+> (its **daemon journal** check), so if you are unsure which you are looking at,
+> ask it rather than the journal.
+
 ---
 
 ## 8. Optional: the Jira credential

@@ -605,10 +605,20 @@ if (!live) {
       return res.body.key;
     };
 
+    // ⚠ EVERYTHING FROM THE FIRST CREATE TO THE LAST ASSERTION SITS IN A
+    // `try`, AND THE CLEANUP IS ITS `finally`. This section writes to a real
+    // board, so the one outcome it must never have is *filed, then died before
+    // deleting* — a throwaway ticket left behind is the KAN-577 population
+    // growing, produced by the very check that measures it. A `for` loop after
+    // the assertions runs only when nothing above threw, which is exactly the
+    // case where it is needed least.
+    let unassigned = null;
+    let assigned = null;
+    try {
     // The subject: exactly what the unguarded door produces. `assignee` is
     // omitted, which is what `createJiraIssue` does when nobody passes
     // `assignee_account_id`.
-    const unassigned = await file('unassigned, assignee omitted (the unguarded door)', {
+    unassigned = await file('unassigned, assignee omitted (the unguarded door)', {
       project: { key: 'KAN' },
       issuetype: { name: 'Task' },
       summary: `[throwaway] KAN-597 live door proof ${stamp} — born unassigned`
@@ -616,7 +626,7 @@ if (!live) {
 
     // ⚠ THE CONTROL, through the SAME door, differing only in the field under
     // test. Without it, a report that flagged every ticket it saw would pass.
-    const assigned = await file('correctly assigned, same door (the control)', {
+    assigned = await file('correctly assigned, same door (the control)', {
       project: { key: 'KAN' },
       issuetype: { name: 'Task' },
       summary: `[throwaway] KAN-597 live door proof ${stamp} — born assigned`,
@@ -706,12 +716,64 @@ if (!live) {
       }
     }
 
-    // Tidy up: these are throwaway tickets on a real board, and leaving them
-    // would be adding to the very population this reports on.
-    for (const key of made) {
-      const del = await api('DELETE', `/rest/api/3/issue/${key}`);
-      console.log(`   cleanup: DELETE ${key} → ${del.status}` +
-        (del.status >= 300 ? ` (leave it: ${JSON.stringify(del.body)})` : ''));
+    } finally {
+      // ---------------------------------------------------------- cleanup --
+      //
+      // ⚠ A DELETE THAT RETURNED 204 IS A CLAIM ABOUT THE REQUEST, NOT ABOUT
+      // WHAT THE BOARD NOW HOLDS. This used to print the status and stop
+      // there, which is the same trade this repository refuses everywhere
+      // else — so each delete is now PROVED by reading the issue back and
+      // requiring a 404, and the 404 is itself checked against a positive
+      // control. A probe that would 404 on anything has measured nothing.
+      //
+      // Residue is counted as a FAILURE rather than mentioned in passing. A
+      // ticket this script leaves behind is unassigned, In To Do, and looks
+      // exactly like the population under test — so it must not be possible
+      // for this section to leave one quietly.
+      console.log('');
+      const control = await api('GET', `/rest/api/3/issue/KAN-597?fields=summary`);
+      const controlOk = control.status === 200;
+      console.log(
+        `   cleanup positive control: GET KAN-597 → ${control.status}` +
+        (controlOk ? '' : '  ⚠ the probe cannot see a live issue, so a 404 below proves nothing')
+      );
+
+      const residue = [];
+      for (const key of made) {
+        const del = await api('DELETE', `/rest/api/3/issue/${key}`);
+        // Its own command, never chained onto the deleting call: a probe
+        // bundled into the invocation that deleted a thing has returned a
+        // stale 200 for a ref that was already gone.
+        const probe = await api('GET', `/rest/api/3/issue/${key}?fields=summary`);
+        const gone = probe.status === 404;
+        console.log(
+          `   cleanup: DELETE ${key} → ${del.status}; GET ${key} → ${probe.status}` +
+          (gone ? '  (gone)' : '  ⚠ STILL THERE')
+        );
+        if (!gone) residue.push(key);
+      }
+
+      if (!controlOk) {
+        failures++;
+        console.log(
+          '   ✗  the cleanup probe could not read a ticket that certainly exists, so it cannot ' +
+          'establish that anything was removed. Check the board by hand for: ' +
+          (made.join(', ') || '(nothing was filed)')
+        );
+      } else if (residue.length) {
+        failures++;
+        console.log(
+          `   ✗  RESIDUE — ${residue.length} throwaway ticket(s) survived and are on the board ` +
+          `now: ${residue.join(', ')}. They are unassigned and in To Do, which is the exact ` +
+          'population this script measures, so remove them by hand before reading any later ' +
+          'run of it.'
+        );
+      } else if (made.length) {
+        console.log(
+          `   ✓  cleanup proved: all ${made.length} throwaway ticket(s) return 404 on a probe ` +
+          'that returns 200 for a live issue. Nothing was left on the board.'
+        );
+      }
     }
   }
 }
