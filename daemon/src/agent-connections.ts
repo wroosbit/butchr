@@ -1,6 +1,11 @@
 import * as net from 'net';
 import { renderedKey } from './keys.js';
 import { McpServerBuild, ServingProcess } from './mcp-build.js';
+// Type-only: this module is imported by the daemon and by every agent's MCP
+// server, and `channel-client-reach.js` reaches `launchers.js` for the one copy
+// of the flag's spelling. A `import type` is erased at compile, so the shape
+// crosses this boundary and no module graph does.
+import type { ClientChannelReach } from './channel-client-reach.js';
 
 /**
  * Which agent is on the other end of a daemon connection.
@@ -91,6 +96,27 @@ export interface AgentConnection {
    * one of them is still running whatever it loaded at spawn.
    */
   build: McpServerBuild | null;
+  /**
+   * Whether the client behind this connection renders channel frames (KAN-319),
+   * or null where nothing measured it — the default, so every harness and every
+   * caller written before this field keeps the routing it had.
+   *
+   * **Measured by the daemon at `hello`**, from the server pid on {@link build},
+   * up one `ppid`, into the client's `cmdline`. Not announced by the server: an
+   * `mcp.js` is never restarted by a deploy (KAN-526), so a self-announced
+   * verdict would arrive only for agents that had already been respawned — the
+   * ones that no longer have the defect.
+   *
+   * **Held on the CONNECTION rather than keyed by address, and that is the whole
+   * point of it.** Every other source of this fact — `ChannelSpawnReachStore`,
+   * `AgentRuntime.channelReach` — answers about an address or a runtime, from an
+   * inference about how a spawn was composed. This one is a measurement of the
+   * process on the other end of *this socket*, taken by that process's own
+   * child, so it is about the thing that will actually discard the frame. It
+   * needs no invalidation for the same reason: it dies with the connection it
+   * describes.
+   */
+  clientReach: ClientChannelReach | null;
 }
 
 /** What `connected_agents` reports; a shape a diagnostic reader can print. */
@@ -105,6 +131,13 @@ export interface AgentConnectionSnapshot {
     current: boolean;
     /** What the server said it loaded, or null if it said nothing (KAN-526). */
     build: McpServerBuild | null;
+    /**
+     * Whether this connection's client renders channel frames (KAN-319), or
+     * null where the server announced nothing. On the diagnostic row because
+     * the defect it names is invisible everywhere else: a connection that is
+     * live, current and building fine, whose client discards every frame.
+     */
+    clientReach: ClientChannelReach | null;
   }[];
 }
 
@@ -157,7 +190,8 @@ export class AgentConnectionRegistry {
   public register(
     socket: net.Socket,
     address: AgentAddress,
-    build: McpServerBuild | null = null
+    build: McpServerBuild | null = null,
+    clientReach: ClientChannelReach | null = null
   ): RegisterResult {
     if (!address.type || !address.key) {
       return { ok: false, error: 'hello requires both workspaceType and workspaceKey' };
@@ -175,7 +209,12 @@ export class AgentConnectionRegistry {
       // announcement with no build is stored as the absence it is instead of
       // being rejected. A server that cannot say which build it loaded is still
       // an agent that must stay addressable.
-      build
+      build,
+      // Defaulted for the same reason, and it matters more here: the population
+      // that announces nothing is every server built before KAN-319, which is
+      // exactly the population the defect is about. Absent must therefore mean
+      // *unmeasured* and route as it always did — never *no channel*.
+      clientReach
     };
     const slot = this.byAddress.get(canonical(address));
     if (slot) slot.push(connection);
@@ -308,7 +347,8 @@ export class AgentConnectionRegistry {
           id: c.id,
           registeredAt: c.registeredAt.toISOString(),
           current: current === c,
-          build: c.build
+          build: c.build,
+          clientReach: c.clientReach
         }))
       });
     }
