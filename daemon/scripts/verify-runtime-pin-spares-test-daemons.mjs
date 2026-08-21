@@ -22,10 +22,14 @@
 // WHERE ITS INPUT COMES FROM, since a proof that supplies its own input has
 // tested nothing about arrival (KAN-145). §1 constructs its `HomeIdentity`
 // values by hand — it is testing the discrimination itself, and the fleet's
-// real home is not a thing a test may move. §2 is what makes that honest: it
-// takes NO constructed input, reads this process's own ambient environment, and
-// asserts that an ordinary process on this machine lands in the `fleet-socket`
-// branch — so §1's cases are the ones a real daemon actually reaches. §3 and §4
+// real home is not a thing a test may move. §2 is what makes that honest: its
+// input is not constructed but asked of the OS, and it asserts that a daemon
+// started with THIS machine's passwd home — which is what a systemd user unit
+// gives the deployed daemon — lands in the `fleet-socket` branch. ⚠ It
+// deliberately does NOT assert anything about this process's own ambient
+// `HOME`: `run-ci-verify-set.mjs` relocates `HOME` for every child, so that
+// reading describes the harness rather than the machine, and asserting it made
+// this script red in CI and green on the machine the defect bites. §3 and §4
 // supply no verdict at all: a real `dist/daemon.js` is spawned and asked to
 // serve, and what is read is whether it claimed a socket.
 //
@@ -118,15 +122,26 @@ process.on('exit', () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-let failures = 0;
 let checks = 0;
+/**
+ * Every failed check's name, kept so the VERDICT can name them.
+ *
+ * ⚠ **`run-ci-verify-set.mjs` prints only the last 25 lines of a failing
+ * script** (`out.split('\n').slice(-25)`), and this script's output is roughly
+ * twice that. So a §1 or §2 failure scrolled off the top and CI reported the
+ * name of no assertion at all — the run said `1 FAILURE(S)` and which one was
+ * unrecoverable from the log. That is not the harness being unhelpful: a proof
+ * whose failure cannot reach its reader has not reported it, and the fix
+ * belongs here, in the last thing printed.
+ */
+const failed = [];
 
 function check(ok, what, detail) {
   checks++;
   if (ok) {
     console.log(`  PASS  ${what}`);
   } else {
-    failures++;
+    failed.push(what);
     console.log(`  FAIL  ${what}`);
     if (detail !== undefined) console.log(`        ${detail}`);
   }
@@ -218,23 +233,49 @@ check(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-rule('2  the same question asked of THIS machine, with nothing constructed');
+rule("2  the daemon systemd starts, asked with this machine's real passwd home");
 // ─────────────────────────────────────────────────────────────────────────────
 
 // §1's inputs are hand-built, so on their own they establish that the function
-// discriminates and nothing about which branch a real daemon reaches. This is
-// that missing half, and it is the KAN-145 check: no fixture, no patch, this
-// process's own ambient environment.
-const ambient = homeIdentity(process.env);
-const ambientVerdict = servesFleetSocket(ambient);
-console.log(`  ambient HOME       ${ambient.processHome}`);
-console.log(`  passwd home        ${ambient.osHome}`);
-console.log(`  verdict            ${ambientVerdict.kind}`);
+// discriminates and nothing about which branch the DEPLOYED daemon reaches.
+// This is that half, and the input is not constructed: `osHomeDir()` asks the
+// OS where this user lives.
+//
+// **The claim is about the daemon systemd starts, and that is not the same
+// process as this one.** A systemd user unit takes `HOME` from passwd, so the
+// deployed daemon's `$HOME` IS its passwd home by construction — which is what
+// makes it governed by the pin, and it is what is asserted here.
+//
+// ⚠ **What is NOT asserted is that THIS process's `$HOME` matches passwd, and
+// the reason is a measurement rather than caution.** `run-ci-verify-set.mjs`
+// sandboxes `HOME` to a fresh temp directory for every child it runs, so under
+// the CI harness this process is deliberately relocated — a reading of its own
+// ambient `HOME` says something about the harness and nothing about the
+// machine. Asserting it cost this script a red in CI while it passed on the
+// developer machine the defect actually bites (KAN-574 review), which is this
+// ticket's own environmental-dependence defect rebuilt inside the proof for it.
+// ⚠ **And it could not have been repaired by skipping on that condition**: a
+// relocated `HOME` and a machine whose daemon is genuinely ungoverned are the
+// SAME observation, so a skip guarded by it would have been a check with no
+// failing branch the world can reach.
+const deployed = homeIdentity({}, osHomeDir());
+const deployedVerdict = servesFleetSocket(deployed);
+console.log(`  passwd home        ${deployed.osHome}`);
+console.log(`  verdict            ${deployedVerdict.kind}`);
 check(
-  ambientVerdict.kind === 'fleet-socket',
-  'an ordinary process on this machine lands in the FLEET-SOCKET branch',
-  `got ${ambientVerdict.kind} — if this is ever false, the runtime pin does not ` +
-    `bind on this machine's own daemon, which is the KAN-550 incident with no guard`
+  deployedVerdict.kind === 'fleet-socket',
+  'a daemon started with the passwd home lands in the FLEET-SOCKET branch',
+  `got ${deployedVerdict.kind} — if this is ever false the runtime pin does not bind ` +
+    `on the daemon systemd starts, which is the KAN-550 incident with no guard`
+);
+
+// Reported, never asserted, for the reason above. It is worth printing because
+// it tells a reader which kind of process they are reading the run of.
+const ambient = homeIdentity(process.env);
+const relocated = servesFleetSocket(ambient).kind !== 'fleet-socket';
+console.log(
+  `  note: this process's own HOME is ${ambient.processHome}` +
+    (relocated ? ' — RELOCATED (a HOME sandbox), so it is not an ordinary process' : ' — un-relocated')
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -473,12 +514,14 @@ if (BREAK_FIX) {
   console.log('itself, which is what they are there to catch.\n');
 }
 
-console.log(`${checks - failures}/${checks} checks passed`);
-if (failures > 0) {
-  console.log(`\n${failures} FAILURE(S)`);
+console.log(`${checks - failed.length}/${checks} checks passed`);
+if (failed.length > 0) {
+  // Named here, last, so the name survives the harness's 25-line tail.
+  console.log(`\n${failed.length} FAILURE(S):`);
+  for (const name of failed) console.log(`  - ${name}`);
 } else {
   console.log('\nALL PASS — the pin refuses the daemon that can displace the fleet,');
   console.log('and spares the daemon that cannot.');
 }
 
-process.exit(failures ? 1 : 0);
+process.exit(failed.length ? 1 : 0);
