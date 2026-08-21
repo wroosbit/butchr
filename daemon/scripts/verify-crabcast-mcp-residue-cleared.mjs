@@ -12,10 +12,39 @@
 // CI-RUNNABLE: partial — §1 and §2 read `daemon/src/*.ts` as text and assert in
 //       full. §3–§8 drive CrabCast's REAL `provisionMcpConfig` out of the peer
 //       checkout at ~/code/wroosbit/crabcast, which CI has not got, so they
-//       announce themselves SKIPPED there. They are not mocked: this proof's
-//       whole value is that the refusal is theirs. Note the skip is reachable
-//       ONLY when the checkout is absent — one that is present but dirty,
-//       behind CRABCAST_PIN, or serving a stale dist FAILS instead.
+//       announce themselves SKIPPED there and the process exits 2 (INCOMPLETE)
+//       rather than 0. They are not mocked: this proof's whole value is that
+//       the refusal is theirs. Note the skip is reachable ONLY when the
+//       checkout is absent — one that is present but dirty, behind
+//       CRABCAST_PIN, or serving a stale dist FAILS instead.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// KAN-595 — THE EXIT CODE NOW CARRIES THE SENTENCE ABOVE. IT DID NOT.
+//
+// This script had five exit points — three spelled `process.exit(failures ? 1 :
+// 0)` and two a bare `process.exit(1)` — and kept NO skip tally at all, so not
+// one of them could consult a skip. On a runner, where the checkout is absent
+// because that is the runner's normal state and not an accident, §3–§8 printed
+// the word SKIP and handed back a **0**. Two arms differing only in `HOME`
+// produced the same exit code for opposite worlds:
+//
+//   checkout PRESENT  EXIT=0   the real CrabCast refusal fired
+//   checkout ABSENT   EXIT=0   nothing drove CrabCast at all
+//
+// A caller wiring this as a gate could not tell "the peer proved it" from
+// "there was no peer" — which is the sentence `lib/verdict-exit.mjs` opens
+// with. KAN-373 repaired six scripts that tallied skips without letting the
+// tally reach the verdict; this one did not tally, so there was nothing for
+// that fix to repair and `sweep-verify-exit-paths.mjs` §skips never asked it a
+// question. Its row was indistinguishable from a script with no skip at all.
+//
+//   0  every section ran, and every assertion passed
+//   1  at least one assertion FAILED (it outranks a skip)
+//   2  nothing failed, and something did not run
+//
+// Pass `--allow-skipped` to assert that an incomplete run is acceptable to THIS
+// caller and get 0 back. `--static-only` already makes that assertion in its
+// own vocabulary, so it does not require the flag as well.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // THE REFUSAL IN THIS PROOF IS CRABCAST'S OWN CODE, NOT A REPRODUCTION OF IT.
@@ -74,6 +103,7 @@ import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { reportAndExit } from './lib/verdict-exit.mjs';
 
 const staticOnly = process.argv.includes('--static-only');
 const noClear = process.argv.includes('--no-clear');
@@ -87,6 +117,10 @@ const distDir = path.join(daemonDir, 'dist');
 const CRABCAST_CHECKOUT = path.join(os.homedir(), 'code', 'wroosbit', 'crabcast');
 
 let failures = 0;
+// KAN-595: this counter is the whole of what was missing. Without it the skip
+// below reached no verdict, and `lib/verdict-exit.mjs` states in its own header
+// that it cannot see a skip that is never tallied.
+let skipped = 0;
 const say = (m = '') => console.log(m);
 const rule = (m) => {
   say('');
@@ -105,6 +139,16 @@ function check(ok, label, detail) {
     }
   }
   return ok;
+}
+/**
+ * A section that did not run. It is not a failure and must not be printed as
+ * one — but it is not a pass either, and the tally is what carries that to the
+ * exit code. The print alone was what this script had, and the print is not
+ * the process.
+ */
+function skip(label) {
+  skipped++;
+  say(`  SKIP  ${label}`);
 }
 
 const read = (p) => fs.readFileSync(p, 'utf8');
@@ -233,8 +277,13 @@ check(
 if (staticOnly) {
   say('');
   say('--static-only: stopping before the sections that import dist.');
-  say(failures > 0 ? `FAILED — ${failures} check(s)` : 'OK — static sections only.');
-  process.exit(failures ? 1 : 0);
+  // KAN-595: `--static-only` IS the caller asserting that an incomplete run is
+  // what it wants — the same statement `--allow-skipped` makes, spelled in this
+  // script's own vocabulary — so this still exits 0 on a clean static pass. The
+  // unrun sections are now tallied and named rather than vanishing, which is
+  // what puts them in the headline instead of leaving "OK" to imply they ran.
+  skip('§3–§8  not run: --static-only was passed, so nothing here drove a real peer.');
+  reportAndExit({ failures, skipped, allowSkipped: true });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -246,8 +295,8 @@ const linkSrc = read(path.join(srcDir, 'crabcast-link.ts'));
 const pinMatch = linkSrc.match(/CRABCAST_PIN\s*=\s*'([0-9a-f]{40})'/);
 if (!check(!!pinMatch, 'crabcast-link.ts declares CRABCAST_PIN', '(constant not found)')) {
   say('');
-  say(`FAILED — ${failures} check(s)`);
-  process.exit(1);
+  // A failure outranks a skip, so this renders as 1 whatever the tally holds.
+  reportAndExit({ failures, skipped });
 }
 const PIN = pinMatch[1];
 
@@ -266,7 +315,7 @@ const PIN = pinMatch[1];
 // could never fail would be a section that does not exist while appearing to.
 const peerPresent = fs.existsSync(path.join(CRABCAST_CHECKOUT, '.git'));
 if (!peerPresent) {
-  say(`  SKIP  no CrabCast checkout at ${CRABCAST_CHECKOUT}`);
+  skip(`§3–§8  no CrabCast checkout at ${CRABCAST_CHECKOUT}`);
   say('');
   say('  §3–§8 need the real peer SOURCE to drive its real refusal. They are skipped, not');
   say('  faked: there is no mock of provisionMcpConfig here, deliberately. This is the');
@@ -274,12 +323,12 @@ if (!peerPresent) {
   say('  checkout these sections run, and a checkout that is present but not at/after the');
   say('  pin FAILS rather than skipping.');
   say('');
-  say(
-    failures > 0
-      ? `FAILED — ${failures} check(s) in the static sections`
-      : 'OK — static sections only (§1–§2). The live sections were skipped, not passed.'
-  );
-  process.exit(failures ? 1 : 0);
+  // KAN-595: this line was `process.exit(failures ? 1 : 0)`, and it is the whole
+  // defect. It read a skipped live section as a pass, so the CI condition — no
+  // peer checkout, which is the runner's ordinary state — handed back the one
+  // value every shell reads as "the gate held". Now it exits 2: nothing failed,
+  // and §3–§8 proved nothing. See `lib/verdict-exit.mjs` for why 2 and not 0.
+  reportAndExit({ failures, skipped });
 }
 
 let peerHead = null;
@@ -294,9 +343,11 @@ try {
 } catch (e) {
   check(false, `the CrabCast checkout at ${CRABCAST_CHECKOUT} is readable`, e?.message ?? String(e));
   say('');
-  say(`FAILED — ${failures} check(s)`);
   say('The checkout is there but unreadable. That is a finding, not a skip.');
-  process.exit(1);
+  // Rendered through the same verdict as every other exit here. `check(false)`
+  // above put `failures` above zero, so this is a 1 — and it stays a 1 even if
+  // a section had also skipped, because a failure outranks a skip.
+  reportAndExit({ failures, skipped });
 }
 // NOT `peerHead === PIN`, and the first draft of this script got that wrong.
 //
@@ -651,4 +702,12 @@ if (failures > 0) {
     }
   }
 }
-process.exit(failures ? 1 : 0);
+// KAN-595: was `process.exit(failures ? 1 : 0)`. On THIS path the two are
+// equivalent and deliberately so — reaching here means §3–§8 ran, and the only
+// two skips in this script both exit before it, so `skipped` is 0 and the
+// verdict is the same 0-or-1 it always was. It is routed through
+// `reportAndExit` anyway so that every exit in this file renders one verdict:
+// the next skip somebody adds mid-run reaches the exit code by construction,
+// rather than depending on whoever adds it also remembering to change this line.
+say('');
+reportAndExit({ failures, skipped });
