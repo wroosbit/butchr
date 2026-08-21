@@ -14,6 +14,14 @@
 # reported as NOT TESTABLE AS WRITTEN and needs a mutation that compiles — it is
 # not a red.
 #
+# ⚠ ARMS 1 AND 2 WERE FIRST WRITTEN AS `if (false && ...)` AND DID NOT COMPILE,
+# which is worth recording rather than quietly fixing. TypeScript drops a
+# narrowing inside a provably-unreachable branch, so `intent` — narrowed
+# non-null forty lines above — went back to `DeployIntent | null` and
+# `intent.by` errored. Both arms reported BUILD_EXIT=2 and no verdict, which was
+# the correct outcome and not a broken arm. They are branch DELETIONS now, which
+# is both the mutation a later author actually makes and one that compiles.
+#
 # Run from the repository root. It reverts each mutation before the next, and
 # leaves the tree as it found it.
 
@@ -24,15 +32,21 @@ SRC=daemon/src/deploy-ledger.ts
 DAEMON=daemon/src/daemon.ts
 PROOF=daemon/scripts/verify-deploy-ledger-is-unbypassable.mjs
 
-revert() { git checkout -- "$SRC" "$DAEMON"; }
+# A revert that silently fails stacks the next mutation on top of this one, and
+# the compiler errors that follow are then about a file nobody wrote. Checked
+# rather than assumed — it happened on the first run of this script.
+revert() {
+  git checkout -- "$SRC" "$DAEMON" || { echo "REVERT FAILED — aborting"; exit 9; }
+  git diff --quiet -- "$SRC" "$DAEMON" || { echo "REVERT LEFT THE TREE DIRTY — aborting"; exit 9; }
+}
 trap revert EXIT
 
 arm() {
   local name="$1"; shift
   echo
-  echo "══════════════════════════════════════════════════════════════════════"
+  echo "======================================================================"
   echo "ARM: $name"
-  echo "══════════════════════════════════════════════════════════════════════"
+  echo "======================================================================"
   revert
   "$@"
   npm --prefix daemon run build > /tmp/kan647-build.log 2>&1
@@ -52,74 +66,69 @@ arm() {
 }
 
 m1() {
-  python3 - <<'PY'
+  python3 -c "
 p='daemon/src/deploy-ledger.ts'; s=open(p).read()
-a="""  if (pinned.length === 0 && mismatched.length === 0) {"""
-assert s.count(a)==1
-s=s.replace(a,"""  if (false && pinned.length === 0 && mismatched.length === 0) {""",1)
+a = s[s.index('  if (pinned.length === 0 && mismatched.length === 0) {'):s.index('  if (mismatched.length > 0) {')]
+s = s.replace(a, '', 1)
 open(p,'w').write(s)
-PY
+"
 }
 
 m2() {
-  python3 - <<'PY'
+  python3 -c "
 p='daemon/src/deploy-ledger.ts'; s=open(p).read()
-a="""  if (mismatched.length > 0) {"""
-assert s.count(a)==1
-s=s.replace(a,"""  if (false && mismatched.length > 0) {""",1)
+a = s[s.index('  if (mismatched.length > 0) {'):s.index(\"  return { kind: 'gated'\")]
+s = s.replace(a, '', 1)
 open(p,'w').write(s)
-PY
+"
 }
 
 m3() {
-  python3 - <<'PY'
+  python3 -c "
 p='daemon/src/deploy-ledger.ts'; s=open(p).read()
-a="""function consumeIntent(intentFile: string, consumedFile: string): string | null {
-  try {"""
+a='function consumeIntent(intentFile: string, consumedFile: string): string | null {'
 assert s.count(a)==1
-s=s.replace(a,"""function consumeIntent(intentFile: string, consumedFile: string): string | null {
-  if (intentFile) return null;
-  try {""",1)
+s=s.replace(a, a + '\n  if (intentFile) return null;', 1)
 open(p,'w').write(s)
-PY
+"
 }
 
 m4() {
-  python3 - <<'PY'
+  python3 -c "
 p='daemon/src/daemon.ts'; s=open(p).read()
-a="""  announceToJournal(describeUngatedStart(deployRecord), logToFileOnly);"""
+a='  announceToJournal(describeUngatedStart(deployRecord), logToFileOnly);'
 assert s.count(a)==1
-s=s.replace(a,"""  for (const line of describeUngatedStart(deployRecord)) log(line);""",1)
+s=s.replace(a,'  for (const line of describeUngatedStart(deployRecord)) log(line);',1)
 open(p,'w').write(s)
-PY
+"
 }
 
 m5() {
-  python3 - <<'PY'
+  python3 -c "
 p='daemon/src/deploy-ledger.ts'; s=open(p).read()
-a="""      hash.update(rel);
-      hash.update('\\0');
+a = '''      hash.update(rel);
+      hash.update('\\\\0');
       hash.update(fs.readFileSync(abs));
-      hash.update('\\0');"""
+      hash.update('\\\\0');'''
 assert s.count(a)==1, s.count(a)
-s=s.replace(a,"""      hash.update(String(stat.mtimeMs));
-      hash.update('\\0');""",1)
+s = s.replace(a, '''      hash.update(String(stat.mtimeMs));
+      hash.update('\\\\0');''', 1)
 open(p,'w').write(s)
-PY
+"
 }
 
 m6() {
-  python3 - <<'PY'
+  python3 -c "
 p='daemon/src/deploy-ledger.ts'; s=open(p).read()
-a="""  return start.kind === 'deploy' || start.kind === 'checkout-moved' || start.kind === 'indeterminate';"""
+a=\"  return start.kind === 'deploy' || start.kind === 'checkout-moved' || start.kind === 'indeterminate';\"
 assert s.count(a)==1
-s=s.replace(a,"""  return start.kind === 'checkout-moved' || start.kind === 'indeterminate';""",1)
+s=s.replace(a,\"  return start.kind === 'checkout-moved' || start.kind === 'indeterminate';\",1)
 open(p,'w').write(s)
-PY
+"
 }
 
-arm "1. judgeGate gates an intent that pins NOTHING" m1
-arm "2. judgeGate gates an intent that names a DIFFERENT build" m2
+arm "1. judgeGate no longer refuses an intent that pins NOTHING" m1
+arm "2. judgeGate no longer refuses an intent that names a DIFFERENT build" m2
 arm "3. consumeIntent is a no-op — the intent gates the next start too" m3
 arm "4. the ungated deploy goes to daemon.log only, not to fd 2" m4
 arm "5. fingerprintDist hashes mtimes instead of bytes" m5
