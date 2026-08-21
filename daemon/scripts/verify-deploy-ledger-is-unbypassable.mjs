@@ -19,6 +19,9 @@
 //     defect, on the exact path a bypass takes;
 //   * an intent file gates a start it does not describe (§2, §4d) — "the gate
 //     ran" quietly substituted for "the gate landed what it promised";
+//   * `announce-deploy-intent.mjs` stops producing an intent the daemon will
+//     accept (§4c) — the shipped gate helper and the daemon drifting apart,
+//     which a hand-written fixture intent could never notice;
 //   * an intent that pins neither a head nor a digest is believed (§2) — a
 //     check with no failing branch the world can reach;
 //   * an intent survives the start it gated and gates the next one too (§4e)
@@ -33,6 +36,13 @@
 // that supply their own input (KAN-145) and they say so: what they establish is
 // that the DECISIONS are right across their input space, and nothing about
 // whether a real daemon reaches them.
+//
+// §4c is the one place that deliberately does NOT supply its own input: it runs
+// the shipped `announce-deploy-intent.mjs` and lets the daemon judge whatever
+// that produces, so the gate helper and the daemon cannot drift apart unnoticed.
+// §4d still hand-writes its intent, because the thing under test there is an
+// intent the shipped helper will not produce — one that names the wrong build.
+// That asymmetry is the point rather than an oversight.
 //
 // §4 closes that by running the REAL `daemon/dist/daemon.js` as real processes
 // and reading the ledger those processes actually wrote, plus the bytes that
@@ -86,7 +96,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { reportAndExit } from './lib/verdict-exit.mjs';
 
@@ -520,15 +530,29 @@ if (!fs.existsSync(path.join(DIST, 'daemon.js'))) {
 
     // §4c — the gate, done properly. The positive control: without this the
     // section above could be a check that reports everything as ungated.
+    //
+    // ⚠ IT RUNS THE SHIPPED `announce-deploy-intent.mjs` RATHER THAN WRITING
+    // THE INTENT ITSELF, and that is the difference between two claims. A
+    // hand-written intent proves the daemon accepts a well-formed one; it
+    // proves nothing about whether the script a gate actually runs produces
+    // one. KAN-145's two scripts were green for weeks because each constructed
+    // the record it then asserted on, and the gap was between them.
     mutate(dist);
     const built = readBuildIdentity(dist);
-    writeIntent(box, {
-      by: 'epic/KAN-203',
-      at: new Date().toISOString(),
-      intendedHead: built.head,
-      intendedDist: built.dist.digest,
-      note: 'kan647 fixture'
-    });
+    const announced = spawnSync(
+      process.execPath,
+      [path.join(HERE, 'announce-deploy-intent.mjs'), '--by', 'epic/KAN-203', '--dist', dist, '--out', box.intentFile],
+      { encoding: 'utf8' }
+    );
+    check(
+      announced.status === 0,
+      '§4c the shipped announce-deploy-intent.mjs runs clean',
+      `exit ${announced.status}: ${announced.stderr || announced.stdout}`
+    );
+    check(
+      fs.existsSync(box.intentFile),
+      '§4c and writes an intent where the daemon looks for one'
+    );
     const c = await runDaemon(box, dist);
     check(c.last?.start?.kind === 'deploy', '§4c an announced deploy is still a `deploy`');
     check(

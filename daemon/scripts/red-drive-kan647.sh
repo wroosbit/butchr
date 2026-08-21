@@ -30,14 +30,15 @@ cd "$(dirname "$0")/../.."
 
 SRC=daemon/src/deploy-ledger.ts
 DAEMON=daemon/src/daemon.ts
+GATE=daemon/scripts/announce-deploy-intent.mjs
 PROOF=daemon/scripts/verify-deploy-ledger-is-unbypassable.mjs
 
 # A revert that silently fails stacks the next mutation on top of this one, and
 # the compiler errors that follow are then about a file nobody wrote. Checked
 # rather than assumed — it happened on the first run of this script.
 revert() {
-  git checkout -- "$SRC" "$DAEMON" || { echo "REVERT FAILED — aborting"; exit 9; }
-  git diff --quiet -- "$SRC" "$DAEMON" || { echo "REVERT LEFT THE TREE DIRTY — aborting"; exit 9; }
+  git checkout -- "$SRC" "$DAEMON" "$GATE" || { echo "REVERT FAILED — aborting"; exit 9; }
+  git diff --quiet -- "$SRC" "$DAEMON" "$GATE" || { echo "REVERT LEFT THE TREE DIRTY — aborting"; exit 9; }
 }
 trap revert EXIT
 
@@ -127,12 +128,23 @@ open(p,'w').write(s)
 "
 }
 
+m7() {
+  python3 -c "
+p='daemon/scripts/announce-deploy-intent.mjs'; s=open(p).read()
+a='  intendedHead: build.head,\n  intendedDist: build.dist.digest,'
+assert s.count(a)==1, s.count(a)
+s=s.replace(a,'  intendedHead: null,\n  intendedDist: null,',1)
+open(p,'w').write(s)
+"
+}
+
 arm "1. judgeGate no longer refuses an intent that pins NOTHING" m1
 arm "2. judgeGate no longer refuses an intent that names a DIFFERENT build" m2
 arm "3. consumeIntent is a no-op — the intent gates the next start too" m3
 arm "4. the ungated deploy goes to daemon.log only, not to fd 2" m4
 arm "5. fingerprintDist hashes mtimes instead of bytes" m5
 arm "6. changesTheRunningFleet says a deploy does not change the fleet" m6
+arm "7. announce-deploy-intent.mjs stops pinning what it built" m7
 
 revert
 npm --prefix daemon run build > /tmp/kan647-build.log 2>&1
