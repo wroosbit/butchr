@@ -1843,6 +1843,26 @@ export class BoardReconciler {
    * running set — the streak is *consecutive*, exactly as
    * {@link BoardReconciler.noteDiagnostic} argues for the diagnostic: the
    * question is "is this reap working right now", not "has it ever failed".
+   *
+   * ⚠ IT IS IN MEMORY, SO A DAEMON RESTART ZEROES IT — and what that produces
+   * is SILENCE, which is the shape this ticket is about. Flagged by
+   * `epic/KAN-203` on the day it deployed: **five daemon restarts** that day,
+   * and `task/KAN-577`'s streak of 106+ became 0 at the last one. **A fleet
+   * restarting its daemon more often than {@link STAND_DOWN_ASKS_BEFORE_ALARM}
+   * cycles would never see this alarm**, and nothing would say so.
+   *
+   * **Disclosed rather than fixed, and the disclosure is the `since` stamp on
+   * the alarm text.** *"asked 3 times since 17:21:07Z"* reads as a window; a
+   * bare *"asked 3 times"* would read as a lifetime. ⚠ **So do not drop `since`
+   * from that message on the grounds the count carries the meaning** — without
+   * it, a post-restart 3 and a genuine 3 are the same string.
+   *
+   * Persisting it was considered and declined *here*: it buys accuracy across
+   * restarts and costs a schema, a migration, and a stored streak that can
+   * disagree with the fleet. Today's cadence is minutes-to-hours against a
+   * three-cycle threshold, so the alarm does fire. **If that cadence tightens,
+   * this is the assumption that broke** — written down so the next reader meets
+   * it rather than deduces it from a quiet log.
    */
   private standDownAsks = new Map<string, { count: number; since: string }>();
 
