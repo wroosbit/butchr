@@ -488,6 +488,203 @@ if (!provenance.reached) {
   }
 }
 
+// --- 7b. has anybody decided what this daemon actually DOES? -------------
+//
+// KAN-622. Every check above this line answers "is Butchr installed?", and a
+// box can pass all of them while staffing no agents and holding no path to
+// Atlassian: `BUTCHR_BOARD_RECONCILE` defaults to `report` (the reconciler
+// computes the diff and starts nothing) and `BUTCHR_ATLASSIAN_PROXY` defaults
+// to `off` (no Atlassian tools are served at all). `install-service.sh` sets
+// neither and the unit it writes declares only `PATH`, so a machine that
+// followed docs/SETUP.md end to end used to arrive here inert and be told
+// `Ready.`
+//
+// ⚠ THE KAN-550 CHECK ABOVE CANNOT CATCH THIS, AND THE REASON IS THE POINT.
+// `pinDrift` compares the serving process against WHAT THE UNIT DECLARES. On a
+// by-the-book box the unit declares nothing but `PATH`, so the comparison is
+// empty and passes — it is a check on agreement, and two parties agreeing
+// about nothing agree perfectly. This check asks the different question: was
+// anything decided at all.
+//
+// THE THREE-WAY IS DELIBERATE, AND `report` IS NOT A FAILURE.
+//   * not declared anywhere  -> FAIL. Nobody chose; the default chose, silently.
+//   * declared inert         -> WARN. Somebody chose `report`/`off`, which are
+//                               supported and useful. Reported, not failed,
+//                               because failing a decision is reporting a
+//                               choice as a fault.
+//   * declared to act        -> PASS, with the value quoted.
+//
+// The value is read off the unit — `systemctl show -p Environment` returns the
+// MERGED view, drop-ins included, which is what makes this see step 6.5's
+// files. A machine with no unit has no declaration to read, so the serving
+// daemon is asked instead; it answers with the NAMES it carries and not their
+// values, and this check says so rather than inventing one.
+
+{
+  /** systemd prints the list on one line, space-separated, values quoted. */
+  const parseUnitEnvironment = (line) => {
+    const out = {};
+    let i = 0;
+    while (i < line.length) {
+      while (i < line.length && line[i] === ' ') i++;
+      if (i >= line.length) break;
+      let token = '';
+      let quote = null;
+      for (; i < line.length; i++) {
+        const ch = line[i];
+        if (quote) {
+          if (ch === quote) quote = null;
+          else token += ch;
+        } else if (ch === '"' || ch === "'") {
+          quote = ch;
+        } else if (ch === ' ') {
+          break;
+        } else {
+          token += ch;
+        }
+      }
+      const eq = token.indexOf('=');
+      if (eq > 0) out[token.slice(0, eq)] = token.slice(eq + 1);
+    }
+    return out;
+  };
+
+  const KNOBS = [
+    {
+      name: 'BUTCHR_BOARD_RECONCILE',
+      dflt: 'report',
+      acting: (v) => v === 'converge',
+      inert: 'the reconciler computes the diff and starts nothing — this machine staffs no agents',
+      act: 'the board starts and stands down agents on this machine'
+    },
+    {
+      name: 'BUTCHR_ATLASSIAN_PROXY',
+      dflt: 'off',
+      acting: (v) => v !== 'off' && v.length > 0,
+      inert: 'no Atlassian tools are served — no agent reaches Jira or Confluence through Butchr',
+      act: 'agents reach Atlassian through Butchr at this rung'
+    }
+  ];
+  const FIX =
+    'Decide both and write them into a drop-in — docs/SETUP.md step 6.5 has the\n' +
+    'exact commands:\n' +
+    '  mkdir -p ~/.config/systemd/user/butchr-daemon.service.d\n' +
+    "  printf '[Service]\\nEnvironment=BUTCHR_BOARD_RECONCILE=converge\\n' \\\n" +
+    '    > ~/.config/systemd/user/butchr-daemon.service.d/converge.conf\n' +
+    "  printf '[Service]\\nEnvironment=BUTCHR_ATLASSIAN_PROXY=jira-write\\n' \\\n" +
+    '    > ~/.config/systemd/user/butchr-daemon.service.d/atlassian-proxy.conf\n' +
+    '  systemctl --user daemon-reload && systemctl --user restart butchr-daemon.service\n' +
+    'docs/env-knobs.md is the value table; SETUP.md step 8 is the proxy ladder.';
+
+  // `LoadState` is read in the same call and never inferred from the
+  // environment being empty: `show -p Environment` on a unit that does not
+  // exist prints an empty line and exits 0, which is byte-identical to a unit
+  // that exists and declares nothing.
+  const shown = tryExec('systemctl', [
+    '--user', 'show', 'butchr-daemon.service', '-p', 'LoadState', '-p', 'Environment'
+  ]);
+  let loadState = null;
+  let declared = null;
+  if (shown !== null) {
+    let envLine = '';
+    for (const raw of shown.split('\n')) {
+      if (raw.startsWith('LoadState=')) loadState = raw.slice('LoadState='.length).trim();
+      else if (raw.startsWith('Environment=')) envLine = raw.slice('Environment='.length);
+    }
+    if (loadState === 'loaded') declared = parseUnitEnvironment(envLine);
+  }
+
+  const servingNames =
+    provenance.reached && provenance.provenance && Array.isArray(provenance.provenance.butchrEnvNames)
+      ? provenance.provenance.butchrEnvNames
+      : null;
+
+  if (declared !== null) {
+    const undecided = KNOBS.filter((k) => typeof declared[k.name] !== 'string');
+    const lines = KNOBS.map((k) => {
+      const v = declared[k.name];
+      if (typeof v !== 'string') {
+        return `  ${k.name}: NOT DECLARED -- running on its default \`${k.dflt}\`, so ${k.inert}`;
+      }
+      return `  ${k.name}=${v} -- ${k.acting(v) ? k.act : k.inert}`;
+    }).join('\n');
+
+    if (undecided.length === KNOBS.length) {
+      fail(
+        'daemon configuration',
+        `The unit declares NEITHER knob, so both are on their inert defaults:\n${lines}\n\n` +
+        `This box is installed and does nothing. It is the state docs/SETUP.md step 6.5\n` +
+        `exists to end, and every check above it passes in it.\n\n${FIX}`
+      );
+    } else if (undecided.length > 0) {
+      fail(
+        'daemon configuration',
+        `${lines}\n\n` +
+        `${undecided.map((k) => k.name).join(', ')} was never decided, so it is on its\n` +
+        `default. Half a configuration is not a decision to leave the other half alone.\n\n${FIX}`
+      );
+    } else {
+      const acting = KNOBS.filter((k) => k.acting(declared[k.name]));
+      if (acting.length === KNOBS.length) {
+        pass('daemon configuration', `both knobs are declared and this machine acts:\n${lines}`);
+      } else {
+        warn(
+          'daemon configuration',
+          `${lines}\n\n` +
+          `Both are declared, so this is a decision somebody made and not a default that\n` +
+          `chose for them — reported rather than failed. If it is not what you meant, step\n` +
+          `6.5 has the values.`
+        );
+      }
+    }
+  } else if (servingNames !== null) {
+    // No unit to read a declaration off. The daemon says which BUTCHR_* it
+    // carries; the values are not on that wire, so nothing here claims one.
+    const missing = KNOBS.filter((k) => !servingNames.includes(k.name));
+    const carried = KNOBS.filter((k) => servingNames.includes(k.name)).map((k) => k.name);
+    const where =
+      loadState === null
+        ? 'systemctl could not be run here'
+        : `this machine has no butchr-daemon.service (LoadState=${loadState})`;
+    if (missing.length === KNOBS.length) {
+      fail(
+        'daemon configuration',
+        `${where}, so there is no unit to read a declaration from. The daemon serving the\n` +
+        `socket carries NEITHER knob, so both are on their inert defaults:\n` +
+        KNOBS.map((k) => `  ${k.name}: absent -- default \`${k.dflt}\`, so ${k.inert}`).join('\n') +
+        `\n\nThis box is installed and does nothing. Without systemd, set both in whatever\n` +
+        `starts the daemon and restart it; docs/SETUP.md step 6.5 has the form.`
+      );
+    } else if (missing.length > 0) {
+      fail(
+        'daemon configuration',
+        `${where}. The daemon serving the socket carries ${carried.join(', ')} and NOT\n` +
+        `${missing.map((k) => k.name).join(', ')}, which is therefore on its default:\n` +
+        missing.map((k) => `  ${k.name}: default \`${k.dflt}\`, so ${k.inert}`).join('\n') +
+        `\n\ndocs/SETUP.md step 6.5.`
+      );
+    } else {
+      warn(
+        'daemon configuration',
+        `${where}, so no declaration can be read. The daemon serving the socket carries\n` +
+        `both ${KNOBS.map((k) => k.name).join(' and ')} -- but a provenance answer names the\n` +
+        `variables it holds and not their values, so WHAT they are set to is not\n` +
+        `established from here. Check the environment of the process that starts it.`
+      );
+    }
+  } else {
+    // Neither instrument answered. Saying "not configured" here would be a
+    // finding about this script's reach reported as a finding about the box.
+    warn(
+      'daemon configuration',
+      `Neither instrument could answer: there is no readable butchr-daemon.service unit\n` +
+      `and the daemon did not report its provenance (check 7 above says why). Whether\n` +
+      `BUTCHR_BOARD_RECONCILE and BUTCHR_ATLASSIAN_PROXY have been decided on this\n` +
+      `machine is UNKNOWN -- which is not the same as "no", and is not reported as one.`
+    );
+  }
+}
+
 // --- 8. where a Jira token would be stored ------------------------------
 // Not a pass/fail — the credential is optional. It is reported because which
 // backend you get depends on an invisible property of the machine, and a user
