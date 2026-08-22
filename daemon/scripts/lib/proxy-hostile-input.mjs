@@ -132,6 +132,14 @@ export function validFor(field) {
   // §4 reported a well-formed failure about product routing. Three fields, three
   // value sets, three entries: the pattern is now the rule rather than a repeat.
   if (field === 'issueFormat') return 'condensed';
+  // KAN-656. THE FOURTH, AND IT ARRIVED EXACTLY AS THE COMMENT ABOVE SAID IT
+  // WOULD. `atlassian_get_issue_description` takes `descriptionFormat`, whose
+  // value set is disjoint from all three above, so the fall-through `'x'` made
+  // it refuse every argument — §5's positive control read 22 of 23 while §4
+  // reported a well-formed failure about a request that was never built. Caught
+  // by CI rather than locally, because a filtered local run of the proxy scripts
+  // did not include this one: an empty result was a claim about the search.
+  if (field === 'descriptionFormat') return 'text';
   if (field === 'fields') return 'summary';
   if (field === 'transitionId') return '31';
   return 'x';

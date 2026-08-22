@@ -188,9 +188,17 @@ check(
 // `Object.keys(REPLACES).length` above are deliberately no longer equal, and
 // the check directly above is the one that still ties the table to the
 // official surface.
+// KAN-656 adds the twenty-third for the same reason KAN-471 added the
+// twenty-second, one field over. `atlassian_get_issue` can ask for
+// `fields=description` and inherits no cap it can page past: a description is
+// ONE field, `fields` is the only lever, and a brief larger than the response
+// budget was therefore returned by nothing at all. Measured on KAN-623 — every
+// route ended in `noWayBack`, and the agent staffed for that ticket could not
+// read it. `atlassian_get_issue_description` pages the rendered text by
+// character offset, which is the lever that did not exist.
 check(
-  'the read surface is exactly 22 operations — the 3 KAN-272 shipped, 18 from KAN-292, and KAN-471\'s comment paging',
-  operationsFor('confluence-read').filter((op) => op.method === 'GET').length === 22,
+  'the read surface is exactly 23 operations — the 3 KAN-272 shipped, 18 from KAN-292, KAN-471\'s comment paging and KAN-656\'s description paging',
+  operationsFor('confluence-read').filter((op) => op.method === 'GET').length === 23,
   JSON.stringify(operationsFor('confluence-read').map((op) => op.tool))
 );
 check(
@@ -583,13 +591,24 @@ rule('6. only four operations reshape a response, and none can reach a credentia
 // operation's default fields against a 9,000-character budget, so the whole
 // `issues` array was replaced, and `fields` is already at its narrowest useful
 // value when that happens. Same argument as the third, made on the same terms.
+// THE FIFTH IS `atlassian_get_issue_description` (KAN-656), and its argument is
+// the second one made on those terms: without a transform its alternative was
+// not an untransformed response but NO DESCRIPTION. Jira serves a description
+// as ADF, which is roughly four times the size of the prose in it — 32,405
+// characters for KAN-623's 8,384 rendered — so the field was replaced whole at
+// every budget, and unlike a list there is no narrower `fields` to ask for. The
+// transform is what renders it, and it is also what lifts the paging cursor out
+// of the clippable region: `total` and `startAt` sit beside the text as scalars
+// rather than inside an object a clip can take, which is the defect KAN-501
+// found in the comment pager, avoided here by construction.
 const withTransform = PROXY_OPERATIONS.filter((op) => op.transform).map((op) => op.tool);
 check(
-  'exactly four operations have a transform, and they are the four that cannot avoid one',
+  'exactly five operations have a transform, and they are the five that cannot avoid one',
   JSON.stringify(withTransform.sort()) ===
     JSON.stringify([
       'atlassian_get_accessible_resources',
       'atlassian_get_issue_comments',
+      'atlassian_get_issue_description',
       'atlassian_search',
       'atlassian_search_issues'
     ]),
