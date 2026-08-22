@@ -107,7 +107,7 @@ Three instances, all live today:
 | Switch | Where | What an agent already running keeps |
 | --- | --- | --- |
 | `channel.json` | *Optional: agent-to-agent channels* | no channel — it stays deaf to them for the rest of its life, and the daemon goes on writing frames at it |
-| `BUTCHR_ATLASSIAN_PROXY` | *Optional: the Jira credential* | the Atlassian tools its workspace was provisioned with, not the ones you just enabled |
+| `BUTCHR_ATLASSIAN_PROXY` | *Configure the daemon*, with the ladder in *Optional: the Jira credential* | the Atlassian tools its workspace was provisioned with, not the ones you just enabled |
 | an integration's **Off** control | the extension's settings page | the `.mcp.json` already written into its workspace; it is left strictly alone and goes on working |
 
 ⚠ **Do not read the rule as symmetrical.** Step 9's kill switch takes effect at
@@ -492,23 +492,33 @@ did.** What it adds is everything a daemon Chrome auto-spawned does not have:
   environment instead. *Check that it worked* describes the two minutes in which
   that state served a real fleet (KAN-550).
 
-⚠ **There is no supported "installed but inert" box, and stopping short of this
-step does not give you one.** The document used to imply otherwise by saying
-nothing about a daemon until here. If you are staging a machine and want nothing
-running, the control is ***Load the extension into Chrome***: an extension that
-is not loaded — or whose card is disabled at `chrome://extensions` — is a Chrome
-that never launches the host, and every step before that one leaves the box
-quiet. Running *this* step is itself a start, since it ends in
-`systemctl --user enable --now butchr-daemon.service`.
+⚠ **There is no supported "installed but nothing running" box, and stopping
+short of this step does not give you one.** The document used to imply otherwise
+by saying nothing about a daemon until here. If you are staging a machine and
+want no process up at all, the control is ***Load the extension into Chrome***:
+an extension that is not loaded — or whose card is disabled at
+`chrome://extensions` — is a Chrome that never launches the host, and every step
+before that one leaves the box quiet. Running *this* step is itself a start,
+since it ends in `systemctl --user enable --now butchr-daemon.service`.
+
+**That is a different question from whether the daemon *acts*, and the next step
+answers that one.** *Configure the daemon* calls a box that stops here **inert**,
+and it is right: the reconciler defaults to `report` and the Atlassian proxy to
+`off`, so a daemon that is up and healthy still staffs nothing. **A staged box in
+that sense is supported and documented** — it is the `report` default, and it is
+inert by design. What is *not* available is a box with no daemon on it once the
+extension has been loaded. Two senses of the word, one step apart: **nothing
+running** is this paragraph, **running and not acting** is the next step.
 
 ⚠ **And because the extension was loaded first, this step routinely starts a
 daemon that loses.** The unit's daemon finds the socket already held by the one
-Chrome spawned, and since KAN-550 a loser that cannot establish the incumbent is the
-configured one exits `3` rather than `0` — so `Restart=on-failure` retries and
+Chrome spawned, and since KAN-550 a loser that cannot establish the incumbent
+is the configured one exits `3` rather than `0` — so `Restart=on-failure` retries and
 the **unit ends up `failed` while the fleet works**. That is this ordering, not
 a broken install. *Check that it worked* is where you resolve it:
-`butchr-doctor` names the process actually holding the socket, and the losing daemon prints the remedy
-itself (kill that pid, then `systemctl --user start butchr-daemon.service`).
+`butchr-doctor` names the process actually holding the socket, and the losing
+daemon prints the remedy itself (kill that pid, then
+`systemctl --user start butchr-daemon.service`).
 
 This is one command because the two things it does are the two things that were
 previously typed by hand on one machine and existed nowhere else.
