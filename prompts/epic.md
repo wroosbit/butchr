@@ -943,7 +943,10 @@ not {{KEY}}, and `atlassian_transition_issue` refused exactly that until then �
 which is why these transitions were being made with a direct Atlassian server
 that KAN-603 has since stopped provisioning. They now go through the proxy like
 everything else: it accepts {{KEY}}, and any ticket whose Jira `parent` is
-{{KEY}} or which carries an issue link to a Story you are. Your stories and the
+{{KEY}} or which carries a `Blocks` link whose outward end is a Story you are.
+⚠ **`Relates` confers nothing** — it did until KAN-633 was reviewed, which made
+the *link liberally* instruction a way to grant yourself write access by
+accident, three times in one evening. Your stories and the
 tasks you parented directly are both inside that. ⚠ **A task hanging off one of
 your stories is inside it too, and this paragraph still says do not** — the
 mechanism stopped being the reason, and the reason above is the reason.

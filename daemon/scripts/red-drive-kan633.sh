@@ -62,7 +62,17 @@
 #          This arm rebuilds, because the mutation is in TypeScript and §4 reads
 #          `dist`; arm 1's mutation is read as source text and needs no build.
 #
-# Both arms restore the file with `git checkout` in an EXIT trap, so an
+#   ARM 3  RE-ADMIT EVERY LINK TYPE — revert the `Blocks` filter in
+#          `supervisionFieldsFrom` so any named link type confers supervision,
+#          which is what this file did before `story/KAN-657`'s finding. §3 must
+#          go RED on the `Relates` checks and on the three real-instance
+#          fixtures. This is the arm for the defect that was actually
+#          DEMONSTRATED rather than reasoned about: the brief tells story agents
+#          to "link liberally", and three `Relates` links made by accident in
+#          one evening silently granted write access to three tickets.
+#          Rebuilds, because §3 reads `dist`.
+#
+# Every arm restores the file with `git checkout` in an EXIT trap, so an
 # interrupted run does not leave a mutated tree.
 #
 # Usage: bash daemon/scripts/red-drive-kan633.sh
@@ -196,6 +206,40 @@ if ! build; then
 fi
 run_verify > /dev/null
 echo "  §4 (the decision): $(section_result '4.')   §5 (the wiring): $(section_result '5.')"
+echo "  and the discriminating detail — which checks reddened:"
+grep '   FAIL ' /tmp/kan633-verify.log | sed 's/^/    /'
+restore
+
+echo
+echo "════════════════════════════════════════════════════════════════════════"
+echo "ARM 3 — re-admit every link type, reverting the Blocks filter."
+echo "        Expect: §3 FAIL on the Relates checks and the three real"
+echo "        instances. This arm rebuilds, because §3 reads dist."
+echo "════════════════════════════════════════════════════════════════════════"
+python3 - "$PROXY" <<'MUTATE3'
+import io, sys
+path = sys.argv[1]
+src = io.open(path, encoding="utf-8").read()
+anchor = "    if (link?.type?.name !== 'Blocks') continue;"
+if src.count(anchor) != 1:
+    sys.stderr.write("  the type filter occurs %d times, expected 1 — writing nothing.\n" % src.count(anchor))
+    sys.exit(1)
+# Admit any NAMED type, which is what this line did before the filter landed.
+# Deleting it outright would leave an unused binding; changing only the
+# predicate keeps the shape, so the mutation is the policy and not the code.
+io.open(path, "w", encoding="utf-8").write(src.replace(anchor, "    if (!link?.type?.name) continue;"))
+print("  the type filter now admits any named link type, Relates included")
+MUTATE3
+if [ $? -ne 0 ]; then
+  echo "  MUTATION FAILED — the parse has moved on. Nothing was demonstrated."
+  exit 1
+fi
+if ! build; then
+  echo "  BUILD FAILED on the mutated tree — see /tmp/kan633-build.log. Not run."
+  exit 1
+fi
+run_verify > /dev/null
+echo "  §3 (the parse): $(section_result '3.')   §4 (the decision): $(section_result '4.')"
 echo "  and the discriminating detail — which checks reddened:"
 grep '   FAIL ' /tmp/kan633-verify.log | sed 's/^/    /'
 restore

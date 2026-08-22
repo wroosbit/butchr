@@ -316,14 +316,44 @@ write to and the set you are answerable for cannot drift apart.
   identity to attach a permission to (`story/KAN-648`, recorded on KAN-654). Any
   fix is about scope on one credential.
 
-**What it concedes, said plainly.** The link branch is an authorisation an agent
-can create for itself: `own-ticket-endpoint` permits a link where one end is
-your own, so an agent may link itself to a stranger's ticket and become its
-supervisor in one call. That is deliberate. This whole policy bounds **accident
-and not malice** — nobody creates a `Blocks` link by accident — and the ordinary
-mistakes it exists to stop, a confused key or a loop over a search result, still
-produce neither a link nor a parent. The `parent` branch concedes nothing: a
-caller cannot set another issue's parent.
+**What it concedes, said plainly — and the first version of this paragraph was
+refuted within the hour.** It read: *"nobody creates a `Blocks` link by
+accident."* The branch did not filter link **type**, and `prompts/story.md` tells
+story agents to *"link liberally — all four standard types"*. So the accident
+that sentence denied had already happened three times in one evening:
+`story/KAN-657` linked KAN-282, KAN-573 and KAN-634 to its own ticket with
+`Relates`, exactly as instructed, and silently acquired write access to three
+tickets that were not its work — one of them named *out of scope* in its own
+description. **A policy that bounds accident cannot rest on an accident being
+unimaginable.**
+
+**The fix, and what it does not fix.** `supervisionFieldsFrom` now requires a
+`Blocks` link with the Story as its **outward** end — *"this task blocks that
+story"*, the shape both briefs use as their worked example. That closes the
+accidental path: `Relates`, `Duplicate`, `Cloners` and an inward `Blocks` all
+confer nothing, and the three real instances are checked in as fixtures by key
+so a later widening reddens on the tickets it would actually have captured.
+⚠ **It does not close a *deliberate* self-grant** — a story can still create
+`<any ticket> — Blocks — <its own ticket>` and write to it.
+
+**Why the remainder is judged acceptable, on narrower ground than before.** Not
+that it cannot happen, but that **a strictly easier and quieter path already
+exists**: `refuseWriteOutsideCaller`'s docblock records that anything reaching
+the daemon's socket can claim any identity, so an agent wanting a stranger's
+ticket can claim to *be* it and leave no artifact at all. The link route is the
+loudest path to a door already open, and guarding it pushes a determined agent
+toward the silent one. ⚠ **KAN-421 and `story/KAN-657` both judge that
+insufficient, and they may be right — the human's ruling is what settles it.**
+The `parent` branch concedes nothing: a caller cannot set another issue's parent.
+
+⚠ **A narrowing that was proposed and withdrawn, recorded so nobody re-proposes
+it.** Requiring `target.parent === caller.parent` — the target must sit in the
+caller's own epic — looks like it bounds the deliberate path to a set the caller
+cannot expand. **Measured on this board it is a check that cannot fail:**
+KAN-657, KAN-633, KAN-612, KAN-282, KAN-573 and KAN-634 all carry `parent:
+KAN-39`, including all three accidental instances. Nearly everything here hangs
+off one epic, so "your own epic" is the whole board. It would have read as a
+control while controlling nothing.
 
 **And it pays KAN-291's price out loud.** That ticket rejected a subtree scope
 because it needs a Jira read per write, and asked what happens when the read

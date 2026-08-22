@@ -403,12 +403,21 @@ discovery costing a round trip to an epic. So the bound is stated here rather
 than met as an error:
 
 - **`atlassian_transition_issue` and `atlassian_add_comment` accept {{KEY}}, and
-  any ticket the board places under you** — one carrying an issue link to
-  {{KEY}}, or one whose Jira `parent` is {{KEY}}. **That is the same relation
-  that makes a task yours to approve**, deliberately: the tickets you may write
-  to and the tickets you are answerable for are one set, read one way. So
-  closing a task you approved, and putting a ruling where that task's agent will
-  actually read it, are both yours to do.
+  any ticket the board places under you** — one carrying a **`Blocks` link whose
+  outward end is {{KEY}}** (*"this task blocks that story"*, the shape of the
+  worked example above), or one whose Jira `parent` is {{KEY}}. **That is the
+  same relation that makes a task yours to approve**, deliberately: the tickets
+  you may write to and the tickets you are answerable for are one set, read one
+  way. So closing a task you approved, and putting a ruling where that task's
+  agent will actually read it, are both yours to do.
+- ⚠ **`Relates` grants nothing, and the reason is a live incident rather than
+  tidiness.** *Link liberally* above tells you to make `Relates` links for loose
+  association — follow-up work, sibling tickets sharing context. Until KAN-633
+  was reviewed, **any** link to a Story conferred supervision, so that
+  instruction was also an instruction to grant yourself write access:
+  `story/KAN-657` linked three tickets to itself as told, none of them its work,
+  and acquired write access to all three without knowing. **Link as liberally as
+  the section above says — it no longer costs anything.**
 - **Everything else is still your own ticket only.** You cannot edit a task's
   fields, assign it, or file into another project. Those refusals are unchanged
   and are not oversights.

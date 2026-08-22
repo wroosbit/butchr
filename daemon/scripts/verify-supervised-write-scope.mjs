@@ -191,48 +191,109 @@ rule('3. supervisionFieldsFrom reads both link directions, and says when it cann
 
 const storyEnd = (key) => ({ key, fields: { issuetype: { name: 'Story' } } });
 const taskEnd = (key) => ({ key, fields: { issuetype: { name: 'Task' } } });
+/** `<this issue> blocks <story>` — the shape both briefs use as their worked example. */
+const blocksStory = (key) => ({ type: { name: 'Blocks' }, outwardIssue: storyEnd(key) });
+/** `<this issue> relates to <story>` — ordinary bookkeeping, and NOT a grant. */
+const relatesStory = (key) => ({ type: { name: 'Relates' }, outwardIssue: storyEnd(key) });
 
 check(
-  'a story linked as the OUTWARD end is found',
+  'a `Blocks` link with the story as the OUTWARD end is found — the worked example',
   JSON.stringify(
     supervisionFieldsFrom({
-      fields: { parent: { key: 'KAN-39' }, issuelinks: [{ outwardIssue: storyEnd('KAN-657') }] }
+      fields: { parent: { key: 'KAN-39' }, issuelinks: [blocksStory('KAN-657')] }
     })
   ) === JSON.stringify({ parent: 'KAN-39', linkedStories: ['KAN-657'] }),
   JSON.stringify(
     supervisionFieldsFrom({
-      fields: { parent: { key: 'KAN-39' }, issuelinks: [{ outwardIssue: storyEnd('KAN-657') }] }
+      fields: { parent: { key: 'KAN-39' }, issuelinks: [blocksStory('KAN-657')] }
     })
   )
 );
+// ⚠ THE CHECK THIS SECTION EXISTS FOR SINCE `story/KAN-657`'s FINDING.
+// `prompts/story.md` tells a story agent to "link liberally — all four standard
+// types", naming `Relates` for loose association. If `Relates` conferred
+// supervision, that instruction would be an instruction to grant yourself write
+// access — and it did, and three live instances were created by accident in one
+// evening before anybody noticed.
 check(
-  'a story linked as the INWARD end is found too — the relation does not depend on who typed it',
+  '⚠ a `Relates` link to a story confers NOTHING — the brief tells agents to make these',
   JSON.stringify(
-    supervisionFieldsFrom({ fields: { issuelinks: [{ inwardIssue: storyEnd('KAN-612') }] } })
-  ) === JSON.stringify({ parent: null, linkedStories: ['KAN-612'] }),
+    supervisionFieldsFrom({ fields: { issuelinks: [relatesStory('KAN-657')] } })
+  ) === JSON.stringify({ parent: null, linkedStories: [] }),
+  JSON.stringify(supervisionFieldsFrom({ fields: { issuelinks: [relatesStory('KAN-657')] } }))
+);
+for (const t of ['Duplicate', 'Cloners', 'relates', 'BLOCKS', '']) {
+  check(
+    `a link of type ${JSON.stringify(t)} to a story confers nothing`,
+    supervisionFieldsFrom({
+      fields: { issuelinks: [{ type: { name: t }, outwardIssue: storyEnd('KAN-657') }] }
+    }).linkedStories.length === 0,
+    JSON.stringify(
+      supervisionFieldsFrom({
+        fields: { issuelinks: [{ type: { name: t }, outwardIssue: storyEnd('KAN-657') }] }
+      })
+    )
+  );
+}
+check(
+  'an INWARD `Blocks` story confers nothing — that is a story blocking a task, the opposite claim',
   JSON.stringify(
-    supervisionFieldsFrom({ fields: { issuelinks: [{ inwardIssue: storyEnd('KAN-612') }] } })
+    supervisionFieldsFrom({
+      fields: { issuelinks: [{ type: { name: 'Blocks' }, inwardIssue: storyEnd('KAN-612') }] }
+    })
+  ) === JSON.stringify({ parent: null, linkedStories: [] }),
+  JSON.stringify(
+    supervisionFieldsFrom({
+      fields: { issuelinks: [{ type: { name: 'Blocks' }, inwardIssue: storyEnd('KAN-612') }] }
+    })
   )
 );
 check(
   'a linked TASK is not a story and does not become a supervisor',
   JSON.stringify(
-    supervisionFieldsFrom({ fields: { issuelinks: [{ outwardIssue: taskEnd('KAN-624') }] } })
+    supervisionFieldsFrom({
+      fields: { issuelinks: [{ type: { name: 'Blocks' }, outwardIssue: taskEnd('KAN-624') }] }
+    })
   ) === JSON.stringify({ parent: null, linkedStories: [] }),
   JSON.stringify(
-    supervisionFieldsFrom({ fields: { issuelinks: [{ outwardIssue: taskEnd('KAN-624') }] } })
+    supervisionFieldsFrom({
+      fields: { issuelinks: [{ type: { name: 'Blocks' }, outwardIssue: taskEnd('KAN-624') }] }
+    })
   )
+);
+// ⚠ THE THREE LIVE INSTANCES, AS FIXTURES. `story/KAN-657` created these on
+// 2026-08-21 by following its brief, and reported them against this PR. They
+// are reproduced by KEY so that a later widening which re-admits `Relates`
+// reddens on the real tickets it would have captured, not on an invented one.
+for (const key of ['KAN-282', 'KAN-573', 'KAN-634']) {
+  check(
+    `⚠ ${key} — a real accidental \`Relates\` to KAN-657 — grants KAN-657 nothing`,
+    supervisionFieldsFrom({
+      fields: { parent: { key: 'KAN-39' }, issuelinks: [relatesStory('KAN-657')] }
+    }).linkedStories.includes('KAN-657') === false,
+    `${key} would be writable by story/KAN-657 on the strength of bookkeeping it was told to do`
+  );
+}
+// The positive control for the five refusals above: the same parse, one field
+// different, says YES. Without it a parse that returned [] for everything would
+// satisfy all of them.
+check(
+  'and the same fixture with type `Blocks` IS a grant — the refusals above are not vacuous',
+  supervisionFieldsFrom({
+    fields: { parent: { key: 'KAN-39' }, issuelinks: [blocksStory('KAN-657')] }
+  }).linkedStories.includes('KAN-657'),
+  'the parse refuses every link type, so the whole story branch is dead'
 );
 check(
   'keys are upper-cased on the way out, so a lower-case link is still a match',
   JSON.stringify(
     supervisionFieldsFrom({
-      fields: { parent: { key: 'kan-39' }, issuelinks: [{ outwardIssue: storyEnd('kan-657') }] }
+      fields: { parent: { key: 'kan-39' }, issuelinks: [blocksStory('kan-657')] }
     })
   ) === JSON.stringify({ parent: 'KAN-39', linkedStories: ['KAN-657'] }),
   JSON.stringify(
     supervisionFieldsFrom({
-      fields: { parent: { key: 'kan-39' }, issuelinks: [{ outwardIssue: storyEnd('kan-657') }] }
+      fields: { parent: { key: 'kan-39' }, issuelinks: [blocksStory('kan-657')] }
     })
   )
 );

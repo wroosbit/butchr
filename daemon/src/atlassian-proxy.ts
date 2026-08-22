@@ -616,12 +616,31 @@ export type WriteScope =
    * attributable, reversible edit to a field designed to be edited"* — and that
    * pricing assumed a link was not an authorisation. For branch 1 it now is.
    * An agent may therefore link its own ticket to a stranger's and become that
-   * ticket's supervisor in one call. **That is deliberate and it is not
-   * softened by a second condition**, because this whole function bounds
-   * accident and not malice — nobody creates a `Blocks` link by accident, and
-   * the audit line names who did. Branch 2 concedes nothing of the sort: a
-   * caller cannot set another issue's `parent`, so the epic branch is not
-   * self-grantable.
+   * ticket's supervisor in one call.
+   *
+   * ⚠ **The first version of this paragraph defended that with "nobody creates
+   * a `Blocks` link by accident", and it was refuted by measurement within the
+   * hour.** The branch did not filter link *type*, and `prompts/story.md` tells
+   * story agents to *"link liberally — all four standard types"*. So the
+   * accident the sentence denied was not merely possible, it had already
+   * happened three times in one evening: `story/KAN-657` linked KAN-282,
+   * KAN-573 and KAN-634 to its own ticket with `Relates`, exactly as instructed,
+   * and silently acquired write access to three tickets that were not its work.
+   * **A policy that bounds accident cannot rest on an accident being
+   * unimaginable.** {@link supervisionFieldsFrom} now requires `Blocks` with the
+   * Story as the outward end, which is what closed that.
+   *
+   * **What remains conceded, precisely:** a *deliberate* self-grant. A story can
+   * still create `<any ticket> — Blocks — <its own ticket>` and write to it.
+   * That is judged acceptable on a narrower ground than before — **not that it
+   * cannot happen, but that a strictly easier and quieter path already exists**:
+   * `refuseWriteOutsideCaller`'s own docblock records that anything reaching the
+   * daemon socket can claim any identity, so an agent wanting a stranger's
+   * ticket can simply claim to *be* it, leaving no artifact at all. The link
+   * route is the loudest path to a door already open. **`story/KAN-657` and
+   * KAN-421 both judged that insufficient; the human's ruling is what settles
+   * it.** Branch 2 concedes nothing of the sort: a caller cannot set another
+   * issue's `parent`, so the epic branch is not self-grantable.
    *
    * **What it still refuses is the ordinary mistake**: a key confused for
    * another, a loop over a search result, an agent talked into moving a ticket
@@ -3930,11 +3949,11 @@ export interface SupervisionBoard {
         /**
          * The keys of every issue of type `Story` this one is linked to, upper-cased.
          *
-         * Link *type* is deliberately not filtered on. Both briefs say the
-         * relation is "an issue link to a Story" and neither names a type —
-         * `prompts/story.md`'s worked example happens to be `Blocks`, and
-         * writing `Blocks` in here would be this file inventing a rule the
-         * board does not enforce and merge governance does not read.
+         * Only a `Blocks` link with the Story as its **outward** end counts —
+         * "this task blocks that story", the shape both briefs use as their
+         * worked example. Accepting any link type let the brief's own "link
+         * liberally" instruction grant write access by accident; see
+         * {@link supervisionFieldsFrom} for the three measured instances.
          */
         linkedStories: string[];
       }
@@ -3960,9 +3979,35 @@ export interface SupervisionBoard {
  * that answered `{parent: null, linkedStories: []}` for a body it did not
  * understand would send an agent to go and fix a link that is already there.
  *
- * Link **type** is deliberately not filtered on: both briefs say the relation is
- * "an issue link to a Story" and neither names a type. `Blocks` is what the
- * worked example happens to use.
+ * ## ⚠ TYPE AND DIRECTION ARE FILTERED, AND THE FIRST VERSION OF THIS DID NOT
+ *
+ * It accepted **any** link to **any** Story on **either** end, reasoning that
+ * both briefs say only *"an issue link to a Story"* and neither names a type —
+ * deriving faithfully from governance rather than inventing a rule. **That was
+ * wrong in effect, and the refutation is measured rather than argued.**
+ *
+ * `prompts/story.md` also tells a story agent to *"link liberally — all four
+ * standard types"*, naming `Relates` for *"loose association: follow-up work,
+ * … sibling tickets sharing context"*. Under the unfiltered read, **that
+ * instruction is an instruction to grant yourself write access.**
+ * `story/KAN-657` produced **three live instances in one evening** doing
+ * exactly the bookkeeping the brief asks for — `Relates` links from KAN-282,
+ * KAN-573 and KAN-634 to its own ticket, none of them its task, one of them
+ * named *out of scope* in its own description. It did not know it had done it.
+ *
+ * **That defeats the justification this whole scope rests on.** The policy
+ * bounds *accident*; an unfiltered link read is a permission an agent grants
+ * itself **by accident, while following its brief**, which is the one thing the
+ * policy is for. So the filter is not caution — it is the difference between
+ * the scope doing its stated job and not.
+ *
+ * ⚠ **What the filter does NOT do, stated so nobody counts it as more:** it
+ * does not stop a *deliberate* self-grant. A story can still create
+ * `<any ticket> — Blocks — <its own ticket>` through `atlassian_create_issue_link`
+ * and be permitted to write to it. **It closes the accidental path, which is
+ * the one that was demonstrated, and leaves the deliberate one open** — see
+ * {@link WriteScope}'s `supervised-ticket` member for why that is judged
+ * acceptable and who disagrees.
  */
 export function supervisionFieldsFrom(
   body: any
@@ -3978,11 +4023,20 @@ export function supervisionFieldsFrom(
   const parent = typeof fields.parent?.key === 'string' ? fields.parent.key.toUpperCase() : null;
   const linkedStories: string[] = [];
   for (const link of Array.isArray(fields.issuelinks) ? fields.issuelinks : []) {
-    for (const end of [link?.inwardIssue, link?.outwardIssue]) {
-      if (typeof end?.key !== 'string') continue;
-      if (end?.fields?.issuetype?.name !== 'Story') continue;
-      linkedStories.push(end.key.toUpperCase());
-    }
+    // ⚠ TYPE AND DIRECTION ARE BOTH LOAD-BEARING. See the docblock: accepting
+    // any link to any Story turned `prompts/story.md`'s "link liberally"
+    // instruction into an instruction to grant yourself write access, and
+    // `story/KAN-657` produced three live instances of it by accident.
+    //
+    // `Blocks` with the Story as the OUTWARD end is "this task blocks that
+    // story" read from the task — the exact shape both briefs use as their
+    // worked example (`KAN-234 blocks KAN-150`). An inward `Blocks` is the
+    // opposite claim, a story blocking a task, and confers nothing.
+    if (link?.type?.name !== 'Blocks') continue;
+    const end = link?.outwardIssue;
+    if (typeof end?.key !== 'string') continue;
+    if (end?.fields?.issuetype?.name !== 'Story') continue;
+    linkedStories.push(end.key.toUpperCase());
   }
   return { parent, linkedStories };
 }
