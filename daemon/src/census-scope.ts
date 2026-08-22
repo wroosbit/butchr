@@ -124,11 +124,19 @@ export function censusScope(runtime: RuntimeMode, hostname: string = os.hostname
     host: hostname,
     runtime,
     workspacesRoot: root,
+    // ⚠ SHORT ON PURPOSE, AND THE LIMIT IS A REAL ONE. A `bounded` exemption in
+    // `NEVER_CLIPPED_FIELDS` may not declare a ceiling above
+    // `MIN_BUDGET_CHARS / 2` — 500 characters — because a single exempt field
+    // larger than half the smallest budget leaves the fitter nothing to work
+    // with. The first draft of this sentence restated the host, the runtime and
+    // the root in prose and measured the block at 504 characters, which
+    // `verify-never-clipped-exemption-is-bounded.mjs` refused. The three
+    // specifics are already fields; the sentence's job is only to make the
+    // wrong COMPLETION unavailable, and the long form of the argument belongs
+    // where nothing is budgeted — the tool descriptions and the refusal text.
     sentence:
-      `Butchr runs one daemon per machine and this one can see no other. This answer covers ` +
-      `agents the ${runtime} runtime holds on host ${hostname}, whose workspaces live under ` +
-      `${root}. An agent staffed on another machine is absent from every field here, and that ` +
-      `absence is NOT evidence about whether it is running.`
+      `One daemon per machine, and this one sees no other: an agent absent from this answer may ` +
+      `simply be on another machine, so absence here is NOT evidence that it stopped.`
   };
 }
 

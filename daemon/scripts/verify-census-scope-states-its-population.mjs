@@ -497,7 +497,7 @@ rule('§7  AC2 — every fleet-shaped answer states its population, and a clip c
 
   row('list_agents censusScope.from', list.censusScope?.from);
   row('capacity censusScope.from', cap.censusScope?.from);
-  row('list censusScope names the root?', String(list.censusScope?.sentence ?? '').includes(wsRoot));
+  row('list censusScope names the root?', list.censusScope?.workspacesRoot === wsRoot);
   row('censusScope is never-clipped?', 'censusScope' in NEVER_CLIPPED_FIELDS);
   row('exemption holds for a real one', exemptionHolds('censusScope', scope));
   row('measured chars', JSON.stringify(scope, null, 2).length);
@@ -506,8 +506,10 @@ rule('§7  AC2 — every fleet-shaped answer states its population, and a clip c
   verdict(
     list.censusScope?.from === 'this-box' &&
       cap.censusScope?.from === 'this-box' &&
-      String(list.censusScope.sentence).includes(wsRoot) &&
-      String(list.censusScope.sentence).includes('can see no other') &&
+      list.censusScope.workspacesRoot === wsRoot &&
+      String(list.censusScope.sentence).includes('sees no other') &&
+      String(list.censusScope.sentence).includes('NOT evidence that it stopped') &&
+      JSON.stringify(scope, null, 2).length <= NEVER_CLIPPED_FIELDS.censusScope.maxChars &&
       'censusScope' in NEVER_CLIPPED_FIELDS &&
       exemptionHolds('censusScope', scope) === true,
     'both fleet-shaped answers carry the population they cover, and the response budget cannot drop it while keeping the counts',
