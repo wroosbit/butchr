@@ -502,12 +502,12 @@ quiet. Running *this* step is itself a start, since it ends in
 `systemctl --user enable --now butchr-daemon.service`.
 
 ⚠ **And because the extension was loaded first, this step routinely starts a
-daemon that loses.** The unit's daemon finds the socket already held by the one Chrome
-spawned, and since KAN-550 a loser that cannot establish the incumbent is the
+daemon that loses.** The unit's daemon finds the socket already held by the one
+Chrome spawned, and since KAN-550 a loser that cannot establish the incumbent is the
 configured one exits `3` rather than `0` — so `Restart=on-failure` retries and
 the **unit ends up `failed` while the fleet works**. That is this ordering, not
-a broken install. *Check that it worked* is where you resolve it: `butchr-doctor` names the
-process actually holding the socket, and the losing daemon prints the remedy
+a broken install. *Check that it worked* is where you resolve it:
+`butchr-doctor` names the process actually holding the socket, and the losing daemon prints the remedy
 itself (kill that pid, then `systemctl --user start butchr-daemon.service`).
 
 This is one command because the two things it does are the two things that were
