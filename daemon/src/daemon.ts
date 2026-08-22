@@ -24,6 +24,13 @@ import {
   runtimePinVerdict,
   type DaemonProvenanceReport
 } from './daemon-provenance.js';
+import {
+  DEPLOY_LEDGER_FILE,
+  changesTheRunningFleet,
+  describeUngatedStart,
+  recordDaemonStart,
+  summariseRecord
+} from './deploy-ledger.js';
 import { MessageRouter } from './router.js';
 import { JiraIssueTypeService } from './jira.js';
 import { CredentialStore } from './credentials.js';
@@ -283,6 +290,54 @@ switch (bootPin.kind) {
     // journal the way the refusal above is.
     for (const line of describeNotFleetDaemon(bootPin)) log(line);
     break;
+}
+
+// ── KAN-647, AC2: a deploy leaves a trace whether or not the gate was used ──
+//
+// This runs at the same point and for the same reason as the pin check above:
+// before the socket, so the record describes the process that is about to serve
+// rather than one that already is. `deploy-ledger.ts` has the whole argument;
+// the short of it is that a bypass never runs the deploy script, so the script
+// cannot be what witnesses one — and restarting THIS process is the terminal
+// act of every deploy, gated or not.
+//
+// Nothing here can stop the daemon starting. An audit trail that can take the
+// fleet down is a worse trade than the gap it closes, so `recordDaemonStart`
+// swallows its own I/O failures and the next start reports the hole.
+//
+// ⚠ The try is belt and braces and is NOT decoration. `recordDaemonStart` is
+// written not to throw — every read, every write and every `git` inside it
+// catches — but this call sits ABOVE the `uncaughtException` handler installed
+// below, so an unanticipated throw here would take the daemon down before
+// anything could report why. Reasoning that a function cannot throw is not the
+// same as it being unable to, and the difference is a fleet outage caused by an
+// audit line.
+try {
+  const deployRecord = recordDaemonStart({
+    distDir: path.dirname(fileURLToPath(import.meta.url))
+  });
+  log(summariseRecord(deployRecord));
+  if (deployRecord.consumeError) {
+    // Loud, because an intent left in place would gate the NEXT start too.
+    log(`WARNING: ${deployRecord.consumeError}`);
+  }
+  if (deployRecord.gate.kind === 'ungated' && changesTheRunningFleet(deployRecord.start)) {
+    announceToJournal(describeUngatedStart(deployRecord), logToFileOnly);
+  } else if (deployRecord.gate.kind === 'gated') {
+    log(`deploy ledger: attributed to ${deployRecord.gate.by}; ledger at ${DEPLOY_LEDGER_FILE}`);
+  }
+} catch (err) {
+  // Said out loud rather than swallowed: a start with no ledger line makes the
+  // NEXT start read `first-record`, which is a hole in the audit and must not
+  // look like a clean one.
+  announceToJournal(
+    [
+      `butchr: the deploy ledger THREW at startup and this start is unrecorded — ` +
+        `${(err as Error)?.message ?? String(err)}`,
+      `  The next start will read \`first-record\` and judge nothing. That is a hole, not a pass.`
+    ],
+    logToFileOnly
+  );
 }
 
 process.on('uncaughtException', (err) => {
