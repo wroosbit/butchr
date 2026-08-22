@@ -661,8 +661,9 @@ export function strandedMergeDetail(row: Omit<StrandedMerge, 'detail'>): string 
 
   const who = row.liveMergers.length
     ? `${row.liveMergers.join(', ')} ${row.liveMergers.length === 1 ? 'is' : 'are'} live and ` +
-      'holds that ticket, so the button is reachable and has not been pressed — an approval ' +
-      'arrives as a GitHub comment and an agent that stopped to wait may never have been told'
+      `${row.liveMergers.length === 1 ? 'holds' : 'hold'} that ticket, so the button is ` +
+      'reachable and has not been pressed — an approval arrives as a GitHub comment and an ' +
+      'agent that stopped to wait may never have been told'
     : `NO live agent on this box holds ${row.issueKey}, so nothing here can press the button: ` +
       'this pull request cannot land until one is started. (This box only — an agent on another ' +
       'machine is invisible from here.)';
