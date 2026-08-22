@@ -200,6 +200,19 @@ const IDENTITY_PROBE = '/rest/api/3/myself';
 const WORK_PROBE = '/rest/api/3/project/search?maxResults=1';
 
 /**
+ * What distinguishes one stored credential from another, for cache keying.
+ *
+ * The token's LENGTH rather than the token: this string is only ever compared
+ * against itself, so it needs to change when the credential changes and needs
+ * to carry nothing that could reach a log. A rotated token of identical length
+ * against the same site and email is the one case this cannot tell apart, and
+ * it is harmless here — the account id behind it is the same account.
+ */
+function fingerprintOf(cred: JiraCredential): string {
+  return `${cred.siteUrl}|${cred.email}|${cred.token.length}`;
+}
+
+/**
  * After a failure, skip the network entirely for this long.
  *
  * Without it, an unreachable Jira costs the full timeout on *every*
@@ -1800,6 +1813,23 @@ export class JiraIssueTypeService {
     this.failingUntil = 0;
   }
 
+  /**
+   * What identifies the stored credential, for the two caches keyed on it.
+   *
+   * ONE DEFINITION ON PURPOSE (KAN-646). {@link getTransport} rebuilds the
+   * transport when this changes and {@link selfAccountId} refuses a cached
+   * account id when it changes, and those two must agree about what "the
+   * credential changed" means. Two spellings of it that drifted apart would
+   * hand out an account id belonging to a credential the transport had already
+   * replaced — which is the defect this is factored out to prevent.
+   *
+   * Null exactly when there is no credential stored.
+   */
+  private async credentialFingerprint(): Promise<string | null> {
+    const cred = await this.store.load();
+    return cred ? fingerprintOf(cred) : null;
+  }
+
   private async getTransport(): Promise<JiraTransport | null> {
     const cred = await this.store.load();
     if (!cred) {
@@ -1809,7 +1839,7 @@ export class JiraIssueTypeService {
     }
     // Rebuild when the credential changes; the transport caches a cloud ID and
     // an auth header that would otherwise go stale.
-    const fingerprint = `${cred.siteUrl}|${cred.email}|${cred.token.length}`;
+    const fingerprint = fingerprintOf(cred);
     if (!this.transport || this.transportCred !== fingerprint) {
       this.transport = this.makeTransport(cred);
       this.transportCred = fingerprint;
@@ -2074,30 +2104,83 @@ export class JiraIssueTypeService {
    * that operation existed. Nothing here widens what the credential is used
    * for; it asks a question an agent could already ask by hand.
    *
-   * CACHED FOR THE LIFE OF THE DAEMON, AND THE NEGATIVE IS NOT CACHED. An
-   * account id does not change under a fixed credential, so the happy path
-   * costs one request ever. A *failure* is deliberately not remembered: the
-   * ordinary reason to fail is a credential that is not configured yet or an
-   * Atlassian that is briefly unreachable, and caching that would turn a
-   * thirty-second outage into a daemon that refuses every create until it is
-   * restarted. It retries on the next call instead.
+   * CACHED FOR THE LIFE OF THE CREDENTIAL, AND THE NEGATIVE IS NOT CACHED. An
+   * account id does not change under a *fixed* credential, so the happy path
+   * costs one request per credential. A *failure* is deliberately not
+   * remembered: the ordinary reason to fail is a credential that is not
+   * configured yet or an Atlassian that is briefly unreachable, and caching
+   * that would turn a thirty-second outage into a daemon that refuses every
+   * create until it is restarted. It retries on the next call instead.
+   *
+   * ⚠ **THIS PARAGRAPH READ "FOR THE LIFE OF THE DAEMON" UNTIL KAN-646, AND
+   * THAT WAS THE DEFECT WRITTEN DOWN AS A FEATURE.** It was an accurate
+   * description of the code: nothing cleared the field, `reset()` included, so
+   * a credential swapped through the settings UI rebuilt the transport for the
+   * new account and left the previous account's id here to be stamped onto
+   * every ticket until a restart. The sentence beside it — *"an account id does
+   * not change under a fixed credential"* — is true and was doing the work of
+   * an argument it does not support: the credential is exactly what was not
+   * fixed. **The daemon's lifetime was never the right bound; the credential's
+   * is**, and {@link cachedAccount} now enforces that rather than asserting it.
    *
    * NEVER THROWS, like everything else this service exposes, and a null is a
    * refusal rather than an empty answer: `atlassian-proxy.ts` turns it into a
    * loud "nothing was sent" and never into an unassigned ticket.
    */
   public async selfAccountId(): Promise<string | null> {
-    if (this.cachedAccountId) return this.cachedAccountId;
+    // Read the fingerprint FIRST, and from the same place `getTransport` reads
+    // it, so that what is cached is always bound to the credential the next
+    // request will actually authenticate with. A null here means there is no
+    // credential at all, which is the refusal branch: never serve a remembered
+    // id on behalf of a credential that is gone.
+    const fingerprint = await this.credentialFingerprint();
+    if (!fingerprint) return null;
+    if (this.cachedAccount && this.cachedAccount.fingerprint === fingerprint) {
+      return this.cachedAccount.accountId;
+    }
     const outcome = await this.proxyRead(IDENTITY_PROBE);
     if (!outcome.ok) return null;
     const accountId = (outcome.body as any)?.accountId;
     if (typeof accountId !== 'string' || !accountId) return null;
-    this.cachedAccountId = accountId;
+    this.cachedAccount = { fingerprint, accountId };
     return accountId;
   }
 
-  /** See {@link selfAccountId}. Null until one has been read successfully. */
-  private cachedAccountId: string | null = null;
+  /**
+   * See {@link selfAccountId}. Null until one has been read successfully.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THE FINGERPRINT IS *INSIDE* THE CACHE RATHER THAN CLEARED ALONGSIDE IT
+   * ---------------------------------------------------------------------------
+   *
+   * KAN-646. This was `cachedAccountId: string | null`, cleared by nothing —
+   * {@link reset} drops the transport, the issue-type cache and the failure
+   * cooldown, and it did not drop this. So a credential swapped through the
+   * settings UI rebuilt the transport for the new account and left the id of
+   * the **previous** one in this field, and every ticket
+   * `atlassian_create_issue` filed thereafter was stamped with an account the
+   * daemon was no longer authenticating as. It corrected itself only on a
+   * daemon restart, because a restart is what drops process memory.
+   *
+   * ⚠ **The measured signature of that state is two fields of one write
+   * disagreeing.** The proxy sends `assignee` from this cache; Jira fills
+   * `creator` server-side from the credential on the request. KAN-627 was filed
+   * `creator: John Winstead, assignee: Wroos Bit` — one call, two accounts —
+   * and the two tickets after the restart read the same name in both fields.
+   *
+   * **Adding `this.cachedAccountId = null` to `reset()` would have fixed the
+   * instance and left the class.** `reset()` is a list a later author extends
+   * by remembering to, and the thing being guarded is a field's ABSENCE from
+   * that list — precisely the shape nobody notices. Pairing the id with the
+   * fingerprint of the credential it was read from makes the stale answer
+   * **unrepresentable instead**: a cache entry names its own credential, so a
+   * mismatch cannot be served whether or not anybody remembers to clear it, and
+   * `reset()` may forget this field forever without that costing anything.
+   *
+   * The negative is still not cached, for the reason above: a failure leaves
+   * this field untouched and the next call retries.
+   */
+  private cachedAccount: { fingerprint: string; accountId: string } | null = null;
 
   private async proxyCall(
     method: 'GET' | 'POST' | 'PUT',
