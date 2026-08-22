@@ -1086,7 +1086,20 @@ type ToolResult = {
  * server is well under the budget. If it starts firing, that is a tool that has
  * grown a fleet-sized field and wants a ladder of its own.
  */
-function boundToBudget(name: string, result: ToolResult): ToolResult {
+function boundToBudget(
+  name: string,
+  result: ToolResult,
+  /**
+   * The arguments the tool was called with, for the one thing a recovery recipe
+   * needs and the response does not carry (KAN-656): WHICH ISSUE was being
+   * read. `atlassian_get_issue_description` takes an `issueKey`, so a recipe
+   * that cannot name one is not typeable and must not be printed — see
+   * `descriptionRecovery` in `mcp-recovery.ts`, which returns no recipe rather
+   * than one with a hole in it. Optional so that every other caller of this
+   * gate is unchanged.
+   */
+  args?: Record<string, unknown>
+): ToolResult {
   // Only the text payload is gated. `isError` is a verdict about the call and
   // is carried through untouched: a refusal that got large must not become a
   // success because it was reduced.
@@ -1118,9 +1131,19 @@ function boundToBudget(name: string, result: ToolResult): ToolResult {
     };
   }
 
+  // The issue this call was about, where it named one. Read off the ARGUMENTS
+  // rather than the response, deliberately: a clipped response is exactly the
+  // one whose body may no longer carry the key, and a recipe built from a
+  // response that had been reduced would go missing precisely when it is needed.
+  const askedAbout = {
+    issueKey: typeof args?.issueKey === 'string' ? args.issueKey : null,
+    startAt: typeof args?.startAt === 'number' ? args.startAt : null,
+    maxResults: typeof args?.maxResults === 'number' ? args.maxResults : null
+  };
+
   const fitted = fitGenericResponse(parsed, {
     tool: name,
-    recoveryFor: (path) => genericRecovery(name, path)
+    recoveryFor: (path) => genericRecovery(name, path, askedAbout)
   });
   // An answer already inside the budget goes back exactly as its tool wrote it.
   // The gate is a ceiling, not a reformatter: adding a `completeness` block to
@@ -1132,7 +1155,7 @@ function boundToBudget(name: string, result: ToolResult): ToolResult {
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  return boundToBudget(name, await dispatchTool(name, args));
+  return boundToBudget(name, await dispatchTool(name, args), args as Record<string, unknown> | undefined);
 });
 
 async function dispatchTool(name: string, args: unknown): Promise<ToolResult> {
