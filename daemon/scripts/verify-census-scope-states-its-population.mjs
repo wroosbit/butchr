@@ -269,8 +269,8 @@ rule('§1  AC1 — an address this box has never held is REFUSED, not described'
   row('refusedBy', res.refusedBy);
   row('sessionless present?', 'sessionless' in res);
   row('herdrStatus present?', 'herdrStatus' in res);
-  row('scope.host', res.scope?.host);
-  row('scope.runtime', res.scope?.runtime);
+  row('censusScope.host', res.censusScope?.host);
+  row('censusScope.runtime', res.censusScope?.runtime);
   row('carries the non-claim?', String(res.error ?? '').includes(NOT_A_CLAIM));
   row('names the control count?', /\b3 other 'task' workspaces\b/.test(String(res.error ?? '')));
   console.log(`\n  error: ${res.error}`);
@@ -282,8 +282,8 @@ rule('§1  AC1 — an address this box has never held is REFUSED, not described'
       !('herdrStatus' in res) &&
       String(res.error).includes(NOT_A_CLAIM) &&
       !String(res.error).includes(DEATH_CLAIM) &&
-      res.scope?.from === 'this-box' &&
-      res.scope?.runtime === 'crabcast',
+      res.censusScope?.from === 'this-box' &&
+      res.censusScope?.runtime === 'crabcast',
     'the fabricated row is gone: no `sessionless`, no `herdrStatus`, the scope names the runtime actually serving, and the refusal says out loud that it is not a claim about whether the agent is running',
     'an address this box has never held still answers with a status a reader can complete as a death'
   );
@@ -495,21 +495,21 @@ rule('§7  AC2 — every fleet-shaped answer states its population, and a clip c
   const cap = drive({ action: 'capacity' }, []);
   const scope = censusScope('crabcast', 'a-host');
 
-  row('list_agents scope.from', list.scope?.from);
-  row('capacity scope.from', cap.scope?.from);
-  row('list scope names the root?', String(list.scope?.sentence ?? '').includes(wsRoot));
-  row('scope is never-clipped?', 'scope' in NEVER_CLIPPED_FIELDS);
-  row('exemption holds for a real one', exemptionHolds('scope', scope));
+  row('list_agents censusScope.from', list.censusScope?.from);
+  row('capacity censusScope.from', cap.censusScope?.from);
+  row('list censusScope names the root?', String(list.censusScope?.sentence ?? '').includes(wsRoot));
+  row('censusScope is never-clipped?', 'censusScope' in NEVER_CLIPPED_FIELDS);
+  row('exemption holds for a real one', exemptionHolds('censusScope', scope));
   row('measured chars', JSON.stringify(scope, null, 2).length);
   console.log(`\n  sentence: ${scope.sentence}`);
 
   verdict(
-    list.scope?.from === 'this-box' &&
-      cap.scope?.from === 'this-box' &&
-      String(list.scope.sentence).includes(wsRoot) &&
-      String(list.scope.sentence).includes('can see no other') &&
-      'scope' in NEVER_CLIPPED_FIELDS &&
-      exemptionHolds('scope', scope) === true,
+    list.censusScope?.from === 'this-box' &&
+      cap.censusScope?.from === 'this-box' &&
+      String(list.censusScope.sentence).includes(wsRoot) &&
+      String(list.censusScope.sentence).includes('can see no other') &&
+      'censusScope' in NEVER_CLIPPED_FIELDS &&
+      exemptionHolds('censusScope', scope) === true,
     'both fleet-shaped answers carry the population they cover, and the response budget cannot drop it while keeping the counts',
     'a count survives a clip that its population statement does not — which is this ticket`s own defect, produced by the fitter'
   );

@@ -4053,7 +4053,7 @@ export class MessageRouter {
           key,
           addressedBy: type ? 'key-and-type' : 'key-only',
           refusedBy: knowledge.kind === 'unknown-here' ? 'not-on-this-box' : 'scope-undetermined',
-          scope,
+          censusScope: scope,
           error:
             knowledge.kind === 'unknown-here'
               ? refusalForOffBoxAddress(type ?? '<any type>', key, knowledge, scope)
@@ -5606,7 +5606,7 @@ export class MessageRouter {
       // `censusUnreadableRecordsTotal` is: a disclosure nobody reads is the
       // same as no disclosure, and all three of those agents had read the
       // docstring.
-      scope: this.censusScope(),
+      censusScope: this.censusScope(),
       agents,
       unbackedPanes,
       // Always present, even when empty: a caller that has to distinguish "no
@@ -5758,7 +5758,7 @@ export class MessageRouter {
       // sentence on a box that runs no task agents, and it is the sentence a
       // supervisor reads as "the fleet is idle" before staffing over the top of
       // work already in flight elsewhere.
-      scope: this.censusScope(),
+      censusScope: this.censusScope(),
       ...capacityDto(capacity),
       derivation: describeCapacity(capacity),
       // At capacity the next question is always "then what would I have to
