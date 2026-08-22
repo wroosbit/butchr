@@ -252,7 +252,16 @@ if (ownTicketBlock) {
 // ── 3. the recorded decision quotes the same counts ────────────────────────
 rule('3. docs/atlassian-proxy.md §4 quotes the same counts');
 
-const decisionSection = /#### The task-agent write list([\s\S]*?)(?=\n## |\n---|\n### |$)/.exec(doc);
+// `\n#### ` is in the lookahead because KAN-658 added a SIBLING `####` section
+// immediately below this one, and without it the capture ran straight through
+// the new heading and swallowed the four-brief inventory table — 9,254
+// characters where the section is 2,322. Measured, not feared: every check
+// below still passed, because an over-capture can only ADD text to search and
+// therefore only ever turns a red green. That is the direction that matters —
+// this section's whole job is to notice a count drifting, and a capture that
+// reaches into a neighbouring table full of scope names is one paste away from
+// being satisfied by a document that no longer says what it is asserted to say.
+const decisionSection = /#### The task-agent write list([\s\S]*?)(?=\n## |\n---|\n#### |\n### |$)/.exec(doc);
 check(
   'the write-list section is present in the document',
   Boolean(decisionSection),
