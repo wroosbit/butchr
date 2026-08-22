@@ -277,6 +277,17 @@ export const PROXY_MODES: readonly ProxyMode[] = [
  *    the caller's own project. An operator on this rung is granting agents the
  *    ability to write **to their own work and nowhere else**, which is what
  *    KAN-291 decided and what this slice inherits rather than re-opens.
+ *
+ *    **KAN-633 widened "their own work" and did not widen "and nowhere else".**
+ *    Two of those five — the transition and the comment — are now
+ *    `supervised-ticket`, which adds the tickets the board places *under* the
+ *    caller: the ones it approves, resolved through the relation merge
+ *    governance already resolves through. An operator is still granting write
+ *    access to the caller's own work; what moved is that a supervisor's own
+ *    work now includes closing the tasks it approved, which is what
+ *    `prompts/story.md` had been asking of it since 2026-08-08 and the
+ *    mechanism had been refusing. See {@link WriteScope}'s `supervised-ticket`
+ *    member for what that concedes.
  *  - Every write in **`confluence-write`** is *unscoped*, because there is
  *    nothing to scope it to: a Confluence page has no relationship to a Jira
  *    issue key that this daemon can read, so "your own ticket" names no page.
@@ -557,6 +568,86 @@ export type WriteScope =
    * the smallest concession that leaves the tool able to do its job.
    */
   | { kind: 'own-ticket-endpoint'; issues(args: Record<string, any>): string[] }
+  /**
+   * The caller's own ticket, **or** a ticket the board places under the caller.
+   *
+   * KAN-633. `prompts/story.md` gives a story agent three duties over the tasks
+   * it filed — staff them, approve their pull requests, set them `Done` when
+   * they merge — and only the middle one happens on GitHub. The other two are
+   * writes to a ticket that is not the caller's own, so `own-ticket` refused
+   * them, and the fleet ran the difference by hand: measured on 2026-08-21,
+   * `story/KAN-648` approved and merged three tasks and could close none of
+   * them, holding three workforce slots for ~40, ~25 and ~10 minutes on a box
+   * running 11 agents. **Since KAN-508 the `Done` transition *is* the
+   * stand-down**, so a supervisor that cannot close is a supervisor that cannot
+   * release capacity, and every one of those closes routed through one epic.
+   *
+   * ## WHAT IT PERMITS, AND WHY THIS RELATION AND NOT A SUBTREE
+   *
+   * The caller may write to a target when the board makes the caller that
+   * target's **approver**, resolved exactly as merge governance resolves it:
+   *
+   *  1. the target carries an issue **link** to a `Story` whose key is the
+   *     caller's — `prompts/story.md`'s *"the tasks you approve are the ones
+   *     linked to {{KEY}}"*; or
+   *  2. the target's Jira **`parent`** is the caller — the epic branch, taken
+   *     when there is no story link.
+   *
+   * That is not a new relation invented for a permission. It is the relation
+   * the fleet already merges by, and using it means the set of tickets you may
+   * write to and the set you are answerable for cannot drift apart: widen one
+   * and you have widened the other, in one place, visibly.
+   *
+   * **A subtree was the obvious alternative and is what KAN-291 rejected**, on
+   * the ground that it needs a Jira read per write and therefore has to answer
+   * what happens when that read fails — *"fail open and the restriction
+   * evaporates in exactly the outage it should hold through; fail closed and a
+   * slow Jira stops agents from moving their own tickets."* Half of that
+   * dilemma is gone here rather than argued away: **the caller's own ticket is
+   * decided without any read at all**, so a Jira that is slow or down cannot
+   * stop an agent claiming, progressing or closing its own work. What remains
+   * is the cross-ticket write, and that one **fails closed** — see
+   * {@link refuseWriteOutsideSupervision}, which says so in the refusal rather
+   * than letting an outage read as a permission decision.
+   *
+   * ## WHAT IT CONCEDES, SAID PLAINLY
+   *
+   * `own-ticket-endpoint` above prices link creation as *"a visible,
+   * attributable, reversible edit to a field designed to be edited"* — and that
+   * pricing assumed a link was not an authorisation. For branch 1 it now is.
+   * An agent may therefore link its own ticket to a stranger's and become that
+   * ticket's supervisor in one call.
+   *
+   * ⚠ **The first version of this paragraph defended that with "nobody creates
+   * a `Blocks` link by accident", and it was refuted by measurement within the
+   * hour.** The branch did not filter link *type*, and `prompts/story.md` tells
+   * story agents to *"link liberally — all four standard types"*. So the
+   * accident the sentence denied was not merely possible, it had already
+   * happened three times in one evening: `story/KAN-657` linked KAN-282,
+   * KAN-573 and KAN-634 to its own ticket with `Relates`, exactly as instructed,
+   * and silently acquired write access to three tickets that were not its work.
+   * **A policy that bounds accident cannot rest on an accident being
+   * unimaginable.** {@link supervisionFieldsFrom} now requires `Blocks` with the
+   * Story as the outward end, which is what closed that.
+   *
+   * **What remains conceded, precisely:** a *deliberate* self-grant. A story can
+   * still create `<any ticket> — Blocks — <its own ticket>` and write to it.
+   * That is judged acceptable on a narrower ground than before — **not that it
+   * cannot happen, but that a strictly easier and quieter path already exists**:
+   * `refuseWriteOutsideCaller`'s own docblock records that anything reaching the
+   * daemon socket can claim any identity, so an agent wanting a stranger's
+   * ticket can simply claim to *be* it, leaving no artifact at all. The link
+   * route is the loudest path to a door already open. **`story/KAN-657` and
+   * KAN-421 both judged that insufficient; the human's ruling is what settles
+   * it.** Branch 2 concedes nothing of the sort: a caller cannot set another
+   * issue's `parent`, so the epic branch is not self-grantable.
+   *
+   * **What it still refuses is the ordinary mistake**: a key confused for
+   * another, a loop over a search result, an agent talked into moving a ticket
+   * by something it read in a comment. None of those produce a link or a
+   * parent, so all of them are still refused.
+   */
+  | { kind: 'supervised-ticket'; issue(args: Record<string, any>): string | null }
   /**
    * A new issue in the caller's own project.
    *
@@ -2015,8 +2106,14 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       "Move a Jira issue through one workflow transition, using the Butchr daemon's own " +
       'credential. THE ONLY WRITE THIS PROXY HAS, and it is deliberately the smallest one: it ' +
       'changes a status and carries no rich content, no fields and no comment. ' +
-      'YOU MAY ONLY TRANSITION YOUR OWN TICKET — the issue key must be this workspace\'s own ' +
-      'key, and a call naming any other issue is refused before it reaches Atlassian. ' +
+      'YOU MAY TRANSITION YOUR OWN TICKET, AND ANY TICKET THE BOARD PLACES UNDER YOU (KAN-633) ' +
+      '— that is a ticket carrying an issue link to your Story, or one whose Jira parent is ' +
+      'you, which is the same relation merge governance resolves an approver through. So a ' +
+      'story closes the tasks it approved and an epic closes the tasks under it, and anything ' +
+      'else is refused before it reaches Atlassian. THE OWN-TICKET CASE IS DECIDED WITHOUT A ' +
+      'BOARD READ and keeps working when Jira does not; the cross-ticket case needs one and ' +
+      'FAILS CLOSED when it cannot be made — a refusal reading "supervision-unreadable" is the ' +
+      'daemon saying it has no answer, not that the answer is no, so retry it. ' +
       'Find the transition id with atlassian_get_transitions; ids are per-workflow and a ' +
       'status name is not an id. On success Jira returns 204 with no body, which is its ' +
       'success shape for this endpoint and is reported as one. A FAILURE HERE IS ALWAYS LOUD: ' +
@@ -2029,8 +2126,9 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
         issueKey: {
           type: 'string',
           description:
-            "The issue key, e.g. \"KAN-291\". Must be this agent's own workspace key — the " +
-            'proxy refuses a transition of anybody else\'s ticket.'
+            'The issue key, e.g. "KAN-291". Your own workspace key, or a ticket the board ' +
+            'places under you — linked to your Story, or carrying you as its Jira parent. ' +
+            'Anything else is refused.'
         },
         transitionId: {
           type: 'string',
@@ -2055,7 +2153,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       };
     },
     writeScope: {
-      kind: 'own-ticket',
+      kind: 'supervised-ticket',
       issue(args) {
         const key = issueKey(args);
         return 'error' in key ? null : key.key;
@@ -2763,9 +2861,17 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
     pathShape: '/rest/api/3/issue/{issueKey}/comment',
     bodyShape: '{"body":{ADF built from your markdown}}',
     description:
-      "Comment on a Jira issue, using the Butchr daemon's own credential. YOU MAY ONLY " +
-      "COMMENT ON YOUR OWN TICKET — the issue key must be this workspace's own key, and a " +
-      'call naming any other issue is refused before it reaches Atlassian. The body is ' +
+      "Comment on a Jira issue, using the Butchr daemon's own credential. YOU MAY COMMENT ON " +
+      'YOUR OWN TICKET, AND ON ANY TICKET THE BOARD PLACES UNDER YOU (KAN-633) — one carrying ' +
+      'an issue link to your Story, or one whose Jira parent is you, which is the same ' +
+      'relation merge governance resolves an approver through. A ruling for a task you are ' +
+      'running therefore goes where that task reads it. Anything else is refused before it ' +
+      'reaches Atlassian. THE OWN-TICKET CASE IS DECIDED WITHOUT A BOARD READ; the ' +
+      'cross-ticket case needs one and FAILS CLOSED when it cannot be made, so a refusal ' +
+      'reading "supervision-unreadable" means no answer rather than no. NOTE THE DIRECTION: ' +
+      'this is a supervisor writing DOWN to work it owns. Commenting UP on your approver\'s ' +
+      'ticket — the merge pointer prompts/task.md asks for — is still refused, and KAN-624 ' +
+      'owns it. The body is ' +
       'Markdown and Butchr converts it to ADF itself; it does NOT use the official ' +
       "converter, which silently drops content nested inside list items. If your markdown " +
       'cannot be converted without losing something, the call is refused and nothing is ' +
@@ -2775,7 +2881,10 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       properties: {
         issueKey: {
           type: 'string',
-          description: "The issue key, e.g. \"KAN-293\". Must be this agent's own workspace key."
+          description:
+            'The issue key, e.g. "KAN-293". Your own workspace key, or a ticket the board ' +
+            'places under you — linked to your Story, or carrying you as its Jira parent. ' +
+            'Anything else is refused.'
         },
         bodyMarkdown: { type: 'string', description: 'The comment, as Markdown.' }
       },
@@ -2793,7 +2902,7 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
       };
     },
     writeScope: {
-      kind: 'own-ticket',
+      kind: 'supervised-ticket',
       issue(args) {
         const key = issueKey(args);
         return 'error' in key ? null : key.key;
@@ -3527,11 +3636,19 @@ export interface ProxyOperationReport {
    * Whether this operation is restricted to the caller's own ticket.
    *
    * **It stopped being "true for every write" in KAN-293, and that is the point
-   * of reporting it.** Of the ten writes, **four** are own-ticket, one is
-   * own-project, one needs only one endpoint to be the caller's, and four are
-   * unscoped. A reader who inferred the answer from the method would now be
-   * wrong six times out of ten, which is exactly why it was reported rather
-   * than inferred in the first place.
+   * of reporting it.** Of the ten writes, **two** are own-ticket, two are
+   * supervised-ticket, one is own-project, one needs only one endpoint to be
+   * the caller's, and four are unscoped. A reader who inferred the answer from
+   * the method would now be wrong eight times out of ten, which is exactly why
+   * it was reported rather than inferred in the first place.
+   *
+   * ⚠ **And `ownTicketOnly: false` no longer means "unbounded by the caller",
+   * which it very nearly did before KAN-633.** A `supervised-ticket` write
+   * reports `false` here and is bounded twice over — by the caller's own key
+   * without a read, and by the board's own approver relation with one. **Read
+   * `writeScope.kind` below rather than this boolean**, which is kept because
+   * it is in the operator report and removing it would silently change what a
+   * reader of that report is told.
    *
    * **The four numbers used to read "five … one … one … four", which sums to
    * eleven for a table of ten** — a doc-constant drift of exactly the class
@@ -3824,6 +3941,14 @@ export interface ProxyCaller {
  * under tells it to claim its ticket, move it to In Progress, and move it to
  * In Review, and all three of those are writes to its own key.
  *
+ * **KAN-633 added one exception and it is not decided in this function.** Two
+ * writes — `atlassian_transition_issue` and `atlassian_add_comment` — now carry
+ * `supervised-ticket`, which permits the caller's own ticket *and* a ticket the
+ * board places under the caller. This function decides the own-ticket half and
+ * returns `null` for the rest; {@link refuseWriteOutsideSupervision} is the
+ * other half of the gate, `router.ts` calls both, and the branch below says
+ * what deleting the second call would cost.
+ *
  * ## IT DOES NOT COVER THE WHOLE BRIEF, AND THIS PARAGRAPH IS THE CORRECTION
  *
  * **This docblock claimed until KAN-515 that the brief's writes were own-ticket
@@ -3835,6 +3960,15 @@ export interface ProxyCaller {
  * The same brief contemplates two more: a comment on somebody else's ticket
  * where the poller cannot announce a merge, and a transition of a ticket that
  * is not the caller's.
+ *
+ * **KAN-633 closed one of those three and left the other two, deliberately.**
+ * *"A transition of a ticket that is not the caller's"* is served now wherever
+ * the board places the caller over it. The two comment rows are **upward** —
+ * a task agent writing to its approver's ticket — and this widening is downward
+ * only, because a supervisor commenting on work it owns and a subordinate
+ * commenting on the ticket that owns it are different grants with different
+ * arguments. `KAN-624` owns the upward one and is unblocked by the policy this
+ * slice settles rather than by the code it wrote.
  *
  * **The refusal is correct and is not the defect.** What was wrong was a
  * sentence in this file asserting a coverage that had never been measured, and
@@ -3866,6 +4000,15 @@ export interface ProxyCaller {
  *    the outage it should hold through; fail closed and a slow Jira stops
  *    agents from moving their own tickets. The slice that genuinely needs it
  *    can add it deliberately and pay for that decision then.
+ *
+ *    ⚠ **KAN-633 IS THAT SLICE, so read this entry as history rather than as
+ *    the current answer.** It took the invitation in the last sentence and paid
+ *    both prices explicitly: the read happens (one `GET` for two fields), and
+ *    the dilemma is **fail closed** — with the second horn removed rather than
+ *    accepted, because the own-ticket case is decided *before* any read, so a
+ *    slow Jira cannot stop an agent moving its own ticket. It is not a subtree:
+ *    it is the approver relation, which is narrower and which the fleet already
+ *    merges by. {@link WriteScope}'s `supervised-ticket` member is the argument.
  *  - **Interactive per-write consent.** There is no human at 03:00, which is
  *    when the fleet runs. It would make the proxy unusable, agents would keep
  *    `mcp-remote` for writes, and **both** costs would stay — which is
@@ -3940,8 +4083,10 @@ export function refuseWriteOutsideCaller(
       error:
         `${op.tool} is refused: this is the "${caller.type}" workspace ${caller.key}, whose key ` +
         'is not a Jira issue, so it has no ticket of its own — and this write is permitted ' +
-        `only against the caller's own work. Nothing was sent to Atlassian. Use this agent's ` +
-        "own Atlassian MCP tools if you genuinely need to write to somebody else's issue."
+        `only against the caller's own work. Nothing was sent to Atlassian. ⚠ THIS TEXT NAMED ` +
+        "THIS AGENT'S OWN ATLASSIAN MCP TOOLS AS THE REMEDY UNTIL KAN-633, AND THAT SERVER IS " +
+        'NOT PROVISIONED while this proxy is on (KAN-603). There is no second door from here: ' +
+        'ask an agent whose workspace is that Jira issue to make the write.'
     };
   }
 
@@ -3958,10 +4103,14 @@ export function refuseWriteOutsideCaller(
         reason: 'not-your-ticket',
         error:
           `${op.tool} is refused: ${caller.type}/${caller.key} asked to write to ${target}, and ` +
-          "the Butchr proxy permits a write only to the caller's own ticket. Nothing was sent " +
-          `to Atlassian and ${target} is unchanged. If ${target} genuinely has to change — ` +
-          'approving agents set Done on the tickets they approve, which is exactly this case ' +
-          "— use this agent's own Atlassian MCP tools, which are unaffected by this refusal."
+          "the Butchr proxy permits this write only to the caller's own ticket. Nothing was " +
+          `sent to Atlassian and ${target} is unchanged. ⚠ DO NOT REACH FOR THIS AGENT'S OWN ` +
+          'ATLASSIAN MCP TOOLS: this text named them as the remedy until KAN-633, and KAN-603 ' +
+          'stopped provisioning that server wherever this proxy is on, so on a workspace like ' +
+          'yours there is nothing there to reach for. Transitions and comments are not in this ' +
+          'refusal — since KAN-633 they are permitted against any ticket the board places ' +
+          `under you. If ${target} genuinely has to change by some other operation, say so on ` +
+          'your own ticket and let the agent that owns it make the write.'
       };
     }
     return null;
@@ -3978,12 +4127,35 @@ export function refuseWriteOutsideCaller(
           "and neither end is this agent's own ticket. A link is permitted when at least one " +
           'end is your own — which is what lets you link a follow-up you just filed to your ' +
           'ticket — but linking two issues that are both somebody else\'s is not yours to do. ' +
-          "Nothing was sent to Atlassian. Use this agent's own Atlassian MCP tools if the link " +
-          'genuinely has to exist.'
+          'Nothing was sent to Atlassian. ⚠ THIS TEXT NAMED THIS AGENT\'S OWN ATLASSIAN MCP ' +
+          'TOOLS AS THE REMEDY UNTIL KAN-633, AND THAT SERVER IS NOT PROVISIONED while this ' +
+          'proxy is on (KAN-603). If the link genuinely has to exist, say so on your own ticket ' +
+          'and let an agent that owns one of its ends create it.'
       };
     }
     return null;
   }
+
+  // KAN-633. THIS FUNCTION IS NOT THE WHOLE GATE FOR `supervised-ticket`, AND
+  // THAT IS THE ONE THING TO CARRY AWAY FROM THIS BLOCK.
+  //
+  // The own-ticket half is decided here, synchronously and with no Jira read,
+  // because it is the hot path and because an agent must be able to move its
+  // own ticket through an outage. The cross-ticket half cannot be decided here
+  // at all: it needs the target's `parent` and `issuelinks`, which is a network
+  // read, and this function is synchronous and pure — thirty-odd assertions in
+  // `verify-atlassian-proxy-write-scope.mjs` and KAN-587's red drive both
+  // depend on it staying that way.
+  //
+  // So it returns `null` — *not yet refused* rather than *permitted* — and
+  // `refuseWriteOutsideSupervision` is what answers. **Delete that second call
+  // from `router.ts` and this scope becomes unbounded**, which is exactly the
+  // property KAN-587 established for the first call and answered the same way:
+  // `verify-supervised-write-scope.mjs` §5 asserts the handler makes both calls
+  // before it sends anything, and `daemon/scripts/red-drive-kan633.sh` deletes
+  // the call and watches it go red. A type cannot carry this one, because the
+  // gate that must not be skipped is a statement in another module.
+  if (scope.kind === 'supervised-ticket') return null;
 
   // own-project. The caller's project is the part of its key before the hyphen,
   // which `JIRA_KEY` has already established is well formed.
@@ -3997,9 +4169,255 @@ export function refuseWriteOutsideCaller(
         `${op.tool} is refused: ${caller.type}/${caller.key} asked to create an issue in ` +
         `project ${target}, and its own ticket lives in ${myProject}. The Butchr proxy permits ` +
         "creation only in the caller's own project. Nothing was sent to Atlassian and no " +
-        `issue was created. Use this agent's own Atlassian MCP tools if you genuinely need to ` +
-        `file into ${target}.`
+        `issue was created. ⚠ THIS TEXT NAMED THIS AGENT'S OWN ATLASSIAN MCP TOOLS AS THE ` +
+        'REMEDY UNTIL KAN-633, AND THAT SERVER IS NOT PROVISIONED while this proxy is on ' +
+        `(KAN-603). If something genuinely has to be filed into ${target}, say so on your own ` +
+        'ticket rather than working around it silently.'
     };
   }
   return null;
+}
+
+/**
+ * What the board says about one issue, reduced to the two fields a supervision
+ * decision reads (KAN-633).
+ *
+ * It is an interface rather than a Jira client because the decision and the
+ * fetch are different jobs with different failure modes, and because
+ * {@link refuseWriteOutsideSupervision} must be testable without a credential:
+ * `verify-supervised-write-scope.mjs` hands it boards it wrote itself, so every
+ * branch — including the unreadable one — is exercised in CI. That is also this
+ * seam's honest limit, and the script's header says it: a board this file
+ * constructs proves the decision, never that the real read populates it. The
+ * router's adapter is the leg no unit test covers, and
+ * `probe-supervised-write.mjs` is what drives it against a live daemon.
+ */
+export interface SupervisionBoard {
+  /**
+   * Read one issue's supervision-bearing fields.
+   *
+   * **Every failure is a `false`, never a throw and never an empty success.**
+   * An issue that does not exist, a credential that is refused and a network
+   * that is down all arrive here as `{ ok: false, detail }` — because a
+   * permission decision must be able to tell "the board says no" from "the
+   * board did not answer", and those two must not share a shape.
+   */
+  issue(key: string): Promise<
+    | {
+        ok: true;
+        /** The Jira `parent` key, upper-cased, or `null` where there is none. */
+        parent: string | null;
+        /**
+         * The keys of every issue of type `Story` this one is linked to, upper-cased.
+         *
+         * Only a `Blocks` link with the Story as its **outward** end counts —
+         * "this task blocks that story", the shape both briefs use as their
+         * worked example. Accepting any link type let the brief's own "link
+         * liberally" instruction grant write access by accident; see
+         * {@link supervisionFieldsFrom} for the three measured instances.
+         */
+        linkedStories: string[];
+      }
+    | { ok: false; detail: string }
+  >;
+}
+
+/**
+ * Read the two supervision-bearing fields out of a Jira issue body (KAN-633).
+ *
+ * **This lives here rather than in `router.ts` so that it can be tested at all.**
+ * It is the part of the supervision gate most likely to be quietly wrong — a
+ * link carries its far end as `inwardIssue` or `outwardIssue` depending on which
+ * way round it was created, and reading only one of them would make a story's
+ * authority over its tasks depend on who typed the link — and a parse sitting
+ * inside a private method of the router is reachable only by a live daemon.
+ * `verify-supervised-write-scope.mjs` §3 feeds it both directions.
+ *
+ * **`null` means the body could not be read, and it is not the same as an issue
+ * with no parent and no links.** That distinction is the whole reason this
+ * returns a nullable rather than an empty result: the caller turns `null` into
+ * a fail-closed refusal, and an empty result into *"the board says no"*. A parse
+ * that answered `{parent: null, linkedStories: []}` for a body it did not
+ * understand would send an agent to go and fix a link that is already there.
+ *
+ * ## ⚠ TYPE AND DIRECTION ARE FILTERED, AND THE FIRST VERSION OF THIS DID NOT
+ *
+ * It accepted **any** link to **any** Story on **either** end, reasoning that
+ * both briefs say only *"an issue link to a Story"* and neither names a type —
+ * deriving faithfully from governance rather than inventing a rule. **That was
+ * wrong in effect, and the refutation is measured rather than argued.**
+ *
+ * `prompts/story.md` also tells a story agent to *"link liberally — all four
+ * standard types"*, naming `Relates` for *"loose association: follow-up work,
+ * … sibling tickets sharing context"*. Under the unfiltered read, **that
+ * instruction is an instruction to grant yourself write access.**
+ * `story/KAN-657` produced **three live instances in one evening** doing
+ * exactly the bookkeeping the brief asks for — `Relates` links from KAN-282,
+ * KAN-573 and KAN-634 to its own ticket, none of them its task, one of them
+ * named *out of scope* in its own description. It did not know it had done it.
+ *
+ * **That defeats the justification this whole scope rests on.** The policy
+ * bounds *accident*; an unfiltered link read is a permission an agent grants
+ * itself **by accident, while following its brief**, which is the one thing the
+ * policy is for. So the filter is not caution — it is the difference between
+ * the scope doing its stated job and not.
+ *
+ * ⚠ **What the filter does NOT do, stated so nobody counts it as more:** it
+ * does not stop a *deliberate* self-grant. A story can still create
+ * `<any ticket> — Blocks — <its own ticket>` through `atlassian_create_issue_link`
+ * and be permitted to write to it. **It closes the accidental path, which is
+ * the one that was demonstrated, and leaves the deliberate one open** — see
+ * {@link WriteScope}'s `supervised-ticket` member for why that is judged
+ * acceptable and who disagrees.
+ */
+export function supervisionFieldsFrom(
+  body: any
+): { parent: string | null; linkedStories: string[] } | null {
+  const fields = body?.fields;
+  // `Array.isArray` is not belt-and-braces here: `typeof [] === 'object'`, so
+  // the null guard alone lets an array through and this function then answers
+  // `{parent: null, linkedStories: []}` for a body it did not understand —
+  // which is the one answer it must never give for an unreadable body, because
+  // the caller reads it as "the board says no". Caught by
+  // `verify-supervised-write-scope.mjs` §3 going red, not by review.
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return null;
+  const parent = typeof fields.parent?.key === 'string' ? fields.parent.key.toUpperCase() : null;
+  const linkedStories: string[] = [];
+  for (const link of Array.isArray(fields.issuelinks) ? fields.issuelinks : []) {
+    // ⚠ TYPE AND DIRECTION ARE BOTH LOAD-BEARING. See the docblock: accepting
+    // any link to any Story turned `prompts/story.md`'s "link liberally"
+    // instruction into an instruction to grant yourself write access, and
+    // `story/KAN-657` produced three live instances of it by accident.
+    //
+    // `Blocks` with the Story as the OUTWARD end is "this task blocks that
+    // story" read from the task — the exact shape both briefs use as their
+    // worked example (`KAN-234 blocks KAN-150`). An inward `Blocks` is the
+    // opposite claim, a story blocking a task, and confers nothing.
+    if (link?.type?.name !== 'Blocks') continue;
+    const end = link?.outwardIssue;
+    if (typeof end?.key !== 'string') continue;
+    if (end?.fields?.issuetype?.name !== 'Story') continue;
+    linkedStories.push(end.key.toUpperCase());
+  }
+  return { parent, linkedStories };
+}
+
+/**
+ * Why a **supervised** write was refused on account of the board, or `null`.
+ *
+ * ## THIS IS THE SECOND HALF OF ONE GATE
+ *
+ * {@link refuseWriteOutsideCaller} decides every other scope and decides the
+ * own-ticket half of this one; it cannot decide the rest because deciding it
+ * needs a network read. **Both are called, in that order, by
+ * `handleAtlassianProxyCall`, and neither is sufficient alone.** The comment on
+ * the `supervised-ticket` branch of the first function says what deleting this
+ * call would cost and names the two things that guard against it.
+ *
+ * ## THE DECISION, IN ORDER
+ *
+ *  1. **Not a `supervised-ticket` write** — reads, and every other scope —
+ *     `null`. This function has no opinion; the first one had it already.
+ *  2. **The target is the caller's own ticket** — `null`, **with no read
+ *     made**. This is the hot path and it is also the availability property:
+ *     an agent claiming, progressing or closing its own ticket is not made to
+ *     depend on a second Jira call succeeding.
+ *  3. **The caller has no Jira key** — refused. Fails closed for the same
+ *     reason and in the same words as the first function: a `confluence`
+ *     workspace is keyed by a page id and has no ticket, so no relation to a
+ *     Jira issue can be established for it.
+ *  4. **The board could not be read** — refused, `supervision-unreadable`.
+ *     **This is the fail-closed branch KAN-291 named when it rejected a
+ *     subtree scope**, and it is why step 2 comes before it: the outage stops
+ *     the cross-ticket write and leaves every own-ticket write working.
+ *  5. **The board was read and does not place the caller over the target** —
+ *     refused, `not-your-supervisee`. The refusal prints what the board
+ *     actually said, because the ordinary cause is a task filed with no link
+ *     to the story that is running it, and an agent that is told the parent
+ *     and the links can fix that rather than guess.
+ *  6. **Otherwise** — permitted.
+ *
+ * ## WHAT THIS IS NOT
+ *
+ * Everything {@link refuseWriteOutsideCaller}'s docblock says under *WHAT THIS
+ * IS NOT* is true here without amendment, and one thing more. It is not
+ * authentication: `caller` is a claim stamped from `mcp.ts`'s argv, so an agent
+ * that can reach the socket can claim to be a story. And the relation it reads
+ * is one agents may themselves create — see the concession recorded on
+ * {@link WriteScope}'s `supervised-ticket` member. It bounds accident.
+ */
+export async function refuseWriteOutsideSupervision(
+  op: ProxyOperation,
+  args: Record<string, any>,
+  caller: ProxyCaller | null,
+  board: SupervisionBoard
+): Promise<{
+  error: string;
+  reason: 'caller-has-no-ticket' | 'supervision-unreadable' | 'not-your-supervisee';
+} | null> {
+  if (!op.writeScope || op.writeScope.kind !== 'supervised-ticket') return null;
+
+  const target = op.writeScope.issue(args);
+  // As in the first gate: `build` refuses a malformed key with a better
+  // sentence than anything here could, and the handler has already called it.
+  if (!target) return null;
+
+  // An unidentified caller never reaches here — the first gate refuses it for
+  // every scope, including this one — but this function is exported and
+  // testable on its own, so it does not rely on that ordering to be safe.
+  if (!caller || !caller.type || !caller.key) {
+    return {
+      reason: 'caller-has-no-ticket',
+      error:
+        `${op.tool} is refused because this call did not say which workspace it came from, ` +
+        'and a supervised write is decided by comparing the caller against the board. Nothing ' +
+        'was sent to Atlassian.'
+    };
+  }
+
+  if (!JIRA_KEY.test(caller.key.toUpperCase())) {
+    return {
+      reason: 'caller-has-no-ticket',
+      error:
+        `${op.tool} is refused: this is the "${caller.type}" workspace ${caller.key}, whose key ` +
+        'is not a Jira issue, so the board cannot place it over anything. Nothing was sent to ' +
+        'Atlassian.'
+    };
+  }
+
+  const mine = caller.key.toUpperCase();
+  // Step 2, and its position is the point: no read is made for a write to the
+  // caller's own ticket, so a Jira outage cannot stop one.
+  if (target === mine) return null;
+
+  const seen = await board.issue(target);
+  if (!seen.ok) {
+    return {
+      reason: 'supervision-unreadable',
+      error:
+        `${op.tool} is refused: ${caller.type}/${caller.key} asked to write to ${target}, and ` +
+        `this write is permitted only where the board places you over ${target} — but the board ` +
+        `could not be read to find out. ${seen.detail} Nothing was sent to Atlassian and ` +
+        `${target} is unchanged. THIS IS A REFUSAL FOR WANT OF AN ANSWER RATHER THAN AN ANSWER: ` +
+        'it says nothing about whether the write is permitted, so retry it rather than ' +
+        "concluding the relation is absent. Your own ticket is unaffected — writes to " +
+        `${mine} are decided without this read and keep working.`
+    };
+  }
+
+  if (seen.parent === mine || seen.linkedStories.includes(mine)) return null;
+
+  return {
+    reason: 'not-your-supervisee',
+    error:
+      `${op.tool} is refused: ${caller.type}/${caller.key} asked to write to ${target}, and the ` +
+      `board does not place you over it. This operation writes to a ticket that is not your ` +
+      'own only where you are its approver — where it carries an issue link to your Story, or ' +
+      'where its ' +
+      `Jira parent is you — which is the same relation merge governance resolves through. ` +
+      `${target}'s parent is ${seen.parent ?? 'unset'} and it is linked to ` +
+      `${seen.linkedStories.length ? seen.linkedStories.join(', ') : 'no Story'}. Nothing was ` +
+      `sent to Atlassian and ${target} is unchanged. If ${target} is genuinely yours to run, ` +
+      'the missing link is the defect — link it to your story and the write will be permitted.'
+  };
 }

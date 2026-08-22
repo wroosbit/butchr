@@ -123,8 +123,21 @@ const doc = read(DOC_REL);
 // claim vacuous rather than wrong.
 rule('1. every write in PROXY_OPERATIONS, and what bounds it');
 
-const SCOPE_KINDS = ['own-ticket', 'own-ticket-endpoint', 'own-project', 'unscoped'];
-const CALLER_BOUNDED = ['own-ticket', 'own-ticket-endpoint', 'own-project'];
+// KAN-633 added `supervised-ticket`: the caller's own ticket plus any ticket
+// the board places under it. It IS caller-bounded — bounded twice, in fact,
+// by the caller's key without a read and by the board's approver relation
+// with one — so a refused row may rest on it. The alternation below lists
+// longer tags before their prefixes; `own-ticket` is a prefix of
+// `own-ticket-endpoint` and an alternation that forgot that would record
+// every endpoint scope as an own-ticket one.
+const SCOPE_KINDS = [
+  'own-ticket',
+  'own-ticket-endpoint',
+  'supervised-ticket',
+  'own-project',
+  'unscoped'
+];
+const CALLER_BOUNDED = ['own-ticket', 'own-ticket-endpoint', 'supervised-ticket', 'own-project'];
 const writes = [];
 const toolsSeen = [];
 {
@@ -137,7 +150,7 @@ const toolsSeen = [];
       toolsSeen.push(tool[1]);
       continue;
     }
-    const kind = /^\s*kind: '(own-ticket-endpoint|own-ticket|own-project|unscoped)',/.exec(lines[i]);
+    const kind = /^\s*kind: '(own-ticket-endpoint|own-ticket|supervised-ticket|own-project|unscoped)',/.exec(lines[i]);
     if (kind && open) {
       writes.push({ ...open, scope: kind[1] });
       open = null;

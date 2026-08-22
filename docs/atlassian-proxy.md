@@ -236,29 +236,134 @@ become the fourth stale copy in the chain.
 | what the brief mandates | operation | scope | through the proxy? |
 | --- | --- | --- | --- |
 | claim the ticket — assign it to yourself | `atlassian_edit_issue` | `own-ticket` | **yes** |
-| move it to In Progress, then to In Review | `atlassian_transition_issue` | `own-ticket` | **yes** |
-| post progress, In Review and merged comments on your own ticket | `atlassian_add_comment` | `own-ticket` | **yes** |
+| move it to In Progress, then to In Review | `atlassian_transition_issue` | `supervised-ticket` | **yes** |
+| post progress, In Review and merged comments on your own ticket | `atlassian_add_comment` | `supervised-ticket` | **yes** |
 | file a follow-up ticket, parented to your own epic | `atlassian_create_issue` | `own-project` | **yes** |
 | link that follow-up `Relates` to your own ticket | `atlassian_create_issue_link` | `own-ticket-endpoint` | **yes** |
-| **post the merge pointer comment on your approver's ticket** | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| **comment on somebody else's ticket where the poller cannot announce** | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| **transition a ticket that is not your own** | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| **post the merge pointer comment on your approver's ticket** | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| **comment on somebody else's ticket where the poller cannot announce** | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| **transition a ticket that is not your own** | `atlassian_transition_issue` | `supervised-ticket` | **yes, where the board places you over it — otherwise `not-your-supervisee`** |
+
+**Read this table as the TASK agent's, which is what its title says**, because
+KAN-633 made the last three rows depend on who is asking. A task agent has no
+supervisees — nothing on the board sits under a `Task` — so all three still
+refuse for the reader this table was written for. A story or an epic asking the
+same three questions gets `yes` on the third, and the two comment rows are
+**upward** writes that stay refused for everybody; `KAN-624` owns those.
 
 **Five of the eight shapes are served and three are refused**, and the first
 refused row is the one that decides the question: it sits on the merge path of
 **every** task, so it is not an edge the fleet can route around.
 
 **The refusal text is itself load-bearing, which is the sharp end of this.** It
-reads, in part, *"use this agent's own Atlassian MCP tools, which are unaffected
-by this refusal."* Retiring the official server would turn a loud, actionable
-refusal into a dead end — at the exact moment a task agent has finished its work
-and is trying to hand off.
+read, in part, *"use this agent's own Atlassian MCP tools, which are unaffected
+by this refusal"* — and **KAN-603 then retired that server wherever this proxy
+is on, which is exactly the dead end this paragraph predicted.** KAN-633 rewrote
+all four such refusals: each now says the remedy it used to name is gone and
+what to do instead. The prediction was right and the repair is late, which is
+the argument for writing predictions down.
 
 **A note on the whole-fleet counts, because they are easy to misread off the
-table above.** Of the ten writes in `PROXY_OPERATIONS`, four are `own-ticket`,
-one is `own-ticket-endpoint`, one is `own-project` and four are `unscoped` — the
-Confluence writes, on the `confluence-write` rung only. The eight rows above are
-*brief mandates*, not operations, and two operations serve more than one row.
+table above.** Of the ten writes in `PROXY_OPERATIONS`, two are `own-ticket`,
+two are `supervised-ticket`, one is `own-ticket-endpoint`, one is `own-project`
+and four are `unscoped` — the Confluence writes, on the `confluence-write` rung
+only. The eight rows above are *brief mandates*, not operations, and two
+operations serve more than one row.
+
+#### KAN-633: the supervisor's half, and why the scope moved rather than the brief
+
+`prompts/story.md` gave a story three duties over its tasks — staff them,
+approve their PRs, close them at merge — and only the middle one happens on
+GitHub. The other two were writes to a ticket that is not the caller's, so
+`own-ticket` refused them and the fleet ran the difference by hand.
+
+**The measurement, 2026-08-21.** `story/KAN-648` approved and merged three tasks
+and could close none of them; the tickets sat In Progress or In Review over
+merged work for ~40, ~25 and ~10 minutes on a box running 11 agents. **Since
+KAN-508 that `Done` transition IS the stand-down**, so this is capacity and not
+tidiness: three workforce slots held by finished work, every one of them waiting
+on one epic to type a transition. The same evening produced two more instances —
+a story with rulings and no way to put them where its task agents read, and a
+task agent unable to correct a ticket it had filed.
+
+**Option taken: widen the scope.** Two operations move from `own-ticket` to
+`supervised-ticket`, which permits the caller's own ticket *and* a ticket the
+board places under the caller — an issue link to the caller's Story, or the
+caller as the Jira `parent`. That is not a new relation: it is the one merge
+governance already resolves an approver through, so the set of tickets you may
+write to and the set you are answerable for cannot drift apart.
+
+**Rejected, with reasons:**
+
+- **Narrow the brief instead** — say plainly that a story approves and an epic
+  staffs and closes. It is the cheaper change and it was refused on two grounds.
+  It **inverts the arrangement the human asked for**, which was *"all tasks need
+  a story, so epics aren't bogged down"*: the story would do the review and the
+  epic every write the review implies, which is a bottleneck wearing a division
+  of labour. And it does nothing for the merge-path pointer comment, whose named
+  remedy KAN-603 deleted — narrowing there means deleting the only route by
+  which a merge is announced at all, since the poller cannot announce one.
+- **The caller's whole subtree**, KAN-291's original candidate. Strictly wider
+  than the approver relation and bounded by a hierarchy rather than by the thing
+  the fleet actually governs by. It would have permitted an epic to write to
+  every ticket beneath it including other stories' tasks, which nothing asks
+  for.
+- **Leave it and document the workarounds.** A legitimate outcome, and it loses
+  to the capacity measurement above: the workaround is not a round trip in a
+  document, it is a held worker slot on a box that is already over its cap.
+- **Give supervisors their own credential.** Measured and impossible as things
+  stand: `JiraCredential` is `{siteUrl, email, token}` and there is no per-agent
+  identity to attach a permission to (`story/KAN-648`, recorded on KAN-654). Any
+  fix is about scope on one credential.
+
+**What it concedes, said plainly — and the first version of this paragraph was
+refuted within the hour.** It read: *"nobody creates a `Blocks` link by
+accident."* The branch did not filter link **type**, and `prompts/story.md` tells
+story agents to *"link liberally — all four standard types"*. So the accident
+that sentence denied had already happened three times in one evening:
+`story/KAN-657` linked KAN-282, KAN-573 and KAN-634 to its own ticket with
+`Relates`, exactly as instructed, and silently acquired write access to three
+tickets that were not its work — one of them named *out of scope* in its own
+description. **A policy that bounds accident cannot rest on an accident being
+unimaginable.**
+
+**The fix, and what it does not fix.** `supervisionFieldsFrom` now requires a
+`Blocks` link with the Story as its **outward** end — *"this task blocks that
+story"*, the shape both briefs use as their worked example. That closes the
+accidental path: `Relates`, `Duplicate`, `Cloners` and an inward `Blocks` all
+confer nothing, and the three real instances are checked in as fixtures by key
+so a later widening reddens on the tickets it would actually have captured.
+⚠ **It does not close a *deliberate* self-grant** — a story can still create
+`<any ticket> — Blocks — <its own ticket>` and write to it.
+
+**Why the remainder is judged acceptable, on narrower ground than before.** Not
+that it cannot happen, but that **a strictly easier and quieter path already
+exists**: `refuseWriteOutsideCaller`'s docblock records that anything reaching
+the daemon's socket can claim any identity, so an agent wanting a stranger's
+ticket can claim to *be* it and leave no artifact at all. The link route is the
+loudest path to a door already open, and guarding it pushes a determined agent
+toward the silent one. ⚠ **KAN-421 and `story/KAN-657` both judge that
+insufficient, and they may be right — the human's ruling is what settles it.**
+The `parent` branch concedes nothing: a caller cannot set another issue's parent.
+
+⚠ **A narrowing that was proposed and withdrawn, recorded so nobody re-proposes
+it.** Requiring `target.parent === caller.parent` — the target must sit in the
+caller's own epic — looks like it bounds the deliberate path to a set the caller
+cannot expand. **Measured on this board it is a check that cannot fail:**
+KAN-657, KAN-633, KAN-612, KAN-282, KAN-573 and KAN-634 all carry `parent:
+KAN-39`, including all three accidental instances. Nearly everything here hangs
+off one epic, so "your own epic" is the whole board. It would have read as a
+control while controlling nothing.
+
+**And it pays KAN-291's price out loud.** That ticket rejected a subtree scope
+because it needs a Jira read per write, and asked what happens when the read
+fails: *"fail open and the restriction evaporates in exactly the outage it
+should hold through; fail closed and a slow Jira stops agents from moving their
+own tickets."* This **fails closed**, with the second horn removed rather than
+accepted: the own-ticket case is decided **before any read**, so an agent
+claiming, progressing or closing its own work never depends on the second call.
+The cross-ticket refusal for an unreadable board says so in its own text —
+`supervision-unreadable` means *no answer*, not *no*.
 
 #### The four-brief cross-ticket write inventory
 
@@ -296,33 +401,53 @@ down and can be disagreed with.
 
 | brief | shape | the phrase in the brief | operation | scope | through the proxy? |
 | --- | --- | --- | --- | --- | --- |
-| `prompts/task.md` | `comment` | `comment on your approver's own ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on your approver's ticket` | `atlassian_add_comment` | `own-ticket` | **n/a — restates the row above** |
-| `prompts/task.md` | `transition` | `transition a ticket that is not **{{KEY}}**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on their ticket — not their pane` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on _their_ ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on its own ticket` | `atlassian_add_comment` | `own-ticket` | **n/a — describes the poller's `own` relation** |
-| `prompts/task.md` | `comment` | `put the substance in a comment on their ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/task.md` | `comment` | `comment on your approver's own ticket` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on your approver's ticket` | `atlassian_add_comment` | `supervised-ticket` | **n/a — restates the row above** |
+| `prompts/task.md` | `transition` | `transition a ticket that is not **{{KEY}}**` | `atlassian_transition_issue` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on their ticket — not their pane` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on _their_ ticket` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on its own ticket` | `atlassian_add_comment` | `supervised-ticket` | **n/a — describes the poller's `own` relation** |
+| `prompts/task.md` | `comment` | `put the substance in a comment on their ticket` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
 | `prompts/story.md` | `link` | `link the two before` | `atlassian_create_issue_link` | `own-ticket-endpoint` | **no — `not-your-ticket`** |
 | `prompts/story.md` | `link` | `link them` | `atlassian_create_issue_link` | `own-ticket-endpoint` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `transition` | `set the task **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `transition` | `transition its issue back` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `comment` | `comment on it naming what took its slot` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `transition` | `transition the task to **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `transition` | `set the task **Done**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/story.md` | `transition` | `transition its issue back` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/story.md` | `comment` | `comment on it naming what took its slot` | `atlassian_add_comment` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/story.md` | `transition` | `transition the task to **Done**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
 | `prompts/story.md` | `edit` | ``apply the `wont-do` label`` | `atlassian_edit_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `transition` | `the story reconciled — set the story` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `transition` | `Transition its issue from In Progress back to **To Do**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `comment` | `Comment on it naming what took its slot` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `transition` | `Transition the ticket to **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/epic.md` | `transition` | `the story reconciled — set the story` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/epic.md` | `transition` | `Transition its issue from In Progress back to **To Do**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/epic.md` | `comment` | `Comment on it naming what took its slot` | `atlassian_add_comment` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/epic.md` | `transition` | `Transition the ticket to **Done**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
 | `prompts/epic.md` | `edit` | ``apply the `wont-do` label`` | `atlassian_edit_issue` | `own-ticket` | **no — `not-your-ticket`** |
 | `prompts/confluence.md` | `link` | `Link the two so the page and the issue can find each other` | `—` | `—` | **n/a — no write in the table carries a page↔issue link** |
 | `prompts/confluence.md` | `comment` | `in a comment on it, not in your terminal` | `atlassian_create_confluence_footer_comment` | `unscoped` | **yes** |
 | `prompts/confluence.md` | `comment` | `into a comment on it, or into a` | `—` | `—` | **n/a — a prohibition, not a mandate** |
 
-**Sixteen refused, one served, five neither.** The refused rows are the finding,
-and they are spread across three briefs rather than concentrated in one: every
-agent type on this board is instructed, in its own brief, to perform at least
-one write the proxy will refuse. `prompts/confluence.md` is the exception, and
+**Nine refused, nine served, four neither — and that tally moved with KAN-633,
+which is what this table was built to catch.** It read *"sixteen refused, one
+served, five neither"* when KAN-658 wrote it, against a proxy where
+`atlassian_transition_issue` and `atlassian_add_comment` were `own-ticket`.
+Eight rows crossed from refused to served when those two became
+`supervised-ticket`: every supervisor mandate to close, re-open or comment on
+work it owns. **The refused nine are what remains**, and they are a sharper
+finding than the sixteen were, because they are no longer a mixture of "the
+mechanism is too narrow" and "this agent has no business here":
+
+- **Five are `prompts/task.md` writing UP** — the merge pointer on an approver's
+  ticket and its restatements. A task has no supervisees, so `supervised-ticket`
+  refuses it `not-your-supervisee`. **`KAN-624` owns that direction.**
+- **Two are `atlassian_edit_issue`** — *"apply the `wont-do` label"* in
+  `story.md` and `epic.md`. That operation is still `own-ticket` and KAN-633
+  deliberately did not widen it: closing a ticket and relabelling somebody
+  else's are different grants.
+- **Two are `atlassian_create_issue_link`** in `story.md`, where a story links
+  two tickets that are both somebody else's — the case `own-ticket-endpoint`
+  refuses on purpose, and the one `story/KAN-657` met on its first job.
+
+The refused rows are still spread across three briefs rather than concentrated
+in one: every agent type on this board is instructed, in its own brief, to
+perform at least one write the proxy will refuse. `prompts/confluence.md` is the exception, and
 its exception is not reassurance — a `confluence` workspace is keyed by a page
 id rather than a Jira issue, so what "the caller's own ticket" means for that
 agent is a question this table does not answer and does not pretend to.
@@ -342,6 +467,16 @@ today so that whatever KAN-633 decides has something that holds it. **When
 KAN-633 lands, this table goes red until it is updated, and that is the
 mechanism working** — the row whose scope moved is the row that names what the
 ruling changed.
+
+⚠ **That prediction was tested within hours and it held exactly as written.**
+KAN-633's branch merged this section and the inventory went red on **18
+checks** — both widened operations reported as *"not a write"*, because this
+script's scope alternation did not know `supervised-ticket`. Nothing here was
+wrong; the parse was one scope kind behind the table it measures. The eight
+verdict cells above were then moved by hand, and **the red is the only reason
+anybody knew which eight.** ⚠ **KAN-633 is still awaiting the human's ruling as
+this is written** — these rows describe the tree on that branch, and if the
+ruling goes against the widening they move back.
 
 ### 5. Blast radius, written down
 
@@ -390,8 +525,13 @@ reads everything — and a restriction that has to be widened on its first day i
 worse than none, because it looks like a control. **It should be reconsidered
 for the write half, where the argument runs the other way**: an agent writing
 outside its own subtree is nearly always a mistake, and the cost of being wrong
-is much higher. Rate limiting is absent because there is no measured problem;
-the search bound is what stops one typo becoming a bulk read.
+is much higher. **KAN-633 did that reconsideration and answered it narrowly**:
+not a subtree, but the approver relation — see *KAN-633: the supervisor's half*
+in §4 — which is the smaller of the two and is the one the fleet already merges
+by. The row above is unchanged because it is about the **read** half, which is
+still unrestricted and should stay so. Rate limiting is absent because there is
+no measured problem; the search bound is what stops one typo becoming a bulk
+read.
 
 ---
 

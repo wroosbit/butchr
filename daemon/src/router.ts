@@ -73,7 +73,10 @@ import {
   proxyReport,
   refuseProxyCall,
   refuseWriteOutsideCaller,
+  refuseWriteOutsideSupervision,
   selectedProxyMode,
+  SupervisionBoard,
+  supervisionFieldsFrom,
   takeBuildCoercions
 } from './atlassian-proxy.js';
 // KAN-298. The same shape doing the same job for a second integration — and a
@@ -4600,6 +4603,61 @@ export class MessageRouter {
     };
   }
 
+  /**
+   * The board, as {@link refuseWriteOutsideSupervision} needs to see it (KAN-633).
+   *
+   * One `GET` for two fields, made with the daemon's own credential — the same
+   * credential the write itself would use, deliberately, because a permission
+   * decided by a credential that cannot make the write would be deciding a
+   * different question.
+   *
+   * **Every failure arrives as `{ ok: false }` and never as a throw or an empty
+   * success**, which is the property the gate's fail-closed branch rests on: a
+   * board that answers `{ ok: true, parent: null, linkedStories: [] }` because
+   * the read fell over would read as *"the relation is genuinely absent"*, and
+   * the agent would be told to go and fix a link that is already there. The
+   * shapes are kept apart here rather than in the caller.
+   *
+   * The parse is deliberately forgiving about *shape* and strict about
+   * *outcome*: an `issuelinks` entry may carry its issue inward or outward and
+   * a `parent` may be absent, so those are read defensively, but anything this
+   * function cannot read at all becomes a refusal rather than an empty list.
+   *
+   * **It does not go through `refuseProxyCall`, and that is not an oversight.**
+   * The mode gate answers *"may this agent ask for this operation"*, and nobody
+   * asked for this read — it is the daemon deciding its own policy question,
+   * with a credential that has held `read:jira-work` since KAN-31 and polls the
+   * board with it every sixty seconds. Routing it through the agent-facing gate
+   * would make the answer depend on which rung the operator had chosen, which
+   * is a different question from the one being asked.
+   */
+  private supervisionBoard(): SupervisionBoard {
+    return {
+      issue: async (key: string) => {
+        if (!this.jira) {
+          return { ok: false as const, detail: 'This daemon has no Jira support.' };
+        }
+        const path =
+          `/rest/api/3/issue/${encodeURIComponent(key)}` + '?fields=parent,issuelinks';
+        const outcome = await this.jira.proxyRead(path, 'jira');
+        if (!outcome.ok) {
+          return { ok: false as const, detail: outcome.error };
+        }
+        const fields = supervisionFieldsFrom(outcome.body);
+        if (!fields) {
+          return {
+            ok: false as const,
+            detail:
+              `Jira answered ${outcome.status} for ${key} with no \`fields\` object, so its ` +
+              'parent and links could not be read. This is not the same as that issue having ' +
+              'neither.'
+          };
+        }
+        return { ok: true as const, ...fields };
+      }
+    };
+  }
+
   private async handleAtlassianProxyCall(data: any, respond: Respond) {
     const tool = typeof data?.tool === 'string' ? data.tool : '';
     const args = data?.args && typeof data.args === 'object' ? data.args : {};
@@ -4661,6 +4719,30 @@ export class MessageRouter {
     const writeRefusal = refuseWriteOutsideCaller(operation, args, callerIdentity);
     if (writeRefusal) {
       fail(writeRefusal.error, { reason: writeRefusal.reason, mode: decision.mode });
+      return;
+    }
+
+    // KAN-633: the second half of the same gate, and the ONLY thing that bounds
+    // a `supervised-ticket` write. The call above cannot decide that scope —
+    // deciding it needs the target's `parent` and `issuelinks`, which is a
+    // network read, and that function is synchronous by design. So it returns
+    // `null` for the cross-ticket case and this line is what answers.
+    //
+    // **Delete this and `atlassian_transition_issue` and `atlassian_add_comment`
+    // become writable against any issue in the site.** That is the same
+    // exposure KAN-587 established for the call above, and it is guarded the
+    // same way rather than a new way: `verify-supervised-write-scope.mjs` §5
+    // asserts both calls are in this method and that both precede the request
+    // loop, and `daemon/scripts/red-drive-kan633.sh` deletes this block and
+    // watches that assertion go red.
+    const supervisionRefusal = await refuseWriteOutsideSupervision(
+      operation,
+      args,
+      callerIdentity,
+      this.supervisionBoard()
+    );
+    if (supervisionRefusal) {
+      fail(supervisionRefusal.error, { reason: supervisionRefusal.reason, mode: decision.mode });
       return;
     }
 

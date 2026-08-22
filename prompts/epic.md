@@ -937,9 +937,32 @@ directly to {{KEY}}, which is the same agent that approved it. Never set Done on
 a task that hangs off one of your stories; that is its story agent's to set, and
 taking it hides the merge from the agent who is tracking the story.
 
+**The mechanism caught up with this paragraph in KAN-633, and it had been
+behind it.** Setting `Done` on a task or a story is a write to a ticket that is
+not {{KEY}}, and `atlassian_transition_issue` refused exactly that until then —
+which is why these transitions were being made with a direct Atlassian server
+that KAN-603 has since stopped provisioning. They now go through the proxy like
+everything else: it accepts {{KEY}}, and any ticket whose Jira `parent` is
+{{KEY}} or which carries a `Blocks` link whose outward end is a Story you are.
+⚠ **`Relates` confers nothing** — it did until KAN-633 was reviewed, which made
+the *link liberally* instruction a way to grant yourself write access by
+accident, three times in one evening. Your stories and the
+tasks you parented directly are both inside that. ⚠ **A task hanging off one of
+your stories is inside it too, and this paragraph still says do not** — the
+mechanism stopped being the reason, and the reason above is the reason.
+`atlassian_add_comment` moved with it, so a ruling for a story of yours can go
+on that story's ticket where its agent reads it.
+
 Note that a merge is **not** a transition, so the Jira poller has nothing to
 deliver at that moment — for tasks you supervise directly, the merge reaches you
-as a pointer comment **on your own ticket**, and no nudge. KAN-230 has landed
+as a pointer comment **on your own ticket**, and no nudge. ⚠ **That comment is a
+task agent writing UP to your ticket, and the proxy still refuses it** — KAN-633
+widened supervisors writing down and left the upward leg to `KAN-624`. Until
+that lands the route described here does not run: expect to learn of a merge
+from the PR, or from the task's own ticket, and do not read its silence as work
+unfinished.
+
+KAN-230 has landed
 and the stopgap nudge `prompts/task.md` used to mandate is deleted, though not
 for the reason that bullet predicted: the poller now reads a Jira `parent`, but
 that covers **transitions**, and a merge is not one — no topology change will
