@@ -314,7 +314,7 @@ const ROOMY = {
   load1: 1,
   totalBytes: 128 * GIB,
   availableBytes: 120 * GIB,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 const opts = (configuredCap) => ({ configuredCap, supervisorsRunning: 0 });
 
@@ -502,7 +502,7 @@ const shortfallMachine = {
   load1: 0.5,
   totalBytes: 16 * GIB,
   availableBytes: 5.2 * GIB,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 const gapped = computeCapacity(shortfallMachine, 2, { configuredCap: 10, supervisorsRunning: 4 });
 const gappedCeiling = effectiveCeilingOf(gapped);

@@ -458,7 +458,7 @@ const LAPTOP = {
   load1: 6.0,
   busyCores: 1.2,
   busyWindowSeconds: 60,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 
 // A measurement far cheaper than the seed on both dimensions — the idle-sampled

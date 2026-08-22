@@ -199,7 +199,7 @@ const LAPTOP = {
   load1: 2.0,
   busyCores: 1.6,
   busyWindowSeconds: 5,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 
 /** Everything sections 1–4 assert, so section 6 can re-run it under a predicate. */
