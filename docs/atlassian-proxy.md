@@ -401,33 +401,53 @@ down and can be disagreed with.
 
 | brief | shape | the phrase in the brief | operation | scope | through the proxy? |
 | --- | --- | --- | --- | --- | --- |
-| `prompts/task.md` | `comment` | `comment on your approver's own ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on your approver's ticket` | `atlassian_add_comment` | `own-ticket` | **n/a — restates the row above** |
-| `prompts/task.md` | `transition` | `transition a ticket that is not **{{KEY}}**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on their ticket — not their pane` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on _their_ ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/task.md` | `comment` | `comment on its own ticket` | `atlassian_add_comment` | `own-ticket` | **n/a — describes the poller's `own` relation** |
-| `prompts/task.md` | `comment` | `put the substance in a comment on their ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/task.md` | `comment` | `comment on your approver's own ticket` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on your approver's ticket` | `atlassian_add_comment` | `supervised-ticket` | **n/a — restates the row above** |
+| `prompts/task.md` | `transition` | `transition a ticket that is not **{{KEY}}**` | `atlassian_transition_issue` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on their ticket — not their pane` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on _their_ ticket` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| `prompts/task.md` | `comment` | `comment on its own ticket` | `atlassian_add_comment` | `supervised-ticket` | **n/a — describes the poller's `own` relation** |
+| `prompts/task.md` | `comment` | `put the substance in a comment on their ticket` | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
 | `prompts/story.md` | `link` | `link the two before` | `atlassian_create_issue_link` | `own-ticket-endpoint` | **no — `not-your-ticket`** |
 | `prompts/story.md` | `link` | `link them` | `atlassian_create_issue_link` | `own-ticket-endpoint` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `transition` | `set the task **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `transition` | `transition its issue back` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `comment` | `comment on it naming what took its slot` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/story.md` | `transition` | `transition the task to **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `transition` | `set the task **Done**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/story.md` | `transition` | `transition its issue back` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/story.md` | `comment` | `comment on it naming what took its slot` | `atlassian_add_comment` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/story.md` | `transition` | `transition the task to **Done**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
 | `prompts/story.md` | `edit` | ``apply the `wont-do` label`` | `atlassian_edit_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `transition` | `the story reconciled — set the story` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `transition` | `Transition its issue from In Progress back to **To Do**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `comment` | `Comment on it naming what took its slot` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| `prompts/epic.md` | `transition` | `Transition the ticket to **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/epic.md` | `transition` | `the story reconciled — set the story` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/epic.md` | `transition` | `Transition its issue from In Progress back to **To Do**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/epic.md` | `comment` | `Comment on it naming what took its slot` | `atlassian_add_comment` | `supervised-ticket` | **yes — where the board places the target under the caller** |
+| `prompts/epic.md` | `transition` | `Transition the ticket to **Done**` | `atlassian_transition_issue` | `supervised-ticket` | **yes — where the board places the target under the caller** |
 | `prompts/epic.md` | `edit` | ``apply the `wont-do` label`` | `atlassian_edit_issue` | `own-ticket` | **no — `not-your-ticket`** |
 | `prompts/confluence.md` | `link` | `Link the two so the page and the issue can find each other` | `—` | `—` | **n/a — no write in the table carries a page↔issue link** |
 | `prompts/confluence.md` | `comment` | `in a comment on it, not in your terminal` | `atlassian_create_confluence_footer_comment` | `unscoped` | **yes** |
 | `prompts/confluence.md` | `comment` | `into a comment on it, or into a` | `—` | `—` | **n/a — a prohibition, not a mandate** |
 
-**Sixteen refused, one served, five neither.** The refused rows are the finding,
-and they are spread across three briefs rather than concentrated in one: every
-agent type on this board is instructed, in its own brief, to perform at least
-one write the proxy will refuse. `prompts/confluence.md` is the exception, and
+**Nine refused, nine served, four neither — and that tally moved with KAN-633,
+which is what this table was built to catch.** It read *"sixteen refused, one
+served, five neither"* when KAN-658 wrote it, against a proxy where
+`atlassian_transition_issue` and `atlassian_add_comment` were `own-ticket`.
+Eight rows crossed from refused to served when those two became
+`supervised-ticket`: every supervisor mandate to close, re-open or comment on
+work it owns. **The refused nine are what remains**, and they are a sharper
+finding than the sixteen were, because they are no longer a mixture of "the
+mechanism is too narrow" and "this agent has no business here":
+
+- **Five are `prompts/task.md` writing UP** — the merge pointer on an approver's
+  ticket and its restatements. A task has no supervisees, so `supervised-ticket`
+  refuses it `not-your-supervisee`. **`KAN-624` owns that direction.**
+- **Two are `atlassian_edit_issue`** — *"apply the `wont-do` label"* in
+  `story.md` and `epic.md`. That operation is still `own-ticket` and KAN-633
+  deliberately did not widen it: closing a ticket and relabelling somebody
+  else's are different grants.
+- **Two are `atlassian_create_issue_link`** in `story.md`, where a story links
+  two tickets that are both somebody else's — the case `own-ticket-endpoint`
+  refuses on purpose, and the one `story/KAN-657` met on its first job.
+
+The refused rows are still spread across three briefs rather than concentrated
+in one: every agent type on this board is instructed, in its own brief, to
+perform at least one write the proxy will refuse. `prompts/confluence.md` is the exception, and
 its exception is not reassurance — a `confluence` workspace is keyed by a page
 id rather than a Jira issue, so what "the caller's own ticket" means for that
 agent is a question this table does not answer and does not pretend to.
@@ -447,6 +467,16 @@ today so that whatever KAN-633 decides has something that holds it. **When
 KAN-633 lands, this table goes red until it is updated, and that is the
 mechanism working** — the row whose scope moved is the row that names what the
 ruling changed.
+
+⚠ **That prediction was tested within hours and it held exactly as written.**
+KAN-633's branch merged this section and the inventory went red on **18
+checks** — both widened operations reported as *"not a write"*, because this
+script's scope alternation did not know `supervised-ticket`. Nothing here was
+wrong; the parse was one scope kind behind the table it measures. The eight
+verdict cells above were then moved by hand, and **the red is the only reason
+anybody knew which eight.** ⚠ **KAN-633 is still awaiting the human's ruling as
+this is written** — these rows describe the tree on that branch, and if the
+ruling goes against the widening they move back.
 
 ### 5. Blast radius, written down
 
