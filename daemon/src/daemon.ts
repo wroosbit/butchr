@@ -107,6 +107,7 @@ import { BoardMode, BoardReconciler } from './board-reconcile.js';
 import { AddressableAgent, BoardControlReport, boardControlReport } from './board-control.js';
 import { CommentAuthorship } from './comment-authorship.js';
 import { startMeasurement, finishMeasurement, MeasurementStart } from './agent-cost.js';
+import { sweepMcpOrphans, describeSweep } from './mcp-orphan.js';
 import {
   dampCost,
   sampleFromMeasurement,
@@ -2294,6 +2295,35 @@ const COST_SAMPLE_INTERVAL_MS = 60_000;
  */
 const CPU_SAMPLE_INTERVAL_MS = 5_000;
 
+/**
+ * How often the daemon looks for MCP stdio servers whose client has gone
+ * (KAN-273).
+ *
+ * Thirty seconds, matching the missing-agent sweep rather than the cost
+ * sampler: this is a cleanup that should follow an agent's death closely, and
+ * one sweep is a `/proc` walk of the same order as the two the sampler already
+ * does every minute. The grace in mcp-orphan.ts is the same figure, so a
+ * server that becomes unreachable is reaped on the second sweep after it does.
+ */
+const MCP_ORPHAN_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * One sweep, with its failure contained.
+ *
+ * A `/proc` walk on a busy machine meets processes that exit between readdir
+ * and read as an ordinary event, and this is a cleanup rather than a duty the
+ * fleet depends on — so a sweep that throws is logged and the timer is left
+ * running, exactly as a failed cost sample is.
+ */
+function sweepMcpOrphanProcesses(): void {
+  try {
+    const line = describeSweep(sweepMcpOrphans());
+    if (line) log(line);
+  } catch (err) {
+    log('[mcp-orphan] Sweep failed:', err);
+  }
+}
+
 /** The open "before" side of the current window; null until the first tick
  * and after any sampling failure. */
 let costWindow: MeasurementStart | null = null;
@@ -2652,6 +2682,13 @@ function onListen() {
   sampleCpuBusy();
   const cpuSampler = setInterval(sampleCpuBusy, CPU_SAMPLE_INTERVAL_MS);
   cpuSampler.unref();
+
+  // KAN-273. Runs one sweep now rather than an interval from now: the common
+  // case for this daemon starting is that it has just restarted, and a restart
+  // is one of the two events that strands these processes in the first place.
+  sweepMcpOrphanProcesses();
+  const mcpOrphanSweep = setInterval(sweepMcpOrphanProcesses, MCP_ORPHAN_SWEEP_INTERVAL_MS);
+  mcpOrphanSweep.unref();
 
   // Unlike the two above, this one schedules its own next tick rather than
   // running on a fixed interval — it has to be able to slow down when Jira
