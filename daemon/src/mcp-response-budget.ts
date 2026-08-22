@@ -343,6 +343,11 @@ export const NEVER_CLIPPED_FIELDS: Readonly<Record<string, ExemptionReason>> = {
     maxChars: 32,
     why: 'a count. `agents.length < agentsTotal` is the whole short-list check, and it holds whoever did the clipping.'
   },
+  scope: {
+    kind: 'bounded',
+    maxChars: 768,
+    why: 'the population every count on this answer covers (KAN-630) — host, runtime, workspaces root and the sentence that completes them. Measured 471 chars on this machine. IT MUST OUTLIVE A CLIP FOR THE SAME REASON `agentsTotal` MUST: a reduced answer that keeps the counts and drops what they are counts OF is exactly the fleet-shaped box answer this field exists to make unavailable, and it would be produced by the fitter rather than by the daemon.'
+  },
   standbyTotal: {
     kind: 'bounded',
     maxChars: 32,
