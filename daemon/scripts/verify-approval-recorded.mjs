@@ -138,6 +138,7 @@ import {
   EXIT_ON,
   QUOTED,
   REFUSAL,
+  GATE_CONTRADICTION_BRIEF,
   STATUS_DESCRIPTION_LIMIT
 } from './lib/approval-marker.mjs';
 
@@ -982,6 +983,7 @@ section(16, 'KAN-627: the status says WHICH refusal, and spends the 140 characte
   ];
 
   const said = new Map();
+  const briefByCode = new Map([[REFUSAL.GATE_CONTRADICTION, GATE_CONTRADICTION_BRIEF]]);
   for (const [code, where, input] of cases) {
     const v = evaluate({ headSha: HEAD, headRef: REF, prBody: input.prBody, comments: input.comments });
     const d = statusDescription(v);
@@ -1002,9 +1004,19 @@ section(16, 'KAN-627: the status says WHICH refusal, and spends the 140 characte
         !d.includes('no approval marker naming this head'), d);
     }
     said.set(code, d);
+    briefByCode.set(code, v.refusals.find((r) => r.code === code)?.brief);
   }
 
-  ok('all eight refusals are said differently — no two share a description',
+  // THE WEAKER OF THE TWO DISTINCTNESS CHECKS, AND IT IS KEPT AS THE WEAKER ONE.
+  // It compares the composed DESCRIPTIONS of the eight fixtures, which is what a
+  // reader actually sees — but it is defeatable, and `story/KAN-609` defeated it
+  // in review: give `self-approval` and `approver-not-an-agent` a byte-identical
+  // sentence and this stays GREEN, because the `approver-not-an-agent` fixture
+  // also raises `wrong-signer` and that unrelated second clause makes the two
+  // descriptions differ while the sentences that matter are the same. Reproduced
+  // here before it was fixed, so this comment is a measurement and not a
+  // paraphrase of somebody's review. The assertion below is the one that holds.
+  ok('all eight fixtures are said differently — no two share a description',
     new Set(said.values()).size === said.size,
     JSON.stringify([...said.entries()]));
   ok('and six of the eight are refusals the old constant described falsely',
@@ -1012,6 +1024,7 @@ section(16, 'KAN-627: the status says WHICH refusal, and spends the 140 characte
 
   // --- the two gate defects, which are refusals too ---------------------------
   const badHead = evaluate({ headSha: 'not-a-sha', headRef: REF, prBody: BODY, comments: [] });
+  briefByCode.set(REFUSAL.HEAD_UNREADABLE, badHead.refusals.find((r) => r.code === REFUSAL.HEAD_UNREADABLE)?.brief);
   ok('an unreadable head is refused with its own code',
     !badHead.ok && badHead.refusals.some((r) => r.code === REFUSAL.HEAD_UNREADABLE),
     JSON.stringify(badHead.refusals));
@@ -1019,6 +1032,48 @@ section(16, 'KAN-627: the status says WHICH refusal, and spends the 140 characte
     badHead.reasons.length === badHead.refusals.length && badHead.reasons.length === 1);
   ok('...and its status names the gate rather than the pull request',
     statusDescription(badHead).includes('gate defect'), statusDescription(badHead));
+
+  // --- ONE REFUSAL, ONE SENTENCE — pairwise, over the whole closed set ---------
+  //
+  // ASKED FOR IN REVIEW BY `story/KAN-609`, AND IT IS THIS TICKET'S OWN DEFECT
+  // COMING BACK THROUGH A DIFFERENT DOOR. `addRefusal` makes a reason with NO
+  // short form impossible to introduce. A reason with a **duplicate** short form
+  // returns the defect just as completely: the reader gets a well-formed,
+  // in-budget, plausible sentence that does not tell them which of two refusals
+  // fired — which is the whole complaint against the constant this ticket
+  // removed, at a smaller scale.
+  //
+  // IT COMPARES THE BRIEFS AND NOT THE DESCRIPTIONS, which is the difference
+  // between this and the check above. A description carries whichever OTHER
+  // refusals happened to fire in the same fixture, so an unrelated clause can
+  // make two descriptions differ while the sentence that identifies the refusal
+  // is shared. The brief is the unit that names the refusal, so it is the unit
+  // distinctness has to hold over.
+  //
+  // AND THE COVERAGE ASSERTION IS NOT CEREMONY. Distinctness over nine of ten
+  // codes is an answer about a subset that reads exactly like an answer about
+  // the whole. A refusal added to `REFUSAL` with no fixture here would be
+  // untested AND silently excluded from the comparison, so the first assertion
+  // is what stops the second from narrowing without anybody noticing.
+  const uncovered = Object.values(REFUSAL).filter((c) => {
+    const b = briefByCode.get(c);
+    return typeof b !== 'string' || b.trim().length === 0;
+  });
+  ok('every refusal in the closed set has a brief this proof actually observed',
+    uncovered.length === 0,
+    `no brief seen for: ${uncovered.join(', ')} — add a fixture, do not narrow the comparison`);
+
+  const collisions = [];
+  const codes = [...briefByCode.keys()];
+  for (let i = 0; i < codes.length; i++) {
+    for (let j = i + 1; j < codes.length; j++) {
+      if (briefByCode.get(codes[i]) === briefByCode.get(codes[j])) {
+        collisions.push(`${codes[i]} and ${codes[j]} both say "${briefByCode.get(codes[i])}"`);
+      }
+    }
+  }
+  ok(`one refusal, one sentence — all ${codes.length} briefs are pairwise distinct`,
+    collisions.length === 0, collisions.join(' | '));
 
   // --- the approved case had spare room as well -------------------------------
   const good = evaluate({ headSha: HEAD, headRef: REF, prBody: BODY, comments: [approval(HEAD, 'epic/KAN-39')] });

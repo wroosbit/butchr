@@ -550,6 +550,24 @@ export const REFUSAL = Object.freeze({
 
 const REFUSAL_CODES = new Set(Object.values(REFUSAL));
 
+/**
+ * The one refusal this library names but never raises — `check-approval-recorded.mjs`
+ * raises it, because only the entry point can see a passing verdict with no
+ * accepted marker attached.
+ *
+ * IT IS A CONSTANT HERE RATHER THAN A LITERAL THERE so that the whole refusal
+ * vocabulary is enumerable from one module. That is what lets the proof assert
+ * **one refusal, one sentence** across every code in `REFUSAL` — a brief that
+ * lived only at its call site could not be compared against the other nine, and
+ * a sentence nobody can compare is a sentence that can silently duplicate
+ * another. `story/KAN-609` found exactly that gap in review: two refusals were
+ * given byte-identical briefs and all 239 assertions stayed green, because the
+ * distinctness check ran over the composed DESCRIPTIONS and one of the two
+ * fixtures also raised an unrelated second refusal, whose extra clause made the
+ * two descriptions differ while the sentences that mattered were the same.
+ */
+export const GATE_CONTRADICTION_BRIEF = 'gate defect: a passing verdict carried no accepted marker';
+
 /** GitHub's own ceiling on a commit status `description`. */
 export const STATUS_DESCRIPTION_LIMIT = 140;
 

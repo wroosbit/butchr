@@ -91,6 +91,7 @@ import {
   statusDescription,
   EXIT_ON,
   REFUSAL,
+  GATE_CONTRADICTION_BRIEF,
   STATUS_DESCRIPTION_LIMIT
 } from './lib/approval-marker.mjs';
 
@@ -313,7 +314,7 @@ if (verdict.ok && !verdict.accepted) {
   // 140 characters most readers actually see.
   addRefusal(verdict, {
     code: REFUSAL.GATE_CONTRADICTION,
-    brief: 'gate defect: a passing verdict carried no accepted marker',
+    brief: GATE_CONTRADICTION_BRIEF,
     reason:
       'the gate returned a passing verdict with no accepted marker attached. That is a ' +
       'contradiction inside `lib/approval-marker.mjs`, not a fact about this pull request. ' +
