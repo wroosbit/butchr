@@ -89,12 +89,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 141 |
-| `partial` | 24 |
+| `partial` | 25 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **191** |
+| **total** | **192** |
 
-**165 of 191** run on every pull request.
+**166 of 192** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -258,6 +258,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-create-issue-staffable` | partial | sections 2-6 assert against the built modules in process, so CI runs them: no daemon, no credential, no network. Section 1, the pre-fix build that makes the rest mean something, needs a `dist` built from the merge base and is SKIPPED (loudly) without one, which is what CI reaches. A run that skips it says so in its verdict rather than reporting a clean sweep. |
 | `verify-daemon-decisions-reach-journal` | partial | §3 is pure and needs nothing at all. §1 imports the built gate; §2 and §4 additionally spawn real node processes against a temp `HOME`; all three SKIP without a build. §5 needs a reachable `systemctl --user` and a `journalctl` and SKIPS on a runner, which makes this script exit 2 there rather than 0 (KAN-373's contract). `run-ci-verify-set.mjs` builds first, so §1, §2 and §4 execute there. |
 | `verify-daemon-provenance-is-loud` | partial | §1-§4 are pure and need nothing. §6 and §7 need `daemon/dist` and spawn real node processes with a stubbed `systemctl`; they SKIP without a build. §5 needs a reachable `systemctl --user` and SKIPS on a runner, which makes this script exit 2 there rather than 0 (KAN-373's contract). `run-ci-verify-set.mjs` builds first, so §6 and §7 execute there. |
+| `verify-deploy-ledger-is-unbypassable` | partial | §1-§3 are pure and need nothing but `dist` to import from. §4 spawns real node daemons and SKIPS without a build, which makes this script exit 2 there rather than 0 (KAN-373's contract). `run-ci-verify-set.mjs` builds first, so §4 executes there. |
 | `verify-jira-nudge-coalescing` | partial | the coalescing assertions run in CI. The CONTROL leg needs an `--unfixed` build to show the defect it prevents, and AC3d needs `--live`; both are skipped without them and both are named in the run output. |
 | `verify-mcp-runtime-validation` | partial | sections 2 onward run in CI. Section 1 — the red — needs an unfixed dist built from `origin/main` and is skipped without one, which the script prints. |
 | `verify-pr-watch-approver-routing` | partial | §2-§6 run anywhere: the GitHub reader is a stub, the fleet is invented, and there is no network, no `gh`, no credential and no terminal. §1, the red drive, needs a second `dist` built from `origin/main` and is SKIPPED — loudly, and saying that its absence makes the run no evidence that the defect existed. The recipe is below and its output is pasted in the pull request. |
