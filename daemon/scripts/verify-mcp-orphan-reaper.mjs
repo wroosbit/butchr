@@ -17,10 +17,12 @@
 // hold a freshly-started server; and the reaper existing but never being called
 // by the daemon, which is the KAN-145 shape — every unit green, nothing wired.
 //
-// CI-RUNNABLE: yes. Every section builds its own socketpairs with
-// `child_process.spawn` and asserts against the built module in process. It
+// CI-RUNNABLE: yes — every section builds its own socketpairs with
+// `child_process.spawn` and asserts against the built module in process, so it
 // needs no live daemon, no fleet, no credential, no terminal and no network.
-// Section 6 reads `daemon/src/daemon.ts` as text.
+// Section 6 reads `daemon/src/daemon.ts` as text. It does read `/proc/net/unix`
+// and `/proc/<pid>/fd`, which a Linux runner has; it asserts nothing about any
+// process it did not spawn itself.
 //
 // ---------------------------------------------------------------------------
 // WHAT THIS SCRIPT SUPPLIES ITSELF, AND WHAT THAT LEAVES UNCOVERED
