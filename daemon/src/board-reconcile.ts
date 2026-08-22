@@ -758,7 +758,50 @@ export interface UnstaffableIssue {
 }
 
 /**
- * The only route from a board row into {@link UnstaffableIssue}.
+ * A cycle's unstaffable rows **and the query string they came back from**, in
+ * one value neither half can leave (KAN-649).
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE ROWS AND THE QUERY ARE ONE VALUE RATHER THAN TWO ARGUMENTS
+ * ---------------------------------------------------------------------------
+ *
+ * Measured on this machine on 2026-08-21: the running daemon answered
+ * `boardControl.health.unstaffable` with an empty result from a build that did
+ * not contain {@link BOARD_UNSTAFFABLE_JQL} at all — its `dist` was built at
+ * 17:41:50Z and the query merged at 22:51:08Z, with `NRestarts=0` in between,
+ * and `grep -c BOARD_UNSTAFFABLE_JQL` read **0** against that build's
+ * `board-reconcile.js` and **8** against `origin/main`'s source. Nothing in the
+ * response said so, because **an absent audit and a clean board were the same
+ * bytes** — and the reading that costs something, *"the cross-door query ran
+ * over every door and found nothing"*, is the comfortable one.
+ *
+ * The repair is that the report **names the query that produced it**, because a
+ * build with no such query cannot fabricate the name. Making that a required
+ * field of {@link UnstaffableReport} already makes *"a report with no query"* a
+ * compile error. Bundling the rows with it goes one step further, in the same
+ * spirit as {@link UnstaffableIssue}'s `from`: the only value that carries the
+ * tickets **is** the value that carries the query, so a report cannot be built
+ * out of rows whose provenance was dropped on the way — there is no moment at
+ * which the two are separately held and one of them can be forgotten.
+ *
+ * `askedJql` is what was **sent**, scope and all, rather than the bare constant:
+ * {@link toUnstaffableIssues}'s client-side project filter is only provably the
+ * same set as the server-side one if the string reported is the scoped string,
+ * and a reader comparing a report against {@link scopedDiagnosticJql}'s output
+ * has to be comparing against the thing that actually ran.
+ */
+export interface UnstaffableEvidence {
+  /** Discriminates this shape, on the same rule as {@link UnstaffableIssue}. */
+  readonly from: 'unstaffable-query';
+  /** The JQL this cycle actually sent, scoped — never the bare constant. */
+  readonly askedJql: string;
+  /** Empty is an ordinary answer and means the board is clean. */
+  readonly tickets: UnstaffableIssue[];
+}
+
+/**
+ * The only route from a board row into {@link UnstaffableIssue}, and therefore
+ * the only route into {@link UnstaffableEvidence}.
  *
  * Two filters, and the second is not redundant with the first:
  *
@@ -773,11 +816,19 @@ export interface UnstaffableIssue {
  *     fails loudly here and would fail silently in the direction of noise.
  *     It cannot mask the opposite defect, which is why
  *     `verify-unstaffable-covers-every-door.mjs` asserts the query string too.
+ *
+ * ⚠ **`askedJql` is a parameter rather than a recomputation**, and that is the
+ * point of taking it: the caller passes the very string it handed
+ * `searchBoard`, so what the report names and what Jira answered cannot drift.
+ * Rebuilding the string here would produce a second reading of the same
+ * intention, which is exactly the arrangement that lets a report describe a
+ * query the cycle did not run.
  */
 export function toUnstaffableIssues(
   rows: JiraBoardIssue[],
-  projects: Set<string>
-): UnstaffableIssue[] {
+  projects: Set<string>,
+  askedJql: string
+): UnstaffableEvidence {
   const tickets: UnstaffableIssue[] = [];
   for (const row of rows) {
     if (row.assigneeAccountId) continue;
@@ -791,7 +842,7 @@ export function toUnstaffableIssues(
       issueTypeName: row.issueTypeName
     });
   }
-  return tickets;
+  return { from: 'unstaffable-query', askedJql, tickets };
 }
 
 /**
@@ -816,11 +867,44 @@ export function toUnstaffableIssues(
  *
  * `consecutiveFailures: 0` is a literal type on the answering branch, so a
  * cycle cannot report tickets and a failure streak together.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY BOTH BRANCHES CARRY `askedJql`, AND WHY IT IS REQUIRED (KAN-649)
+ * ---------------------------------------------------------------------------
+ *
+ * Splitting on `answered` fixed the distinction **inside** this build and could
+ * not reach the one **across** builds. A daemon that does not carry
+ * {@link BOARD_UNSTAFFABLE_JQL} at all publishes an empty result too — measured
+ * here on 2026-08-21 against the running daemon's own build — and *"nobody
+ * asked, because this build has no such query"* rendered as *"the query ran and
+ * the board is clean"*. No value on either branch said which, and the field
+ * predates the query by a whole ticket, so its mere presence establishes
+ * nothing.
+ *
+ * `askedJql` is what a build lacking the query **cannot produce**. It is
+ * required on both branches rather than only on the answering one, because the
+ * question a reader has — *did this daemon ask across every door?* — is exactly
+ * as live on a cycle whose read failed: without it, `answered: false` and *"no
+ * such query exists here"* collapse the same way `[]` and `null` used to.
+ *
+ * ⚠ **It is required rather than optional deliberately.** An optional field is
+ * a field a later author can stop setting and a reader can stop finding, with
+ * the build still green — which is the shape of the defect this replaces, not a
+ * cure for it. Omitting it is a compile error at the one place a report is
+ * constructed, and the answering branch's copy is read off
+ * {@link UnstaffableEvidence} rather than passed in beside the rows, so the
+ * string published is the string those rows came back from.
  */
 export type UnstaffableReport =
   | {
       answered: true;
       consecutiveFailures: 0;
+      /**
+       * The JQL this cycle sent, scoped. Absent on any daemon predating
+       * KAN-649 — and its absence is the only thing that distinguishes such a
+       * daemon's empty `tickets` from a clean board.
+       */
+      askedJql: string;
       /** Empty is an ordinary answer and means the board is clean. */
       tickets: UnstaffableIssue[];
     }
@@ -832,7 +916,132 @@ export type UnstaffableReport =
       failingSince: string;
       /** `searchBoard`'s own words, so a partial page is distinguishable from a 503. */
       detail: string;
+      /**
+       * The JQL this cycle sent — or, where the cycle threw before it could be
+       * scoped, the unscoped constant this build carries. Either way it is a
+       * string this daemon could only produce by holding the query, which is
+       * what the reader is asking.
+       */
+      askedJql: string;
     };
+
+/**
+ * What a reader can establish from a published `boardControl.health.unstaffable`
+ * — **including one published by a daemon that has no cross-door query at all**
+ * (KAN-649).
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THERE IS A READER AT ALL, WHEN THE PRODUCER IS IN THIS FILE
+ * ---------------------------------------------------------------------------
+ *
+ * Every producer-side repair shares one blind spot: it can only change what
+ * **new** builds say. The reading this ticket was filed for was taken off an
+ * **old** build's response, which no amount of care here will ever improve. So
+ * the distinction has to be drawn where the response is *read*, and this is
+ * that rule written once, as code, instead of once per reader as a habit.
+ *
+ * ⚠ **Every shape that cannot name its query reads as
+ * `no-cross-door-query`** — an absent field, a bare array (the KAN-577 shape),
+ * a `null` (the pre-KAN-577 shape), an object with no `askedJql` (the KAN-597
+ * shape), and a blank or non-string one. That is deliberate degradation
+ * **toward the alarming branch**: the comfortable reading of every one of those
+ * is *"clean board"*, and it is the reading this whole ticket exists to stop.
+ */
+export type UnstaffableReading =
+  | {
+      kind: 'no-cross-door-query';
+      /** Which shape arrived, so a caller can tell an old build from a mangled field. */
+      because: string;
+      sentence: string;
+    }
+  | { kind: 'clean'; askedJql: string; sentence: string }
+  | { kind: 'unstaffable'; askedJql: string; tickets: UnstaffableIssue[]; sentence: string }
+  | {
+      kind: 'not-answered';
+      askedJql: string;
+      consecutiveFailures: number;
+      failingSince: string;
+      detail: string;
+      sentence: string;
+    };
+
+/**
+ * Read a published `boardControl.health.unstaffable` for what it can support.
+ *
+ * Takes `unknown` on purpose: its whole job is to be handed a payload from a
+ * build whose types this one does not have, so a signature that demanded
+ * {@link UnstaffableReport} would refuse the only input that matters.
+ *
+ * `null` is the fourth shape and is **not** grouped with the others' sentence:
+ * on a current build it means no cycle has completed yet, which is the ordinary
+ * state for the first minute after a restart. It still reads as
+ * `no-cross-door-query`, because a reader holding it has not been told anything
+ * about any door — but `because` says which of the two it is, so a caller does
+ * not raise an alarm about a daemon that started forty seconds ago.
+ */
+export function readUnstaffableSurface(published: unknown): UnstaffableReading {
+  const noQuery = (because: string): UnstaffableReading => ({
+    kind: 'no-cross-door-query',
+    because,
+    sentence:
+      'this response cannot name a cross-door query, so it is not evidence about any door: ' +
+      `${because}. An empty result here is NOT a clean board — read it as "nobody asked".`
+  });
+
+  if (published === null) return noQuery('the field is null (no cycle has completed yet)');
+  if (published === undefined) return noQuery('the field is absent from this response');
+  if (Array.isArray(published)) {
+    return noQuery(
+      `the field is a bare array of ${published.length} row(s) — the KAN-577 shape, fed by the ` +
+      'diagnostic query, which asks about In Progress and In Review only and never about To Do'
+    );
+  }
+  if (typeof published !== 'object') return noQuery(`the field is a ${typeof published}`);
+
+  const report = published as Record<string, unknown>;
+  const askedJql = report.askedJql;
+  if (typeof askedJql !== 'string' || !askedJql.trim()) {
+    return noQuery(
+      'the field carries no askedJql, so this daemon predates KAN-649 and its empty result is ' +
+      'the old near-miss shape rather than an answer about every door'
+    );
+  }
+
+  if (report.answered === false) {
+    const consecutiveFailures =
+      typeof report.consecutiveFailures === 'number' ? report.consecutiveFailures : 0;
+    const failingSince = typeof report.failingSince === 'string' ? report.failingSince : '';
+    const detail = typeof report.detail === 'string' ? report.detail : '';
+    return {
+      kind: 'not-answered',
+      askedJql,
+      consecutiveFailures,
+      failingSince,
+      detail,
+      sentence:
+        `the cross-door query is in this build and did not answer for ${consecutiveFailures} ` +
+        `cycle(s) since ${failingSince || 'an unreported time'}: ${detail || 'no detail given'}. ` +
+        `Asked: ${askedJql}`
+    };
+  }
+
+  const rows = Array.isArray(report.tickets) ? (report.tickets as UnstaffableIssue[]) : [];
+  if (!rows.length) {
+    return {
+      kind: 'clean',
+      askedJql,
+      sentence: `the board is clean, and this is the query that establishes it: ${askedJql}`
+    };
+  }
+  return {
+    kind: 'unstaffable',
+    askedJql,
+    tickets: rows,
+    sentence:
+      `${rows.length} open ticket(s) have no assignee and can never be staffed — ` +
+      `${rows.map((t) => t.key).join(', ')}. Asked: ${askedJql}`
+  };
+}
 
 /**
  * How long between cycles.
@@ -1147,8 +1356,11 @@ export interface BoardCycle {
    * A superset of `nearMisses`, and deliberately not a replacement for it: the
    * two come from different queries, and a cycle where one answered and the
    * other did not is a real state that a single field could not describe.
+   *
+   * Carries the query string beside the rows since KAN-649 — see
+   * {@link UnstaffableEvidence} for why the two are one value.
    */
-  unstaffable: UnstaffableIssue[] | null;
+  unstaffable: UnstaffableEvidence | null;
   /**
    * Why the partitioned query did not return each stand-down candidate — one
    * entry per agent in `diff.toStop`, in the same order, whether or not the
@@ -1280,6 +1492,14 @@ export interface BoardHealth {
    * the official Atlassian MCP server, through the web UI, or through anything
    * else that is not this daemon's proxy — and a ticket that simply lost its
    * assignee later.
+   *
+   * ⚠ **Since KAN-649 it names the query that produced it, and that field is
+   * the first one to read.** Everything above describes a build that carries
+   * {@link BOARD_UNSTAFFABLE_JQL}; a build that does not carries this field
+   * anyway, because it predates the query by a whole ticket, and answers with
+   * an empty result that reads exactly like a clean board. `askedJql` is the
+   * one thing such a build cannot produce. {@link readUnstaffableSurface} is
+   * that rule as code, for a reader holding a response rather than a type.
    */
   unstaffable: UnstaffableReport;
   /** ISO timestamp of the cycle this describes. */
@@ -2090,13 +2310,26 @@ export class BoardReconciler {
     // versa — two independent reports, neither able to take the other down, and
     // neither able to reach the diff.
     let unstaffableFailure: string | null = null;
+    // KAN-649. What this cycle asked, held where the failing branch can still
+    // reach it. It starts as the UNSCOPED constant rather than as an empty
+    // string, and that is not a fallback masking an unset value: it is the
+    // honest answer for a cycle that threw before it could compute a scope —
+    // this build holds the query, and saying so is the whole of what a reader
+    // is asking. An empty string here would be indistinguishable from the
+    // build that has no query at all, which is the defect, not a tidier zero.
+    let askedJql = this.unstaffableJql;
     try {
       // Recomputed rather than carried across from the block above: the two
       // blocks are independent by design, and a value threaded between them
       // would be exactly the shared fate this separation exists to avoid.
       const projects = fleetProjects(outcome.issues, running);
-      const read = await this.readUnstaffable(projects);
-      if ('issues' in read) cycle.unstaffable = toUnstaffableIssues(read.issues, projects);
+      // Scoped HERE rather than inside `readUnstaffable`, so that one string is
+      // both what is sent and what is reported. Two computations of it would be
+      // two readings of one intention, and the gap between them is precisely
+      // where a report describing a query the cycle did not run comes from.
+      askedJql = scopedDiagnosticJql(this.unstaffableJql, projects);
+      const read = await this.readUnstaffable(askedJql);
+      if ('issues' in read) cycle.unstaffable = toUnstaffableIssues(read.issues, projects, askedJql);
       else unstaffableFailure = read.failure;
     } catch (e: any) {
       cycle.unstaffable = null;
@@ -2140,7 +2373,7 @@ export class BoardReconciler {
       // already null when that query did not answer, and `unstaffableReport`
       // turns the null into the failing branch rather than into an empty list —
       // see {@link UnstaffableReport} for why the two are different shapes.
-      unstaffable: this.unstaffableReport(cycle.unstaffable),
+      unstaffable: this.unstaffableReport(cycle.unstaffable, askedJql),
       at: new Date().toISOString()
     };
 
@@ -2308,11 +2541,16 @@ export class BoardReconciler {
    * queries, so the server-side filter and {@link toUnstaffableIssues}'s
    * client-side one are provably the same set rather than two rules kept in
    * step by hand.
+   *
+   * ⚠ **The scoped string is a parameter rather than something this method
+   * builds** (KAN-649). The caller has to publish it, so building it here would
+   * mean the string that was sent and the string that gets reported are two
+   * computations that a later edit can separate. One value, one send, one
+   * report.
    */
   private async readUnstaffable(
-    projects: Set<string>
+    jql: string
   ): Promise<{ issues: JiraBoardIssue[] } | { failure: string }> {
-    const jql = scopedDiagnosticJql(this.unstaffableJql, projects);
     try {
       const outcome = await this.opts.jira.searchBoard(jql, this.maxResults);
       if (outcome.ok) return { issues: outcome.issues };
@@ -2364,15 +2602,29 @@ export class BoardReconciler {
    * them is the thing being asserted, and driving off the other would leave a
    * refactor free to publish a clean board out of a cycle that read nothing.
    */
-  private unstaffableReport(tickets: UnstaffableIssue[] | null): UnstaffableReport {
-    if (tickets) return { answered: true, consecutiveFailures: 0, tickets };
+  private unstaffableReport(
+    evidence: UnstaffableEvidence | null,
+    askedJql: string
+  ): UnstaffableReport {
+    if (evidence) {
+      return {
+        answered: true,
+        consecutiveFailures: 0,
+        // ⚠ Off the EVIDENCE, never off the parameter (KAN-649). The two hold
+        // the same string today; reading it from the value the rows arrived in
+        // is what keeps them the same string after somebody edits one of them.
+        askedJql: evidence.askedJql,
+        tickets: evidence.tickets
+      };
+    }
     return {
       answered: false,
       consecutiveFailures: this.unstaffableFailures,
       // Non-null whenever the count is non-zero, by `noteUnstaffable`'s own
       // arithmetic — the two move together and nothing else writes either.
       failingSince: this.unstaffableFailingSince ?? new Date().toISOString(),
-      detail: this.lastUnstaffableDetail
+      detail: this.lastUnstaffableDetail,
+      askedJql
     };
   }
 
@@ -2550,7 +2802,7 @@ export class BoardReconciler {
     // whose agent is affected right now; this line is for the rest, which is
     // where every measured occurrence actually sat.
     const alreadyNamed = new Set((cycle.nearMisses ?? []).map((miss) => miss.key));
-    const alsoUnstaffable = (cycle.unstaffable ?? []).filter(
+    const alsoUnstaffable = (cycle.unstaffable?.tickets ?? []).filter(
       (ticket) => !alreadyNamed.has(ticket.key)
     );
     if (alsoUnstaffable.length) {
@@ -2564,8 +2816,9 @@ export class BoardReconciler {
         `. This is what a create path that is not this daemon's proxy leaves behind — the ` +
         `official Atlassian MCP server and the web UI both reach this site without passing ` +
         `the assignee guard (KAN-597). Assign each to this machine's Jira account. Reported ` +
-        `on butchr_list_agents as boardControl.health.unstaffable; this line is a report, and ` +
-        `nothing has been started, stopped or written to Jira.`
+        `on butchr_list_agents as boardControl.health.unstaffable, which names this query ` +
+        `beside the rows as askedJql (KAN-649). Asked: ${cycle.unstaffable?.askedJql ?? 'nothing'}. ` +
+        `This line is a report, and nothing has been started, stopped or written to Jira.`
       );
     }
 

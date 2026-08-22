@@ -144,7 +144,11 @@ friction.
   `boardControl.health.unstaffable` on `butchr_list_agents` reports every open
   unassigned ticket whichever door it came through (KAN-597), because the
   reconciler reads the board rather than the call — and that is what a sweep
-  should read. If you ever file by a route that is not the proxy, set the
+  should read. ⚠ **Read that field's `askedJql` before its rows** (KAN-649):
+  `unstaffable` is older than the query, so a build carrying **no** cross-door
+  query answers with an empty result byte-identical to a clean board —
+  measured on 2026-08-21 against the running daemon's own build. No `askedJql` means **nobody
+  asked**, not that there is nothing to find. If you ever file by a route that is not the proxy, set the
   assignee yourself and read the ticket back.
 - **Set it at creation** — `createJiraIssue` takes `parent`. Fixing it
   afterwards works, but nothing goes looking: a backfill re-parented 74 tickets
