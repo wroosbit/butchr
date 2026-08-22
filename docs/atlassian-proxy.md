@@ -260,6 +260,89 @@ one is `own-ticket-endpoint`, one is `own-project` and four are `unscoped` — t
 Confluence writes, on the `confluence-write` rung only. The eight rows above are
 *brief mandates*, not operations, and two operations serve more than one row.
 
+#### The four-brief cross-ticket write inventory
+
+`prompts/` holds four briefs — `task.md`, `story.md`, `epic.md`,
+`confluence.md` — and until KAN-658 the section above was the whole of what
+anybody had measured against `PROXY_OPERATIONS`. It covers one of them.
+`daemon/scripts/verify-task-agent-write-list.mjs` opens
+`const BRIEF_REL = 'prompts/task.md'` and nothing else, so **three briefs were
+reconciled against the proxy by nothing**, and the drift that check exists to
+prevent for `task.md` was free to happen in the other three.
+
+**It was already happening.** The `link` shape below is the one nobody had
+written down, and it is not hypothetical: on 2026-08-21 `story/KAN-657`'s
+**first job** was to link KAN-652 and KAN-656 `Duplicate` and close the loser —
+`prompts/story.md`'s own mandate, two rows down — and
+`atlassian_create_issue_link` refused it, `reason: not-your-ticket`, because
+neither end was that agent's ticket. A per-brief check would have found that in
+CI months before an agent found it in flight.
+
+**Derived from `PROXY_OPERATIONS`, from every file in `prompts/`, and from this
+table on every pull request** by
+`daemon/scripts/verify-brief-cross-ticket-write-inventory.mjs`. It reconciles in
+both directions: a mandate in a brief with no row here is red, and a row here
+whose phrase has left its brief is red. A red names the brief, the phrase and
+the scope that decides it.
+
+**Read the verdict column as three answers, not two.** `yes` is served, `no` is
+refused by the scope named beside it, and **`n/a` is prose the detector matches
+which mandates no write at all** — a sentence describing how the proxy behaves,
+a prohibition, or the explanatory half of a mandate recorded on its own row
+above. Those rows are here rather than tuned out of the detector on purpose: a
+pattern narrowed until an inconvenient match disappears is a pattern nobody can
+audit, and the row is where the judgement that it is not a mandate is written
+down and can be disagreed with.
+
+| brief | shape | the phrase in the brief | operation | scope | through the proxy? |
+| --- | --- | --- | --- | --- | --- |
+| `prompts/task.md` | `comment` | `comment on your approver's own ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/task.md` | `comment` | `comment on your approver's ticket` | `atlassian_add_comment` | `own-ticket` | **n/a — restates the row above** |
+| `prompts/task.md` | `transition` | `transition a ticket that is not **{{KEY}}**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/task.md` | `comment` | `comment on their ticket — not their pane` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/task.md` | `comment` | `comment on _their_ ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/task.md` | `comment` | `comment on its own ticket` | `atlassian_add_comment` | `own-ticket` | **n/a — describes the poller's `own` relation** |
+| `prompts/task.md` | `comment` | `put the substance in a comment on their ticket` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `link` | `link the two before` | `atlassian_create_issue_link` | `own-ticket-endpoint` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `link` | `link them` | `atlassian_create_issue_link` | `own-ticket-endpoint` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `transition` | `set the task **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `transition` | `transition its issue back` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `comment` | `comment on it naming what took its slot` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `transition` | `transition the task to **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/story.md` | `edit` | ``apply the `wont-do` label`` | `atlassian_edit_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/epic.md` | `transition` | `the story reconciled — set the story` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/epic.md` | `transition` | `Transition its issue from In Progress back to **To Do**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/epic.md` | `comment` | `Comment on it naming what took its slot` | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/epic.md` | `transition` | `Transition the ticket to **Done**` | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/epic.md` | `edit` | ``apply the `wont-do` label`` | `atlassian_edit_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| `prompts/confluence.md` | `link` | `Link the two so the page and the issue can find each other` | `—` | `—` | **n/a — no write in the table carries a page↔issue link** |
+| `prompts/confluence.md` | `comment` | `in a comment on it, not in your terminal` | `atlassian_create_confluence_footer_comment` | `unscoped` | **yes** |
+| `prompts/confluence.md` | `comment` | `into a comment on it, or into a` | `—` | `—` | **n/a — a prohibition, not a mandate** |
+
+**Sixteen refused, one served, five neither.** The refused rows are the finding,
+and they are spread across three briefs rather than concentrated in one: every
+agent type on this board is instructed, in its own brief, to perform at least
+one write the proxy will refuse. `prompts/confluence.md` is the exception, and
+its exception is not reassurance — a `confluence` workspace is keyed by a page
+id rather than a Jira issue, so what "the caller's own ticket" means for that
+agent is a question this table does not answer and does not pretend to.
+
+**Two rows in the `—` column are a finding of their own.** A Confluence page and
+a Jira issue are linked by a *remote* link, and `PROXY_OPERATIONS` carries no
+write for one — `atlassian_get_issue_remote_links` reads them and nothing
+writes them. `prompts/confluence.md` mandates making that link anyway. Nothing
+refuses it either; there is simply no operation, which is a third state the
+`yes`/`no` column was not built to hold and which is why it holds three answers.
+
+**What this table does NOT decide.** Whether the proxy should widen or the
+briefs should narrow is [KAN-633](https://wroosbit.atlassian.net/browse/KAN-633),
+which was In Review and awaiting a human decision when this section was written
+(PR #290). This is the detector, not the ruling: it records what the tree says
+today so that whatever KAN-633 decides has something that holds it. **When
+KAN-633 lands, this table goes red until it is updated, and that is the
+mechanism working** — the row whose scope moved is the row that names what the
+ruling changed.
+
 ### 5. Blast radius, written down
 
 **After this, any agent can read as far as the daemon's credential can, with no
