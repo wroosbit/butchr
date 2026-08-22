@@ -92,6 +92,61 @@ import { renderedKey } from './keys.js';
  * will be wrong the moment the mapping changes.
  */
 export type SendIntent = 'steer' | 'stop-now';
+
+/** One account named on a stamped ticket, as Jira gave it back. */
+export interface StampedAccount {
+  accountId: string | null;
+  displayName: string | null;
+}
+
+/**
+ * What a create operation can say about the account its ticket landed on.
+ *
+ * ---------------------------------------------------------------------------
+ * A UNION, SO THAT "NOBODY LOOKED" CANNOT CARRY A VERDICT (KAN-646/KAN-649)
+ * ---------------------------------------------------------------------------
+ *
+ * The failure this shape exists to prevent is the comfortable one: a read-back
+ * that could not be made reporting something a reader takes for agreement. So
+ * the two cases are **different shapes rather than one shape with a flag** —
+ * the unverified branch has no `matchesCredential` key at all, which makes
+ * `verified: false, matchesCredential: false` a **compile error** rather than a
+ * thing a later author can write by accident. A `false` there would read as a
+ * finding, and nobody made one.
+ *
+ * ⚠ **This deliberately mirrors `UnstaffableEvidence.askedJql` in
+ * `board-reconcile.ts` — named by module rather than `{@link}`ed, because the
+ * type is not imported here and a link that does not resolve is a worse
+ * citation than a filename — which
+ * landed in KAN-649 while this was in review.** That field is required so that
+ * a build lacking the cross-door query **cannot produce it**, because its
+ * absence has to mean *nobody asked* rather than *nothing was found*. Same rule,
+ * different seam: KAN-649 reports what the board-level query actually sent;
+ * this reports what the create-level read-back actually saw. The two do not
+ * overlap — KAN-649 covers an EMPTY assignee across every door, and this covers
+ * a WRONG one at the single door the daemon controls, at the moment of writing.
+ *
+ * An earlier draft of this was `Record<string, unknown>` and enforced the
+ * separation only in a verify script's §3. The assertion is still there; the
+ * type is what makes it belt-and-braces, in that order.
+ */
+export type StampAudit =
+  | {
+      verified: true;
+      key: string;
+      assignee: StampedAccount | null;
+      creator: StampedAccount | null;
+      matchesCredential: boolean;
+      /** Present exactly when `matchesCredential` is false. */
+      warning?: string;
+    }
+  | {
+      verified: false;
+      /** Absent when the create response carried no key to read back. */
+      key?: string;
+      /** Why no comparison could be made. Never optional: silence is the defect. */
+      because: string;
+    };
 import {
   PreemptionCandidate,
   addressOf,
@@ -4354,6 +4409,130 @@ export class MessageRouter {
     return { selfAccountId: await this.jira!.selfAccountId() };
   }
 
+  /**
+   * What account a just-filed ticket actually landed on, read back from Jira.
+   *
+   * ---------------------------------------------------------------------------
+   * KAN-646, WANT 3: MAKING A WRONG STAMP VISIBLE AT THE MOMENT IT IS MADE
+   * ---------------------------------------------------------------------------
+   *
+   * A ticket stamped with the wrong account is filed, looks filed, and has a
+   * populated assignee. Every existing surface is blind to it:
+   * `boardControl.health.unstaffable` looks for an **empty** assignee, and this
+   * population is populated-and-wrong. So the defect has no symptom until the
+   * wrong machine picks the ticket up, or nothing does — KAN-643 and KAN-649
+   * were both repaired **by hand after the fact**, because nothing said at
+   * filing time which account had gone on.
+   *
+   * This says it at filing time, in the create response, where the agent that
+   * filed it is already looking.
+   *
+   * ⚠ **IT IS ALWAYS PRESENT ON A CREATE, INCLUDING WHEN IT FAILED, AND THAT IS
+   * THE POINT RATHER THAN A DETAIL (KAN-649).** An absent audit and a clean
+   * result must not be the same bytes. `boardControl.health.unstaffable` read
+   * `[]` for 48 minutes while the build it was running had no cross-door query
+   * at all, and `[]` is exactly what a clean board looks like. So this block
+   * carries `verified: true | false` and never resolves to `undefined`: a
+   * read-back that could not be made says so in `because`, and the one thing a
+   * reader can never get here is silence that reads like agreement.
+   *
+   * ⚠ **WHAT IT CATCHES AND WHAT IT CANNOT — NAMED, BECAUSE THE GAP IS THE
+   * INTERESTING HALF.** `creator` is filled by Jira server-side from the
+   * credential on the request; `assignee` is what this daemon chose to send. So
+   * a divergence between them is a claim about **this daemon's stamp not
+   * matching the account it authenticated as** — the KAN-627 signature exactly,
+   * `creator: John Winstead, assignee: Wroos Bit` on one call.
+   *
+   * It does **NOT** catch a stamp that is consistent and still wrong for the
+   * ticket: a supervisor on the manager box filing a Task gets
+   * `creator === assignee === manager`, they agree, and the ticket still
+   * belongs on the workforce account. **Nothing here can catch that**, because
+   * this daemon holds exactly one credential and can name exactly one account —
+   * `JiraCredential` is `{siteUrl, email, token}` and there is no second
+   * account anywhere in this codebase to compare against. That is KAN-646's
+   * want 2 and it needs a configuration input that does not exist yet.
+   *
+   * **What this does for that case instead is name the account out loud.** The
+   * filer sees `stamped.displayName` in the response it is already reading, at
+   * the moment of filing, rather than discovering the account weeks later off
+   * the board. That converts a silent wrong stamp into a visible one at the
+   * cost of one read, and it is the most the daemon can honestly offer until
+   * somebody tells it what the right answer is.
+   */
+  private async stampReadBack(body: unknown): Promise<StampAudit> {
+    const key = (body as any)?.key;
+    if (typeof key !== 'string' || !key) {
+      return {
+        verified: false,
+        because:
+          'The create succeeded but its response carried no issue key, so there was nothing to ' +
+          'read back. The ticket exists; which account it landed on is unverified here.'
+      };
+    }
+
+    const outcome = await this.jira!.proxyRead(
+      `/rest/api/3/issue/${encodeURIComponent(key)}?fields=assignee,creator`
+    );
+    if (!outcome.ok) {
+      return {
+        key,
+        verified: false,
+        because:
+          `The ticket was filed as ${key}, but reading it back to confirm which account it ` +
+          `landed on failed: ${outcome.error ?? 'no reason given'}. The create itself was not ` +
+          'affected — this is the confirming read, and it is reported rather than dropped so ' +
+          'that "unverified" cannot be mistaken for "verified and matching".'
+      };
+    }
+
+    const fields = (outcome.body as any)?.fields ?? {};
+    const assignee = fields.assignee ?? null;
+    const creator = fields.creator ?? null;
+    // `verified: true` as a literal rather than a widened `boolean`, so that
+    // the spreads below stay assignable to the verified arm of `StampAudit`.
+    const stamped = {
+      key,
+      verified: true as const,
+      assignee: assignee
+        ? { accountId: assignee.accountId ?? null, displayName: assignee.displayName ?? null }
+        : null,
+      creator: creator
+        ? { accountId: creator.accountId ?? null, displayName: creator.displayName ?? null }
+        : null
+    };
+
+    if (!assignee?.accountId) {
+      return {
+        ...stamped,
+        matchesCredential: false,
+        warning:
+          `${key} was filed with NO ASSIGNEE. The board reconciler starts an agent only for ` +
+          '`assignee = currentUser() AND status IN ("In Progress", "In Review")`, so this ' +
+          'ticket can never be staffed and reads exactly like one nobody has triaged. Set the ' +
+          'assignee by hand and say so on the ticket.'
+      };
+    }
+
+    // The comparison this exists for. `creator` came from Atlassian's own view
+    // of who authenticated; `assignee` is what this daemon chose to send. They
+    // are two different sources answering one question, which is precisely why
+    // a disagreement is informative and a shared-cause reading would not be.
+    const matches = !!creator?.accountId && creator.accountId === assignee.accountId;
+    if (matches) return { ...stamped, matchesCredential: true };
+
+    return {
+      ...stamped,
+      matchesCredential: false,
+      warning:
+        `${key} was stamped with an account this daemon is NOT authenticating as. Jira recorded ` +
+        `the creator as ${creator?.displayName ?? creator?.accountId ?? 'an unknown account'} ` +
+        `and the assignee as ${assignee.displayName ?? assignee.accountId}. One call wrote both ` +
+        'fields, so they disagree only if the assignee did not come from the live credential. ' +
+        'This is the KAN-646 signature. The ticket is filed and is pointing at the wrong ' +
+        'account — say so on it rather than repairing it silently, and report this daemon.'
+    };
+  }
+
   private async handleAtlassianProxyCall(data: any, respond: Respond) {
     const tool = typeof data?.tool === 'string' ? data.tool : '';
     const args = data?.args && typeof data.args === 'object' ? data.args : {};
@@ -4548,10 +4727,24 @@ export class MessageRouter {
       }
     }
 
+    // KAN-646: an operation that stamps an assignee says which account it
+    // stamped, every time, verified against Jira. Gated on the operation's own
+    // `needsSelfAccountId` rather than on a tool name, so the audit follows the
+    // property that makes it necessary — an operation that later acquires the
+    // stamp acquires the read-back with it, and cannot acquire one silently.
+    const stamped = operation.needsSelfAccountId
+      ? await this.stampReadBack(responseBody)
+      : null;
+
     respond({
       action: 'atlassian_proxy_call_response',
       success: true,
       status: outcome.status,
+      // Present exactly when the operation stamps an assignee, and then always
+      // — never omitted for a stamp that could not be confirmed. See
+      // `stampReadBack`: absence means "this operation does not assign", and
+      // that is the only thing it is ever allowed to mean.
+      ...(stamped ? { stamped } : {}),
       // KAN-502: what the conversion changed about the content, when it changed
       // anything. Present only when non-empty, so its absence means "nothing
       // was altered" rather than "this daemon does not report alterations" —

@@ -14,8 +14,22 @@
 // preemption that stands an agent down to relieve a stall it cannot relieve; and
 // a derivation whose `headroom` no longer reproduces from the terms it prints.
 //
-// CI-RUNNABLE: yes — imports the built daemon modules and asserts against them
-// in process; no live daemon, no herdr, no credential, no peer, no terminal.
+// CI-RUNNABLE: partial — sections 1, 3, 4, 5 and 7 import the built daemon
+// modules and assert against them in process, needing no live daemon, herdr,
+// credential, peer or terminal. Sections 2 and 6 read THIS HOST'S live PSI, and
+// a runner is not a machine whose I/O behaviour the tree controls: §2 must be
+// able to stall a quiet disk on purpose, and §6 needs a real pressure figure to
+// refuse an activation on. Where the host cannot supply either, those sections
+// SKIP and the script exits 2 (INCOMPLETE) — never 0, and never 1.
+//
+// KAN-643 is why this is `partial` and not `yes`. It was `yes`, and it was
+// wrong in both directions at once: on a runner with no /proc/pressure both
+// sections skipped in silence and the script exited 0 (a green with two holes),
+// and on a shared-tenant runner whose disk a neighbour already owned §2 failed
+// and turned a required check red on a healthy tree. Same cause — the host
+// could not supply the section's input — rendered once as a pass and once as a
+// failure. Both are now a skip, which is the third answer those two were being
+// substituted for.
 //
 // Seven sections:
 //
@@ -77,6 +91,19 @@
 // and prints the table for the reader. On hardware where it cannot induce a
 // stall it says so and does not pass.
 //
+// KAN-643 sharpened "does not pass" into "does not FAIL either". The sentence
+// above was already the right instinct and the code did not implement it: the
+// bar was `peakSome > Math.max(5, baseline * 1.5)`, whose multiplicative arm
+// demands a response proportional to the noise ALREADY on the box — so a
+// shared-tenant runner sitting at 19.19% had to reach 28.79% to prove the
+// instrument worked, and reached 27.16%. PSI had moved +7.97 points and was
+// plainly not a constant; the check went red anyway, on a required status, on a
+// tree that passes on two developer machines. The decision now lives in
+// `lib/stall-response-verdict.mjs`, which tests the excursion in points rather
+// than as a ratio, and which separates "the instrument is flat" (FAIL) from
+// "somebody else already owns this disk" and "the load never ran" (SKIP). Read
+// that module's header for the discriminator and for the hole it accepts.
+//
 // HOW TO WATCH IT GO RED (do this rather than trusting the green):
 //   cd daemon && npm run build
 //   # 1. delete the veto: in src/capacity.ts, replace
@@ -125,13 +152,30 @@ const { createAtlassianIntegration } = await import(
 );
 const { IntegrationStateStore } = await import(path.join(distDir, 'integrations', 'enablement.js'));
 
+const { reportAndExit } = await import('./lib/verdict-exit.mjs');
+const { stallResponseVerdict, RESPONDED, RESPONSE_MARGIN_POINTS } = await import(
+  './lib/stall-response-verdict.mjs'
+);
+
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const failures = [];
+const skips = [];
 const verdict = (ok, yes, no) => {
   if (!ok) failures.push(no);
   console.log(`\n  ${ok ? '→ ' + yes : '→ FAILED — ' + no}`);
+};
+
+// A section that could not run. KAN-643: this script counted failures and
+// nothing else, so its two host-dependent sections skipped by printing a line
+// and touching no counter — and `process.exit(failures.length ? 1 : 0)` then
+// rendered a run with both of them missing as a clean pass. `skips` is the
+// tally `lib/verdict-exit.mjs` needs in order to say EXIT_INCOMPLETE, and the
+// reason is carried with it so the reader learns what went unchecked.
+const skip = (why) => {
+  skips.push(why);
+  console.log(`\n  → SKIPPED — ${why}`);
 };
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kan218-stall-'));
@@ -208,7 +252,10 @@ function readIowaitTicks() {
 
 let caveat = null;
 if (!hasPsi) {
-  console.log('  skipped: no /proc/pressure on this machine.');
+  skip(
+    'no /proc/pressure on this machine, so no stall can be induced or observed. This ' +
+      'section proved nothing about PSI; it did not run.'
+  );
 } else {
   // 8 processes each doing synchronous, direct 4k writes. Each write is a round
   // trip to the device with a flush, so the process sits in D state spending
@@ -250,6 +297,14 @@ if (!hasPsi) {
       { stdio: 'ignore' }
     )
   );
+  // KAN-643: a writer that never started is the one input this section never
+  // checked. `dd` absent from PATH, a read-only or full temp dir, or O_DIRECT
+  // refused by the filesystem all end with eight processes that wrote nothing —
+  // and every one of them used to arrive at the assertion below as "PSI did not
+  // respond", blaming the instrument for a silence nobody had spoken into.
+  const spawnErrors = [];
+  for (const w of writers) w.on('error', (e) => spawnErrors.push(e.message));
+
   console.log('  8 synchronous-direct writers started; sampling every 2s…\n');
   for (let i = 0; i < 10; i++) {
     await sleep(2000);
@@ -259,7 +314,23 @@ if (!hasPsi) {
     writers.map((w) => new Promise((r) => (w.exitCode !== null ? r() : w.on('exit', r))))
   );
   for (const w of writers) w.kill('SIGKILL');
+
+  // Measure what actually reached the disk, before the evidence is deleted.
+  let bytesWritten = 0;
+  for (let i = 0; i < 8; i++) {
+    try {
+      bytesWritten += fs.statSync(path.join(tmp, `sync${i}.bin`)).size;
+    } catch {
+      /* the file is absent, which this sum reports as the zero it is */
+    }
+  }
   for (let i = 0; i < 8; i++) fs.rmSync(path.join(tmp, `sync${i}.bin`), { force: true });
+
+  const loadApplied = spawnErrors.length === 0 && bytesWritten > 0;
+  console.log(
+    `  load actually applied: ${bytesWritten.toLocaleString()} bytes written by 8 writers` +
+      (spawnErrors.length ? `; ${spawnErrors.length} failed to start: ${spawnErrors[0]}` : '')
+  );
 
   console.log(
     '    when       io some   io full   mem full   iowait%\n' +
@@ -278,8 +349,17 @@ if (!hasPsi) {
   const peakSome = Math.max(...loaded.map((s) => s.ioSome));
   // The interesting sample: PSI clearly elevated while iowait says almost
   // nothing. This is the caveat, if this hardware produces it.
+  // KAN-643: this picker carried the same `baseline * 1.5` shape as the verdict
+  // did, and for the same reason it stops finding anything on a loaded host —
+  // so the caveat narrative, which is the entire pedagogical point of §2,
+  // silently vanished exactly where a reader most needed it. It selects for
+  // display and never for a verdict, so it could not turn a check red; it is
+  // corrected here because leaving one copy of a fixed expression behind is how
+  // the fix gets rediscovered.
   const divergent = loaded
-    .filter((s) => s.iowaitPct !== null && s.ioSome > Math.max(5, baseline * 1.5))
+    .filter(
+      (s) => s.iowaitPct !== null && s.ioSome >= baseline + RESPONSE_MARGIN_POINTS
+    )
     .sort((a, b) => a.iowaitPct - b.iowaitPct)[0];
 
   caveat = { baseline, peakSome, divergent };
@@ -295,18 +375,42 @@ if (!hasPsi) {
       '  would have seen a healthy machine; that is why this term reads /proc/pressure.'
     );
   }
-  verdict(
-    peakSome > Math.max(5, baseline * 1.5),
-    `PSI moved with a real induced stall on real hardware (${baseline.toFixed(2)}% → ` +
-      `${peakSome.toFixed(2)}%), so it is\n    measuring something and not a constant. ` +
-      (divergent
-        ? `And it reported ${divergent.ioSome.toFixed(2)}% where iowait reported ` +
-          `${divergent.iowaitPct.toFixed(2)}%, which is the\n    caveat resolved by measurement rather than repeated.`
-        : '(iowait did not visibly diverge on this run — see the table.)'),
-    `PSI did not respond to a deliberate 8-way synchronous-direct-write load ` +
-      `(before ${baseline.toFixed(2)}%, peak ${peakSome.toFixed(2)}%). Either this hardware absorbs it, ` +
-      'or the instrument is not reading what it claims to.'
-  );
+  // KAN-643: the decision lives in `lib/stall-response-verdict.mjs` as a pure
+  // function, so that its whole input space can be driven by
+  // `verify-stall-response-verdict.mjs` without stalling a shared machine —
+  // which on a box carrying a live fleet crosses STALL_REFUSE_PERCENT and
+  // refuses every agent start for the duration. Read that module's header for
+  // why the old `baseline * 1.5` bar was hardest to clear exactly where the
+  // hardware was least able to clear it.
+  const responded = stallResponseVerdict({ baseline, peak: peakSome, loadApplied });
+
+  // The branch reads `isSkip` rather than re-listing the outcomes here, so that
+  // the module owns the question "is this a section that did not run" in one
+  // place. Re-testing `outcome === HOST_ALREADY_STALLED || …` at the call site
+  // is the same fact spelled twice, and the copy that drifts is always the one
+  // a new outcome forgets to update.
+  if (responded.isSkip) {
+    // host-already-stalled, or the load never ran. Neither is a fact about PSI,
+    // and rendering either as a failing assertion is the false red this ticket
+    // was filed for.
+    skip(responded.headline);
+  } else if (responded.outcome === RESPONDED) {
+    verdict(
+      true,
+      responded.headline +
+        (divergent
+          ? ` And it reported ${divergent.ioSome.toFixed(2)}% where iowait reported ` +
+            `${divergent.iowaitPct.toFixed(2)}%, which is the\n    caveat resolved by measurement rather than repeated.`
+          : ' (iowait did not visibly diverge on this run — see the table.)'),
+      null
+    );
+  } else {
+    // FLAT, UNREADABLE, and anything a later author adds that is not a skip.
+    // The unrecognised case lands HERE, as a failure, rather than in the skip
+    // arm — an outcome nobody has taught this branch about must not be able to
+    // quietly excuse the section.
+    verdict(false, null, responded.headline);
+  }
 }
 
 // ----------------------------------------------------------- 3. the parser --
@@ -595,7 +699,10 @@ rule('6. LIVE REFUSAL — this machine\'s real figure, through the real router')
 // the router, the refusal sentence, and the absence of a preemption offer.
 // The constant is what nothing here covers, and the header says so.
 if (!hasPsi) {
-  console.log('  skipped: no /proc/pressure on this machine.');
+  skip(
+    'no /proc/pressure on this machine, so there is no real reading to refuse an ' +
+      'activation on. The live refusal was not exercised; this section did not run.'
+  );
 } else {
   function stubBridge(runningAgentNames) {
     const agents = runningAgentNames.map((name) => ({
@@ -883,10 +990,20 @@ verdict(
 
 fs.rmSync(tmp, { recursive: true, force: true });
 
-console.log(
-  failures.length
-    ? `\n${failures.length} section(s) FAILED:\n${failures.map((f) => `  - ${f}`).join('\n')}`
-    : '\nALL PASS.'
-);
+if (failures.length) {
+  console.log(
+    `\n${failures.length} section(s) FAILED:\n${failures.map((f) => `  - ${f}`).join('\n')}`
+  );
+}
+if (skips.length) {
+  console.log(
+    `\n${skips.length} section(s) DID NOT RUN:\n${skips.map((s) => `  - ${s}`).join('\n')}`
+  );
+}
 console.log('\n== done ==');
-process.exit(failures.length ? 1 : 0);
+
+// KAN-643: a skip is not a pass and is not a failure. Before this, the exit was
+// `failures.length ? 1 : 0`, which consulted no skip tally because there was
+// none to consult — so a host with no /proc/pressure ran neither §2 nor §6 and
+// still exited 0.
+reportAndExit({ failures: failures.length, skipped: skips.length });
