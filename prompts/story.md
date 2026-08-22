@@ -1494,6 +1494,16 @@ plausible one.** A *cannot* and a *safe* both close inquiry, and neither is ever
 retested by whoever relies on it: **a false positive gets tested by whoever acts
 on it; a false limit never does, because it removes the reason to test.**
 
+⚠ **And it has a reverse form, which is the same mechanism wearing abundance
+instead of scarcity.** *"We cannot"* and *"we can always get another"* both
+remove the reason to check. **The second is the harder one to see, because it
+sounds like confidence rather than limitation** — and it is falsified only at
+the moment you need the thing you already discarded. `epic/KAN-39` terminated a
+live reproduction of KAN-663 partly on the grounds that *"the condition recurs
+on every task completion here, so the repro is recreatable on demand"*. **Nobody
+had observed it recur.** Evidence was discarded on a premise of exactly this
+class, by the agent that had spent that evening flagging the class in others.
+
 **Measured twice in one day, by two agents.** `epic/KAN-59` hit a 404 on
 `branches/main/protection` and published *"nobody on this machine can read it"* —
 the endpoint was readable the whole time by the other credential on the same box,

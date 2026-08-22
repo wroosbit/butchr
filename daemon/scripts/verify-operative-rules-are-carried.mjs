@@ -1963,11 +1963,26 @@ const RULES = [
     // because it names the instrument; "check carefully" would not.
     id: 'H-34',
     title:
-      'a limit claim needs the evidence of a positive claim: a false limit is never retested, retracting one restates the hold, and over-attribution is not humility either',
+      'a limit claim needs the evidence of a positive claim: a false limit is never retested, its reverse form wears abundance rather than scarcity, retracting one restates the hold, and over-attribution is not humility either',
     carriedBy: {
       'prompts/story.md': [
         /takes away someone's reason to check/i,
         /a false limit never does/i,
+        // KAN-651, added at the approver's request while this PR was in review.
+        // The reverse form is a COMPLETION of this rule rather than a fifth
+        // rule: scarcity and abundance are one mechanism, and an incomplete
+        // rule 2 inside the ticket whose subject is rule 2 is the defect the
+        // ticket exists to repair. The abundance form is the harder half to
+        // see — it reads as confidence — so if one of the two gets tidied away
+        // for length it will be this one.
+        // Both widened by the paraphrase drive before they were ever pushed:
+        // the tighter `same mechanism wearing abundance` went red on "same
+        // mechanism, wearing abundance" and `we can always get another` on "we
+        // can always get hold of another" — two rewrites that keep the rule
+        // exactly. Same failure this file's docblocks keep naming, caught here
+        // by driving the paraphrase rather than only the removal.
+        /wearing abundance/i,
+        /can always get[^."]{0,16}another/i,
         /re-state the hold on its real grounds/i,
         /over-attribution is not humility/i,
         /comes from the changelog/i,
