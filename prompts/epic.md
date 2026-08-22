@@ -957,7 +957,9 @@ task agent writing UP to your ticket, and the proxy still refuses it** — KAN-6
 widened supervisors writing down and left the upward leg to `KAN-624`. Until
 that lands the route described here does not run: expect to learn of a merge
 from the PR, or from the task's own ticket, and do not read its silence as work
-unfinished. KAN-230 has landed
+unfinished.
+
+KAN-230 has landed
 and the stopgap nudge `prompts/task.md` used to mandate is deleted, though not
 for the reason that bullet predicted: the poller now reads a Jira `parent`, but
 that covers **transitions**, and a merge is not one — no topology change will
