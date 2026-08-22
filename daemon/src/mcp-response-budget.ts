@@ -343,6 +343,11 @@ export const NEVER_CLIPPED_FIELDS: Readonly<Record<string, ExemptionReason>> = {
     maxChars: 32,
     why: 'a count. `agents.length < agentsTotal` is the whole short-list check, and it holds whoever did the clipping.'
   },
+  censusScope: {
+    kind: 'bounded',
+    maxChars: 480,
+    why: 'the population every count on this answer covers (KAN-630) — host, runtime, workspaces root, and one short sentence making the wrong completion unavailable. Measured 337 chars on this machine, where the root is 44 of them. IT MUST OUTLIVE A CLIP FOR THE SAME REASON `agentsTotal` MUST: a reduced answer that keeps the counts and drops what they are counts OF is exactly the fleet-shaped box answer this field exists to make unavailable, and it would be produced by the fitter rather than by the daemon. THE CEILING IS UNDER MIN_BUDGET_CHARS/2 DELIBERATELY: the first draft restated the three fields in prose, measured 504, and was refused — the long form of the argument belongs in the tool descriptions and the refusal text, where nothing is budgeted.'
+  },
   standbyTotal: {
     kind: 'bounded',
     maxChars: 32,
