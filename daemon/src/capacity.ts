@@ -1013,6 +1013,41 @@ export function unobservedStartsAmong(
 export const HERDR_OVERHEAD_CORES = 0.5;
 
 /**
+ * Why a pressure file produced no figure. Never set when one was measured.
+ *
+ * `absent` — there is no such file. Pre-4.20 kernels, kernels built without
+ * CONFIG_PSI, and everything that is not Linux. Expected, permanent, and not a
+ * problem with this machine: the honest answer is "this kernel cannot tell
+ * you", and nothing here is broken.
+ *
+ * `unreadable` — the file is THERE and would not give us a figure. EACCES in a
+ * restricted container, a user namespace, a hardened /proc, a truncated or
+ * malformed read. Not expected, possibly transient, and it means an instrument
+ * this machine is supposed to have is not answering.
+ *
+ * Those two want different things from whoever reads the derivation — the first
+ * is a fact about the kernel to accept, the second is something on this box to
+ * go and look at — and KAN-267 is that a single `null` could ask for neither.
+ */
+export type PressureUnavailable = 'absent' | 'unreadable';
+
+/**
+ * One /proc/pressure file, read.
+ *
+ * A DISCRIMINATED UNION RATHER THAN A NULLABLE NUMBER, AND THE DISCRIMINANT IS
+ * THE POINT. There is no field a caller can read as a percentage without having
+ * gone through `state` first, so "an unreadable file scored 0.00%" — an
+ * all-clear printed by an instrument that measured nothing — is not a thing
+ * this module is able to say. That is the invariant expressed as a type rather
+ * than as an assertion a later author can delete (KAN-267); `worstStall`'s
+ * null branch carries the assertion half.
+ */
+export type PressureReading =
+  | { state: 'measured'; fullAvg10Percent: number }
+  | { state: 'absent'; detail: string }
+  | { state: 'unreadable'; detail: string };
+
+/**
  * How much wall-clock time the machine spent stalled, from
  * /proc/pressure/{io,memory}.
  *
@@ -1021,14 +1056,21 @@ export const HERDR_OVERHEAD_CORES = 0.5;
  * stopped, not merely something waiting. See the header for why `full` rather
  * than `some`, and why both files rather than just `io`.
  *
- * Either may be null on its own if that file is unreadable; both null means PSI
- * is unavailable on this machine and the term is inert.
+ * Both readings are kept even though only the worse one can bind, so a
+ * derivation can print the one that did not — and so that "io read 0.31% and
+ * memory could not be read" is a sentence this report is able to say.
+ *
+ * SHAPE CHANGED BY KAN-267. This was `{ ioFullPercent, memoryFullPercent }`,
+ * two `number | null`s, and the null collapsed `absent` into `unreadable`. See
+ * {@link PressureUnavailable}. `worstStall` refuses the old shape loudly rather
+ * than reading it as a machine with no PSI, because that failure would restore
+ * exactly the silence this ticket removed.
  */
 export interface StallFacts {
-  /** `/proc/pressure/io` → `full avg10`, as a percentage. */
-  ioFullPercent: number | null;
-  /** `/proc/pressure/memory` → `full avg10`, as a percentage. Swap-in lives here. */
-  memoryFullPercent: number | null;
+  /** `/proc/pressure/io` → `full avg10`. The disk. */
+  io: PressureReading;
+  /** `/proc/pressure/memory` → `full avg10`. Swap-in and reclaim live here. */
+  memory: PressureReading;
 }
 
 /**
@@ -1067,18 +1109,93 @@ export function worstStall(
   stall: StallFacts | null | undefined
 ): { percent: number; source: StallSource } | null {
   if (!stall) return null;
+  assertNotLegacyStallFacts(stall);
   const candidates: Array<{ percent: number; source: StallSource }> = [];
-  if (typeof stall.ioFullPercent === 'number' && Number.isFinite(stall.ioFullPercent)) {
-    candidates.push({ percent: stall.ioFullPercent, source: 'io' });
+  if (stall.io?.state === 'measured') {
+    candidates.push({ percent: stall.io.fullAvg10Percent, source: 'io' });
   }
-  if (typeof stall.memoryFullPercent === 'number' && Number.isFinite(stall.memoryFullPercent)) {
-    candidates.push({ percent: stall.memoryFullPercent, source: 'memory' });
+  if (stall.memory?.state === 'measured') {
+    candidates.push({ percent: stall.memory.fullAvg10Percent, source: 'memory' });
   }
   if (candidates.length === 0) return null;
   // Ties go to io: it is the cheaper of the two to act on (a disk is a thing an
   // operator can look at), and a tie between two equal figures is arbitrary
   // anyway. reduce with `>` rather than `>=` keeps that stable.
   return candidates.reduce((worst, c) => (c.percent > worst.percent ? c : worst));
+}
+
+/**
+ * Refuse a pre-KAN-267 `StallFacts` loudly instead of reading it as no-PSI.
+ *
+ * The type stops a TypeScript caller from handing over the old shape; nothing
+ * stops the .mjs proofs, which build machine facts as object literals and are
+ * not typechecked. Without this, an un-migrated literal makes `worstStall`
+ * find no `measured` reading, return null, and the machine reads as one with no
+ * pressure files at all — a machine that is admitted, silently, by a gate that
+ * has quietly stopped gating. That is the exact failure this ticket exists to
+ * remove, so it must not be reachable by forgetting to update a fixture.
+ *
+ * This is the assertion half of "prefer the type, then assert anyway": the type
+ * says what the code is able to express, and this says what actually arrived.
+ */
+function assertNotLegacyStallFacts(stall: StallFacts): void {
+  const legacy = stall as unknown as Record<string, unknown>;
+  if (
+    stall.io === undefined &&
+    stall.memory === undefined &&
+    ('ioFullPercent' in legacy || 'memoryFullPercent' in legacy)
+  ) {
+    throw new TypeError(
+      'StallFacts is the pre-KAN-267 shape { ioFullPercent, memoryFullPercent }. It is now ' +
+      '{ io, memory }, each a PressureReading — see capacity.ts. Reading the old shape here ' +
+      'would report this machine as having no /proc/pressure at all, which admits agents ' +
+      'onto a stalled machine without a word anywhere saying the gate stopped gating.'
+    );
+  }
+}
+
+/**
+ * Whether this machine can answer the stall question at all, as one word for a
+ * report to lead with.
+ *
+ * `measured`   — at least one file gave a figure, so the term can bind.
+ * `absent`     — no PSI here. Expected; nothing bounds I/O saturation and the
+ *                derivation says so.
+ * `unreadable` — PSI is present and did not answer. Worth going to look at.
+ *
+ * `unreadable` WINS OVER `absent` WHEN THE TWO FILES DISAGREE, because it is the
+ * one that asks somebody to do something. A machine with an absent `io` and an
+ * unreadable `memory` has a problem to investigate, and calling that pair
+ * `absent` would bury it under the expected case.
+ */
+export function stallInstrument(
+  stall: StallFacts | null | undefined
+): 'measured' | 'absent' | 'unreadable' {
+  if (!stall) return 'absent';
+  assertNotLegacyStallFacts(stall);
+  if (stall.io?.state === 'measured' || stall.memory?.state === 'measured') return 'measured';
+  if (stall.io?.state === 'unreadable' || stall.memory?.state === 'unreadable') return 'unreadable';
+  return 'absent';
+}
+
+/**
+ * One reading in words, for the derivation.
+ *
+ * Every branch is a sentence rather than a number-or-blank, because the line
+ * this feeds is read by somebody asking why an agent was refused — or, more
+ * dangerously, why one was not. `unreadable` carries its detail because
+ * "EACCES" and "no `full` line" send a reader to different places, and the
+ * derivation is the only place either of them is ever printed.
+ */
+export function describePressureReading(label: StallSource, reading: PressureReading): string {
+  switch (reading.state) {
+    case 'measured':
+      return `${reading.fullAvg10Percent.toFixed(2)}% ${label}`;
+    case 'absent':
+      return `${label} not present`;
+    case 'unreadable':
+      return `${label} UNREADABLE (${reading.detail})`;
+  }
 }
 
 /** What the machine looks like right now, or what we pretend it looks like. */
@@ -1306,14 +1423,33 @@ export interface Capacity {
   stallPercent: number | null;
   /** Which pressure file `stallPercent` came from. Null when it is null. */
   stallSource: StallSource | null;
-  /** Both figures as read, so a report can show the one that did not bind. */
+  /** Both readings as taken, so a report can show the one that did not bind. */
   stall: StallFacts | null;
+  /**
+   * Which kind of answer this machine gave, in one word (KAN-267).
+   *
+   * `stallPercent: null` says only "no figure", and a caller reading that alone
+   * cannot tell a kernel with no PSI from a /proc/pressure that is present and
+   * refusing to be read. Those want different responses — accept the first, go
+   * and look at the second — so the distinction is a field rather than
+   * something to infer from the two readings.
+   *
+   * `measured` exactly when `stallPercent` is non-null. The other two are the
+   * two ways of getting null, and `unreadable` wins when the files disagree.
+   */
+  stallInstrument: 'measured' | 'absent' | 'unreadable';
   /** The threshold `stallPercent` was compared against, after any override. */
   stallRefusePercent: number;
   /**
    * True when the veto fired: the machine is stalled and no agent is admitted
-   * however much CPU and memory are free. Always false where PSI is
-   * unavailable — an absent instrument refuses nothing.
+   * however much CPU and memory are free.
+   *
+   * ALWAYS FALSE WHERE NO FIGURE WAS TAKEN, and that covers `unreadable` as
+   * well as `absent` — the decision recorded on KAN-267. An unreadable pressure
+   * file is not evidence of the saturation this term measures (a /proc read
+   * fetches nothing from the block layer, measured), so refusing on it would be
+   * refusing on a non-signal, and it would wedge the whole fleet on a
+   * permissions problem. It is reported loudly and it gates nothing.
    */
   stalled: boolean;
 
@@ -1608,10 +1744,16 @@ export function computeCapacity(
   // has no room at all, whatever the three terms above computed, and there is
   // no per-agent I/O cost to divide by that would make it one. See the header.
   //
-  // `worst` is null exactly when /proc/pressure could not be read, and a
-  // missing instrument must refuse nothing: `stalled` is false, the derivation
-  // says the term is inert, and I/O saturation is bounded by nothing on that
-  // machine. That is a named hole rather than a silent one.
+  // `worst` is null exactly when NEITHER file yielded a figure, and an
+  // instrument that did not answer must refuse nothing: `stalled` is false, the
+  // derivation says the term is inert, and I/O saturation is bounded by nothing
+  // on that machine. That is a named hole rather than a silent one.
+  //
+  // KAN-267: there are two ways to get that null and the veto treats them
+  // alike, deliberately — see `stalled`'s contract. What is NOT alike is what
+  // gets printed, which is the whole of that ticket: `stallInstrument` carries
+  // which one it was through to the derivation, so a present-but-unreadable
+  // /proc/pressure stops being reported as a kernel without PSI.
   const worst = worstStall(machine.stall);
   const stallRefusePercent = options.stallRefusePercent ?? STALL_REFUSE_PERCENT;
   const stalled = worst !== null && worst.percent >= stallRefusePercent;
@@ -1651,6 +1793,7 @@ export function computeCapacity(
     stallPercent: worst ? worst.percent : null,
     stallSource: worst ? worst.source : null,
     stall: machine.stall ?? null,
+    stallInstrument: stallInstrument(machine.stall),
     stallRefusePercent,
     stalled,
     atCapacity: headroom <= 0
@@ -1687,11 +1830,22 @@ export function readAvailableBytes(): number {
  *     some avg10=2.27 avg60=2.32 avg300=1.98 total=537036752
  *     full avg10=0.01 avg60=0.18 avg300=0.24 total=313582439
  *
- * Returns null for every way this can fail — no file (pre-4.20, no CONFIG_PSI,
- * not Linux), no `full` line, an unparseable field, a figure outside 0..100 —
- * because the caller's handling of "no instrument" is to leave the gate open
- * and say so, and a half-read file must take that path rather than produce a
- * number that looks measured.
+ * NO WAY OF FAILING PRODUCES A NUMBER, and since KAN-267 the ways of failing
+ * are told apart. ENOENT is `absent` — a fact about the kernel. Every other
+ * failure is `unreadable` — the file is there and did not yield a figure —
+ * and each carries the detail a reader would otherwise have to guess at:
+ * EACCES in a container, no `full` line, an unparseable field.
+ *
+ * A figure outside 0..100 is `unreadable` rather than clamped or dropped:
+ * `full` is a share of wall time and cannot exceed 100, so a value that does
+ * means this file is not what this parser thinks it is, and guessing at it is
+ * how a gate ends up dividing noise.
+ *
+ * ⚠ THE `catch` USED TO SWALLOW THE ERRNO, and that was the defect. ENOENT and
+ * EACCES arrived here as the same caught exception and left as the same null,
+ * so a machine whose /proc/pressure was present but unreadable was reported —
+ * in words, in the derivation — as a machine with no PSI at all. `e.code` is
+ * the whole of what separates them and it was being thrown away.
  *
  * The path is a parameter so the proof can drive it from fixtures. That is not
  * only convenience: a gate whose arithmetic is verified on facts the test
@@ -1699,22 +1853,38 @@ export function readAvailableBytes(): number {
  * real parser at a file containing a real stalled machine's numbers is what
  * closes the seam between the parse and the arithmetic.
  */
-export function readPressureFull(path: string): number | null {
+export function readPressureFull(path: string): PressureReading {
+  let text: string;
   try {
-    const line = fs
-      .readFileSync(path, 'utf8')
-      .split('\n')
-      .find((l) => l.startsWith('full '));
-    if (!line) return null;
-    const field = line.split(/\s+/).find((f) => f.startsWith('avg10='));
-    if (!field) return null;
-    const value = Number(field.slice('avg10='.length));
-    if (!Number.isFinite(value) || value < 0 || value > 100) return null;
-    return value;
-  } catch {
-    // no /proc/pressure: pre-4.20, CONFIG_PSI off, or not Linux
-    return null;
+    text = fs.readFileSync(path, 'utf8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      return {
+        state: 'absent',
+        detail: `${path} does not exist (no CONFIG_PSI, a pre-4.20 kernel, or not Linux)`
+      };
+    }
+    return {
+      state: 'unreadable',
+      detail: `${path} could not be read: ${code ?? (e as Error)?.message ?? String(e)}`
+    };
   }
+
+  const line = text.split('\n').find((l) => l.startsWith('full '));
+  if (!line) return { state: 'unreadable', detail: `${path} has no \`full\` line` };
+
+  const field = line.split(/\s+/).find((f) => f.startsWith('avg10='));
+  if (!field) return { state: 'unreadable', detail: `${path}'s \`full\` line has no avg10= field` };
+
+  const value = Number(field.slice('avg10='.length));
+  if (!Number.isFinite(value)) {
+    return { state: 'unreadable', detail: `${path} gave a non-numeric avg10 (${field})` };
+  }
+  if (value < 0 || value > 100) {
+    return { state: 'unreadable', detail: `${path} gave avg10=${value}, outside 0..100` };
+  }
+  return { state: 'measured', fullAvg10Percent: value };
 }
 
 /**
@@ -1727,8 +1897,8 @@ export function readPressureFull(path: string): number | null {
  */
 export function readStallFacts(root = '/proc/pressure'): StallFacts {
   return {
-    ioFullPercent: readPressureFull(`${root}/io`),
-    memoryFullPercent: readPressureFull(`${root}/memory`)
+    io: readPressureFull(`${root}/io`),
+    memory: readPressureFull(`${root}/memory`)
   };
 }
 
@@ -2495,21 +2665,39 @@ export function describeCapacity(c: Capacity): string {
   // reader will assume is protecting them (KAN-218) — the whole reason this
   // ticket exists is that a protection disappeared without a line anywhere
   // saying it had.
+  // KAN-267: THREE BRANCHES, NOT TWO. `stallPercent === null` used to print the
+  // no-CONFIG_PSI sentence unconditionally, so a machine whose pressure files
+  // were present and unreadable was told it did not have them — a false
+  // statement about the machine, sending an operator to check a kernel config
+  // when what they have is a permission or a namespace. Both branches still say
+  // the term is inert and what that leaves unprotected; they differ on why, and
+  // the second one names a thing to go and look at.
+  //
+  // Branching on `stallPercent` rather than on `stallInstrument` keeps the
+  // `measured` arm's figure narrowed to a number by the compiler, and it states
+  // the invariant the two fields share: `measured` exactly when there is a
+  // figure. The instrument only has to separate the two ways of having none.
+  const readings = c.stall
+    ? `${describePressureReading('io', c.stall.io)}, ` +
+      `${describePressureReading('memory', c.stall.memory)}`
+    : 'no readings taken';
   if (c.stallPercent === null) {
     lines.push(
-      'io/memory stall: no /proc/pressure on this machine (needs Linux 4.20+ with CONFIG_PSI), ' +
-      'so this term is inert and nothing here bounds a machine thrashing on swap or stalled ' +
-      'on a failing disk. The cpu term deliberately counts iowait as idle, and there is no ' +
-      'honest fallback instrument — see capacity.ts'
+      c.stallInstrument === 'unreadable'
+        ? 'io/memory stall: /proc/pressure IS PRESENT ON THIS MACHINE AND COULD NOT BE READ, ' +
+          'so this term is inert and nothing here bounds a machine thrashing on swap or ' +
+          'stalled on a failing disk — the same hole as a kernel without PSI, but this one is ' +
+          'a fault on this box rather than a property of its kernel, and it is worth going to ' +
+          'look at. It does not itself refuse anything: an unreadable pressure file is not ' +
+          `evidence of I/O saturation (KAN-267). ${readings}`
+        : 'io/memory stall: no /proc/pressure on this machine (needs Linux 4.20+ with ' +
+          'CONFIG_PSI), so this term is inert and nothing here bounds a machine thrashing on ' +
+          'swap or stalled on a failing disk. The cpu term deliberately counts iowait as ' +
+          'idle, and there is no honest fallback instrument — see capacity.ts'
     );
   } else {
-    const io = c.stall?.ioFullPercent;
-    const mem = c.stall?.memoryFullPercent;
-    const both =
-      `${typeof io === 'number' ? `${io.toFixed(2)}% io` : 'io unreadable'}, ` +
-      `${typeof mem === 'number' ? `${mem.toFixed(2)}% memory` : 'memory unreadable'}`;
     lines.push(
-      `io/memory stall: ${both} (/proc/pressure \`full avg10\` — the share of the last 10s in ` +
+      `io/memory stall: ${readings} (/proc/pressure \`full avg10\` — the share of the last 10s in ` +
       `which every non-idle task was stalled); worst is ${c.stallPercent.toFixed(2)}% on ` +
       `${c.stallSource}, against a ${c.stallRefusePercent}% threshold` +
       (c.stalled

@@ -453,18 +453,29 @@ function capacityDto(c: Capacity) {
       c.cpuBusyWindowSeconds === null ? null : Math.round(c.cpuBusyWindowSeconds),
     // The stall veto (KAN-218), which is not a count and so has no
     // `headroomBy…` companion. `stallPercent: null` is the one reading a caller
-    // must not read as "fine": it means this machine has no /proc/pressure and
-    // nothing at all is bounding I/O saturation. `stalled` is therefore sent
-    // separately from the figure rather than inferred from it.
+    // must not read as "fine": it means no figure was taken and nothing at all
+    // is bounding I/O saturation. `stalled` is therefore sent separately from
+    // the figure rather than inferred from it.
     stallPercent: c.stallPercent === null ? null : Math.round(c.stallPercent * 100) / 100,
     stallSource: c.stallSource,
+    // KAN-267: which of the two kinds of "no figure" this is. A caller holding
+    // only `stallPercent: null` cannot tell a kernel without PSI from a
+    // /proc/pressure that is present and refusing to be read, and the second is
+    // a fault on the box worth surfacing. The per-file states carry the same
+    // distinction one file at a time, with the detail that says what happened.
+    stallInstrument: c.stallInstrument,
+    stallIoState: c.stall?.io.state ?? null,
+    stallMemoryState: c.stall?.memory.state ?? null,
+    stallIoDetail: c.stall?.io.state === 'measured' ? null : (c.stall?.io.detail ?? null),
+    stallMemoryDetail:
+      c.stall?.memory.state === 'measured' ? null : (c.stall?.memory.detail ?? null),
+    // The two figures themselves, unchanged on the wire: null still means "no
+    // figure from this file", and `stallIoState` is now what says why.
     stallIoPercent:
-      typeof c.stall?.ioFullPercent === 'number'
-        ? Math.round(c.stall.ioFullPercent * 100) / 100
-        : null,
+      c.stall?.io.state === 'measured' ? Math.round(c.stall.io.fullAvg10Percent * 100) / 100 : null,
     stallMemoryPercent:
-      typeof c.stall?.memoryFullPercent === 'number'
-        ? Math.round(c.stall.memoryFullPercent * 100) / 100
+      c.stall?.memory.state === 'measured'
+        ? Math.round(c.stall.memory.fullAvg10Percent * 100) / 100
         : null,
     stallRefusePercent: c.stallRefusePercent,
     stalled: c.stalled,

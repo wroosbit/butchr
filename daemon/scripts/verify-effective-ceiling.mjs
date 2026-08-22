@@ -193,7 +193,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // loosened to make a number look better. Sections that are ABOUT this machine
 // — 1, and section 3's real-figures walk — read the real pressure files, as
 // they must.
-const QUIET_STALL = { ioFullPercent: 0, memoryFullPercent: 0 };
+const QUIET_STALL = { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } };
 
 // ---------------------------------------------------------------------------
 // Section 1 — this machine, measured
