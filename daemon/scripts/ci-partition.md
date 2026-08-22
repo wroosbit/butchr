@@ -88,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 140 |
-| `partial` | 24 |
+| `yes` | 141 |
+| `partial` | 25 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **190** |
+| **total** | **192** |
 
-**164 of 190** run on every pull request.
+**166 of 192** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -150,6 +150,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-crabcast-channel-startup-supervision` | yes | reads `daemon/src/*.ts` as TEXT and asserts against them in process; no build, no live daemon, no herdr, no credential, no peer, no terminal, no CrabCast socket. |
 | `verify-crabcast-reconnect-resync` | yes | stands up its own Unix socket and answers its own frames in process; no live daemon, no herdr, no PTY, no credential, no peer, no network. It writes nothing to disk outside os.tmpdir(). |
 | `verify-crabcast-runtime-switch` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-create-stamp-is-audited` | yes | every section drives the built router in process against a stub transport: no daemon, no credential, no network, no Jira. |
 | `verify-cross-type-activation` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-cutover-health-predicate` | yes | node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. Every frame is a literal in this file or a recorded line quoted in it. §5 spawns cutover-health.mjs as a child node process and writes its frames under os.tmpdir(), never into the repository, then removes them. |
 | `verify-cutover-reap-verdict` | yes | node builtins only, no build, no daemon, no herdr, no credential, no peer, no terminal, no network. §3 and §5 create a temporary unix socket and a temporary directory tree under `os.tmpdir()`, never inside the repository, and remove both. §3 additionally spawns two short-lived node children as positive controls — one held open and killed in a `finally`, one that prints a reading and exits — and §5 spawns the reaper three times. Every child is `process.execPath` and every path is under `os.tmpdir()`. |
@@ -263,6 +264,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-pr-watch-approver-routing` | partial | §2-§6 run anywhere: the GitHub reader is a stub, the fleet is invented, and there is no network, no `gh`, no credential and no terminal. §1, the red drive, needs a second `dist` built from `origin/main` and is SKIPPED — loudly, and saying that its absence makes the run no evidence that the defect existed. The recipe is below and its output is pasted in the pull request. |
 | `verify-prompt-write-refusal` | partial | the refusal itself is asserted in CI. Section 1, the silent uninstructed start that makes the refusal meaningful, needs a dist built from `origin/main` and is skipped without one. |
 | `verify-pty-init-rejects-unknown-session` | partial | the rejection path asserts in CI. The regression stage needs herdr to start a real agent and prints `SKIPPED: no herdr to start an agent with` instead. |
+| `verify-self-account-follows-credential` | partial | sections 2-6 drive the built service in process, so CI runs them: no daemon, no credential, no network. Section 1, the pre-fix build that makes the rest mean something, needs a `dist` built from the merge base and is SKIPPED (loudly) without one. A run that skips it exits 2 and says so, rather than reporting a clean sweep. |
 | `verify-setup-shell-portability` | partial | §1–§3 read `docs/SETUP.md` as TEXT and assert in full on any runner: they parse its fenced `bash` blocks, refuse a bare `$?` outside a `bash -c` wrapper, and prove the detector fires on a synthetic hazard it was never told about. Node builtins only — no build, no daemon, no herdr, no credential, no network, no wall clock. §4 runs the hazard against a REAL `fish` to show that a single parse unit is refused ENTIRE -- the command before the `$?` does not run either; a runner without `fish` on PATH announces that section SKIPPED, and a skip is printed as a skip and never counted as a pass. It is not mocked: the whole value of §4 is that the parse error is fish's own. §5 does the same for FILE mode — it writes a four-step fixture with a `$?` on line 3 and shows that none of the four ran, steps 1 and 2 above it included — and skips identically. |
 | `verify-shared-clone-is-not-grafted` | partial | sections 1 and 2 build their own git repositories in a temp dir and need nothing but `git`, node and a built `dist`, so they assert in full on a runner. Section 3 classifies the real shared clone at ~/code/wroosbit/butchr, which no CI runner has; it skips loudly and does not fail, and it is the only section that observes a clone this script did not create. |
 | `verify-skip-is-not-a-pass` | partial | §1 and §2 need no peer, no herdr, no PTY, no credential and no network; they read this repository's own helper and spawn `node`. §3 needs `daemon/dist` and SKIPS without it, which makes THIS script exit 2 rather than 0 — the contract under test applied to itself, and deliberate. `run-ci-verify-set.mjs` builds before it runs, so §3 executes there; the `verify-script-sweep` job does not build, and that step passes `--allow-skipped` to say so out loud. |
