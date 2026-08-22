@@ -121,36 +121,56 @@ function subheadings(markdown) {
  * identical predicates against mutated text. A detector returns null when the
  * claim holds and a sentence naming what is missing when it does not.
  */
+//
+// ⚠ SECTIONS ARE LOCATED BY NAME, NEVER BY NUMBER. `task/KAN-621` renumbers
+// these steps — it swaps *Load the extension into Chrome* with *Register the
+// native-messaging host* — so a detector keyed on `## 4.` would, after that
+// merge, assert over whichever section happened to land at 4 and report a
+// green about the wrong prose. That is this repository's own convention:
+// KAN-621's document says steps are referred to by name "so that a future
+// reorder of this document cannot silently invalidate it".
+const LOAD_STEP = /^## \d+(\.\d+)?\. .*Load the extension into Chrome/;
+const AUTOSTART_STEP = /^## \d+(\.\d+)?\. .*Autostart, and the file-descriptor ceiling/;
+const CHECK_STEP = /^## \d+(\.\d+)?\. .*Check that it worked/;
+const CHANNELS_STEP = /^## \d+(\.\d+)?\. .*agent-to-agent channels/;
+
 const DETECTORS = {
-  'launcher-in-step-4': (doc) => {
-    const s = sectionOf(doc, /^## 4\./);
-    if (!s) return 'no `## 4.` heading in the document';
-    if (!/starts the daemon/i.test(s.text)) return '§4 does not say the extension *starts the daemon*';
-    if (!/native-host\.(ts|sh)/.test(s.text)) {
-      return '§4 says it but names no source file a reader could check (`native-host.ts` / `native-host.sh`)';
+  'launcher-where-the-extension-is-loaded': (doc) => {
+    const s = sectionOf(doc, LOAD_STEP);
+    if (!s) return 'no *Load the extension into Chrome* step in the document';
+    if (!/starts the daemon/i.test(s.text)) {
+      return 'the extension-loading step does not say it *starts the daemon*';
     }
-    if (!/launcher/i.test(s.text)) return '§4 does not call the native-messaging host a *launcher*';
+    if (!/native-host\.(ts|sh)/.test(s.text)) {
+      return 'it says so but names no source file a reader could check (`native-host.ts` / `native-host.sh`)';
+    }
+    if (!/launcher/i.test(s.text)) {
+      return 'it does not call the native-messaging host a *launcher*';
+    }
     return null;
   },
 
-  'step-6-is-not-where-the-daemon-begins': (doc) => {
-    const s = sectionOf(doc, /^## 6\./);
-    if (!s) return 'no `## 6.` heading in the document';
-    if (!/does not start it|already did|does not start the daemon/i.test(s.text)) {
-      return '§6 does not say that it is not what starts the daemon';
+  'autostart-is-not-where-the-daemon-begins': (doc) => {
+    const s = sectionOf(doc, AUTOSTART_STEP);
+    if (!s) return 'no *Autostart, and the file-descriptor ceiling* step in the document';
+    if (!/does not start it|already\s+\n?did|does not start the daemon/i.test(s.text)) {
+      return 'the autostart step does not say that it is not what starts the daemon';
     }
     if (!/inert/i.test(s.text)) {
-      return '§6 does not answer the staging question — no mention of an *inert* box';
+      return 'the autostart step does not answer the staging question — no mention of an *inert* box';
+    }
+    if (!/Load the extension into Chrome/.test(s.text)) {
+      return 'the autostart step does not name the step that DOES start the daemon';
     }
     return null;
   },
 
-  'step-7-kan-550-names-its-cause': (doc) => {
-    const s = sectionOf(doc, /^## 7\./);
-    if (!s) return 'no `## 7.` heading in the document';
-    if (!/KAN-550/.test(s.text)) return '§7 no longer mentions KAN-550';
-    if (!/step 4/i.test(s.text)) {
-      return "§7's KAN-550 paragraph does not point at step 4, so the incident still arrives without its cause";
+  'kan-550-names-its-cause': (doc) => {
+    const s = sectionOf(doc, CHECK_STEP);
+    if (!s) return 'no *Check that it worked* step in the document';
+    if (!/KAN-550/.test(s.text)) return 'the check step no longer mentions KAN-550';
+    if (!/Load the extension into Chrome/.test(s.text)) {
+      return 'the KAN-550 paragraph does not point at *Load the extension into Chrome*, so the incident still arrives without its cause';
     }
     return null;
   },
@@ -159,14 +179,14 @@ const DETECTORS = {
     const subs = subheadings(doc);
     const rule = subs.filter((h) => /switch/i.test(h.title) && /already running/i.test(h.title));
     if (rule.length === 0) return 'no subheading states the switch/already-running rule anywhere';
-    const outside = rule.filter((h) => !/^9\./.test(h.step));
+    const outside = rule.filter((h) => !/agent-to-agent channels/i.test(h.step));
     if (outside.length === 0) {
       return `the rule is stated only inside step 9 (${rule.map((h) => `line ${h.line}`).join(', ')})`;
     }
-    const nine = sectionOf(doc, /^## 9\./);
-    if (!nine) return 'no `## 9.` heading in the document';
-    if (!/switch you flip does not reach/i.test(nine.text)) {
-      return '§9 does not point at the general rule, so its warning still reads as a fact about channels';
+    const channels = sectionOf(doc, CHANNELS_STEP);
+    if (!channels) return 'no agent-to-agent channels step in the document';
+    if (!/switch you flip does not reach/i.test(channels.text)) {
+      return 'the channels step does not point at the general rule, so its warning still reads as a fact about channels';
     }
     return null;
   }
@@ -174,14 +194,14 @@ const DETECTORS = {
 
 const doc = fs.readFileSync(SETUP, 'utf8');
 
-// ── §1a. The document carries the launcher claim, in §4, checkably ──────────
-console.log('\n§1a  the launcher claim is in §4, and names a file');
+// ── §1a. The extension-loading step carries the launcher claim, checkably ───
+console.log('\n§1a  the launcher claim is where the extension is loaded, and names a file');
 {
-  const why = DETECTORS['launcher-in-step-4'](doc);
+  const why = DETECTORS['launcher-where-the-extension-is-loaded'](doc);
   if (why) fail(why);
   else {
-    const s = sectionOf(doc, /^## 4\./);
-    ok(`§4 (lines ${s.startLine}-${s.endLine}) says the extension starts the daemon and names the source`);
+    const s = sectionOf(doc, LOAD_STEP);
+    ok(`lines ${s.startLine}-${s.endLine} say the extension starts the daemon and name the source`);
   }
 }
 
@@ -206,31 +226,34 @@ console.log('\n§1b  the mechanism the prose points at still exists in the sourc
 }
 
 // ── §2. §6 says what it adds, and answers the staging question ──────────────
-console.log('\n§2   §6 does not claim to be where the daemon begins');
+console.log('\n§2   the autostart step does not claim to be where the daemon begins');
 {
-  const why = DETECTORS['step-6-is-not-where-the-daemon-begins'](doc);
+  const why = DETECTORS['autostart-is-not-where-the-daemon-begins'](doc);
   if (why) fail(why);
-  else ok('§6 says it is not what starts the daemon, and answers the inert-box question');
+  else ok('it disclaims the start, names the step that does it, and answers the inert-box question');
 }
 
 // ── §3. §7's KAN-550 paragraph reaches its cause ────────────────────────────
-console.log('\n§3   §7 connects the KAN-550 incident to step 4');
+console.log('\n§3   the check step connects the KAN-550 incident to its cause');
 {
-  const why = DETECTORS['step-7-kan-550-names-its-cause'](doc);
+  const why = DETECTORS['kan-550-names-its-cause'](doc);
   if (why) fail(why);
-  else ok('§7 mentions KAN-550 and points at step 4');
+  else ok('KAN-550 is named alongside *Load the extension into Chrome*');
 }
 
 // ── §4. The switch rule is stated outside §9, and §9 points at it ───────────
-console.log('\n§4   the switch rule is reachable without reading step 9');
+console.log('\n§4   the switch rule is reachable without reading the channels step');
 {
   const why = DETECTORS['switch-rule-lives-outside-step-9'](doc);
   if (why) fail(why);
   else {
     const h = subheadings(doc).find(
-      (x) => /switch/i.test(x.title) && /already running/i.test(x.title) && !/^9\./.test(x.step)
+      (x) =>
+        /switch/i.test(x.title) &&
+        /already running/i.test(x.title) &&
+        !/agent-to-agent channels/i.test(x.step)
     );
-    ok(`the rule is stated at line ${h.line}, under "${h.step}", and §9 points at it`);
+    ok(`the rule is stated at line ${h.line}, under "${h.step}", and the channels step points at it`);
   }
 }
 
@@ -244,47 +267,47 @@ console.log('\n§5   each detector goes red when its passage is removed (detecto
 {
   const MUTATIONS = [
     {
-      detector: 'launcher-in-step-4',
-      what: 'drop §4 entirely',
+      detector: 'launcher-where-the-extension-is-loaded',
+      what: 'drop the extension-loading step entirely',
       apply: (d) => {
-        const s = sectionOf(d, /^## 4\./);
+        const s = sectionOf(d, LOAD_STEP);
         const lines = d.split('\n');
         return [...lines.slice(0, s.startLine - 1), ...lines.slice(s.endLine)].join('\n');
       }
     },
     {
-      detector: 'launcher-in-step-4',
-      what: 'keep §4 but remove the phrase "starts the daemon" from it',
+      detector: 'launcher-where-the-extension-is-loaded',
+      what: 'keep the step but remove the phrase "starts the daemon" from it',
       apply: (d) => {
-        const s = sectionOf(d, /^## 4\./);
+        const s = sectionOf(d, LOAD_STEP);
         const lines = d.split('\n');
         const cut = s.text.replace(/starts the daemon/gi, 'does a thing');
         return [...lines.slice(0, s.startLine - 1), ...cut.split('\n'), ...lines.slice(s.endLine)].join('\n');
       }
     },
     {
-      detector: 'step-6-is-not-where-the-daemon-begins',
-      what: 'remove the word "inert" from §6',
+      detector: 'autostart-is-not-where-the-daemon-begins',
+      what: 'remove the word "inert" from the autostart step',
       apply: (d) => {
-        const s = sectionOf(d, /^## 6\./);
+        const s = sectionOf(d, AUTOSTART_STEP);
         const lines = d.split('\n');
         const cut = s.text.replace(/inert/gi, 'quiet');
         return [...lines.slice(0, s.startLine - 1), ...cut.split('\n'), ...lines.slice(s.endLine)].join('\n');
       }
     },
     {
-      detector: 'step-7-kan-550-names-its-cause',
-      what: 'remove every "step 4" pointer from §7',
+      detector: 'kan-550-names-its-cause',
+      what: 'remove the cause pointer from the check step',
       apply: (d) => {
-        const s = sectionOf(d, /^## 7\./);
+        const s = sectionOf(d, CHECK_STEP);
         const lines = d.split('\n');
-        const cut = s.text.replace(/step 4/gi, 'that step');
+        const cut = s.text.replace(/Load the extension into Chrome/g, 'that step');
         return [...lines.slice(0, s.startLine - 1), ...cut.split('\n'), ...lines.slice(s.endLine)].join('\n');
       }
     },
     {
       detector: 'switch-rule-lives-outside-step-9',
-      what: 'delete the rule subheading, leaving §9 as the only statement',
+      what: 'delete the rule subheading, leaving the channels step as the only statement',
       apply: (d) =>
         d
           .split('\n')

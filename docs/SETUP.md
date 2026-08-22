@@ -103,8 +103,8 @@ Three instances, all live today:
 
 | Switch | Where | What an agent already running keeps |
 | --- | --- | --- |
-| `channel.json` | step 9 | no channel — it stays deaf to them for the rest of its life, and the daemon goes on writing frames at it |
-| `BUTCHR_ATLASSIAN_PROXY` | step 8 | the Atlassian tools its workspace was provisioned with, not the ones you just enabled |
+| `channel.json` | *Optional: agent-to-agent channels* | no channel — it stays deaf to them for the rest of its life, and the daemon goes on writing frames at it |
+| `BUTCHR_ATLASSIAN_PROXY` | *Optional: the Jira credential* | the Atlassian tools its workspace was provisioned with, not the ones you just enabled |
 | an integration's **Off** control | the extension's settings page | the `.mcp.json` already written into its workspace; it is left strictly alone and goes on working |
 
 ⚠ **Do not read the rule as symmetrical.** Step 9's kill switch takes effect at
@@ -361,13 +361,15 @@ table means by *"auto-spawned by the first client"* — **Chrome is that first
 client.** Two things follow, and the document used to leave you to find both the
 hard way:
 
-- **The daemon does not begin at step 6.** By the time you reach it, one is
-  already running. What step 6 adds is set out there.
+- **The daemon does not begin at *Autostart, and the file-descriptor ceiling*.**
+  By the time you reach that step, one is already running. What it adds is set
+  out there.
 - **The daemon Chrome spawns carries Chrome's environment, which has no
   `BUTCHR_*` variables in it at all** — so the runtime pin, the agent cap, the
   reconciler's mode and the Atlassian proxy are all at their defaults on it.
-  That is the cause of the incident step 7 describes; step 6 is what replaces it
-  with a supervised daemon.
+  That is the cause of the incident *Check that it worked* describes;
+  *Autostart, and the file-descriptor ceiling* is what replaces it with a
+  supervised daemon.
 
 ---
 
@@ -397,8 +399,8 @@ If you ever move the clone, re-run this — the manifest holds an absolute path.
 daemon/scripts/install-service.sh
 ```
 
-**This step does not start the daemon — step 4 already did.** What it adds is
-everything a daemon Chrome auto-spawned does not have:
+**This step does not start the daemon — *Load the extension into Chrome* already
+did.** What it adds is everything a daemon Chrome auto-spawned does not have:
 
 - **autostart across a reboot**, via the unit plus `loginctl enable-linger`;
 - **the fd drop-in** that raises herdr's `LimitNOFILE`, and the periodic
@@ -410,24 +412,24 @@ everything a daemon Chrome auto-spawned does not have:
   unit exists*, precisely because the unit is the one spawner that carries the
   `BUTCHR_*` drop-ins; before this step there is no unit to ask, so Chrome's
   host falls through to a bare `spawn()` and the daemon inherits **Chrome's**
-  environment instead. Step 7 describes the two minutes in which that state
-  served a real fleet (KAN-550).
+  environment instead. *Check that it worked* describes the two minutes in which
+  that state served a real fleet (KAN-550).
 
 ⚠ **There is no supported "installed but inert" box, and stopping short of this
 step does not give you one.** The document used to imply otherwise by saying
-nothing before step 6 about a daemon. If you are staging a machine and want
-nothing running, the control is **step 4**: an extension that is not loaded — or
-whose card is disabled at `chrome://extensions` — is a Chrome that never
-launches the host, and every step before it leaves the box quiet. Running this
-step is itself a start, since it ends in
+nothing about a daemon until here. If you are staging a machine and want nothing
+running, the control is ***Load the extension into Chrome***: an extension that
+is not loaded — or whose card is disabled at `chrome://extensions` — is a Chrome
+that never launches the host, and every step before that one leaves the box
+quiet. Running *this* step is itself a start, since it ends in
 `systemctl --user enable --now butchr-daemon.service`.
 
-⚠ **And because step 4 ran first, this step routinely starts a daemon that
-loses.** The unit's daemon finds the socket already held by the one Chrome
+⚠ **And because the extension was loaded first, this step routinely starts a
+daemon that loses.** The unit's daemon finds the socket already held by the one Chrome
 spawned, and since KAN-550 a loser that cannot establish the incumbent is the
 configured one exits `3` rather than `0` — so `Restart=on-failure` retries and
 the **unit ends up `failed` while the fleet works**. That is this ordering, not
-a broken install. Step 7 is where you resolve it: `butchr-doctor` names the
+a broken install. *Check that it worked* is where you resolve it: `butchr-doctor` names the
 process actually holding the socket, and the losing daemon prints the remedy
 itself (kill that pid, then `systemctl --user start butchr-daemon.service`).
 
@@ -576,11 +578,12 @@ Nothing reported it, because nothing reported the process actually holding the
 socket. `butchr-doctor` now asks that process directly and FAILS when it is not
 carrying what the unit declares, naming each variable that differs.
 
-**Where Chrome got a daemon to auto-spawn is step 4**, and it is worth reading
-that warning next to this paragraph: the native-messaging host brings a daemon
-up on its own, so this incident's starting state is the ordinary state of any
-box between steps 4 and 6 rather than something that went wrong. This paragraph
-is the remedy; step 4 is the cause.
+**Where Chrome got a daemon to auto-spawn is *Load the extension into Chrome***,
+and it is worth reading that step's warning next to this paragraph: the
+native-messaging host brings a daemon up on its own, so this incident's starting
+state is the ordinary state of any box between loading the extension and
+*Autostart, and the file-descriptor ceiling* rather than something that went
+wrong. This paragraph is the remedy; loading the extension is the cause.
 
 A clean run ends in `Ready.`
 
@@ -735,8 +738,8 @@ restart — that direction is what a kill switch is for.
 **That is not a fact about channels.** It is this step's worked example of
 [*A switch you flip does not reach an agent that is already running*](#a-switch-you-flip-does-not-reach-an-agent-that-is-already-running),
 in step 0, which states the rule once and lists the other switches it governs —
-including `BUTCHR_ATLASSIAN_PROXY` in step 8, so a reader who never turns
-channels on still meets it. Channels are the instance where getting it wrong is
+including `BUTCHR_ATLASSIAN_PROXY`, so a reader who never turns channels on
+still meets it. Channels are the instance where getting it wrong is
 loudest, for the reason set out below: the failure is silent on the side that
 would report it. The *off* direction being immediate is a property of **this**
 switch, which the daemon consults per message, and not of the rule.
