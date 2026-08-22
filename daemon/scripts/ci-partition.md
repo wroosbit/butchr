@@ -89,12 +89,12 @@ classification is the deliverable and the CI job is downstream of it.
 | class | count |
 | --- | --- |
 | `yes` | 140 |
-| `partial` | 22 |
+| `partial` | 23 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **188** |
+| **total** | **189** |
 
-**162 of 188** run on every pull request.
+**163 of 189** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -267,6 +267,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-skip-is-not-a-pass` | partial | §1 and §2 need no peer, no herdr, no PTY, no credential and no network; they read this repository's own helper and spawn `node`. §3 needs `daemon/dist` and SKIPS without it, which makes THIS script exit 2 rather than 0 — the contract under test applied to itself, and deliberate. `run-ci-verify-set.mjs` builds before it runs, so §3 executes there; the `verify-script-sweep` job does not build, and that step passes `--allow-skipped` to say so out loud. |
 | `verify-supervisor-cost-exclusion` | partial | the exclusion arithmetic (1-4), the enablement predicate (5b), the unmarked-tree discriminator (5c) and the falsifier (6) all assert in CI. Section 5 reads the live fleet through /proc and is skipped on a runner, which has no agent trees. KAN-537 is why its unmarked arm no longer fails on a tree that holds no MCP server at all. |
 | `verify-unstaffable-covers-every-door` | partial | sections 1-5 run in process against the built modules and section 3 shells the repo's own tsc: no daemon, no credential, no network, so CI reaches all five. Section 6 files real Jira tickets through a door that is NOT this daemon's proxy, which is the only thing that can demonstrate the acceptance criterion, and it is SKIPPED (loudly) without `--live`. A run that skips it says so in its verdict rather than reporting a clean sweep. |
+| `verify-unstaffable-report-names-its-query` | partial | sections 1, 2 and 5 run in process against this repo's own build and its own tsc (no daemon, no credential, no network), while sections 3 and 4 need a SECOND build to read — a `dist` from another commit, named with `--against-build <dir>` — and are SKIPPED (loudly, and tallied) without one, because the acceptance criterion is a comparison between two builds and one build cannot make it. |
 
 ## `quarantined` — CI-runnable but currently RED — excluded loudly, with a reason and a ticket
 
