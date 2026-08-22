@@ -12,9 +12,12 @@ different paths for all three and a keyring backend that does not yet exist
 it; assume it does not work.
 
 **One step cannot be automated and is not pretended away:** loading and
-reloading the Chrome extension. Chrome offers no way to install, reload, or
-read the ID of an unpacked extension from outside the browser. Steps 4, 5 and 7
-require you to click. Everything else is a command.
+reloading the Chrome extension. Chrome offers no way to install or reload an
+unpacked extension from outside the browser. Steps 5 and 7 require you to
+click. Everything else is a command — including the extension's **ID**, which
+used to be on this list because it was read off the extension's card. It is
+derived from the load path and is now computed rather than copied, which is
+what lets step 4 run before step 5.
 
 **Every code block here is `bash`, and your login shell may not be.** This
 matters more than it sounds: the second machine this document was rehearsed
@@ -72,7 +75,7 @@ Three pieces that have to find each other:
 
 Chrome reaches the daemon through a **native-messaging host** — a small proxy
 Chrome launches, which relays to the one long-lived daemon over a Unix socket
-at `~/.local/share/butchr/butchr.sock`. Registering that host is step 5, and it
+at `~/.local/share/butchr/butchr.sock`. Registering that host is step 4, and it
 is the step most likely to be the reason nothing works.
 
 **Agents message each other over a fourth thing that is off by default**, and it
@@ -273,8 +276,45 @@ cd butchr
 
 The daemon reads `prompts/*.md` relative to the repo root at activation time,
 so **the clone is a runtime dependency, not just a build directory**. Put it
-somewhere permanent. If you move it later you must re-run steps 5 and 6, both
-of which bake in absolute paths.
+somewhere permanent.
+
+### If you move the clone
+
+**Three things bake in the clone's absolute path, and moving it invalidates all
+three at once.** This used to be a parenthesis at the end of a step you had
+already left, naming two step numbers and no commands; on the KAN-568 rehearsal
+the clone *was* relocated by hand and the right steps happened to run
+afterwards, so the note was satisfied by ordering luck rather than by anybody
+following it. Here it is as something you can run. Steps are referred to by
+**name** rather than by number, so that a future reorder of this document
+cannot silently invalidate it.
+
+From inside the clone, at its **new** location:
+
+```bash
+# 1. Re-register the native-messaging host. Both halves of that manifest moved:
+#    the path it points at, and the extension origin it allows — an unpacked
+#    extension's ID is derived from its load path, so the move changed it.
+daemon/scripts/install-native-host.sh "$(node daemon/scripts/compute-extension-id.mjs)"
+
+# 2. Reinstall the systemd units, whose ExecStart and WorkingDirectory are
+#    written as absolute paths at install time.
+daemon/scripts/install-service.sh
+
+# 3. Confirm — this re-checks both of the above against where things now are.
+node daemon/scripts/butchr-doctor.mjs
+```
+
+**Then re-load the extension in Chrome**, which is the third thing and the one
+no command can do. Chrome identifies an unpacked extension by the directory it
+was loaded from, so the card at `chrome://extensions` is now pointing at a path
+that no longer exists. Remove it, then **Load unpacked** the new
+`extension/dist` — the procedure is *Load the extension into Chrome*, and the
+ID it comes up with will be the one the command above just computed.
+
+That is the whole of it: the work of *Register the native-messaging host* and
+of *Autostart, and the file-descriptor ceiling*, done again against the new
+path, plus a re-load in the browser.
 
 ---
 
@@ -297,41 +337,78 @@ You should now have `daemon/dist/daemon.js`, `daemon/dist/native-host.js` and
 
 ---
 
-## 4. Load the extension into Chrome — and get its ID
+## 4. Register the native-messaging host
 
-**Manual. There is no way around this.**
+The host manifest allows exactly one extension origin, so it needs the
+extension's ID — and **the ID is computable before Chrome has ever seen the
+extension**. An unpacked extension's ID is `sha256` of the absolute directory
+it is loaded from, first 32 hex nibbles, each mapped `0–15 → a–p`. This
+document used to state that the ID "is derived from the load path" and then
+send you to the browser to copy it; the derivation now ships:
+
+```bash
+daemon/scripts/install-native-host.sh "$(node daemon/scripts/compute-extension-id.mjs)"
+```
+
+With no argument, `compute-extension-id.mjs` hashes `extension/dist` resolved
+off this clone's root — the same directory the next step tells you to select.
+Pass a path to compute the ID for any other location, and `--help` for the
+rest. It prints the ID on stdout and nothing else, which is what makes the
+`$(...)` above safe.
+
+`install-native-host.sh` writes `com.butchr.daemon.json` into both
+`~/.config/google-chrome/NativeMessagingHosts/` and the Chromium equivalent,
+pointing at `daemon/bin/native-host.sh` in your clone and allowing exactly that
+one extension origin. To see the ID on its own first:
+
+```bash
+node daemon/scripts/compute-extension-id.mjs
+```
+
+> **The ID is not a secret and is not portable.** It is different on every
+> machine because every machine has a different path, and it changes if you
+> move the clone — which is why nothing in this repository hard-codes it, and
+> why moving the clone has a procedure of its own (*If you move the clone*, in
+> step 2).
+>
+> **This is the unpacked case only.** A packed or Chrome Web Store extension
+> takes its ID from the signing key in its `.crx` rather than from any path, so
+> the computation above neither produces nor predicts one.
+
+**This step comes before the browser deliberately.** It used to come after, and
+the reload the next step then demanded was justified by exactly one condition:
+*an extension loaded before the manifest existed*. Registering first means the
+manifest is already on disk when the extension makes its first connection, so
+that condition never arises.
+
+---
+
+## 5. Load the extension into Chrome
+
+**Manual. There is no way around this** — Chrome offers no way to install or
+reload an unpacked extension from outside the browser.
 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode** (top right).
 3. **Load unpacked** → select `extension/dist` (the built output, *not*
    `extension/`).
-4. The card that appears shows an **ID** — 32 lowercase letters, e.g.
-   `mfhdmkkkpaepapfmelifphbjgmpekpah`. Copy it.
+4. The card that appears shows an **ID** — 32 lowercase letters. It must be the
+   32 characters step 4 computed. **If it is not, you loaded a different
+   directory than you hashed**: remove the extension and load the one whose
+   path went into the manifest, or re-run step 4 against the path you actually
+   picked. A mismatch here is the one thing that makes this step fail silently
+   — everything looks loaded, and nothing can connect.
 
-> **The ID is derived from the load path**, so it is different on every machine
-> and it changes if you move the clone. It is not a secret, but it is not
-> portable either — which is why nothing in this repository can hard-code it,
-> and why step 5 takes it as an argument.
+**No reload is needed, and that is what step 4's ordering buys.** The warning
+that used to live here — that an extension loaded before the manifest existed
+reports `Specified native messaging host com.butchr.daemon not found` until it
+is reloaded — described a condition this order does not create. If you do meet
+that message, it means the manifest was absent or wrong when the extension
+first connected: fix it with step 4 and then use the ↻ on the extension's card,
+which is the one case that still needs it.
 
----
-
-## 5. Register the native-messaging host
-
-```bash
-daemon/scripts/install-native-host.sh <the-id-from-step-4>
-```
-
-This writes `com.butchr.daemon.json` into both
-`~/.config/google-chrome/NativeMessagingHosts/` and the Chromium equivalent,
-pointing at `daemon/bin/native-host.sh` in your clone and allowing exactly that
-one extension origin.
-
-Then **reload the extension** (the ↻ on its card at `chrome://extensions`).
-Chrome reads the host manifest when the extension connects, and an extension
-loaded before the manifest existed will report `Specified native messaging host
-com.butchr.daemon not found` until it is reloaded.
-
-If you ever move the clone, re-run this — the manifest holds an absolute path.
+Rebuilding the extension later is a different matter and does still need a
+manual reload — see step 10.
 
 ---
 
