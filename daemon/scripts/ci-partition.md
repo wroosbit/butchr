@@ -88,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 143 |
+| `yes` | 144 |
 | `partial` | 26 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **195** |
+| **total** | **196** |
 
-**169 of 195** run on every pull request.
+**170 of 196** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -129,6 +129,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-board-reconciler-guard` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-brief-location` | yes | §1 and §2 read `daemon/src/*.ts` as text; §3 and §4 import the built daemon modules and call them over values this script constructs. It needs no peer, no herdr, no PTY, no credential and no network, and it writes nothing. The `--static-only` flag below is for a human running this against a build that just failed, not for CI, which builds first. |
 | `verify-cap-claims-match-the-chain` | yes | imports the built daemon modules, reads source files off the checkout, and builds its red-drive fixtures in memory. No live daemon, no herdr, no credential, no peer, no terminal, no network. |
+| `verify-census-scope-states-its-population` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-channel-capability-refusal` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. Its sockets are unix sockets it creates under os.tmpdir(), and the one piece of shared state it touches — the channel kill switch under BUTCHR_DIR — it reads, overwrites and restores in a `finally`, which the CI runner sandboxes per child anyway. |
 | `verify-channel-client-reach` | yes | imports the built daemon modules and asserts against them in process, over unix sockets and child processes it creates under os.tmpdir(); no live daemon, no herdr, no credential, no peer, no terminal, and nothing read from the fleet. EVERY section runs on a runner, so there is no skip tally and no way to report a green that a section did not earn. |
 | `verify-channel-emission-gate` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |

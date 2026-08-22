@@ -33,6 +33,15 @@ import {
   workspaceDirFor
 } from './herdr.js';
 import type { AgentRuntime } from './agent-runtime.js';
+import {
+  type AddressKnowledge,
+  type CensusScope,
+  addressKnowledge,
+  censusScope,
+  refusalForOffBoxAddress,
+  refusalForUnestablishedAddress,
+  workspacePresence
+} from './census-scope.js';
 import { StartLedger, sharedStartLedger } from './start-ledger.js';
 import type { RuntimeSwitchReport } from './runtime-switch.js';
 import { readWorkState } from './work-state.js';
@@ -4006,6 +4015,53 @@ export class MessageRouter {
         return;
       }
 
+      // ⚠ AN ADDRESS THIS BOX HAS NEVER HELD IS REFUSED, NOT DESCRIBED
+      // (KAN-630). This is the branch `story/KAN-609` read three of on
+      // 2026-08-21 and reported as three agents having stood down; all three
+      // were alive on the other machine and their PRs merged while it was
+      // being escalated.
+      //
+      // **The row it read was fabricated, and only under the runtime the fleet
+      // actually runs.** `HerdrBridge.describeAgent` throws `No agent found for
+      // key '<key>'` for an address it does not know, and the catch below turns
+      // that into `success: false`. `CrabCastRuntime.describeAgent` never
+      // throws: its census lookup is an optional `find`, so a miss returns
+      // `workDir: workspaceDirFor(type, key)` — a path it COMPUTED rather than
+      // found — and `herdrStatus: asHerdrStatus(undefined)`, which is
+      // `'unknown'`. The result is a well-formed `sessionless: true` row about
+      // an agent that was never here, indistinguishable on the wire from a real
+      // reading of a real agent.
+      //
+      // Refused rather than annotated, on the same rule the ambiguous-key
+      // branch above states: the caller wanted ONE agent's state, and no
+      // caveat attached to a fabricated row makes it a reading. A refusal has
+      // no `herdrStatus` and no `sessionless` on it, so the sentence *"it is
+      // sessionless with unknown status"* stops being producible for this
+      // population rather than being argued against — which is the point,
+      // because all three agents that got this wrong had read the argument.
+      //
+      // ⚠ **It cannot swallow an agent that IS here.** `known-here` falls
+      // through to exactly today's answer, and it holds if ANY of three
+      // witnesses says so — see {@link addressKnowledge}. `cannot-tell` is its
+      // own refusal and never collapses into this one.
+      const knowledge = this.addressKnowledge(type, key);
+      if (knowledge.kind !== 'known-here') {
+        const scope = this.censusScope();
+        respond({
+          action: 'agent_status_response',
+          success: false,
+          key,
+          addressedBy: type ? 'key-and-type' : 'key-only',
+          refusedBy: knowledge.kind === 'unknown-here' ? 'not-on-this-box' : 'scope-undetermined',
+          censusScope: scope,
+          error:
+            knowledge.kind === 'unknown-here'
+              ? refusalForOffBoxAddress(type ?? '<any type>', key, knowledge, scope)
+              : refusalForUnestablishedAddress(type ?? '<any type>', key, knowledge, scope)
+        });
+        return;
+      }
+
       // The herdr-list fallback refuses an ambiguous key of its own accord —
       // `resolveAgentName` throws `AmbiguousKeyError` — and the catch below
       // turns that into the same refusal shape the session path answers with,
@@ -5542,6 +5598,15 @@ export class MessageRouter {
     respond({
       action: 'list_agents_response',
       success: true,
+      // WHICH POPULATION THIS LIST IS (KAN-630). Every count below — `agents`,
+      // `agentsTotal`, `missingAgents`, the capacity headroom — reads as a
+      // fleet answer and is a box answer, and on 2026-08-21 three agents in one
+      // hour completed one of them as a fleet fact and were wrong every time.
+      // Adjacent to the counts rather than in a docstring, for the reason
+      // `censusUnreadableRecordsTotal` is: a disclosure nobody reads is the
+      // same as no disclosure, and all three of those agents had read the
+      // docstring.
+      censusScope: this.censusScope(),
       agents,
       unbackedPanes,
       // Always present, even when empty: a caller that has to distinguish "no
@@ -5688,6 +5753,12 @@ export class MessageRouter {
     respond({
       action: 'capacity_response',
       success: true,
+      // The same population statement as `list_agents` (KAN-630), and it is
+      // load-bearing here in its own right: `running: 0 task agents` is a true
+      // sentence on a box that runs no task agents, and it is the sentence a
+      // supervisor reads as "the fleet is idle" before staffing over the top of
+      // work already in flight elsewhere.
+      censusScope: this.censusScope(),
       ...capacityDto(capacity),
       derivation: describeCapacity(capacity),
       // At capacity the next question is always "then what would I have to
@@ -5942,6 +6013,72 @@ export class MessageRouter {
   }
 
   /**
+   * The population every census-derived answer on this router covers (KAN-630).
+   *
+   * The runtime is read off **the object actually serving** — `runtimeName` on
+   * the {@link AgentRuntime} this router was constructed with — rather than off
+   * {@link MessageRouterOptions.agentRuntimeReport}. Both would be right today
+   * and only one of them cannot drift: the report is optional, so a router built
+   * without one would answer with a mode nobody chose, and *"a scope naming a
+   * runtime the daemon is not in"* is this ticket's own defect wearing the fix's
+   * clothes. The field's own docblock makes the same argument one level up about
+   * re-reading the environment.
+   */
+  private censusScope(): CensusScope {
+    return censusScope(this.herdrBridge.runtimeName);
+  }
+
+  /**
+   * Whether this box holds an address at all (KAN-630), asked of three
+   * independent witnesses.
+   *
+   * ⚠ **The census leg asks the RAW census rather than `surveyAgents`.** The
+   * derived list drops every row `addressFromAgentName` cannot parse, which is
+   * exactly the population KAN-579 exists for — an agent alive under a name
+   * this daemon did not derive. Joining on the workspace directory rather than
+   * on the name is what reaches it, and the direction of that failure matters
+   * here more than it does there: a missed row here would refuse to answer
+   * about an agent that is running on this very machine.
+   *
+   * The registry leg is a read of intents, which is what this daemon recorded
+   * activating and what survives its own restart. The disk leg is
+   * {@link workspacePresence}, and it is the one that carries the positive
+   * control.
+   */
+  private addressKnowledge(type: string | undefined, key: string): AddressKnowledge {
+    const census = this.herdrBridge.listHerdrAgentsChecked();
+    // A bare key is matched on the directory's LAST SEGMENT rather than on the
+    // whole path, because the type is precisely what the caller did not say.
+    // That is wider than the typed join and deliberately so: the direction of
+    // a false match here is `known-here`, which returns the caller to today's
+    // answer, while a miss would refuse to answer about a live local agent.
+    const wantedDir = type ? normaliseWorkDir(workspaceDirFor(type, key)) : null;
+    const wantedKey = key.toLowerCase();
+    const liveInCensus =
+      census.reachable &&
+      census.agents.some((row) => {
+        if (type && row.name === agentNameFor(type, key)) return true;
+        const dir = normaliseWorkDir(row.workDir);
+        if (dir === null) return false;
+        if (wantedDir !== null) return dir === wantedDir;
+        return path.basename(dir).toLowerCase() === wantedKey;
+      });
+
+    const intents = this.agentRegistry?.intents();
+    const inDurableRegistry = type
+      ? (intents?.has(agentNameFor(type, key)) ?? false)
+      : [...(intents?.values() ?? [])].some(
+          (intent) => intent.record.key.toLowerCase() === wantedKey
+        );
+
+    return addressKnowledge({
+      liveInCensus,
+      inDurableRegistry,
+      presence: workspacePresence(type, key)
+    });
+  }
+
+  /**
    * The gap between what the registry says should be running and what herdr
    * actually has.
    *
@@ -5949,6 +6086,16 @@ export class MessageRouter {
    * agent that survived a daemon restart has no session of ours and is
    * nonetheless perfectly alive, and calling it missing would be the same
    * false alarm KAN-9 and KAN-28 already fixed at other layers.
+   *
+   * ⚠ **KAN-630 deliberately leaves this method alone, and that is the half of
+   * that ticket which is easiest to get wrong.** Every row here comes off
+   * `this.agentRegistry` — *this box's own* durable record of agents *this
+   * daemon* activated — so every row is `known-here` by construction and there
+   * is no off-box population to spare. Gating {@link reasonForMissingAgent}'s
+   * `clear` arm on a scope check would therefore suppress nothing but real
+   * losses, which is KAN-21's detectability half disarmed in the name of
+   * fixing a different ticket. `verify-census-scope-states-its-population.mjs`
+   * §5 is the assertion that keeps this true rather than merely intended.
    */
   private missingAgents(
     agents: ListedAgent[],
