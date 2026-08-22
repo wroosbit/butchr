@@ -114,7 +114,10 @@ export interface StampedAccount {
  * thing a later author can write by accident. A `false` there would read as a
  * finding, and nobody made one.
  *
- * ⚠ **This deliberately mirrors {@link UnstaffableEvidence}'s `askedJql`, which
+ * ⚠ **This deliberately mirrors `UnstaffableEvidence.askedJql` in
+ * `board-reconcile.ts` — named by module rather than `{@link}`ed, because the
+ * type is not imported here and a link that does not resolve is a worse
+ * citation than a filename — which
  * landed in KAN-649 while this was in review.** That field is required so that
  * a build lacking the cross-door query **cannot produce it**, because its
  * absence has to mean *nobody asked* rather than *nothing was found*. Same rule,
