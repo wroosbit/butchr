@@ -88,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 142 |
+| `yes` | 143 |
 | `partial` | 26 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **194** |
+| **total** | **195** |
 
-**168 of 194** run on every pull request.
+**169 of 195** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -220,6 +220,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-selfcheck-verdict-outlives-connection` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-send-claims-not-collapsed` | yes | it imports the built daemon modules and drives the real MessageRouter in-process. No terminal, no socket, no network, no `claude`. |
 | `verify-setup-configures-the-daemon` | yes | §1–§4 read `docs/SETUP.md` and `daemon/scripts/butchr-doctor.mjs` as TEXT off the checkout; §5 spawns `butchr-doctor.mjs` as a node child with a stub `systemctl` on PATH, in a temporary directory. Node builtins only — no build, no daemon, no herdr, no credential, no network, no wall clock. §5 needs a POSIX `sh` to run the stub and announces itself SKIPPED where there is none, and a skip is printed as a skip and never counted as a pass. |
+| `verify-setup-switch-scope-rule` | yes | reads `docs/SETUP.md` and `daemon/src/native-host.ts` as TEXT off the checkout. Node builtins only: no build, no `dist` import, no daemon, no herdr, no credential, no network, no wall clock, no git. |
 | `verify-staleness-check` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
 | `verify-staleness-over-socket` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. It does `git clone` this checkout into a scratch directory and then `checkout -B main origin/main` inside the clone, so the checkout it runs from needs a **local** `main` branch — a clone resolves `origin/*` from the local branches of its source, and `actions/checkout` leaves a detached HEAD with none. The `verify-runnable-set` job creates one; see the comment there. |
 | `verify-stall-response-verdict` | yes | pure arithmetic over a decision function. It induces no I/O, spawns nothing, reads no /proc, and imports nothing from dist. That is deliberate and is the point of the module being pure: exercising this decision for real means deliberately stalling a shared machine, which on a box carrying a live agent fleet crosses STALL_REFUSE_PERCENT and refuses EVERY new agent start for as long as it runs. This script covers the whole input space at zero blast radius; §2 still does the real thing on a host that can supply it, and nothing here replaces that. |
