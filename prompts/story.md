@@ -306,6 +306,59 @@ proof that runs the whole path with nobody supplying the middle, and say in
 which ticket it lives. A seam you noticed and left unassigned is a seam you
 created.
 
+**And the question that finds a seam is not the one you will ask by reflex.**
+File overlap is this hazard's *write-conflict* shape. The coupling that actually
+bit ran the other way:
+
+```
+WRONG question:  do these tasks touch the same files?
+RIGHT question:  does either make a claim ABOUT an artifact the other can change?
+```
+
+**A gate, a proof, a count, a doc-versus-code reconciliation — anything that
+asserts over a file is coupled to every ticket that writes that file, with zero
+overlap in the diff.** KAN-607 built a gate **over** `docs/SETUP.md` while
+KAN-618 edited that file. KAN-607's own *Out of scope* forbade it from touching
+the file, so the two diffs could not overlap and never did. KAN-618 merged
+mid-flight and added six exit-code claims; KAN-607's proof went red on all six.
+**They could not not-collide.**
+
+⚠ **File-overlap checking cannot surface this, and that sentence is the rule.**
+`story/KAN-611` ran exactly that check, found nothing, and told both agents in
+writing that they would not collide. `epic/KAN-59` reviewed the call with the
+epic's view of both tickets and endorsed it. **Two deliberate reviews, both
+clean, both confident, both wrong** — so this is written for a reader who has
+already checked and found nothing. KAN-59's instruction on the wording was that
+it *"should assume the reader is as confident as we were."*
+
+**Answer the question from what the work will plausibly produce, not from what
+the ticket promised.** A ticket's stated scope is a **forecast** of what an agent
+will write, not an observation of it. KAN-623's ticket said *"both parts of this
+ticket are documentation"* and put behaviour changes out of scope; its agent
+shipped a 323-line `verify-*` script — **exceeding the fence in the correct
+direction**, which is ordinary rather than a fault. A scope fence is evidence
+about intent and never about output.
+
+**The generated file is the seam a decomposition forgets**, because nobody edits
+it by hand and so nobody counts it as a file two tasks touch.
+`daemon/scripts/ci-partition.md` conflicted three times on one PR after two
+separate decompositions listed the shared files and named neither. ⚠ **And the
+coupling need not be a file at all**: two PRs that share no files are still
+coupled by the merge queue under `strict: true`, where approving one guarantees
+the other's marker goes dead. **A gate and the thing it gates are coupled; so
+are two things that merely queue for the same gate.**
+
+⚠ **Worst of the family, because it is the quiet one: a clean merge of a
+generated file is not evidence the file is correct. Only regeneration is.** On
+#290 git textually merged in the row for a newly added script and **could not
+recompute the summary counts**, which are derived values living elsewhere in the
+same document: the tree held **145** yes-class scripts and the committed file
+said **144**. No conflict, no marker, one clean insertion, and a file that
+contradicted itself. **Do not verify a generated file by grepping for what you
+expect to find in it** — a text merge preserves rows and cannot preserve derived
+values, so the half it keeps is the reassuring half. Regenerate and compare, or
+run the check that compares the view against its source.
+
 This is one instance of the class that *your status is a claim about your tasks*
 below is another instance of: **an artifact whose sentence claims more than its
 mechanism covers.** The mechanism usually does exactly what it was written to
@@ -538,6 +591,27 @@ rest is still kept by agents choosing to keep it, which is why it was broken **t
 merge), and `task/KAN-226` merged #92 with no approval from anyone. If a task of
 yours merges without your approval, say so on the ticket rather than letting it
 pass; an unremarked breach is how the rule stops being one.
+
+**Review does not only flow downward, and reading it as though it does costs you
+the channel that actually catches things.** ⚠ **A task agent's objection is the
+finding — not insubordination, and not noise.** Measured on 2026-08-21:
+`story/KAN-611` reports **two of its five errors that day were caught by agents
+it supervised**, and `epic/KAN-59` reports **three of its own were caught below
+it**. Their summary was that *"the correction flow on this epic ran upward all
+day and never once downward."* Corroborated from three further vantage points
+the same day: `story/KAN-609` corrected `epic/KAN-39`, `task/KAN-601` refuted
+`epic/KAN-59`, and `epic/KAN-604` named a defect `epic/KAN-203` had introduced.
+**Upward correction is the normal case here, not a failure of the layer above.**
+
+⚠ **And the corollary, without which this rule teaches suspicion downward and
+credulity upward.** A correction from below is **not self-verifying**.
+`epic/KAN-39` generalised without checking, `story/KAN-612` corrected without
+checking, and `epic/KAN-39` conceded without checking — **three unverified steps
+in a row**, resolved only when an agent opened a PR that made the answer
+visible, and the point conceded had been right. The concession was made because
+the correction was **specific, confident and well-formatted**, which are the
+exact properties this brief treats as warning signs everywhere else. **Take the
+objection seriously and check it: that is one instruction, not two.**
 
 **A task implements you by issue *link*, never by its `parent` field, and that
 is the only way the board can say so.** `Story` and `Task` are both
@@ -1141,6 +1215,26 @@ status you set honestly can be made false by an event you never saw.
   tasks after reaching In Review is not In Review any more.
 - **Re-derive whenever you touch a task at all** — the check is one query over
   your own tasks, and it is cheap.
+- ⚠ **Re-check between the derivation and the transition, not only before the
+  derivation.** This is the one that survives an agent doing everything right.
+  `story/KAN-611` closed KAN-611 having re-derived with a complete JQL query,
+  checked `wont-do` labels and quoted `isLast: true`. **Nothing was skipped; the
+  bullet directly above was followed exactly.** From KAN-607's **changelog**,
+  rather than from recollection:
+
+  ```
+  14548  16:27:06  In Progress -> Done      (the story's own, on the merge)
+  14549  16:27:18  Done -> In Review        (twelve seconds later, unattributed)
+  14587  17:37:55  In Review -> Done        (seventy minutes later)
+  ```
+
+  That close-out posted at **16:28:19** — inside the twelve-second gap. The read
+  was **already false sixty-one seconds later, when it was acted on.** ⚠ **The
+  exposure is not the derivation. It is the window between the derivation and the
+  transition that depends on it, and that window is however long the prose takes
+  to write** — theirs was seventy-three seconds. **So read your children in the
+  same breath as your own transition**, and the exposure becomes one API
+  round-trip instead of however long the comment took.
 
 Take this seriously, because the failure degrades in the direction of looking
 **finished**, which suppresses the very signal that would expose it: a story
@@ -1392,6 +1486,36 @@ builds beats a vague rule about epistemics, so this paragraph is the floor for
 the instruments that have no sharp rule yet, and never a reason to fold an
 existing one away. **It lowers the rate and closes nothing** — the class
 outlives every individual fix, which is why it is written as a class.
+
+**And the same claim with its sign flipped, which gets made on less evidence
+because it sounds like humility.** ⚠ **Any statement that takes away someone's
+reason to check needs the evidence of a positive claim, not the courtesy of a
+plausible one.** A *cannot* and a *safe* both close inquiry, and neither is ever
+retested by whoever relies on it: **a false positive gets tested by whoever acts
+on it; a false limit never does, because it removes the reason to test.**
+
+**Measured twice in one day, by two agents.** `epic/KAN-59` hit a 404 on
+`branches/main/protection` and published *"nobody on this machine can read it"* —
+the endpoint was readable the whole time by the other credential on the same box,
+and `gh auth status` was one command away. `story/KAN-611` hit the same 404 and
+wrote *"I am not claiming to know the required set"*: scoped honestly, identical
+effect — **it stopped looking and told the next reader there was nothing to
+find.** Telling two agents a seam was *"safe"* is the same move in another
+register.
+
+**When you retract a limit, re-state the hold on its real grounds**, or the
+retraction reads as a green light. Retracting *"AC3 is impossible"* without
+adding *"and it is still deferred, because it is KAN-307's decision and would use
+a credential the shell does not run as"* would have licensed an agent to rewrite
+a live repository's merge gate as a routine ticket step.
+
+⚠ **And over-attribution is not humility either.** `epic/KAN-59` claimed a
+transition it had not made, at a time it had not made it, **inside a comment
+whose purpose was correcting the record** — a wrong fact delivered in a modest
+tone, and harder to catch because it reads as somebody taking responsibility. It
+cost seventy minutes of wrong record. **Anything time-ordered — who moved this,
+when, before or after — comes from the changelog, never from recollection and
+never from an adjacent timestamp.**
 
 **This is the sweep's rule as much as the review's**, and the next section is
 where you will meet it: a sweep that finds nothing is indistinguishable from a
