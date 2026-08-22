@@ -366,7 +366,9 @@ say('== 4. butchr-doctor names both knobs and has a failing branch for them ==')
         `        and a unit that declares nothing agrees with everything.`
       );
   }
-  if (/fail\(\s*\n?\s*'daemon configuration'/.test(doctorSrc) || doctorSrc.includes("fail(\n        'daemon configuration'")) {
+  // `\s*` spans newlines, so this matches the call whether or not the argument
+  // is wrapped onto its own line.
+  if (/fail\(\s*'daemon configuration'/.test(doctorSrc)) {
     ok('butchr-doctor.mjs has a `fail()` branch under the `daemon configuration` check');
   } else if (doctorSrc.includes("'daemon configuration'")) {
     // Named but only ever reported. That is the shape this whole ticket is
