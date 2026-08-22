@@ -715,8 +715,10 @@ restart is the half that applies it. Restarting `butchr-daemon` does **not**
 kill herdr's panes — herdr owns them, and it is the *herdr* restart in step 6
 that takes them down with it. An agent that is already running keeps the MCP
 servers it was provisioned with, so a proxy rung you turn on now reaches the
-next agent to start rather than the ones already up. Step 9 makes the general
-form of that point.
+next agent to start rather than the ones already up. **That is an instance of
+[*A switch you flip does not reach an agent that is already running*](#a-switch-you-flip-does-not-reach-an-agent-that-is-already-running)**,
+in step 0, which states it once for every switch; step 9 is its other worked
+example.
 
 ### Why the installer does not write this for you
 
