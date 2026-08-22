@@ -92,6 +92,58 @@ import { renderedKey } from './keys.js';
  * will be wrong the moment the mapping changes.
  */
 export type SendIntent = 'steer' | 'stop-now';
+
+/** One account named on a stamped ticket, as Jira gave it back. */
+export interface StampedAccount {
+  accountId: string | null;
+  displayName: string | null;
+}
+
+/**
+ * What a create operation can say about the account its ticket landed on.
+ *
+ * ---------------------------------------------------------------------------
+ * A UNION, SO THAT "NOBODY LOOKED" CANNOT CARRY A VERDICT (KAN-646/KAN-649)
+ * ---------------------------------------------------------------------------
+ *
+ * The failure this shape exists to prevent is the comfortable one: a read-back
+ * that could not be made reporting something a reader takes for agreement. So
+ * the two cases are **different shapes rather than one shape with a flag** —
+ * the unverified branch has no `matchesCredential` key at all, which makes
+ * `verified: false, matchesCredential: false` a **compile error** rather than a
+ * thing a later author can write by accident. A `false` there would read as a
+ * finding, and nobody made one.
+ *
+ * ⚠ **This deliberately mirrors {@link UnstaffableEvidence}'s `askedJql`, which
+ * landed in KAN-649 while this was in review.** That field is required so that
+ * a build lacking the cross-door query **cannot produce it**, because its
+ * absence has to mean *nobody asked* rather than *nothing was found*. Same rule,
+ * different seam: KAN-649 reports what the board-level query actually sent;
+ * this reports what the create-level read-back actually saw. The two do not
+ * overlap — KAN-649 covers an EMPTY assignee across every door, and this covers
+ * a WRONG one at the single door the daemon controls, at the moment of writing.
+ *
+ * An earlier draft of this was `Record<string, unknown>` and enforced the
+ * separation only in a verify script's §3. The assertion is still there; the
+ * type is what makes it belt-and-braces, in that order.
+ */
+export type StampAudit =
+  | {
+      verified: true;
+      key: string;
+      assignee: StampedAccount | null;
+      creator: StampedAccount | null;
+      matchesCredential: boolean;
+      /** Present exactly when `matchesCredential` is false. */
+      warning?: string;
+    }
+  | {
+      verified: false;
+      /** Absent when the create response carried no key to read back. */
+      key?: string;
+      /** Why no comparison could be made. Never optional: silence is the defect. */
+      because: string;
+    };
 import {
   PreemptionCandidate,
   addressOf,
@@ -4404,9 +4456,7 @@ export class MessageRouter {
    * cost of one read, and it is the most the daemon can honestly offer until
    * somebody tells it what the right answer is.
    */
-  private async stampReadBack(
-    body: unknown
-  ): Promise<Record<string, unknown>> {
+  private async stampReadBack(body: unknown): Promise<StampAudit> {
     const key = (body as any)?.key;
     if (typeof key !== 'string' || !key) {
       return {
@@ -4435,9 +4485,11 @@ export class MessageRouter {
     const fields = (outcome.body as any)?.fields ?? {};
     const assignee = fields.assignee ?? null;
     const creator = fields.creator ?? null;
+    // `verified: true` as a literal rather than a widened `boolean`, so that
+    // the spreads below stay assignable to the verified arm of `StampAudit`.
     const stamped = {
       key,
-      verified: true,
+      verified: true as const,
       assignee: assignee
         ? { accountId: assignee.accountId ?? null, displayName: assignee.displayName ?? null }
         : null,
