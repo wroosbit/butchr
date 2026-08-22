@@ -8,7 +8,11 @@
 // DELETE arriving under the POST the union now allows, an operation whose body
 // or path is built from an agent's argument rather than from validated pieces,
 // or the own-ticket restriction being lost so that any agent can move any
-// issue. It would equally catch the write mode ceasing to be off by default,
+// issue. Since KAN-633 it would also catch the two `supervised-ticket` writes
+// losing their scope tag, or being permitted OUTRIGHT here — §5b asserts they
+// are *deferred* rather than allowed, which is the distinction that stops this
+// file from reading a widening as a bypass or a bypass as a widening. It would
+// equally catch the write mode ceasing to be off by default,
 // which is the direction KAN-272's criterion 3 cared about and which a write
 // makes considerably more expensive to get wrong.
 //
@@ -548,10 +552,34 @@ check(
 );
 
 // ── 5. the scoping decision — an agent writes only to its own ticket ───────
+//
+// ⚠ THIS SECTION NO LONGER USES `THE_WRITE`, AND THE REASON IS THE POINT.
+//
+// It used to, and the comment two checks down said so out loud: *"if a later
+// slice widens this, THIS is the assertion it has to change, which is the point
+// of writing it down."* KAN-633 is that slice. `atlassian_transition_issue`
+// carries `supervised-ticket` now, so pointing an own-ticket proof at it would
+// have measured the wrong scope — and it would have gone GREEN on the two
+// checks that only look for a non-null refusal, which is the failure mode this
+// section exists to catch in the product.
+//
+// So the own-ticket proof moved to an operation that really is own-ticket, and
+// `atlassian_edit_issue` is chosen rather than invented: it is the write
+// `prompts/task.md` mandates for claiming a ticket, so a bypass in it is a real
+// bypass. What KAN-633 did to `THE_WRITE` is asserted separately, at the end of
+// this section, rather than left as an absence.
 rule("5. the policy — a write is permitted only to the caller's own ticket");
 
-const theWrite = operationByTool(THE_WRITE);
+const THE_OWN_TICKET_WRITE = 'atlassian_edit_issue';
+const theWrite = operationByTool(THE_OWN_TICKET_WRITE);
 const args = (issueKey) => ({ issueKey, transitionId: '31' });
+
+check(
+  `the own-ticket proof below is pointed at a real own-ticket write (${THE_OWN_TICKET_WRITE})`,
+  theWrite?.writeScope?.kind === 'own-ticket',
+  `${THE_OWN_TICKET_WRITE} carries ${JSON.stringify(theWrite?.writeScope?.kind)} — every ` +
+    'assertion in this section is measuring a scope other than the one it names'
+);
 
 check(
   "an agent transitioning somebody else's ticket is refused",
@@ -574,20 +602,27 @@ check(
   ),
   refuseWriteOutsideCaller(theWrite, args('KAN-150'), { type: 'task', key: 'KAN-291' })?.error
 );
+// ⚠ THIS CHECK WAS INVERTED BY KAN-633, and the old one is worth naming because
+// it passed for six days after it stopped being true. It read *"the refusal
+// points at the agent's own Atlassian session, which still works"* — and KAN-603
+// stopped provisioning that server wherever this proxy is on, so the refusal was
+// sending a stuck agent to a tool its workspace does not have. The regex still
+// matches the same three words; what changed is what they are doing there.
 check(
-  "the refusal points at the agent's own Atlassian session, which still works",
-  /own Atlassian MCP tools/.test(
-    refuseWriteOutsideCaller(theWrite, args('KAN-150'), { type: 'task', key: 'KAN-291' })?.error ?? ''
-  ),
+  'the refusal warns OFF the retired official server rather than recommending it',
+  (() => {
+    const e =
+      refuseWriteOutsideCaller(theWrite, args('KAN-150'), { type: 'task', key: 'KAN-291' })?.error ??
+      '';
+    return /own Atlassian MCP tools/i.test(e) && /DO NOT REACH FOR/i.test(e) && /KAN-603/.test(e);
+  })(),
   refuseWriteOutsideCaller(theWrite, args('KAN-150'), { type: 'task', key: 'KAN-291' })?.error
 );
-// An epic agent may not move a task's ticket, and this is the case that will be
-// argued with: the fleet's own governance has approvers setting Done on tickets
-// they approve. It is refused deliberately — see `refuseWriteOutsideCaller` —
-// and the refusal names the workaround. If a later slice widens this, THIS is
-// the assertion it has to change, which is the point of writing it down.
+// An epic agent may not EDIT a task's ticket. The transition and the comment are
+// a different matter since KAN-633 and are asserted at the end of this section;
+// everything else stays own-ticket, and this is the check that says so.
 check(
-  "an epic agent is refused a transition of its child's ticket",
+  "an epic agent is refused an edit of its child's ticket",
   refuseWriteOutsideCaller(theWrite, args('KAN-291'), { type: 'epic', key: 'KAN-39' })?.reason ===
     'not-your-ticket',
   JSON.stringify(refuseWriteOutsideCaller(theWrite, args('KAN-291'), { type: 'epic', key: 'KAN-39' }))
@@ -647,15 +682,65 @@ check(
     'KAN-272 granted exactly that'
 );
 
+// ── 5b. what KAN-633 moved OUT of this function, asserted rather than absent ─
+//
+// The two supervised writes return `null` here for a cross-ticket target, and a
+// `null` from this function is indistinguishable from "permitted" — which is
+// exactly why it must not be the last word, and exactly why the fact is
+// asserted here instead of being left as a gap in a section about refusals.
+// `verify-supervised-write-scope.mjs` is what proves the second gate refuses
+// them; this pair of checks is what proves the two files are talking about the
+// same operations.
+rule('5b. the supervised writes are deferred here, and refused by the second gate');
+
+const SUPERVISED = ['atlassian_transition_issue', 'atlassian_add_comment'];
+
+for (const tool of SUPERVISED) {
+  const op = operationByTool(tool);
+  check(
+    `${tool} carries supervised-ticket`,
+    op?.writeScope?.kind === 'supervised-ticket',
+    JSON.stringify(op?.writeScope?.kind)
+  );
+  check(
+    `${tool} still permits the caller's own ticket without any board read`,
+    refuseWriteOutsideCaller(op, args('KAN-291'), { type: 'task', key: 'KAN-291' }) === null,
+    JSON.stringify(refuseWriteOutsideCaller(op, args('KAN-291'), { type: 'task', key: 'KAN-291' }))
+  );
+  check(
+    `${tool} DEFERS a cross-ticket target here — this function is not its whole gate`,
+    refuseWriteOutsideCaller(op, args('KAN-150'), { type: 'story', key: 'KAN-291' }) === null,
+    JSON.stringify(refuseWriteOutsideCaller(op, args('KAN-150'), { type: 'story', key: 'KAN-291' }))
+  );
+  check(
+    `${tool} is still refused outright for a caller with no Jira key`,
+    refuseWriteOutsideCaller(op, args('KAN-150'), { type: 'confluence', key: '123456' })?.reason ===
+      'caller-has-no-ticket',
+    JSON.stringify(refuseWriteOutsideCaller(op, args('KAN-150'), { type: 'confluence', key: '123456' }))
+  );
+}
+
 // ── 6. the report, and where the gate lives ────────────────────────────────
 rule('6. the report tells the truth about writes, and the wiring is in the daemon');
 
 const cred = { configured: true, siteUrl: 'https://x.atlassian.net', email: 'a@b.c' };
 const writeReport = proxyReport(writeDecision, cred);
 check(
-  'the report marks the write as own-ticket-only',
-  writeReport.operations.find((op) => op.tool === THE_WRITE)?.ownTicketOnly === true,
+  'the report marks the own-ticket write as own-ticket-only',
+  writeReport.operations.find((op) => op.tool === THE_OWN_TICKET_WRITE)?.ownTicketOnly === true,
   JSON.stringify(writeReport.operations)
+);
+// ⚠ `ownTicketOnly: false` stopped meaning "unbounded by the caller" at KAN-633
+// and an operator reading the report off that boolean alone would now be told
+// less than the truth. Both halves are asserted so that a future edit cannot
+// quietly make the boolean the only thing the report says.
+check(
+  `the report reports ${THE_WRITE} as supervised rather than as merely not-own-ticket`,
+  (() => {
+    const row = writeReport.operations.find((op) => op.tool === THE_WRITE);
+    return row?.ownTicketOnly === false && row?.writeScope?.kind === 'supervised-ticket';
+  })(),
+  JSON.stringify(writeReport.operations.find((op) => op.tool === THE_WRITE))
 );
 check(
   'and marks every read as not',
@@ -945,7 +1030,8 @@ console.log(
     failures
       ? `FAILED — ${failures} check(s)`
       : 'OK — one POST, in jira-write only, off by default, body built from two validated ' +
-        "strings, and refused for any ticket but the caller's own. The instrument was shown " +
+        "strings, refused for any ticket but the caller's own by the identity gate, and " +
+        'deferred to the supervision gate where KAN-633 widened it. The instrument was shown ' +
         'to say yes in the same run.'
   }\n`
 );

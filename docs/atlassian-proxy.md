@@ -236,29 +236,104 @@ become the fourth stale copy in the chain.
 | what the brief mandates | operation | scope | through the proxy? |
 | --- | --- | --- | --- |
 | claim the ticket — assign it to yourself | `atlassian_edit_issue` | `own-ticket` | **yes** |
-| move it to In Progress, then to In Review | `atlassian_transition_issue` | `own-ticket` | **yes** |
-| post progress, In Review and merged comments on your own ticket | `atlassian_add_comment` | `own-ticket` | **yes** |
+| move it to In Progress, then to In Review | `atlassian_transition_issue` | `supervised-ticket` | **yes** |
+| post progress, In Review and merged comments on your own ticket | `atlassian_add_comment` | `supervised-ticket` | **yes** |
 | file a follow-up ticket, parented to your own epic | `atlassian_create_issue` | `own-project` | **yes** |
 | link that follow-up `Relates` to your own ticket | `atlassian_create_issue_link` | `own-ticket-endpoint` | **yes** |
-| **post the merge pointer comment on your approver's ticket** | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| **comment on somebody else's ticket where the poller cannot announce** | `atlassian_add_comment` | `own-ticket` | **no — `not-your-ticket`** |
-| **transition a ticket that is not your own** | `atlassian_transition_issue` | `own-ticket` | **no — `not-your-ticket`** |
+| **post the merge pointer comment on your approver's ticket** | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| **comment on somebody else's ticket where the poller cannot announce** | `atlassian_add_comment` | `supervised-ticket` | **no — `not-your-supervisee`** |
+| **transition a ticket that is not your own** | `atlassian_transition_issue` | `supervised-ticket` | **yes, where the board places you over it — otherwise `not-your-supervisee`** |
+
+**Read this table as the TASK agent's, which is what its title says**, because
+KAN-633 made the last three rows depend on who is asking. A task agent has no
+supervisees — nothing on the board sits under a `Task` — so all three still
+refuse for the reader this table was written for. A story or an epic asking the
+same three questions gets `yes` on the third, and the two comment rows are
+**upward** writes that stay refused for everybody; `KAN-624` owns those.
 
 **Five of the eight shapes are served and three are refused**, and the first
 refused row is the one that decides the question: it sits on the merge path of
 **every** task, so it is not an edge the fleet can route around.
 
 **The refusal text is itself load-bearing, which is the sharp end of this.** It
-reads, in part, *"use this agent's own Atlassian MCP tools, which are unaffected
-by this refusal."* Retiring the official server would turn a loud, actionable
-refusal into a dead end — at the exact moment a task agent has finished its work
-and is trying to hand off.
+read, in part, *"use this agent's own Atlassian MCP tools, which are unaffected
+by this refusal"* — and **KAN-603 then retired that server wherever this proxy
+is on, which is exactly the dead end this paragraph predicted.** KAN-633 rewrote
+all four such refusals: each now says the remedy it used to name is gone and
+what to do instead. The prediction was right and the repair is late, which is
+the argument for writing predictions down.
 
 **A note on the whole-fleet counts, because they are easy to misread off the
-table above.** Of the ten writes in `PROXY_OPERATIONS`, four are `own-ticket`,
-one is `own-ticket-endpoint`, one is `own-project` and four are `unscoped` — the
-Confluence writes, on the `confluence-write` rung only. The eight rows above are
-*brief mandates*, not operations, and two operations serve more than one row.
+table above.** Of the ten writes in `PROXY_OPERATIONS`, two are `own-ticket`,
+two are `supervised-ticket`, one is `own-ticket-endpoint`, one is `own-project`
+and four are `unscoped` — the Confluence writes, on the `confluence-write` rung
+only. The eight rows above are *brief mandates*, not operations, and two
+operations serve more than one row.
+
+#### KAN-633: the supervisor's half, and why the scope moved rather than the brief
+
+`prompts/story.md` gave a story three duties over its tasks — staff them,
+approve their PRs, close them at merge — and only the middle one happens on
+GitHub. The other two were writes to a ticket that is not the caller's, so
+`own-ticket` refused them and the fleet ran the difference by hand.
+
+**The measurement, 2026-08-21.** `story/KAN-648` approved and merged three tasks
+and could close none of them; the tickets sat In Progress or In Review over
+merged work for ~40, ~25 and ~10 minutes on a box running 11 agents. **Since
+KAN-508 that `Done` transition IS the stand-down**, so this is capacity and not
+tidiness: three workforce slots held by finished work, every one of them waiting
+on one epic to type a transition. The same evening produced two more instances —
+a story with rulings and no way to put them where its task agents read, and a
+task agent unable to correct a ticket it had filed.
+
+**Option taken: widen the scope.** Two operations move from `own-ticket` to
+`supervised-ticket`, which permits the caller's own ticket *and* a ticket the
+board places under the caller — an issue link to the caller's Story, or the
+caller as the Jira `parent`. That is not a new relation: it is the one merge
+governance already resolves an approver through, so the set of tickets you may
+write to and the set you are answerable for cannot drift apart.
+
+**Rejected, with reasons:**
+
+- **Narrow the brief instead** — say plainly that a story approves and an epic
+  staffs and closes. It is the cheaper change and it was refused on two grounds.
+  It **inverts the arrangement the human asked for**, which was *"all tasks need
+  a story, so epics aren't bogged down"*: the story would do the review and the
+  epic every write the review implies, which is a bottleneck wearing a division
+  of labour. And it does nothing for the merge-path pointer comment, whose named
+  remedy KAN-603 deleted — narrowing there means deleting the only route by
+  which a merge is announced at all, since the poller cannot announce one.
+- **The caller's whole subtree**, KAN-291's original candidate. Strictly wider
+  than the approver relation and bounded by a hierarchy rather than by the thing
+  the fleet actually governs by. It would have permitted an epic to write to
+  every ticket beneath it including other stories' tasks, which nothing asks
+  for.
+- **Leave it and document the workarounds.** A legitimate outcome, and it loses
+  to the capacity measurement above: the workaround is not a round trip in a
+  document, it is a held worker slot on a box that is already over its cap.
+- **Give supervisors their own credential.** Measured and impossible as things
+  stand: `JiraCredential` is `{siteUrl, email, token}` and there is no per-agent
+  identity to attach a permission to (`story/KAN-648`, recorded on KAN-654). Any
+  fix is about scope on one credential.
+
+**What it concedes, said plainly.** The link branch is an authorisation an agent
+can create for itself: `own-ticket-endpoint` permits a link where one end is
+your own, so an agent may link itself to a stranger's ticket and become its
+supervisor in one call. That is deliberate. This whole policy bounds **accident
+and not malice** — nobody creates a `Blocks` link by accident — and the ordinary
+mistakes it exists to stop, a confused key or a loop over a search result, still
+produce neither a link nor a parent. The `parent` branch concedes nothing: a
+caller cannot set another issue's parent.
+
+**And it pays KAN-291's price out loud.** That ticket rejected a subtree scope
+because it needs a Jira read per write, and asked what happens when the read
+fails: *"fail open and the restriction evaporates in exactly the outage it
+should hold through; fail closed and a slow Jira stops agents from moving their
+own tickets."* This **fails closed**, with the second horn removed rather than
+accepted: the own-ticket case is decided **before any read**, so an agent
+claiming, progressing or closing its own work never depends on the second call.
+The cross-ticket refusal for an unreadable board says so in its own text —
+`supervision-unreadable` means *no answer*, not *no*.
 
 ### 5. Blast radius, written down
 
@@ -307,8 +382,13 @@ reads everything — and a restriction that has to be widened on its first day i
 worse than none, because it looks like a control. **It should be reconsidered
 for the write half, where the argument runs the other way**: an agent writing
 outside its own subtree is nearly always a mistake, and the cost of being wrong
-is much higher. Rate limiting is absent because there is no measured problem;
-the search bound is what stops one typo becoming a bulk read.
+is much higher. **KAN-633 did that reconsideration and answered it narrowly**:
+not a subtree, but the approver relation — see *KAN-633: the supervisor's half*
+in §4 — which is the smaller of the two and is the one the fleet already merges
+by. The row above is unchanged because it is about the **read** half, which is
+still unrestricted and should stay so. Rate limiting is absent because there is
+no measured problem; the search bound is what stops one typo becoming a bulk
+read.
 
 ---
 

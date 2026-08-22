@@ -99,7 +99,17 @@ const brief = read(BRIEF_REL);
 // silently unbounded one.
 rule('1. every write in PROXY_OPERATIONS, and what bounds it');
 
-const SCOPE_KINDS = ['own-ticket', 'own-ticket-endpoint', 'own-project', 'unscoped'];
+// KAN-633 added `supervised-ticket`. The order matters to the regex below and
+// nowhere else: `own-ticket` is a PREFIX of `own-ticket-endpoint`, so the
+// alternation lists the longer tags first and an alternation that stopped
+// doing so would silently record every endpoint scope as an own-ticket one.
+const SCOPE_KINDS = [
+  'own-ticket',
+  'own-ticket-endpoint',
+  'supervised-ticket',
+  'own-project',
+  'unscoped'
+];
 const writes = [];
 const toolsSeen = [];
 {
@@ -112,7 +122,7 @@ const toolsSeen = [];
       toolsSeen.push(tool[1]);
       continue;
     }
-    const kind = /^\s*kind: '(own-ticket-endpoint|own-ticket|own-project|unscoped)',/.exec(lines[i]);
+    const kind = /^\s*kind: '(own-ticket-endpoint|own-ticket|supervised-ticket|own-project|unscoped)',/.exec(lines[i]);
     if (kind && open) {
       writes.push({ ...open, scope: kind[1] });
       open = null;
@@ -142,8 +152,12 @@ check(
 );
 check(
   'the table carries writes — at least one of every caller-bounded scope',
-  counts['own-ticket'] > 0 && counts['own-ticket-endpoint'] > 0 && counts['own-project'] > 0,
-  `own-ticket=${counts['own-ticket']} own-ticket-endpoint=${counts['own-ticket-endpoint']} own-project=${counts['own-project']}`
+  counts['own-ticket'] > 0 &&
+    counts['own-ticket-endpoint'] > 0 &&
+    counts['supervised-ticket'] > 0 &&
+    counts['own-project'] > 0,
+  `own-ticket=${counts['own-ticket']} own-ticket-endpoint=${counts['own-ticket-endpoint']} ` +
+    `supervised-ticket=${counts['supervised-ticket']} own-project=${counts['own-project']}`
 );
 check(
   'every write named a scope — no write parsed without one',
@@ -211,6 +225,10 @@ if (ownTicketBlock) {
     [
       `own-ticket (${counts['own-ticket']}) is quoted`,
       new RegExp(`\\*?\\*?(${numAlt(counts['own-ticket'])})\\*?\\*?[^.]{0,40}own-ticket`, 'i')
+    ],
+    [
+      `supervised-ticket (${counts['supervised-ticket']}) is quoted`,
+      new RegExp(`(${numAlt(counts['supervised-ticket'])})\\b[^.]{0,40}supervised-ticket`, 'i')
     ],
     [
       `unscoped (${counts['unscoped']}) is quoted`,

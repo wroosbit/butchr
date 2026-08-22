@@ -88,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 143 |
+| `yes` | 144 |
 | `partial` | 26 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **195** |
+| **total** | **196** |
 
-**169 of 195** run on every pull request.
+**170 of 196** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -232,6 +232,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-startup-admission` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-startup-dialog-discrimination` | yes | imports the built daemon modules and drives the real `superviseChannelStartup` on a virtual clock. No live daemon, no herdr, no terminal, no credential. |
 | `verify-status-change-nudges` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-supervised-write-scope` | yes | imports the built daemon modules and reads `router.ts` as text; no live daemon, no herdr, no credential, no peer, no terminal, no network. |
 | `verify-supervision-key-spelling` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-tail-asks-every-source` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-tail-async-awaited` | yes | imports the built daemon modules and reads `daemon/src` off the checkout; the only herdr is a shim this file writes onto PATH. No live daemon, no real herdr, no credential, no peer, no terminal, no network. |
