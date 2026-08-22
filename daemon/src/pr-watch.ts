@@ -313,6 +313,22 @@ export interface PrMemory {
   reviewDecision: string;
   /** KAN-306's `approval-recorded` status, as last seen. */
   approval?: string;
+  /**
+   * ISO 8601 of the FIRST tick that saw an approval standing at this pull
+   * request, or absent (KAN-260).
+   *
+   * The only field here that answers a question about the pull request rather
+   * than "is this new?", and it is here because nowhere else can answer it:
+   * GitHub's own timestamps are on the comment and on the status, and reading
+   * either would cost a second API call per row per tick to recover a fact this
+   * watcher already observes for free on the tick it fires `approved`.
+   *
+   * CLEARED WHEN THE HEAD MOVES, because an approval is pinned to a head and one
+   * given against an older commit is not an approval that has been waiting — it
+   * is one that no longer exists. Carrying it across a push would make
+   * {@link StrandedMerge.waitingMs} the age of a superseded verdict.
+   */
+  approvedAt?: string;
   checks: string;
   mergeStateStatus: string;
   headRefOid: string;
@@ -413,6 +429,334 @@ export function isStaleMergeability(mergeability: Mergeability): boolean {
 }
 
 /**
+ * ---------------------------------------------------------------------------
+ * THE OTHER SIDE OF `green-idle`: APPROVED, AND NOBODY HAS PRESSED THE BUTTON
+ * (KAN-260)
+ * ---------------------------------------------------------------------------
+ *
+ * `green-idle` says *"this is waiting on a review that has not happened."* When
+ * the review happens, the pull request leaves that population — and until this
+ * shipped it entered no other. **Nothing anywhere reported an approved pull
+ * request that had not merged**, which is the whole of KAN-260:
+ *
+ *   - the board says In Review, which is true and reads as *progressing*;
+ *   - `gh pr list` says CLEAN;
+ *   - the fleet census says the agent is on standby, which reads as *deliberate*;
+ *   - and `prompts/task.md` permits exactly one party to press the button.
+ *
+ * Four pull requests sat like that at once on 2026-08-10 — #112, #113, #114,
+ * #115 — and were found by a supervisor reading the census for an unrelated
+ * reason, hours later.
+ *
+ * ---------------------------------------------------------------------------
+ * THE DIAGNOSIS IN THE TICKET'S TITLE IS THE ONE THIS MUST NOT ENCODE
+ * ---------------------------------------------------------------------------
+ *
+ * KAN-260 was filed as *"an approved PR whose task agent has been stood down"*,
+ * and `epic/KAN-39` corrected its own framing an hour later on the evidence:
+ * **#115's agent was live, idle, and had not merged.** It was not stood down and
+ * it was not at capacity — it simply did not know, because an approval lands as
+ * a GitHub PR comment and nothing carried that across to an agent that had
+ * stopped to wait. Standing the agent down makes it worse; it was already
+ * broken.
+ *
+ * So the population here is **every** approved-and-unmerged pull request, and
+ * whether anybody is live to act is a FIELD on the row rather than the filter
+ * that produces it. A report that fired only on standby would be this ticket's
+ * own superseded diagnosis, encoded — green on the case that disproved it.
+ * `verify-stranded-merges.mjs` §2 is that arm, and it exists to fail.
+ *
+ * ---------------------------------------------------------------------------
+ * IT CLASSIFIES NOTHING ITSELF, AND THAT IS DELIBERATE (KAN-339)
+ * ---------------------------------------------------------------------------
+ *
+ * {@link mergeHoldOf} takes a {@link PrReadiness} and maps its blocker. It does
+ * not read `mergeStateStatus`, it does not read `checks`, and it must not: those
+ * are the two fields KAN-339 recorded this module getting wrong by writing *the
+ * absence of known-bad values* where *the presence of a known-good one* was
+ * meant, in two places, on the same day. One classifier already answers that
+ * question. A second one here would be free to answer it differently, and the
+ * two sentences a reader would then meet — *"waiting on a review"* and *"one
+ * command from merging"* — are the pair that must never come apart.
+ *
+ * The mapping is exhaustive over {@link PrBlocker} with no `default`, so a
+ * blocker added later does not compile until somebody decides which hold it is.
+ * `prompts/task.md`: prefer the type to the assertion where the invariant is
+ * about what the code is able to say.
+ */
+export type MergeHold =
+  /**
+   * Nothing at all. Approved, green, and a head GitHub positively says merges —
+   * it is one `gh pr merge` away and has been for {@link StrandedMerge.waitingMs}.
+   */
+  | 'nobody-has-pressed-it'
+  /**
+   * Approved, but the head does not merge: conflicted, behind, or a mergeability
+   * GitHub has not computed. `head-stale` announces the first two to whoever can
+   * fix them; this row exists so the pull request does not fall silent while the
+   * fix is somebody's to do.
+   *
+   * ⚠ **This is the state the KAN-260 four decayed INTO**, and it is why the
+   * population is not narrowed to `nobody-has-pressed-it`. Each of the four went
+   * `BEHIND` as `main` moved past it, which adds a second reason it cannot land —
+   * so a report that fired only on the clean case would have gone quiet on all
+   * four exactly as their situation got worse. A signal that stops reporting a
+   * problem when the problem compounds is worse than no signal.
+   */
+  | 'the-head-does-not-merge'
+  /**
+   * Approved, and a check at this head is not green — failing, still running, or
+   * never run at all. `checks-absent` is in here rather than in a fourth value
+   * because the action is the same: somebody has to go and look at the checks.
+   */
+  | 'a-check-is-not-green';
+
+/**
+ * Which hold an approved pull request is under, or null if it is not in the
+ * population at all.
+ *
+ * `null` for `ready: true` — that is `green-idle`'s pull request, waiting on a
+ * review — and for the two blockers that mean it was never merge-able in the
+ * first place. Every other blocker is somebody being waited on.
+ */
+export function mergeHoldOf(readiness: PrReadiness): MergeHold | null {
+  if (readiness.ready) return null;
+  switch (readiness.blocker) {
+    case 'already-approved':
+      return 'nobody-has-pressed-it';
+    case 'conflicted':
+    case 'behind':
+    case 'mergeability-unknown':
+      return 'the-head-does-not-merge';
+    case 'checks-absent':
+    case 'checks-pending':
+    case 'checks-failed':
+      return 'a-check-is-not-green';
+    case 'draft':
+    case 'not-open':
+      return null;
+    default: {
+      // No `default:` body that guesses. A blocker added to `PrBlocker` without
+      // a case here fails to assign to `never`, which is a COMPILE error at the
+      // one place that knows the answer — rather than a row silently classified
+      // as whatever the last branch happened to return.
+      const unclassified: never = readiness.blocker;
+      return unclassified;
+    }
+  }
+}
+
+/**
+ * One approved pull request that has not merged, and what is holding it.
+ *
+ * Every field is either read off the snapshot or off this watcher's own memory.
+ * Nothing here is inferred about an agent's intent, and nothing here is a
+ * threshold: a reader is given the elapsed time and decides for itself, because
+ * a daemon that picked a number would be answering a governance question in a
+ * constant.
+ */
+export interface StrandedMerge {
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  /** The ticket its branch names. Its agent is the one permitted to merge. */
+  issueKey: string;
+  /** The head the approval is pinned to. A push invalidates the approval. */
+  headRefOid: string;
+  /** Which mechanism records the approval. See {@link approvalAtHead}. */
+  approvalSource: 'marker' | 'review';
+  /**
+   * ISO 8601 of the first tick that saw this approval, or null.
+   *
+   * **Null is an ordinary answer and means this watcher's memory is younger than
+   * the approval** — a daemon restarted after the approval landed, or a pull
+   * request whose first sight already carried one. It is NOT "approved just
+   * now", and {@link waitingMs} is null with it rather than zero, so there is no
+   * value on this row that a reader can mistake for a fresh approval.
+   */
+  approvedAt: string | null;
+  /** How long it has been approved and unmerged, or null when `approvedAt` is. */
+  waitingMs: number | null;
+  hold: MergeHold;
+  /**
+   * Live agents holding {@link issueKey}, as `<type>/<KEY>`.
+   *
+   * ⚠ **EMPTY IS KAN-260'S ORIGINAL CASE AND NON-EMPTY IS ITS CORRECTION.**
+   * Empty means nothing on this box can press the button and the pull request
+   * cannot land until somebody is started. Non-empty means an agent that CAN
+   * merge has not — #115's state, and the one a standby-only report would have
+   * called clean. Both are rows; neither is filtered out.
+   *
+   * A list rather than a boolean, because the address is what a reader has to
+   * act on and a boolean would need a second field to carry it — two fields that
+   * can disagree where one cannot.
+   *
+   * ⚠ **This is a reading of THIS BOX** (KAN-630). An agent staffed on another
+   * machine is absent from `liveAgents()` and therefore absent from here, and
+   * that absence is not evidence that nobody holds the ticket.
+   */
+  liveMergers: string[];
+  /** A sentence a reader can act on without reconstructing it from the fields. */
+  detail: string;
+}
+
+/**
+ * Every approved-and-unmerged pull request the last tick could see — or the
+ * reason there is no such list.
+ *
+ * ---------------------------------------------------------------------------
+ * THE FAILING BRANCH CARRIES NO `pulls` KEY, AND THAT IS THE WHOLE SHAPE
+ * ---------------------------------------------------------------------------
+ *
+ * The same discriminated shape as `UnstaffableReport` and `GitHubOutcome`,
+ * deliberately and for the reason KAN-597 moved that distinction into the type:
+ * *an empty result is a claim about your search.* A report that answered `[]`
+ * when GitHub could not be read would say **the fleet has nothing stranded** in
+ * the exact bytes it says **I could not look** — and this is a report whose
+ * entire value is that somebody believes it when it is empty.
+ *
+ * So there is deliberately no value on `answered: false` that can be mistaken
+ * for a clean board: a reader that forgets to check the flag cannot reach a
+ * `pulls` array at all, because the type does not have one.
+ *
+ * `scannedRepos` is present on both branches and is the positive control:
+ * **an empty list of repositories scanned is not a clean fleet**, it is a tick
+ * that asked nothing — the ordinary state when no live agent holds a checkout
+ * and nothing is outstanding in memory. `prompts/task.md`: before reporting a
+ * null result, say what the instrument would have printed had the thing been
+ * there, and confirm that output could have reached you.
+ *
+ * ⚠ **AND AN ABSENT `strandedMerges` FIELD IS A THIRD ANSWER**, exactly as
+ * KAN-649 found for `askedJql`: a daemon built before this shipped carries no
+ * such key, its `prWatch` block is otherwise identical, and its silence is not a
+ * report that nothing is stranded. Nobody asked.
+ */
+export type StrandedMergeReport =
+  | {
+      answered: true;
+      /** The repositories actually read this tick. Empty means nothing was asked. */
+      scannedRepos: string[];
+      at: string;
+      /** Empty here genuinely means nothing is stranded in `scannedRepos`. */
+      pulls: StrandedMerge[];
+    }
+  | {
+      answered: false;
+      /** The repositories this tick MEANT to read. */
+      scannedRepos: string[];
+      /** Null before the first tick has run at all. */
+      at: string | null;
+      /** Which reads failed and why, in this watcher's own words. */
+      because: string;
+    };
+
+/** The sentence on one row. Composed here so the report and a log line agree. */
+export function strandedMergeDetail(row: Omit<StrandedMerge, 'detail'>): string {
+  const waited =
+    row.waitingMs === null
+      ? 'for at least as long as this daemon has been running (the approval predates this ' +
+        "watcher's memory of it, so how long is genuinely unknown)"
+      : `for ${Math.round(row.waitingMs / 1000)}s`;
+
+  const who = row.liveMergers.length
+    ? `${row.liveMergers.join(', ')} ${row.liveMergers.length === 1 ? 'is' : 'are'} live and ` +
+      'holds that ticket, so the button is reachable and has not been pressed — an approval ' +
+      'arrives as a GitHub comment and an agent that stopped to wait may never have been told'
+    : `NO live agent on this box holds ${row.issueKey}, so nothing here can press the button: ` +
+      'this pull request cannot land until one is started. (This box only — an agent on another ' +
+      'machine is invisible from here.)';
+
+  const hold = {
+    'nobody-has-pressed-it':
+      'is approved at this head, green, and GitHub reports it merging cleanly — it is one ' +
+      '`gh pr merge` away',
+    'the-head-does-not-merge':
+      'is approved at this head, but the head does not merge — it needs `gh pr update-branch` ' +
+      'or a conflict resolved first, and because that changes the head the approval will not ' +
+      'survive it',
+    'a-check-is-not-green':
+      'is approved at this head, but a check at that head is not green — the approval is not ' +
+      'what it is waiting for'
+  }[row.hold];
+
+  return `${row.repo}#${row.number} (${row.issueKey}) ${hold}, and has been approved ${waited}. ${who}`;
+}
+
+/**
+ * Build the row for one pull request, or null if it is not stranded.
+ *
+ * Pure, and takes the readiness rather than computing it, so this and
+ * `green-idle` are provably reading one classification of one snapshot.
+ */
+export function strandedMergeOf(args: {
+  pr: PullRequestSnapshot;
+  issueKey: string;
+  readiness: PrReadiness;
+  approvedAt: string | null;
+  liveMergers: string[];
+  now: number;
+}): StrandedMerge | null {
+  const { pr, issueKey, readiness, approvedAt, liveMergers, now } = args;
+  const approvalSource = approvalAtHead(pr);
+  if (!approvalSource) return null;
+  const hold = mergeHoldOf(readiness);
+  if (!hold) return null;
+
+  const approvedMs = approvedAt === null ? NaN : Date.parse(approvedAt);
+  const base: Omit<StrandedMerge, 'detail'> = {
+    repo: pr.repo,
+    number: pr.number,
+    url: pr.url,
+    title: pr.title,
+    issueKey,
+    headRefOid: pr.headRefOid,
+    approvalSource,
+    approvedAt,
+    // `Math.max(0, …)` rather than the raw difference: a clock that stepped
+    // backwards must not produce a negative age that reads as the future.
+    waitingMs: Number.isFinite(approvedMs) ? Math.max(0, now - approvedMs) : null,
+    hold,
+    liveMergers
+  };
+  return { ...base, detail: strandedMergeDetail(base) };
+}
+
+/**
+ * Whether an approval stands **at this head**, and by which mechanism — or null.
+ *
+ * ONE PREDICATE, TWO CALLERS, AND THAT IS THE POINT. {@link readinessOf} asks it
+ * to decide that nobody is being waited on for a review; {@link strandedMergeOf}
+ * asks it to decide that somebody is being waited on for the merge button. Those
+ * are the two halves of one pull request's life and they must not be able to
+ * disagree about whether it was approved — which is exactly what two copies of
+ * `pr.approval === 'recorded' || pr.reviewDecision === 'APPROVED'` would
+ * eventually do, in the same way KAN-339's two fields did.
+ *
+ * The disjunction is not redundancy. `approval` is KAN-306's head-pinned marker
+ * and is how every approval on this board is actually recorded; `reviewDecision`
+ * is a GitHub review verdict, which this fleet structurally cannot produce under
+ * one shared identity and which is kept for a human reviewing from a second
+ * account. Returning WHICH is what lets a report say so rather than assert an
+ * approval whose provenance it has dropped.
+ *
+ * TAKEN STRUCTURALLY RATHER THAN AS A `PullRequestSnapshot`, so that the same
+ * predicate answers about a {@link PrMemory} — *was it already approved when we
+ * last looked?* — which is the question {@link PrMemory.approvedAt} turns on. A
+ * second copy written against the memory's shape is how the two would come to
+ * disagree about what an approval is, which is the whole reason this function
+ * exists rather than the disjunction being written out twice.
+ */
+export function approvalAtHead(pr: {
+  approval?: string;
+  reviewDecision: string;
+}): 'marker' | 'review' | null {
+  if (pr.approval === 'recorded') return 'marker';
+  if (pr.reviewDecision === 'APPROVED') return 'review';
+  return null;
+}
+
+/**
  * The one place that decides it. Every sentence about whether a pull request
  * needs a reviewer is composed from this and from nothing else.
  */
@@ -473,7 +817,7 @@ export function readinessOf(pr: PullRequestSnapshot): PrReadiness {
       };
   }
 
-  if (pr.approval === 'recorded' || pr.reviewDecision === 'APPROVED') {
+  if (approvalAtHead(pr)) {
     return {
       ready: false,
       blocker: 'already-approved',
@@ -743,6 +1087,16 @@ export interface PrTick {
    * read window rather than with anything wrong.
    */
   nobodyLive: string[];
+  /**
+   * Every approved-and-unmerged pull request this tick saw, or why there is no
+   * such list (KAN-260).
+   *
+   * **Required, so a proof reads the shipped report rather than recomputing it.**
+   * The same value goes onto {@link PrWatchHealth.strandedMerges} and onto
+   * `butchr_list_agents`; one computation, three readers, so what a verify
+   * script asserts on and what a supervisor reads cannot come apart.
+   */
+  strandedMerges: StrandedMergeReport;
   unmatched: UnmatchedPr[];
   events: PrEvent[];
   notices: PrNotice[];
@@ -820,6 +1174,22 @@ export interface PrWatchHealth {
   openCount: number;
   /** OPEN, matched a ticket, and no live agent to tell. */
   nobodyLiveCount: number;
+  /**
+   * Approved pull requests that have not merged — KAN-260's whole subject.
+   *
+   * ⚠ **NOT DERIVABLE FROM {@link nobodyLiveCount}, which is why it is a field
+   * and not a note on that one.** That count is documented as *"nothing to
+   * announce, not a fault"* and it is right about the population it names: a
+   * pull request with no live agent is ordinarily just a finished piece of work.
+   * The one case where it IS a fault — the pull request is approved, so the
+   * absent agent is the only party permitted to land it — is invisible inside
+   * the count, and the count also misses the case that disproved KAN-260's
+   * original diagnosis entirely: an approved pull request whose agent IS live.
+   *
+   * See {@link StrandedMergeReport} for why an unanswerable tick has no `pulls`
+   * key at all.
+   */
+  strandedMerges: StrandedMergeReport;
   /** Matched no ticket at all. Named individually, because AC4 asks for that. */
   unmatched: UnmatchedPr[];
   /** A sentence a reader can quote without reconstructing it from the fields. */
@@ -884,6 +1254,28 @@ export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: numbe
   // was open and nothing wanted anything. The counters answered "how many rows
   // did I poll?" while the prose asked "how much is outstanding?". Splitting
   // them is the fix; narrowing the fetch is NOT, and must not be — see above.
+  // KAN-260, AND IT IS APPENDED TO EVERY BRANCH RATHER THAN BEING A FIELD
+  // NOBODY READS. The defect this reports was found by a supervisor reading the
+  // census for an unrelated reason, hours late — so the one thing it must not be
+  // is a key you have to know about. `detail` is the sentence supervision sweeps
+  // actually quote, and this rides it.
+  //
+  // ITS THREE BRANCHES ARE THREE DIFFERENT FACTS AND NONE OF THEM IS SILENCE:
+  // stranded pull requests named individually; a clean answer that says WHAT
+  // WAS SCANNED, so an empty scope cannot read as a clean fleet; and an
+  // unanswerable tick that says so first.
+  const stranded = !health.strandedMerges.answered
+    ? ` APPROVED-AND-UNMERGED PULL REQUESTS: NOT ESTABLISHED THIS TICK — ${health.strandedMerges.because}`
+    : health.strandedMerges.pulls.length
+      ? ` ⚠ ${health.strandedMerges.pulls.length} APPROVED PULL REQUEST(S) HAVE NOT MERGED: ` +
+        health.strandedMerges.pulls.map((row) => row.detail).join(' ')
+      : ` No approved pull request is sitting unmerged in ${
+          health.strandedMerges.scannedRepos.length
+            ? health.strandedMerges.scannedRepos.join(', ')
+            : 'any repository — because NONE was scanned, which is a fact about the scope of ' +
+              'this answer rather than about the fleet'
+        }.`;
+
   const closedRows = Math.max(0, health.watchedCount - health.openCount);
   const asOf =
     `As of the last successful look, ${health.openCount} OPEN pull request(s) matched a ticket, ` +
@@ -938,14 +1330,14 @@ export function describeHealth(health: Omit<PrWatchHealth, 'detail'>, now: numbe
         ? ` Polling has slowed to ${DEGRADED_PR_POLL_INTERVAL_MS / 1000}s while GitHub asks to be ` +
           'left alone; it has not stopped.'
         : '') +
-      ` ${repos} ${asOf}`
+      ` ${repos} ${asOf}${stranded}`
     );
   }
 
   return (
     `${repos} Last looked successfully at ${health.lastSuccessAt} ` +
     `(${health.lastSuccessAt ? Math.round((now - Date.parse(health.lastSuccessAt)) / 1000) : '?'}s ` +
-    `ago), so "nothing new" here means nothing new rather than nothing seen. ${asOf}`
+    `ago), so "nothing new" here means nothing new rather than nothing seen. ${asOf}${stranded}`
   );
 }
 
@@ -1145,6 +1537,11 @@ export class PrWatchState {
           ? value.commentIds.filter((id: any) => typeof id === 'string')
           : [],
         greenIdleSha: typeof value.greenIdleSha === 'string' ? value.greenIdleSha : '',
+        // Absent in a state file written before KAN-260 shipped, and absent is
+        // the honest answer for one: the approval was seen by a build that was
+        // not recording when. It reads back as `approvedAt: null` on the report,
+        // which that field's docblock says is "unknown" rather than "just now".
+        ...(typeof value.approvedAt === 'string' ? { approvedAt: value.approvedAt } : {}),
         seenAt: typeof value.seenAt === 'string' ? value.seenAt : new Date(this.now()).toISOString()
       });
     }
@@ -1548,6 +1945,15 @@ export class PrWatcher {
     watchedCount: 0,
     openCount: 0,
     nobodyLiveCount: 0,
+    // Before the first tick, NOBODY HAS LOOKED — and that is not the same
+    // answer as "nothing is stranded". The unanswered branch is the correct
+    // initial value for the same reason `lastAttemptAt` starts null.
+    strandedMerges: {
+      answered: false,
+      scannedRepos: [],
+      at: null,
+      because: 'no tick has run yet, so no pull request has been read'
+    },
     unmatched: []
   };
 
@@ -1634,6 +2040,16 @@ export class PrWatcher {
       watched: [],
       openWatched: [],
       nobodyLive: [],
+      // Replaced at the end of a tick that read something. Every early return
+      // below therefore leaves an UNANSWERED report behind rather than an empty
+      // list of stranded pull requests — the fleet could not be read, or the
+      // repositories could not be discovered, and neither is a clean fleet.
+      strandedMerges: {
+        answered: false,
+        scannedRepos: [],
+        at: null,
+        because: 'this tick returned before any pull request was read'
+      },
       unmatched: [],
       events: [],
       notices: [],
@@ -1686,6 +2102,20 @@ export class PrWatcher {
       this.health.openCount = 0;
       this.health.nobodyLiveCount = 0;
       this.health.unmatched = [];
+      // ANSWERED, WITH AN EMPTY SCOPE — not unanswered, and not a clean fleet.
+      // Nothing failed here: this tick asked about zero repositories and got a
+      // complete answer about zero repositories. `scannedRepos: []` is the
+      // positive control that says so, and it is why that field is on the
+      // succeeding branch as well as the failing one: a reader comparing it
+      // against the repositories it expected learns that the SCOPE was empty,
+      // which no count of stranded pull requests could have told it.
+      tick.strandedMerges = {
+        answered: true,
+        scannedRepos: [],
+        at: new Date(this.now()).toISOString(),
+        pulls: []
+      };
+      this.health.strandedMerges = tick.strandedMerges;
       return tick;
     }
 
@@ -1693,6 +2123,7 @@ export class PrWatcher {
     let anyFailure = false;
     let lastError: string | null = null;
     const pending: PrEvent[] = [];
+    const strandedThisTick: StrandedMerge[] = [];
 
     // Taken ONCE, before any pull request is recorded (KAN-600). Asking the
     // memory per pull request would answer `true` for the second row of a
@@ -1741,6 +2172,27 @@ export class PrWatcher {
           pending.push(event);
           tick.events.push(event);
         }
+
+        // AFTER `recognise`, deliberately: that call is what records the moment
+        // an approval was first seen, so reading the memory before it would
+        // report `approvedAt: null` on the very tick the approval arrived — the
+        // one row where the age is known exactly.
+        //
+        // The readiness is the SAME classification `recognise` composed
+        // `green-idle` from, taken from one call to the one classifier, so this
+        // report and that notice cannot describe one head two ways (KAN-339).
+        const stranded = strandedMergeOf({
+          pr,
+          issueKey,
+          readiness: readinessOf(pr),
+          approvedAt: this.state.get(`${pr.repo}#${pr.number}`)?.approvedAt ?? null,
+          // Live agents holding the ticket, as addresses. `byKey` is the same
+          // map the notification routing uses, so "reported as having nobody"
+          // and "told nobody" are one fact rather than two.
+          liveMergers: (byKey.get(issueKey) ?? []).map((a) => `${a.type}/${a.key}`),
+          now: this.now()
+        });
+        if (stranded) strandedThisTick.push(stranded);
       }
     }
 
@@ -1767,6 +2219,45 @@ export class PrWatcher {
       this.health.openCount = tick.openWatched.length;
       this.health.nobodyLiveCount = tick.nobodyLive.length;
       this.health.unmatched = tick.unmatched;
+    }
+
+    // KAN-260's report, and it follows the same discipline as the counters
+    // above: an incomplete read never becomes a clean answer.
+    //
+    // ⚠ A PARTIAL TICK IS `answered: false` EVEN THOUGH SOME ROWS WERE FOUND,
+    // AND THAT COSTS ONE INTERVAL. Two repositories, one read failing: the rows
+    // from the other are real, and they are dropped rather than published under
+    // a flag saying the list is short. The alternative was a second array on the
+    // failing branch — which is a value a reader can take for the answer, in a
+    // report whose entire purpose is that an empty one is believed. The cost is
+    // bounded and small: the next successful tick, a minute later, reports the
+    // same rows. The defect this ticket exists for was measured in HOURS.
+    tick.strandedMerges = anyFailure
+      ? {
+          answered: false,
+          scannedRepos: repos.map((r) => r.repo),
+          at: new Date(this.now()).toISOString(),
+          because:
+            `${tick.failures.length} of ${repos.length} repository read(s) failed this tick, so ` +
+            'this is not a complete list and an empty one would not have been evidence: ' +
+            tick.failures.map((f) => `${f.repo}: ${f.error}`).join('; ')
+        }
+      : {
+          answered: true,
+          scannedRepos: repos.map((r) => r.repo),
+          at: new Date(this.now()).toISOString(),
+          pulls: strandedThisTick
+        };
+    this.health.strandedMerges = tick.strandedMerges;
+
+    // Logged as well as reported, because the report is a pull and the log is
+    // the record — and one line per stranded pull request per tick is the same
+    // volume `board-reconcile` accepts for a withheld stand-down. Nothing is
+    // logged when the list is empty; a clean tick is the ordinary case.
+    if (tick.strandedMerges.answered) {
+      for (const row of tick.strandedMerges.pulls) {
+        this.opts.log(`[pr-watch] APPROVED AND UNMERGED: ${row.detail}`);
+      }
     }
 
     // One pull request's events are announced together (KAN-207).
@@ -1952,6 +2443,15 @@ export class PrWatcher {
         headRefOid: pr.headRefOid,
         commentIds: pr.commentIds,
         approval: pr.approval,
+        // NO `approvedAt` AT FIRST SIGHT, EVEN WHEN THE APPROVAL IS ALREADY
+        // THERE (KAN-260). Stamping it here would say "approved now" about a
+        // verdict this watcher has just met and did not see arrive — which is
+        // false, and false in the reassuring direction: the report would read
+        // `waitingMs: 0` for a pull request that has been stranded for hours,
+        // on exactly the tick after a daemon restart. Absent reads back as
+        // `approvedAt: null`, whose sentence is "how long is genuinely
+        // unknown". `verify-stranded-merges.mjs` §7 caught this version of this
+        // module doing the stamping.
         greenIdleSha: greenIdle && repoIsNew ? pr.headRefOid : '',
         seenAt
       });
@@ -2060,6 +2560,36 @@ export class PrWatcher {
           : pr.mergeStateStatus,
       headRefOid: pr.headRefOid,
       approval: pr.approval,
+      // WHEN THE APPROVAL WAS SEEN TO ARRIVE — stamped on the TRANSITION and
+      // never on the state (KAN-260). Four cases:
+      //
+      //   - no approval now                 -> forgotten, so a later one starts
+      //                                        its own clock rather than
+      //                                        inheriting a withdrawn verdict's;
+      //   - approved, head unmoved, known   -> the earliest sighting is kept;
+      //   - approved and it was NOT approved
+      //     last time, or the head MOVED    -> stamped now, because that is an
+      //                                        arrival this watcher witnessed;
+      //                                        a marker is pinned to a sha, so
+      //                                        one naming a new head is a new
+      //                                        approval;
+      //   - approved, head unmoved, and we
+      //     never recorded when             -> LEFT ABSENT. This is a state file
+      //                                        written by a build that did not
+      //                                        record it, or a first sight that
+      //                                        deliberately did not stamp. The
+      //                                        age is genuinely unknown, and the
+      //                                        report says so rather than
+      //                                        restarting the clock at zero —
+      //                                        which is what this code did until
+      //                                        §7 of the proof went red on it.
+      ...(approvalAtHead(pr)
+        ? seen.approvedAt && seen.headRefOid === pr.headRefOid
+          ? { approvedAt: seen.approvedAt }
+          : !approvalAtHead(seen) || seen.headRefOid !== pr.headRefOid
+            ? { approvedAt: seenAt }
+            : {}
+        : {}),
       // The union, so a comment deleted between reads cannot make an older one
       // look new on the tick after that.
       commentIds: [...new Set([...seen.commentIds, ...pr.commentIds])],

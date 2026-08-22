@@ -88,13 +88,13 @@ classification is the deliverable and the CI job is downstream of it.
 
 | class | count |
 | --- | --- |
-| `yes` | 146 |
+| `yes` | 147 |
 | `partial` | 26 |
 | `quarantined` | 3 |
 | `no` | 23 |
-| **total** | **198** |
+| **total** | **199** |
 
-**172 of 198** run on every pull request.
+**173 of 199** run on every pull request.
 
 ## `yes` — runs in CI; every section asserts
 
@@ -235,6 +235,7 @@ classification is the deliverable and the CI job is downstream of it.
 | `verify-startup-admission` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-startup-dialog-discrimination` | yes | imports the built daemon modules and drives the real `superviseChannelStartup` on a virtual clock. No live daemon, no herdr, no terminal, no credential. |
 | `verify-status-change-nudges` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
+| `verify-stranded-merges` | yes | imports the built daemon modules and asserts in process, with no live daemon, no herdr, no credential, no network and no terminal. The GitHub reader is stubbed; every classification, the report and the health sentence are the shipped ones, reached through the shipped `PrWatcher.watchOnce`. |
 | `verify-supervision-key-spelling` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-tail-asks-every-source` | yes | imports the built daemon modules and asserts against them in process; no live daemon, no herdr, no credential, no peer, no terminal. |
 | `verify-tail-async-awaited` | yes | imports the built daemon modules and reads `daemon/src` off the checkout; the only herdr is a shim this file writes onto PATH. No live daemon, no real herdr, no credential, no peer, no terminal, no network. |
