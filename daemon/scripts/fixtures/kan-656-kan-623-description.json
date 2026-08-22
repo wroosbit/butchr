@@ -1,0 +1,1267 @@
+{
+  "_what": "The REAL description ADF of KAN-623, the ticket KAN-656 was filed from — captured through the daemon proxy so it is the payload the proxy actually sees, not a hand-written stand-in.",
+  "_capturedOn": "2026-08-22",
+  "_liveRenderedChars": 8384,
+  "_liveAdfChars": 32405,
+  "key": "KAN-623",
+  "fields": {
+    "description": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Repository:",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " "
+            },
+            {
+              "type": "text",
+              "text": "wroosbit/butchr",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " (clone via "
+            },
+            {
+              "type": "text",
+              "text": "gh",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ")."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Implements story KAN-612",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " — this is the "
+            },
+            {
+              "type": "text",
+              "text": "silent-behaviour",
+              "marks": [
+                {
+                  "type": "em"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " slice: two places where "
+            },
+            {
+              "type": "text",
+              "text": "docs/SETUP.md",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " describes the machine correctly for one narrow case and leaves the reader with a general belief that is false."
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "attrs": {
+            "level": 2
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Problem — part one: the extension is the launcher"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "This is the seventh gap, the structural one the story adds to the six measured during bring-up.",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "docs/SETUP.md",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " reads as if the daemon begins at §6 (line 314), "
+            },
+            {
+              "type": "text",
+              "text": "\"Autostart, and the file-descriptor ceiling\"",
+              "marks": [
+                {
+                  "type": "em"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", which runs "
+            },
+            {
+              "type": "text",
+              "text": "install-service.sh",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " and ends with "
+            },
+            {
+              "type": "text",
+              "text": "systemctl --user enable --now butchr-daemon.service",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ". Nothing before §6 says a daemon is running."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "It is not true. The native-messaging host is a launcher: Chrome spawns it when the extension connects, and it brings the daemon up if one is not already there. "
+            },
+            {
+              "type": "text",
+              "text": "daemon/src/native-host.ts",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ":"
+            }
+          ]
+        },
+        {
+          "type": "codeBlock",
+          "content": [
+            {
+              "type": "text",
+              "text": "127: // Connect (and spawn the daemon if needed) as soon as Chrome starts us, so\n128: // the first real message doesn't pay the startup latency.\n129: void ensureDaemonLink();"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "So §4 — \"Load the extension into Chrome\" — starts the daemon.",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " Two consequences the document does not carry:"
+            }
+          ]
+        },
+        {
+          "type": "bulletList",
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "A box cannot be staged \"ready but inert\" by withholding §6.",
+                      "marks": [
+                        {
+                          "type": "strong"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " An operator who wants everything installed but nothing running has no such state available by stopping short, and the document implies they do."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "This is the same mechanism as the KAN-550 incident §7 already describes",
+                      "marks": [
+                        {
+                          "type": "strong"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": ", from the other end. §7 (line 441) says that on 2026-08-20 "
+                    },
+                    {
+                      "type": "text",
+                      "text": "systemctl is-active",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " read "
+                    },
+                    {
+                      "type": "text",
+                      "text": "inactive",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " while "
+                    },
+                    {
+                      "type": "text",
+                      "text": "\"a daemon Chrome had auto-spawned served the fleet with none of the unit's `BUTCHR_",
+                      "marks": [
+                        {
+                          "type": "em"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " variables\"*. §7 explains how ",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": "butchr-doctor` now catches that. It never says "
+                    },
+                    {
+                      "type": "text",
+                      "text": "why Chrome had a daemon to auto-spawn in the first place",
+                      "marks": [
+                        {
+                          "type": "strong"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " — which is this gap. The reader gets the remedy without the cause."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "attrs": {
+            "level": 2
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Problem — part two: §9's warning is narrower than the rule it is an instance of"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "§9 (line 519) warns, correctly and at length, that turning channels on does not reach agents that are already running: "
+            },
+            {
+              "type": "text",
+              "text": "\"whether an agent has a channel is decided when it is spawned\"",
+              "marks": [
+                {
+                  "type": "em"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", and "
+            },
+            {
+              "type": "text",
+              "text": "\"Those agents are deaf for the rest of their lives and the daemon will keep writing frames at them.\"",
+              "marks": [
+                {
+                  "type": "em"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "That is written as a fact about channels. It is an instance of a general rule: "
+            },
+            {
+              "type": "text",
+              "text": "a daemon-side switch never changes what an already-connected client negotiated.",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " It is true of the Atlassian proxy in exactly the same way — flipping "
+            },
+            {
+              "type": "text",
+              "text": "BUTCHR_ATLASSIAN_PROXY",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " does not give an already-running agent the tools it did not have when its MCP session was negotiated."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "task/KAN-568",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " proposed "
+            },
+            {
+              "type": "text",
+              "text": "generalising §9's warning rather than adding a proxy footnote",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", and KAN-612 endorses that as the better fix. A footnote per switch is a list that will be incomplete the day a switch is added; the rule is what survives."
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "attrs": {
+            "level": 2
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Tasks"
+            }
+          ]
+        },
+        {
+          "type": "bulletList",
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Say in "
+                    },
+                    {
+                      "type": "text",
+                      "text": "docs/SETUP.md",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " §4 (or wherever the reader first meets the extension) that loading the extension starts the daemon, and that this is the native-messaging host doing its job rather than a surprise. Name "
+                    },
+                    {
+                      "type": "text",
+                      "text": "daemon/src/native-host.ts",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " or "
+                    },
+                    {
+                      "type": "text",
+                      "text": "daemon/bin/native-host.sh",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " so a reader can check it."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Say what §6 therefore adds, since it is not \"the daemon now exists\": autostart across reboot, linger, the fd drop-in, and a "
+                    },
+                    {
+                      "type": "text",
+                      "text": "supervised",
+                      "marks": [
+                        {
+                          "type": "em"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " daemon carrying the unit's environment rather than Chrome's minimal one."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Say plainly that stopping before §6 does not give you an inert box, and — if there is a supported way to stage one — say what it is. If there is not, say that instead. Do not invent a mechanism."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Connect this to §7's KAN-550 paragraph so the incident and its cause sit together. §7's existing text is a sibling task's neighbour, so add a sentence and a pointer rather than rewriting the paragraph."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Generalise §9's already-running warning into a stated rule that covers any daemon-side switch, keeping the channels case as its worked example. §9's specifics — the transport table, the "
+                    },
+                    {
+                      "type": "text",
+                      "text": "--dangerously-load-development-channels",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " flag, the measured client versions — stay as they are; what changes is that the warning is framed as an instance."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Put the general rule where a reader of §8 or of the environment step will also meet it, not only inside the optional channels step. A reader who never turns channels on must still learn it."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "attrs": {
+            "level": 2
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Out of scope"
+            }
+          ]
+        },
+        {
+          "type": "bulletList",
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "§2, §4's ID mechanics, and §5",
+                      "marks": [
+                        {
+                          "type": "strong"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " — a sibling task filed from KAN-612 owns the computable extension ID and reorders §4/§5. You are adding a sentence about what loading the extension "
+                    },
+                    {
+                      "type": "text",
+                      "text": "does",
+                      "marks": [
+                        {
+                          "type": "em"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": "; you are not touching how the ID is obtained or the order of those two steps. Coordinate — see below."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "§8 and the new environment step",
+                      "marks": [
+                        {
+                          "type": "strong"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " — a second sibling owns those, including the "
+                    },
+                    {
+                      "type": "text",
+                      "text": "BUTCHR_ATLASSIAN_PROXY",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " documentation. You may state the general rule and you may cite the proxy as an instance; you may not document the knob."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Changing any behaviour. Both parts of this ticket are documentation. If you find that the code should change — for example that there ought to be a real way to stage an inert box — file a ticket and link it "
+                    },
+                    {
+                      "type": "text",
+                      "text": "Relates",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": "; do not build it here."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Turning channels on, or changing their default. §9 stays optional and not recommended."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "attrs": {
+            "level": 2
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Acceptance criteria — with a live proof"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "This ticket's claims are about source, so the proof reads source and does not need a build."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Part one — the launcher claim is true and the document now carries it:",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "codeBlock",
+          "attrs": {
+            "language": "bash"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "grep -n 'ensureDaemonLink' daemon/src/native-host.ts\ngrep -n -i 'native-messaging host\\|starts the daemon\\|launcher' docs/SETUP.md"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Paste both. The first is the mechanism; the second must show the new sentence in §4's region and the pointer near §7's KAN-550 paragraph. "
+            },
+            {
+              "type": "text",
+              "text": "A grep count alone is not the proof",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " — paste the matched lines so a reviewer can read what you actually wrote."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Part two — the rule is stated generally, and reachable from outside §9.",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " Paste the new rule text with its line number, and show that it is either outside §9 or cross-referenced from the environment step:"
+            }
+          ]
+        },
+        {
+          "type": "codeBlock",
+          "attrs": {
+            "language": "bash"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "awk 'NR>=1 && /^## /{s=$0} /already-connected|already running|negotiated/{print NR\": [\"s\"] \"$0}' docs/SETUP.md"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "The rule must appear under a heading other than §9, or §9's statement must be pointed at from elsewhere. State in the PR body which of the two you did."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Red drive.",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " Run both proofs against "
+            },
+            {
+              "type": "text",
+              "text": "origin/main",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "'s "
+            },
+            {
+              "type": "text",
+              "text": "docs/SETUP.md",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " first and paste that output: the part-one grep must miss, and the part-two awk must show the warning only under §9. If either already matches on the unmodified document, this ticket's premise is wrong for that half — say so and stop, rather than writing prose to satisfy a check that was already green."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Reviewers re-run both against the PR head.",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "attrs": {
+            "level": 2
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Coordination"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Two sibling tasks filed from KAN-612 also edit ",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "docs/SETUP.md",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ".",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " Carved by section: this one owns "
+            },
+            {
+              "type": "text",
+              "text": "§6/§7's framing and §9",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "; a sibling owns "
+            },
+            {
+              "type": "text",
+              "text": "§8 and a new environment step",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "; a sibling owns "
+            },
+            {
+              "type": "text",
+              "text": "§2/§4/§5",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Both siblings are sequenced ahead of you",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " — the environment task first, the extension-ID task second. "
+            },
+            {
+              "type": "text",
+              "text": "Expect to ",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "git merge origin/main",
+              "marks": [
+                {
+                  "type": "code"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " before review.",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "The seam, named because it is real and it is yours to raise, not to absorb:",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " you are adding a sentence to §4's region, and the extension-ID sibling is "
+            },
+            {
+              "type": "text",
+              "text": "rewriting and reordering",
+              "marks": [
+                {
+                  "type": "em"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " §4 and §5. This is the one genuine overlap in the three-way split. Read that sibling's merged text before you write yours, put your sentence where its ordering leaves room, and if the two cannot both be true, say so on this ticket and to "
+            },
+            {
+              "type": "text",
+              "text": "story/KAN-612",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " rather than editing around it."
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "attrs": {
+            "level": 2
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Standing rules"
+            }
+          ]
+        },
+        {
+          "type": "bulletList",
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Work lands as a pull request against protected "
+                    },
+                    {
+                      "type": "text",
+                      "text": "main",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": ". Required CI checks must pass; read the current required set with "
+                    },
+                    {
+                      "type": "text",
+                      "text": "gh pr checks",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " rather than a remembered list, and filter by workflow ("
+                    },
+                    {
+                      "type": "text",
+                      "text": "gh run list --workflow=ci.yml",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": ") so you are not reading another workflow's conclusion."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Approval before merge, and green CI is not approval.",
+                      "marks": [
+                        {
+                          "type": "strong"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " Your approver is "
+                    },
+                    {
+                      "type": "text",
+                      "text": "story/KAN-612",
+                      "marks": [
+                        {
+                          "type": "strong"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": ". You merge your own PR, but only after that approval is on it."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Declare the approver in the PR body on a line of its own: "
+                    },
+                    {
+                      "type": "text",
+                      "text": "BUTCHR-APPROVER: story/KAN-612",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": ". The required "
+                    },
+                    {
+                      "type": "text",
+                      "text": "approval-recorded",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " check compares the approver's marker against that line, so a PR that declares nobody cannot go green."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "An approval is pinned to the head SHA. If you push or run "
+                    },
+                    {
+                      "type": "text",
+                      "text": "gh pr update-branch",
+                      "marks": [
+                        {
+                          "type": "code"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "text": " after approval, the approval no longer names the head and you must ask again."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -135,13 +135,45 @@ function paramsOf(tool) {
 // 4 is what covers it.
 // ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * The tool a recipe is an instruction to CALL, where it is a recipe at all.
+ *
+ * KAN-656. Until that ticket every recipe this file audited was an instruction
+ * to re-call the tool that had just been clipped, so `auditRecipes` checked the
+ * named parameters against the CALLING tool and was right to. That assumption
+ * is now false in one case and will be false in more: a clipped description
+ * prints `atlassian_get_issue_description({ issueKey: ..., startAt: 0 })` while
+ * the tool being clipped is `atlassian_get_issue`, whose schema has no
+ * `startAt`. Checking that recipe against the caller would report a correct,
+ * executable recipe as a defect — and, worse, the same blind spot would pass a
+ * recipe naming a tool that does not exist.
+ */
+function toolNamedBy(text) {
+  if (typeof text !== 'string') return null;
+  const call = text.match(/^([A-Za-z_][A-Za-z0-9_]*)\(\{(.*)\}\)$/s);
+  return call ? call[1] : null;
+}
+
+/**
+ * Every identifier a recipe names that ought to be a PARAMETER of some tool.
+ *
+ * ⚠ A BACKTICKED TOOL NAME IS NOT A PARAMETER (KAN-656). The prose arm below
+ * reads backticked identifiers as parameter names, which is right for
+ * "`fields` or `maxResults`" and wrong for a sentence that names a route —
+ * `atlassian_get_issue_description` is a tool, and reporting it as a parameter
+ * the calling tool does not accept is a false red. Filtered against the
+ * operation tables rather than against a hand-kept list of exceptions, so a
+ * tool renamed in the table stops being excused here on the same day.
+ */
 function paramsNamedBy(text) {
   if (typeof text !== 'string') return [];
   const call = text.match(/^([A-Za-z_][A-Za-z0-9_]*)\(\{(.*)\}\)$/s);
   if (call) {
     return [...call[2].matchAll(/([A-Za-z][A-Za-z0-9_]*)\s*:/g)].map((m) => m[1]);
   }
-  return [...text.matchAll(/`([A-Za-z][A-Za-z0-9_]*)`/g)].map((m) => m[1]);
+  return [...text.matchAll(/`([A-Za-z][A-Za-z0-9_]*)`/g)]
+    .map((m) => m[1])
+    .filter((name) => paramsOf(name) === null);
 }
 
 /** Every recovery claim in a fitted payload, with where it was found. */
@@ -165,19 +197,34 @@ function recoveryClaims(payload) {
 }
 
 function auditRecipes(label, tool, payload) {
-  const advertised = paramsOf(tool);
   const claims = recoveryClaims(payload);
   const offenders = [];
   for (const claim of claims) {
+    // WHICH TOOL THIS RECIPE IS ABOUT (KAN-656). A recipe that names a tool is
+    // checked against THAT tool's schema; prose that names none is still about
+    // the tool that was clipped. Getting this wrong in either direction is a
+    // wrong answer: against the caller, a correct cross-tool recipe reads as a
+    // defect; against nothing, a recipe naming a tool that does not exist
+    // passes.
+    const named = toolNamedBy(claim.text);
+    const subject = named ?? tool;
+    const advertised = paramsOf(subject);
+    if (named !== null && advertised === null) {
+      offenders.push(
+        `${claim.at}: is an instruction to call \`${named}\`, which is not a tool on ` +
+          `this server — "${claim.text}"`
+      );
+      continue;
+    }
     for (const param of paramsNamedBy(claim.text)) {
       // `null` means this script could not establish the tool's parameters, and
       // an unestablished schema is not evidence of a good recipe — it is a hole,
       // reported as one rather than silently passed.
       if (advertised === null) {
-        offenders.push(`${claim.at}: names \`${param}\` and ${tool}'s parameters could not be read`);
+        offenders.push(`${claim.at}: names \`${param}\` and ${subject}'s parameters could not be read`);
       } else if (!advertised.includes(param)) {
         offenders.push(
-          `${claim.at}: names \`${param}\`, which ${tool} does not accept ` +
+          `${claim.at}: names \`${param}\`, which ${subject} does not accept ` +
             `(it takes ${advertised.length ? advertised.join(', ') : 'no parameters'}) — "${claim.text}"`
         );
       }

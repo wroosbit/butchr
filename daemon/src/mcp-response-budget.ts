@@ -97,6 +97,34 @@ export type ClipRecord = {
      */
     | 'members-omitted'
     /**
+     * KAN-656. A LONG STRING KEPT SHORT RATHER THAN GIVEN UP WHOLE — the text
+     * counterpart of KAN-522's `entries-omitted`, and it exists for the same
+     * reason: a prefix of n characters strictly dominates zero of them for
+     * every n > 0, and costs the same disclosure either way.
+     *
+     * ⚠ `returned`, `total` and `omitted` ARE COUNTED IN CHARACTERS ON THIS
+     * RECORD, where every other reduction counts entries. That is the one place
+     * the units change, so it is said here and on each field rather than left
+     * to be inferred from the field name.
+     *
+     * THE DEFECT IT ENDS. A ticket's description is a single string, and until
+     * this rung the fitter had exactly two moves for one: keep it whole or
+     * replace it with a stub. Measured on KAN-623 (2026-08-21), a brief of
+     * 8,568 rendered characters against a 9,000 budget lost by ~200 characters
+     * of envelope and came back as `noWayBack` — the agent staffed for that
+     * ticket could not read it. Half the text would have been worth having.
+     *
+     * ⚠ WHAT THIS RUNG DOES NOT DO, said because it is the easy thing to
+     * assume: it does not reach a description by any of the ordinary read
+     * routes. The candidate walk descends ONE level, and a description sits
+     * three levels down on both of them — inside `body.issues[0]` on the
+     * search, inside `body.fields` on the issue read. Reaching it is
+     * `atlassian_get_issue_description`'s job, which puts the rendered text at
+     * `body.text` where this rung can see it. The two are halves of one fix and
+     * neither closes KAN-656 alone.
+     */
+    | 'text-windowed'
+    /**
      * KAN-525. NOTHING WENT, AND THE ANSWER IS STILL OVER BUDGET — the one
      * record that reports a reduction that could not happen. It exists because
      * the alternative is worse than useless: before this, an answer whose
@@ -114,11 +142,21 @@ export type ClipRecord = {
      * client's business rather than ours.
      */
     | 'irreducible';
-  /** How many entries came back. `null` where the field is not a list. */
+  /**
+   * How many entries came back. `null` where the field is neither a list nor a
+   * string. ⚠ On `text-windowed` this is CHARACTERS, not entries (KAN-656).
+   */
   readonly returned: number | null;
-  /** How many exist. `null` where the field is not a list. */
+  /**
+   * How many exist. `null` where the field is neither a list nor a string.
+   * ⚠ On `text-windowed` this is CHARACTERS — the length of the whole string,
+   * so `returned + omitted === total` still holds, in the other unit.
+   */
   readonly total: number | null;
-  /** How many did not come back. `null` where the field is not a list. */
+  /**
+   * How many did not come back. `null` where the field is neither a list nor a
+   * string. ⚠ On `text-windowed` this is CHARACTERS (KAN-656).
+   */
   readonly omitted: number | null;
   /** The exact call that returns this field unreduced. */
   readonly readTheRest: string;
@@ -1124,8 +1162,29 @@ function clippedVerdict(
   unclippedChars: number,
   clipped: readonly [ClipRecord, ...ClipRecord[]]
 ): Completeness {
-  const lists = clipped.filter((c) => c.omitted !== null && c.omitted > 0);
-  const lost = lists.reduce((n, c) => n + (c.omitted ?? 0), 0);
+  // KAN-656. COUNTED SEPARATELY BECAUSE THE UNITS DIFFER. Every reduction but
+  // one counts ENTRIES; `text-windowed` counts CHARACTERS. Summing them into a
+  // single figure and calling it "list entr(ies)" is a disclosure that is
+  // precisely wrong about what was lost — measured while adding that rung: a
+  // description cut to 4 characters reported "5996 list entr(ies) are absent"
+  // for a field that is not a list and has no entries. A sentence that
+  // miscounts what went is worse than one that says less, because this is the
+  // sentence a reader trusts to tell them what they are missing.
+  const droppedEntries = clipped.filter(
+    (c) => c.reduction !== 'text-windowed' && c.omitted !== null && c.omitted > 0
+  );
+  const droppedChars = clipped.filter(
+    (c) => c.reduction === 'text-windowed' && c.omitted !== null && c.omitted > 0
+  );
+  const lostEntries = droppedEntries.reduce((n, c) => n + (c.omitted ?? 0), 0);
+  const lostChars = droppedChars.reduce((n, c) => n + (c.omitted ?? 0), 0);
+  const lost = lostEntries + lostChars;
+  const whatWentMissing = [
+    lostEntries > 0 ? `${lostEntries} list entr(ies)` : null,
+    lostChars > 0 ? `${lostChars} characters of text` : null
+  ]
+    .filter(Boolean)
+    .join(' and ');
   return {
     kind: 'clipped',
     chars,
@@ -1164,7 +1223,7 @@ function clippedVerdict(
         'budget went to.'
       : `NOT WHOLE: ${unclippedChars} chars reduced to fit ${budgetChars}. ` +
         (lost > 0
-          ? `${lost} list entr(ies) are absent — \`clipped\` names the field and the call that returns them.`
+          ? `${whatWentMissing} are absent — \`clipped\` names the field and the call that returns them.`
           : clipped.some((c) => c.reduction === 'rows-summarised' || c.reduction === 'rows-addressed')
             ? 'No entry was dropped; every agent is named, with less said about some.'
             : 'No list entry was dropped; `clipped` names each field that was reduced and what, if anything, returns it.')
@@ -1195,6 +1254,41 @@ function clippedVerdict(
  * the next tool to grow. The other tools measure well under the budget today;
  * this is what makes that a fact about their size rather than about luck.
  */
+/**
+ * The length past which a string stops being a scalar a reader steers by
+ * (KAN-656).
+ *
+ * WHY A THRESHOLD RATHER THAN "ALL STRINGS". The candidate walk's own rule is
+ * that scalars are not candidates — "they are a few dozen characters each and
+ * they are the half a reader steers by" — and that rule is right about
+ * `descriptionFormat`, `key`, `outcome` and every other short string in this
+ * daemon's responses. It is wrong about exactly one thing: a string carrying
+ * PROSE, which is the case KAN-656 is about and which no other rung can reach.
+ *
+ * So the discriminator is size and not type, because size is what the original
+ * rule was actually appealing to. 512 is well above the longest steering string
+ * this daemon emits (`whatAnEmptyToolListMeans`, measured 68 chars, is declared
+ * bounded at 256) and well below any prose worth windowing — a description
+ * short enough to sit under it fits the budget whole anyway, so the rung would
+ * have nothing to do.
+ */
+const TEXT_CANDIDATE_MIN_CHARS = 512;
+
+/**
+ * Whether this member is something the fitter can usefully give up part of.
+ *
+ * ⚠ THIS ANSWERS ONE OF THE WALK'S TWO QUESTIONS AND NOT THE OTHER. It decides
+ * which members become CANDIDATES. It is deliberately NOT used for
+ * `keepsSomething`, which asks whether descending keeps anything — and a long
+ * string answers yes to that, because the string rung windows it rather than
+ * dropping it. See the comment at the `keepsSomething` site for what using the
+ * complement there would cost.
+ */
+function isReducible(value: unknown): boolean {
+  if (isPlainObject(value) || Array.isArray(value)) return true;
+  return typeof value === 'string' && value.length >= TEXT_CANDIDATE_MIN_CHARS;
+}
+
 export function fitGenericResponse(
   response: unknown,
   options: {
@@ -1308,9 +1402,7 @@ export function fitGenericResponse(
       continue;
     }
     if (isPlainObject(value)) {
-      const members = Object.keys(value).filter(
-        (k) => isPlainObject(value[k]) || Array.isArray(value[k])
-      );
+      const members = Object.keys(value).filter((k) => isReducible(value[k]));
       // WHAT DESCENDING IS FOR, AND THE CONDITION IS THE WHOLE OF IT: keeping
       // the small members while the large ones go. An object with no small
       // members has nothing to keep, so descending into it buys nothing — and
@@ -1321,6 +1413,19 @@ export function fitGenericResponse(
       // and a 1,200-character `toolsAdvertised` list dropped in its place,
       // because the report had no single candidate as large as the list. The
       // reduction was correct and the field it chose was the wrong one.
+      // ⚠ NOT `!isReducible` — AND THE ASYMMETRY IS DELIBERATE (KAN-656). The
+      // question this asks is "would descending keep anything", and a long
+      // string answers YES: the rung below WINDOWS it, so a prefix survives.
+      // Only an object or an array is given up whole. Using the complement of
+      // `isReducible` here would make an object of, say, one long string and
+      // one list stop being descended into the moment the string crossed 512
+      // characters — and BOTH would then be stubbed together, where before the
+      // change the string was kept entire. That is a reduction in what a reader
+      // gets, introduced by a rung whose whole purpose is to increase it.
+      //
+      // So this predicate is unchanged from what it was, which makes the change
+      // strictly additive: more members become candidates, and descent happens
+      // at least as often as it did before.
       const keepsSomething = Object.keys(value).some(
         (k) => !isPlainObject(value[k]) && !Array.isArray(value[k])
       );
@@ -1340,11 +1445,29 @@ export function fitGenericResponse(
   }
   candidates.sort((a, b) => b.size - a.size);
 
+  // ⚠ `budgetChars` RATHER THAN `0` AS THE PLACEHOLDER, AND THE THREE CHARACTERS
+  // IT BUYS ARE LOAD-BEARING (KAN-656). `serialiseWithExactChars` rewrites
+  // `chars` to the answer's TRUE length after this has chosen what to keep, so a
+  // trial measured with `chars: 0` is short by the digit width of the real
+  // figure — one character against four. Every rung that binary-searches for the
+  // largest thing that fits therefore aimed slightly over the line.
+  //
+  // It went unnoticed while the only such rung was KAN-522's array trim, where
+  // entries are chunky and a prefix rarely lands within three characters of the
+  // boundary. The string rung lands there routinely, because a prefix can be any
+  // length: measured on `verify-list-agents-answer-is-bounded`'s 40,000-character
+  // blob, the search returned a payload of 9,003 against a 9,000 budget.
+  //
+  // `budgetChars` is the right placeholder because it is a genuine upper bound:
+  // any answer this function accepts has `chars <= budgetChars`, so its decimal
+  // width is at most that of `budgetChars`, and the estimate can only ever be
+  // conservative. Not a fixed slack constant, which would be a number nobody
+  // could later justify.
   const measure = (payload: Record<string, unknown>, against: ClipRecord[]): number => {
     const provisional =
       against.length === 0
-        ? completeVerdict(0, budgetChars)
-        : clippedVerdict(0, budgetChars, unclippedChars, against as [ClipRecord, ...ClipRecord[]]);
+        ? completeVerdict(budgetChars, budgetChars)
+        : clippedVerdict(budgetChars, budgetChars, unclippedChars, against as [ClipRecord, ...ClipRecord[]]);
     return sizeOf(withCompleteness(payload, provisional));
   };
 
@@ -1428,6 +1551,73 @@ export function fitGenericResponse(
         const trimmed = place(raw.slice(0, lo));
         if (trimmed) {
           working = trimmed;
+          clips.push(recordFor(lo));
+          continue;
+        }
+      }
+    }
+
+    // ---- a long STRING is WINDOWED, never deleted (KAN-656) ---------------
+    //
+    // WHY THIS RUNG EXISTS AT ALL, and it is KAN-522's argument in the other
+    // unit. A list was the one shape this function knew something about; a
+    // string is the second, and on it the two moves are equally incomparable —
+    // a prefix of n characters strictly dominates zero of them for every n > 0,
+    // and `ClipRecord` already models `returned`/`total`/`omitted` exactly, so
+    // the disclosure costs the same either way.
+    //
+    // MEASURED, WHICH IS WHY IT IS HERE RATHER THAN IN A LATER TICKET. KAN-623
+    // carried its whole brief in its description: 8,568 characters rendered,
+    // against a 9,000 budget, losing by about 200 characters of envelope. The
+    // stub below was the whole of what its agent got — `noWayBack`, correctly,
+    // because `description` is one field and `fields` is the only lever the
+    // read routes have. **Half of that brief would have been worth having**,
+    // and this is the rung that returns it.
+    //
+    // ⚠ THE WINDOW MUST BE NON-EMPTY, AND THE STUB IS WHAT ZERO GETS — the same
+    // split as the array rung above, for the same reason and it is sharper
+    // here. An empty string is not a short answer, it is a WRONG one:
+    // `text: ""` reads as a ticket with no description, which is a real state
+    // this proxy can return and must stay distinguishable from a description
+    // that did not fit. The stub says `omitted: 'for-budget'` and cannot be
+    // read that way, so the two arms split on `keep > 0` rather than on
+    // tidiness.
+    //
+    // ⚠ AND A SHORT STRING IS NOT A CANDIDATE FOR THIS AT ALL. The guard is
+    // `raw.length > 0`, but what makes the rung safe is that it only ever runs
+    // on a candidate the largest-first ordering already reached — so a 40-character
+    // `key` beside a 6,000-character `text` is never the one truncated.
+    if (typeof raw === 'string' && raw.length > 0) {
+      const total = raw.length;
+      const recordFor = (keep: number): ClipRecord => ({
+        field: candidate.path,
+        reduction: 'text-windowed',
+        // ⚠ CHARACTERS, NOT ENTRIES — the one record on which these three
+        // change units. See the `text-windowed` docblock on ClipRecord.
+        returned: keep,
+        total,
+        omitted: total - keep,
+        readTheRest: recovery.kind === 'call' ? recovery.call : recovery.why,
+        ...(candidate.owner === null ? revocationSpread(candidate.key, raw) : {})
+      });
+
+      // The largest prefix that fits, by binary search, exactly as the array
+      // rung does it and for the same reason: halving overshoots by up to half
+      // the string every time, and the overshoot is measured in characters a
+      // reader wanted. The size of a prefix is monotone in its length.
+      let lo = 0;
+      let hi = total;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi + 1) / 2);
+        const trial = place(raw.slice(0, mid));
+        if (trial && measure(trial, [...clips, recordFor(mid)]) <= budgetChars) lo = mid;
+        else hi = mid - 1;
+      }
+
+      if (lo > 0) {
+        const windowed = place(raw.slice(0, lo));
+        if (windowed) {
+          working = windowed;
           clips.push(recordFor(lo));
           continue;
         }

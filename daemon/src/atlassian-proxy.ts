@@ -858,6 +858,35 @@ export const PROXY_LIST_MAX_RESULTS = 50;
 export const PROXY_COMMENT_MAX_RESULTS = 100;
 
 /**
+ * How many CHARACTERS of a rendered description one page may carry (KAN-656).
+ *
+ * DERIVED FROM THE BUDGET RATHER THAN PICKED, and the derivation is the whole
+ * of why this number is not larger. The response budget is
+ * `DEFAULT_BUDGET_CHARS` = 9,000, and a page of this operation spends some of
+ * it on things that are not the text: the proxy envelope (`action`, `success`,
+ * `status`, `via`), this operation's own cursor, and `completeness`. KAN-652
+ * measured the `via`/`condensedAway`/`completeness` wrapper at ~630 characters
+ * on an ordinary call, and `via.path` carries the caller's own query so it is
+ * not fixed. JSON string escaping is the other half: a character of prose can
+ * cost two in `JSON.stringify`, and a newline does.
+ *
+ * 6,000 leaves ~3,000 for all of that, which is comfortable at the default
+ * budget without being so generous that the common ticket needs two calls.
+ *
+ * ⚠ IT IS A CAP AND NOT A GUARANTEE, and the difference is the reason this
+ * operation is not the whole fix. A caller may lower the budget
+ * (`BUTCHR_MCP_RESPONSE_BUDGET_CHARS` has a floor and no ceiling), and at
+ * `MIN_BUDGET_CHARS` = 1,000 no fixed window fits. What makes the page still
+ * arrive is the string rung in `mcp-response-budget.ts`, which windows
+ * `body.text` further rather than omitting it — so `returned` is the number a
+ * caller pages by and `maxResults` is only what was asked for. Nothing here
+ * needs to know the budget, which is the point: the budget is known in the
+ * process that applies it, and this number is a courtesy that keeps the common
+ * case to one call.
+ */
+export const PROXY_DESCRIPTION_MAX_CHARS = 6_000;
+
+/**
  * A numeric Atlassian id — a Confluence page, space or comment — or the reason
  * this one is not.
  *
@@ -1214,6 +1243,37 @@ function commentBodyFormat(
       '"text" (the default) renders each comment to plain text, which is what makes a page ' +
       'of a real ticket fit inside the response budget. "adf" returns Atlassian\'s raw ' +
       'document, which on a long comment can exceed that budget on its own.'
+  };
+}
+
+/**
+ * How a caller asked for the description, or the reason that is not an answer
+ * (KAN-656).
+ *
+ * Same shape and same argument as {@link commentBodyFormat} one function up,
+ * and refused rather than defaulted for the same reason: `'adf'` returns a node
+ * tree and `'text'` returns prose, so they differ in what the answer *is*. A
+ * caller that typed `'ADF'` and silently got windowed text would be paging by a
+ * character offset into a rendering it did not ask for, believing it held the
+ * structure it did — and nothing in the response would say otherwise.
+ *
+ * Called from both {@link ProxyOperationBase.build} and the operation's
+ * transform, which is why it is a function rather than a line: the value the
+ * transform acts on has to be the value `build` agreed to.
+ */
+function descriptionFormat(
+  args: Record<string, any>
+): { format: 'text' | 'adf' } | { error: string } {
+  const raw = args?.descriptionFormat;
+  if (raw === undefined || raw === null || raw === '') return { format: 'text' };
+  if (raw === 'text' || raw === 'adf') return { format: raw };
+  return {
+    error:
+      `descriptionFormat must be "text" or "adf"; got ${JSON.stringify(raw)}. ` +
+      '"text" (the default) renders the description and returns the window you asked for, ' +
+      'which is what makes a description larger than the response budget readable at all. ' +
+      '"adf" returns Atlassian\'s raw document unwindowed, which on a long description ' +
+      'exceeds that budget on its own.'
   };
 }
 
@@ -1641,6 +1701,207 @@ export const PROXY_OPERATIONS: readonly ProxyOperation[] = [
               : {})
           };
         })
+      };
+    }
+  },
+  {
+    // KAN-656. THE SECOND READ ON THIS TABLE THAT REACHES SOMETHING NO OTHER
+    // SURFACE CAN — and it is the same defect as `atlassian_get_issue_comments`
+    // one entry up, moved from the comments to the description.
+    //
+    // THE DEFECT. A ticket's description is one field, and `fields` is the only
+    // lever any read on this table has. Measured on KAN-623 (2026-08-21), whose
+    // brief is ~8.5k rendered characters of problem statement, tasks,
+    // out-of-scope and acceptance criteria:
+    //
+    //   atlassian_get_issue (default fields)      clipped, unclipped 48,230
+    //   atlassian_get_issue fields=description    clipped, unclipped 40,543 (raw ADF)
+    //   atlassian_search_issues fields=description  clipped, unclipped 9,200 —
+    //     rendered to text, 8,568 characters, against a 9,000 budget, and it
+    //     STILL loses by about 200 characters of response envelope
+    //   atlassian_fetch_resource by ARI           takes no `fields` at all
+    //
+    // Every route ended in `noWayBack`, correctly: description is one field and
+    // it is the one wanted, so there is no narrower request to make. The agent
+    // assigned to that ticket could not read the ticket it was staffed for.
+    //
+    // ⚠ WHY A NEW OPERATION RATHER THAN A RUNG IN THE FITTER. Because the
+    // fitter cannot reach a description and should not learn to. Its candidate
+    // walk descends ONE level by deliberate design — two levels down a field
+    // name stops being something a caller can act on — and a description sits
+    // THREE levels down by every existing route: inside `body.issues[0]` on the
+    // search, inside `body.fields` on the issue read. Measured while writing
+    // this: at a lowered budget, KAN-522's array rung ran on `body.issues`,
+    // binary-searched for the largest prefix that fits, and found ZERO, because
+    // a single entry exceeded the budget by itself. Windowing long strings
+    // in the fitter is a real improvement and it is in this change — but on its
+    // own it would not have touched either route, because neither puts the text
+    // anywhere the fitter looks.
+    //
+    // So this operation's job is to put the rendered text ONE level down, at
+    // `body.text`, where the fitter's member rung can window it — and to put
+    // the cursor beside it as scalars, which are never candidates at all.
+    //
+    // ⚠ WHAT THIS IS NOT. It is not a bigger budget. `DEFAULT_BUDGET_CHARS`
+    // is unchanged at 9,000 and `MEASURED_CLIENT_CAP_CHARS` at 10,000, and the
+    // headroom between them is still deliberate. A fix that raised either would
+    // pass this ticket's acceptance and deliver nothing: it moves the cliff
+    // instead of adding a route over it. What changes here is that a field
+    // LARGER than the budget becomes reachable a window at a time, which is
+    // what the ticket actually asked for.
+    //
+    // ⚠ AND IT IS NOT A WRITE-TIME GUARD, which cannot work: descriptions are
+    // written by humans in the Jira web UI as well as by agents through this
+    // proxy, so the population to serve includes tickets nothing in this fleet
+    // wrote. That finding is KAN-652's, carried over when it was closed as a
+    // duplicate of KAN-656.
+    tool: 'atlassian_get_issue_description',
+    mode: 'jira-read',
+    products: ['jira'],
+    scope: 'read:jira-work',
+    method: 'GET',
+    pathShape: '/rest/api/3/issue/{issueKey}?fields=description',
+    description:
+      "Read one Jira issue's DESCRIPTION as plain text, a window at a time, through the " +
+      "Butchr daemon's own credential. THIS IS THE ONLY READ ON THIS PROXY THAT CAN RETURN " +
+      'A DESCRIPTION LARGER THAN THE RESPONSE BUDGET. Every other route asks for the field ' +
+      'whole and is refused whole: `description` is one field, `fields` is the only lever ' +
+      'they have, and a brief of ~8.5k rendered characters exceeds the 9,000-character ' +
+      'budget once the response envelope is counted — so they return `noWayBack` and the ' +
+      'text is unreachable. Here the ADF is rendered to text and cut to a window you page ' +
+      'by CHARACTER OFFSET. READ `total` BEFORE TREATING A WINDOW AS THE DESCRIPTION: it is ' +
+      'the length of the whole rendered text in characters, fixed before the response budget ' +
+      'runs. ⚠ WALK BY THE LENGTH OF THE `text` YOU ACTUALLY GOT — next startAt is ' +
+      '`startAt + text.length`, and you are done when that equals `total`. THERE IS NO ' +
+      '`returned` AND NO `isLast` ON PURPOSE: both would be counted before the response ' +
+      'budget runs and the budget can shorten `text` after it, so either one would be a ' +
+      'number that quietly disagrees with what you are holding — measured as a real defect ' +
+      'on the comment pager, where `returned: 5` arrived beside two comments. THE TEXT YOU ' +
+      'HOLD IS THE ONLY HONEST CURSOR. `total`, `startAt` and `maxResults` sit at the top of ' +
+      'the response beside the text rather than inside it, so the cursor is the last thing a ' +
+      'further clip can reach. ⚠ IF `text` COMES BACK AS A STUB (`omitted: "for-budget"`) the ' +
+      'window did not fit at all: the stub carries a `readWith` naming this same call with a ' +
+      'SMALLER maxResults and your place kept, so follow it rather than restarting. ' +
+      'An issue with no description answers `total: 0` with ' +
+      "an empty `text` — which is a real answer and not a failure to read it. Pass " +
+      'descriptionFormat: "adf" for Atlassian\'s raw document, which on a long description ' +
+      'exceeds the budget on its own and is offered as the escape hatch, not as a page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issueKey: { type: 'string', description: 'The issue key, e.g. "KAN-656".' },
+        startAt: {
+          type: 'number',
+          description:
+            'Optional 0-based CHARACTER offset into the rendered description. Defaults to 0. ' +
+            'Page by adding the `returned` you actually got — not the `maxResults` you asked ' +
+            'for — and stop when startAt + returned === total.'
+        },
+        maxResults: {
+          type: 'number',
+          description:
+            `Optional window size in CHARACTERS. Defaults to and is capped at ` +
+            `${PROXY_DESCRIPTION_MAX_CHARS}, which is chosen to leave room for the response ` +
+            'envelope inside the budget. Asking for more is clamped rather than refused.'
+        },
+        descriptionFormat: {
+          type: 'string',
+          enum: ['text', 'adf'],
+          description:
+            'Optional. "text" (the default) renders the description and windows it, which is ' +
+            'what makes a long description readable at all. "adf" returns Atlassian\'s raw ' +
+            'document unwindowed, and on a long description that exceeds the budget by itself.'
+        }
+      },
+      required: ['issueKey']
+    },
+    build(args) {
+      const key = issueKey(args);
+      if ('error' in key) return key;
+      const format = descriptionFormat(args);
+      if ('error' in format) return format;
+      return { path: `/rest/api/3/issue/${encodeURIComponent(key.key)}?fields=description` };
+    },
+    /**
+     * Render the description, cut the window, and keep the cursor in front.
+     *
+     * THE ENVELOPE IS FIRST AND AT THE TOP LEVEL, for the reason
+     * `atlassian_get_issue_comments` gives one entry up and this ticket proves
+     * one turn deeper: a pager whose own cursor can be clipped away is a pager
+     * that strands its reader. `total`, `startAt`, `maxResults`, `returned` and
+     * `isLast` are scalars sitting beside `text` rather than inside anything,
+     * so the fitter's member rung — which only ever takes objects and arrays —
+     * cannot reach them, and the field it CAN reach is the one a reader can
+     * afford to get less of.
+     *
+     * ⚠ `total` IS THE LENGTH OF THE WHOLE RENDERED TEXT, not of this window,
+     * and it is computed before any cutting. That is what makes
+     * `startAt + text.length === total` a termination condition a caller can
+     * trust rather than a claim about what happened to fit.
+     *
+     * ⚠ THERE IS DELIBERATELY NO `returned` AND NO `isLast`, AND THE REASON IS
+     * A MEASURED BUG IN THE PAGER THIS ONE IS MODELLED ON. Both would be
+     * computed HERE, in the daemon, and the response budget is applied LATER in
+     * the agent's own MCP server — so either one is a claim this transform makes
+     * about a payload that has not finished being reduced. Measured while
+     * building this operation, on the shipped `atlassian_get_issue_comments`:
+     * a five-comment page fitted at a 4,000-character budget came back carrying
+     * `returned: 5` beside an array of **2**, because KAN-522's array rung
+     * trimmed the list after the transform had counted it. That tool's own
+     * description instructs a caller to "walk `startAt` until
+     * `startAt + returned` reaches `total`" — which, followed exactly, SKIPS
+     * three comments per page and reports having read the history. It is filed
+     * separately and linked `Relates` to KAN-656; it is not fixed here, because
+     * changing that tool's contract belongs on its own ticket.
+     *
+     * So this operation does not carry the field that can go stale. A caller
+     * pages by `text.length` — the thing it is actually holding — and stops when
+     * `startAt + text.length === total`. `total` and `startAt` are safe to state
+     * because both are fixed before any reduction runs and both are scalars the
+     * fitter's candidate walk never takes. **The convenience field is the one
+     * that can lie, so there is no convenience field.**
+     *
+     * WHAT IS GIVEN UP, SAID PLAINLY, because a transform is where a field goes
+     * missing: the ADF node tree, and every issue field other than the
+     * description. `descriptionFormat: 'adf'` returns Jira's own object
+     * untouched, which is the escape hatch for anybody who needs the structure.
+     */
+    transform(bodies, _context, args) {
+      const raw = bodies[0];
+      if (!raw || typeof raw !== 'object') return raw;
+      const issue = raw as Record<string, any>;
+      const format = descriptionFormat(args);
+      // A refusal cannot reach here — `build` returned it — but the type says
+      // it can, and returning the raw issue is the right answer if it ever does.
+      if ('error' in format || format.format === 'adf') return issue;
+
+      const adf = issue?.fields?.description;
+      // AN ABSENT DESCRIPTION IS NOT AN UNRENDERABLE ONE. `adfToText` reports a
+      // non-node as `not-adf:<type>`, which is correct for a body it was handed
+      // and wrong as a description of a ticket nobody wrote one for — a reader
+      // meeting `not-adf:null` would go looking for a rendering fault that is
+      // not there. So the empty case is answered here rather than walked.
+      const rendered =
+        adf === null || adf === undefined
+          ? { text: '', unrendered: [] as string[] }
+          : adfToText(adf);
+      const total = rendered.text.length;
+      const startAt = Math.min(pageOffset(args), total);
+      const maxResults = listLimit(args, 'maxResults', PROXY_DESCRIPTION_MAX_CHARS);
+      const text = rendered.text.slice(startAt, startAt + maxResults);
+
+      return {
+        // The cursor first and at the top level, for the reason in the docblock.
+        total,
+        startAt,
+        maxResults,
+        descriptionFormat: 'text',
+        key: issue?.key ?? null,
+        text,
+        // Named on the answer it happened to, exactly as the comment pager names
+        // it per comment: a reader who meets `[adf:expand]` in the prose must be
+        // able to see that the renderer said so about THIS description.
+        ...(rendered.unrendered.length > 0 ? { textUnrenderedNodes: rendered.unrendered } : {})
       };
     }
   },
