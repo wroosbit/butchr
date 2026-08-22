@@ -161,6 +161,27 @@ function looksLikeDescription(path: string): boolean {
 }
 
 /**
+ * Whether a clip on THIS tool is recoverable by asking for a smaller window.
+ *
+ * ⚠ ON THE PAGER ITSELF, THE PATH DOES NOT MATTER AND MUST NOT BE CONSULTED.
+ * Everything `atlassian_get_issue_description` returns is one description, so
+ * whatever the fitter gave up, a narrower `maxResults` is the answer. Keying off
+ * the path there is a bug that only shows at a low budget: the fitter stubs
+ * `body.text` first, is STILL over, and the backstop then replaces the whole
+ * `body` — whose path is `body`, matching no description-shaped name, so the
+ * recipe vanished at exactly the budget where the reader needed it most.
+ * Measured at `MIN_BUDGET_CHARS`: the walk stranded on a stub carrying
+ * `noWayBack`, which is this ticket rebuilt one turn deeper.
+ *
+ * Off the pager, the path IS the only signal there is — a clipped
+ * `atlassian_get_issue` names a description only through `body.fields` — so the
+ * two arms genuinely differ rather than one being a relaxation of the other.
+ */
+function clipIsRecoverableHere(tool: string, path: string): boolean {
+  return tool === DESCRIPTION_PAGER || looksLikeDescription(path);
+}
+
+/**
  * The one real recovery this module can offer, or `null` where it cannot.
  *
  * ⚠ RETURNS `null` RATHER THAN A RECIPE WHENEVER ANYTHING IS UNESTABLISHED —
@@ -170,8 +191,12 @@ function looksLikeDescription(path: string): boolean {
  * exists to end, and "no recipe" degrades to the honest sentence below rather
  * than to a wrong one.
  */
-function descriptionRecovery(path: string, call: DescriptionCall | null): Recovery | null {
-  if (!call?.issueKey || !looksLikeDescription(path)) return null;
+function descriptionRecovery(
+  tool: string,
+  path: string,
+  call: DescriptionCall | null
+): Recovery | null {
+  if (!call?.issueKey || !clipIsRecoverableHere(tool, path)) return null;
   const key = call.issueKey.trim().toUpperCase();
   if (!JIRA_KEY_SHAPE.test(key)) return null;
   const pagerParams = advertisedParams(DESCRIPTION_PAGER);
@@ -228,7 +253,7 @@ export function genericRecovery(
   // recipe existed keeps working rather than silently passing `undefined`.
   const context: DescriptionCall | null =
     typeof call === 'string' ? { issueKey: call } : (call ?? null);
-  const real = descriptionRecovery(path, context);
+  const real = descriptionRecovery(tool, path, context);
   if (real) return real;
 
   // NO KEY TO NAME, BUT A ROUTE THAT EXISTS — the search case (KAN-656).
@@ -240,7 +265,7 @@ export function genericRecovery(
   // with a placeholder where an argument goes is not executable as printed,
   // which is the one property this module exists to keep.
   const routeForDescription =
-    looksLikeDescription(path) && advertisedParams(DESCRIPTION_PAGER) !== null
+    clipIsRecoverableHere(tool, path) && advertisedParams(DESCRIPTION_PAGER) !== null
       ? ` A description larger than the budget is reachable a window at a time through ` +
         `${DESCRIPTION_PAGER}, which needs the issue key — this call did not name one.`
       : '';

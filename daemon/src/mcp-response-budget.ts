@@ -1440,11 +1440,29 @@ export function fitGenericResponse(
   }
   candidates.sort((a, b) => b.size - a.size);
 
+  // ⚠ `budgetChars` RATHER THAN `0` AS THE PLACEHOLDER, AND THE THREE CHARACTERS
+  // IT BUYS ARE LOAD-BEARING (KAN-656). `serialiseWithExactChars` rewrites
+  // `chars` to the answer's TRUE length after this has chosen what to keep, so a
+  // trial measured with `chars: 0` is short by the digit width of the real
+  // figure — one character against four. Every rung that binary-searches for the
+  // largest thing that fits therefore aimed slightly over the line.
+  //
+  // It went unnoticed while the only such rung was KAN-522's array trim, where
+  // entries are chunky and a prefix rarely lands within three characters of the
+  // boundary. The string rung lands there routinely, because a prefix can be any
+  // length: measured on `verify-list-agents-answer-is-bounded`'s 40,000-character
+  // blob, the search returned a payload of 9,003 against a 9,000 budget.
+  //
+  // `budgetChars` is the right placeholder because it is a genuine upper bound:
+  // any answer this function accepts has `chars <= budgetChars`, so its decimal
+  // width is at most that of `budgetChars`, and the estimate can only ever be
+  // conservative. Not a fixed slack constant, which would be a number nobody
+  // could later justify.
   const measure = (payload: Record<string, unknown>, against: ClipRecord[]): number => {
     const provisional =
       against.length === 0
-        ? completeVerdict(0, budgetChars)
-        : clippedVerdict(0, budgetChars, unclippedChars, against as [ClipRecord, ...ClipRecord[]]);
+        ? completeVerdict(budgetChars, budgetChars)
+        : clippedVerdict(budgetChars, budgetChars, unclippedChars, against as [ClipRecord, ...ClipRecord[]]);
     return sizeOf(withCompleteness(payload, provisional));
   };
 
