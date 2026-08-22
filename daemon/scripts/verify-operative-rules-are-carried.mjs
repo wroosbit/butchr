@@ -294,6 +294,38 @@
 // against the merged working tree for exactly that reason — it is the only
 // place the defect exists. KAN-268 asks whether the id can be made
 // collision-proof rather than collision-detected.
+//
+// AND (KAN-651, absorbing KAN-665) THE RED DRIVE FOR H-33..H-36, WHICH IS A
+// MUTATION AT THE PASSAGE RATHER THAN A MERGE BASE. The paragraph above about
+// `--ref` explains why a merge-base red is the weakest evidence here and looks
+// like the strongest: it shows only that this script reacts to a wholly
+// different file. These four entries were driven red the way that paragraph
+// prescribes — **put the rule's own sentence out of the passage where the rule
+// lives, and watch the entry go red there.** One witness per pattern, twenty in
+// all, each reddening EXACTLY its own entry and no other:
+//
+//   perl -0pi -e 's/File-overlap checking cannot surface this/REMOVED/' prompts/story.md
+//   node daemon/scripts/verify-operative-rules-are-carried.mjs   # exit 1, H-33 only
+//   git checkout -- prompts/story.md
+//
+// **The negative control is half the evidence and is easy to skip**: deleting an
+// unrelated sentence (`Prefer slices that ship over layers`) must leave all four
+// GREEN. Without it, twenty reds establish only that the script dislikes edits.
+//
+// THE OTHER HALF IS THE OPPOSITE FAILURE, AND IT IS THE ONE THIS FILE KEEPS
+// WARNING ABOUT: an entry that goes red on a rewrite which keeps the rule is a
+// style check wearing a rule check's clothes. So each entry was also driven with
+// **paraphrases that preserve the rule** — and four patterns were widened
+// because they failed it, which is the part worth reading. `scope is a[^.]{0,16}
+// forecast` went red on *"scope is only ever a forecast"*; `objection is the
+// finding` went red on *"objection is very often the finding"*; `however long
+// the prose takes to write` went red on *"...happens to take to write"*; and
+// `not self-verifying` went red under a re-wrap that split the hyphen. Every one
+// of those was a false red on text that carries the rule exactly.
+//
+// A re-wrap of the whole file at 60/72/80/100/120 columns, with and without
+// hyphen splitting, is green throughout — the wrap width is the change most
+// likely to actually happen, and `unwrap()` above is what makes it survivable.
 
 import fs from 'fs';
 import path from 'path';
@@ -1870,6 +1902,162 @@ const RULES = [
         ],
       ])
     ),
+  },
+  {
+    // KAN-651 (absorbing KAN-665). The existing seam passage taught the hazard
+    // only in its **write-conflict** shape, which is why two deliberate reviews
+    // came back clean on a seam that was already coupled: KAN-607 built a gate
+    // *over* `docs/SETUP.md` and KAN-618 edited it, with zero overlap in the
+    // diffs by construction.
+    //
+    // THE THIRD PATTERN IS THE ONE DOING THE WORK, and it is here because
+    // KAN-665 asked for it by name. Without an explicit "file-overlap checking
+    // cannot surface this", the next reader runs the overlap check, finds
+    // nothing, and is *reassured* — which is precisely what happened twice. A
+    // rule that only adds a better question, and does not disqualify the
+    // familiar one, leaves the failure reachable by a careful reader.
+    //
+    // The last two pin the generated-file half, which arrived in three distinct
+    // shapes in one night: the file a decomposition forgets, the conflict that
+    // did happen after two supervisors said it could not, and — the quiet one —
+    // a CLEAN merge that left the file internally inconsistent, because a text
+    // merge preserves rows and cannot recompute derived values. `only
+    // regeneration is` is the load-bearing clause: a rewrite that keeps the
+    // warning and drops it turns a verification rule back into a coordination
+    // note, which is the weaker thing this entry replaced.
+    id: 'H-33',
+    title:
+      'the seam question is about reads, not writes: does either task make a claim ABOUT an artifact the other can change — and file-overlap checking cannot surface it',
+    carriedBy: {
+      'prompts/story.md': [
+        /claim about an artifact the other can change/i,
+        /could not not-collide/i,
+        /file-overlap checking cannot surface/i,
+        // Tolerant of the bolding and of the qualifier: what must survive is
+        // that the fence is a prediction of output. The paraphrase drive caught
+        // the tighter `scope is a[^.]{0,16}forecast` going red on "scope is
+        // only ever a **forecast**" — a rewrite that keeps the rule exactly.
+        /scope is[^.]{0,28}forecast/i,
+        /gate and the thing it gates are coupled/i,
+        /clean merge of a generated file is not evidence/i,
+        /only regeneration is/i,
+      ],
+    },
+  },
+  {
+    // KAN-651 (absorbing KAN-665). The read-side rule beside it — *an empty
+    // result is a claim about your search* — already covers the null finding.
+    // This is the same claim with the sign flipped, and it gets made on less
+    // evidence precisely because it sounds like humility: a `cannot` and a
+    // `safe` both close inquiry and neither is retested by whoever relies on
+    // them.
+    //
+    // BOTH COROLLARIES ARE PINNED BECAUSE BOTH ARE THE HALF THAT GETS TIDIED
+    // AWAY. The retraction clause is what stops a withdrawn limit reading as a
+    // green light — without it, retracting "AC3 is impossible" would have
+    // licensed rewriting a live merge gate as a routine ticket step. The
+    // over-attribution clause is the one nobody expects to be in this rule at
+    // all: claiming *more* responsibility than the record supports is a wrong
+    // fact in a modest tone, and it cost seventy minutes of wrong record inside
+    // a comment whose purpose was correcting the record. `changelog` is pinned
+    // because it names the instrument; "check carefully" would not.
+    id: 'H-34',
+    title:
+      'a limit claim needs the evidence of a positive claim: a false limit is never retested, its reverse form wears abundance rather than scarcity, retracting one restates the hold, and over-attribution is not humility either',
+    carriedBy: {
+      'prompts/story.md': [
+        /takes away someone's reason to check/i,
+        /a false limit never does/i,
+        // KAN-651, added at the approver's request while this PR was in review.
+        // The reverse form is a COMPLETION of this rule rather than a fifth
+        // rule: scarcity and abundance are one mechanism, and an incomplete
+        // rule 2 inside the ticket whose subject is rule 2 is the defect the
+        // ticket exists to repair. The abundance form is the harder half to
+        // see — it reads as confidence — so if one of the two gets tidied away
+        // for length it will be this one.
+        // Both widened by the paraphrase drive before they were ever pushed:
+        // the tighter `same mechanism wearing abundance` went red on "same
+        // mechanism, wearing abundance" and `we can always get another` on "we
+        // can always get hold of another" — two rewrites that keep the rule
+        // exactly. Same failure this file's docblocks keep naming, caught here
+        // by driving the paraphrase rather than only the removal.
+        /wearing abundance/i,
+        /can always get[^."]{0,16}another/i,
+        /re-state the hold on its real grounds/i,
+        /over-attribution is not humility/i,
+        /comes from the changelog/i,
+      ],
+    },
+  },
+  {
+    // KAN-651. Measured on 2026-08-21: `story/KAN-611` had two of its five
+    // errors that day caught by agents it supervised, and `epic/KAN-59` three
+    // of its own — "the correction flow on this epic ran upward all day and
+    // never once downward."
+    //
+    // THE SECOND HALF IS NOT DECORATION AND MUST NOT BE DROPPED FOR LENGTH.
+    // Stated alone, "take corrections from below seriously" produces a story
+    // agent who defers upward and a supervisor who defers downward, and nobody
+    // verifies anything — which is a real sequence rather than a worry:
+    // generalised-unchecked, corrected-unchecked, conceded-unchecked, and the
+    // conceded point turned out to be right. The concession was made *because*
+    // the correction was specific, confident and well-formatted — the exact
+    // properties this brief treats as warning signs everywhere else. Hence
+    // `not self-verifying` and the both-directions clause are pinned alongside
+    // the rule itself.
+    id: 'H-35',
+    title:
+      'review does not only flow downward: a task agent\'s objection is the finding, and a correction from below is not self-verifying either',
+    carriedBy: {
+      'prompts/story.md': [
+        /review does not only flow downward/i,
+        // Widened after the paraphrase drive: "objection is very often the
+        // finding" is the same rule and the bare phrase went red on it.
+        /objection is[^.]{0,24}the finding/i,
+        // Hyphen-tolerant. The real file never splits a hyphenated word
+        // across lines (measured: zero line-final hyphens at origin/main), so
+        // this is hardening rather than a fix — but a re-wrap that did split it
+        // would otherwise produce a false red on a rule that is present.
+        /not self.{0,2}verifying/i,
+        /suspicion downward and credulity upward/i,
+      ],
+    },
+  },
+  {
+    // KAN-651, from KAN-665's third rule — story/KAN-611's finding, and two of
+    // its instances are their own errors, offered as such.
+    //
+    // THIS IS THE ENTRY FOR THE AGENT THAT DID EVERYTHING RIGHT, which is what
+    // makes it worth a rule rather than a reminder. The re-derive bullet
+    // directly above it was followed exactly: a complete JQL query, `wont-do`
+    // labels checked, `isLast: true` quoted. The read still landed in a
+    // twelve-second window (changelog 14548 -> 14549) and was already false
+    // sixty-one seconds later when it was acted on.
+    //
+    // `14549` is pinned deliberately, against this file's own habit of not
+    // pinning counts. It is not a count and it does not rise: it is the
+    // changelog id of the transition that made the read false, and it is the
+    // evidence that the window is measured rather than imagined. The rule
+    // survives a rewrite; the worked case is what makes anyone believe it.
+    id: 'H-36',
+    title:
+      'the re-derive window: re-check between the derivation and the transition, not only before it — read your children in the same breath as your own transition',
+    carriedBy: {
+      'prompts/story.md': [
+        // Pinned to the IMPERATIVE, not to the phrase. The phrase occurs
+        // twice in the passage — once as the instruction and once in the
+        // sentence explaining the exposure — so a pattern matching it bare
+        // stayed green when the instruction itself was deleted, which the red
+        // drive caught. Tolerant of a qualifier between the verb and the
+        // preposition so this stays a rule check rather than a style check.
+        /re-check[^.]{0,24}between the derivation and the transition/i,
+        // Widened by the paraphrase drive, which caught the bare phrase going
+        // red on "however long the prose happens to take to write".
+        /however long the prose[^.]{0,20}takes? to write/i,
+        /same breath as your own transition/i,
+        /14549/,
+      ],
+    },
   },
 ];
 
