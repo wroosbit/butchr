@@ -539,6 +539,118 @@ have no autostart and no fd drop-in; raise the limit in whatever starts herdr
 
 ---
 
+## 6.5 Configure the daemon — the two knobs that decide whether it acts
+
+⚠ **Steps 1–6 install Butchr. None of them configures it, and both defaults are
+inert.** A machine that stops at step 6 comes up, holds its socket, answers
+every question you put to it — and staffs no agents and has no path to Atlassian
+at all. It reads finished. That is why this step is here, and why it is *before*
+the health check rather than after it.
+
+| variable | default | what a box that leaves it alone does |
+| --- | --- | --- |
+| `BUTCHR_BOARD_RECONCILE` | `report` | the reconciler reads the board, computes the diff, writes `would converge: start …` to the log — and starts nothing, forever |
+| `BUTCHR_ATLASSIAN_PROXY` | `off` | the daemon serves no Atlassian tools at all, so no agent reaches Jira or Confluence through Butchr |
+
+`daemon/scripts/install-service.sh` sets neither, and the unit it writes
+declares exactly one variable — `PATH`. Nothing above this line has named
+either knob. [env-knobs.md](env-knobs.md) is the reference table for both, with
+every value and every default; **this step is the decision, not the table.**
+
+### Which value you want, and why
+
+**`BUTCHR_BOARD_RECONCILE=converge`** is what makes the board drive the fleet:
+the reconciler starts an agent for each issue assigned to you and In Progress or
+In Review, and stands down the ones the board no longer wants. `report` runs the
+same loop and writes what it *would* have done to the log instead of doing it —
+genuinely useful on a machine you are not ready to hand the board, and inert by
+design. `off` stops it reading Jira at all.
+
+⚠ **`converge` is the value that spends money and acts on a live board**, so
+decide it deliberately. But do decide it: leaving it unmade is not a cautious
+middle position, it is a box that looks staffed and is not.
+
+**`BUTCHR_ATLASSIAN_PROXY=<rung>`** decides how far agents reach into Atlassian,
+and how far the credential in step 8 is used. It is a ladder — `off`,
+`jira-read`, `confluence-read`, `jira-write`, `confluence-write` — and **step 8
+is where the ladder and the token are described.** Read it before picking a
+rung, and see [atlassian-proxy.md](atlassian-proxy.md) for the full account.
+What matters here is only that a rung gets chosen and written down: left at
+`off`, a machine with a perfectly good credential still gives its agents no
+Atlassian path, and step 8 will look like it did nothing.
+
+The fleet this document was written from runs `converge` and `confluence-write`
+(the "what is set on this machine" section of [env-knobs.md](env-knobs.md) is
+read from its running daemon). That is one machine's answer and not a
+recommendation to copy without reading step 8.
+
+### Write the drop-in
+
+Both knobs are read from the daemon's **environment**, and the durable way to
+put something there is a systemd drop-in. Step 12 explains the same directory
+for `BUTCHR_AGENT_RUNTIME`; these are the two files the machine in
+[env-knobs.md](env-knobs.md) actually has:
+
+```bash
+mkdir -p ~/.config/systemd/user/butchr-daemon.service.d
+printf '[Service]\nEnvironment=BUTCHR_BOARD_RECONCILE=converge\n' \
+  > ~/.config/systemd/user/butchr-daemon.service.d/converge.conf
+printf '[Service]\nEnvironment=BUTCHR_ATLASSIAN_PROXY=jira-write\n' \
+  > ~/.config/systemd/user/butchr-daemon.service.d/atlassian-proxy.conf
+systemctl --user daemon-reload
+systemctl --user restart butchr-daemon.service
+```
+
+One file per knob, because that is what a deployment accumulates and because
+`ls` of that directory then reads as a list of decisions somebody made. A single
+file carrying both `Environment=` lines behaves identically — systemd merges
+every `*.conf` in the directory.
+
+**A drop-in that has not been reloaded is not in force, and neither is one the
+running daemon predates.** Both values are read from the environment the daemon
+process was started with, so `daemon-reload` on its own changes nothing: the
+restart is the half that applies it. Restarting `butchr-daemon` does **not**
+kill herdr's panes — herdr owns them, and it is the *herdr* restart in step 6
+that takes them down with it. An agent that is already running keeps the MCP
+servers it was provisioned with, so a proxy rung you turn on now reaches the
+next agent to start rather than the ones already up. Step 9 makes the general
+form of that point.
+
+### Why the installer does not write this for you
+
+`install-service.sh` writes units, herdr's descriptor drop-in and a timer. Every
+one of those is mechanical: there is one correct answer and the script knows it.
+**Neither knob here is that kind of decision.** `converge` hands this machine's
+agent budget to a Jira board, and the proxy rung decides how far a credential's
+grant reaches. An installer that picked either would be making a policy choice
+on your behalf, silently, in a file you did not know existed — and the first
+evidence of it would be agents starting.
+
+So it is left to you deliberately, and the omission is **guarded rather than
+trusted**: `butchr-doctor` — the next step — **fails while either knob is still
+undecided**, and reports what you decided when both are. It does not fail on
+`report` or `off` *chosen*: a decision is not a fault, and failing one would be
+reporting a choice as a defect. What it refuses is a machine where the default
+decided and nobody knows. Before this step existed it passed such a box and said
+`Ready.`
+
+### If you do not use systemd
+
+Set both in whatever starts the daemon, remembering that it reads them once at
+startup:
+
+```bash
+env BUTCHR_BOARD_RECONCILE=converge BUTCHR_ATLASSIAN_PROXY=jira-write \
+  node /path/to/butchr/daemon/dist/daemon.js
+```
+
+`butchr-doctor` reads the declaration off the systemd unit. On a machine with no
+unit it asks the daemon serving the socket instead, which can say **which** of
+the two it carries but not what they are set to — the values are not on that
+wire.
+
+---
+
 ## 7. Check that it worked
 
 ```bash
@@ -550,7 +662,8 @@ exits non-zero if any of them is not true. It reports node, herdr, herdr's live
 fd soft limit and the pane headroom that implies, both builds *and whether they
 are stale relative to their sources*, the native-messaging manifest (including
 whether the path it names still exists), the systemd unit and linger, whether
-anything can actually connect to the daemon socket, which backend a Jira
+anything can actually connect to the daemon socket, **whether step 6.5's two
+knobs have been decided and what they were decided to be**, which backend a Jira
 token would land in, and whether agent-to-agent channels are on.
 
 It also reports **which daemon is serving the socket, and where its
@@ -660,6 +773,69 @@ under the credential you just typed, with no per-agent login. So a `.mcp.json`
 carrying only `butchr` is the proxy working, not provisioning failing. Before
 KAN-603 the server was emitted either way, which on a fresh machine meant every
 agent came up waiting on an OAuth token nobody was going to supply.
+
+**Which rung you are on is set in step 6.5**, not here. This section is where
+the ladder and the credential are explained; the drop-in that actually selects a
+rung is written there, and a token typed here with the proxy left at `off` buys
+nothing at all.
+
+### Moving the credential to a second machine
+
+**The short answer is: do not move it — type it again.** The Settings page takes
+the token in a password field, so entering it on the second machine puts it
+through no shell, no history file and no transcript. It is also the only route
+that writes *both* halves of the credential consistently for **that** machine's
+backend, which matters more than it looks — see the warning at the end of this
+section.
+
+If the second machine has to carry the same secret and re-entering it is not
+possible, the two backends move differently, and **neither route may print the
+token to a terminal.** A terminal is a transcript.
+
+**Keyring → keyring.** The secret is in libsecret under
+`service butchr account jira`; the metadata beside it is not secret and is
+copied separately.
+
+```bash
+# the secret: read on one machine, written on the other, never displayed
+secret-tool lookup service butchr account jira \
+  | ssh you@newbox 'secret-tool store --label "Butchr — Atlassian API token" service butchr account jira'
+
+# the non-secret half: site URL, account email, and which backend to read
+scp ~/.local/share/butchr/jira-credential.json you@newbox:~/.local/share/butchr/
+```
+
+⚠ **Never run the `lookup` half on its own.** On its own it writes the token to
+your terminal, which is the one thing this whole page forbids. Piping it is what
+keeps it out. That `store` invocation is the daemon's own: `credentials.ts`
+stores a token by handing it to `secret-tool store` on **stdin**, with the
+secret never appearing as an argument — arguments are visible in `ps`. That is
+where this recipe comes from, and it is the limit of what is claimed for it: the
+machine this section was written on has **no keyring at all**, so the two-box
+transfer above has not been run end to end. Run `butchr-doctor` on the receiving
+box before you believe it worked.
+
+**File backend.** Here `jira-credential.json` holds the token as well as the
+site URL and email, so the file *is* the credential. Copy it; never `cat` it.
+
+```bash
+scp ~/.local/share/butchr/jira-credential.json you@newbox:~/.local/share/butchr/
+ssh you@newbox 'chmod 600 ~/.local/share/butchr/jira-credential.json'
+```
+
+⚠ **The metadata file records which backend it was written for, and the two
+machines need not agree.** A `jira-credential.json` saying `"storage":
+"keyring"` copied onto a machine with no keyring leaves Butchr looking for a
+secret that is not there, and it reports *not configured* rather than an error —
+the same quiet-and-wrong shape step 6.5 exists to close. Step 7's **jira
+credential storage** line tells you which backend each machine actually has;
+read it on both before you copy anything, and if they differ, re-enter the token
+through Settings on the second machine instead.
+
+**Confirm it landed** by running `butchr-doctor` on the new machine and opening
+the Settings page, which validates the credential at submit time and reports
+what it is holding. Issuing or rotating an Atlassian token is a human action and
+is out of scope for this document.
 
 ---
 
@@ -971,9 +1147,11 @@ ls ~/.config/systemd/user/butchr-daemon.service.d/
 
 The drop-in directory is the part worth looking at directly. It is where a
 deployment's real configuration accumulates — the runtime pin, the agent cap, the
-proxy mode — **and this document installs none of it**. Two machines that both
-followed this file to the letter can still be running different products because
-one of them has a drop-in the other does not.
+proxy mode — **and no script here writes any of it**. Step 6.5 is the only place
+this document tells you to write one, and it covers two knobs of the several that
+can live there. Two machines that both followed this file to the letter can still
+be running different products because one of them has a drop-in the other does
+not.
 
 To select CrabCast, if you have been told to:
 
@@ -1004,6 +1182,7 @@ daemon that would silently have come up on the *other* runtime stops instead.
 
 ```
 ~/.config/systemd/user/butchr-daemon.service
+~/.config/systemd/user/butchr-daemon.service.d/*.conf      (step 6.5 — you wrote these)
 ~/.config/systemd/user/herdr.service                       (if you had none)
 ~/.config/systemd/user/herdr.service.d/10-butchr-nofile.conf
 ~/.config/systemd/user/butchr-agent-check.{service,timer}
@@ -1023,7 +1202,8 @@ that resolves outside it.
 systemctl --user disable --now butchr-daemon.service butchr-agent-check.timer
 rm -f  ~/.config/systemd/user/butchr-daemon.service \
        ~/.config/systemd/user/butchr-agent-check.{service,timer}
-rm -rf ~/.config/systemd/user/herdr.service.d
+rm -rf ~/.config/systemd/user/herdr.service.d \
+       ~/.config/systemd/user/butchr-daemon.service.d
 systemctl --user daemon-reload
 rm -f ~/.config/{google-chrome,chromium}/NativeMessagingHosts/com.butchr.daemon.json
 rm -rf ~/.local/share/butchr       # deletes every agent workspace — check first
