@@ -14,6 +14,14 @@
 // preemption that stands an agent down to relieve a stall it cannot relieve; and
 // a derivation whose `headroom` no longer reproduces from the terms it prints.
 //
+// AND SINCE KAN-267: a machine whose /proc/pressure is PRESENT and could not be
+// read being reported — in words, in the derivation an operator reads — as a
+// machine whose kernel has no PSI. That failure refuses nothing and changes no
+// number, so no assertion about admission can see it: it sends whoever is
+// debugging a mute instrument to check a kernel config for what is a permission,
+// a container namespace or a truncated read. Section 7's second mutant is the
+// only thing here that catches it.
+//
 // CI-RUNNABLE: partial — sections 1, 3, 4, 5 and 7 import the built daemon
 // modules and assert against them in process, needing no live daemon, herdr,
 // credential, peer or terminal. Sections 2 and 6 read THIS HOST'S live PSI, and
@@ -40,13 +48,17 @@
 //                       answers "why not the obvious instrument" with a
 //                       measurement instead of folklore
 //   3. the parser     — readStallFacts() driven against fixture files: stalled,
-//                       healthy, absent, malformed, and one file of each pair
-//                       missing
+//                       healthy, absent, malformed, one file of each pair
+//                       missing, and (KAN-267) present-but-unreadable — by
+//                       EISDIR, which is unreadable to root as well, plus EACCES
+//                       where the host's uid can supply it
 //   4. the gate       — fixture-driven machines through computeCapacity and
 //                       capacityRefusal: io-stalled refused, swap-thrashing
 //                       refused and named as memory, no-PSI admitted (the hole,
 //                       asserted so it stays deliberate), full board still
-//                       bound by cap
+//                       bound by cap, and an unreadable /proc/pressure admitted
+//                       on the same reasoning while being told apart from an
+//                       absent one
 //   5. hand-check     — the derivation's own printed figures re-derived, the
 //                       veto included
 //   6. live refusal   — this machine's real pressure figure, through the real
@@ -54,9 +66,11 @@
 //                       healthy machine's real reading crosses it. The figure is
 //                       real; the threshold is the part that was changed, and
 //                       the section says so. Also asserts no victim is offered
-//   7. can it fail    — section 4's battery against a model with the veto
-//                       removed. If the battery still passes, it proves nothing
-//                       and this script exits red
+//   7. can it fail    — section 4's battery against TWO mutants: one with the
+//                       veto removed, and one that collapses absent into
+//                       unreadable the way main did. If the battery still passes
+//                       against either, it proves nothing and this script exits
+//                       red
 //
 // WHERE THIS SCRIPT SUPPLIES ITS OWN INPUT, AND WHAT THAT LEAVES UNCOVERED:
 // sections 4, 5 and 7 hand `computeCapacity` machine facts this file wrote. A
@@ -112,12 +126,21 @@
 //   #      const headroom = headroomBeforeStall;
 //   #    npm run build && node scripts/verify-io-stall-gate.mjs
 //   #    -> sections 4, 6 and 7 fail; exit 1.
-//   # 2. narrow it to io only: in worstStall(), delete the memoryFullPercent
+//   # 2. narrow it to io only: in worstStall(), delete the `stall.memory`
 //   #    branch. npm run build && node scripts/verify-io-stall-gate.mjs
 //   #    -> section 4's swap-thrash machine is admitted; exit 1.
 //   # 3. make the missing instrument look healthy: in computeCapacity, use
 //   #      const stalled = (worst?.percent ?? 100) >= stallRefusePercent;
 //   #    -> section 4's no-PSI machine is refused; exit 1.
+//   # 4. KAN-267: collapse the two absences again. In readPressureFull, drop the
+//   #    ENOENT branch so every caught error returns
+//   #      { state: 'absent', detail: ... }
+//   #    npm run build && node scripts/verify-io-stall-gate.mjs
+//   #    -> section 3's `unreadable` and `mixed` fixtures report the wrong state
+//   #       and section 4(f) says the derivation told a machine that HAS
+//   #       /proc/pressure that it has none; exit 1.
+//   #    Section 7's second mutant does this same collapse from outside, on
+//   #    every run, so the red drive is not a thing you have to remember.
 //   # Then `git checkout src/capacity.ts && npm run build` for green.
 //
 // Usage:
@@ -139,6 +162,8 @@ const {
   readStallFacts,
   readPressureFull,
   worstStall,
+  stallInstrument,
+  describePressureReading,
   capacityRefusal,
   capacityHeadline,
   summarizeCapacity,
@@ -158,6 +183,12 @@ const { stallResponseVerdict, RESPONDED, RESPONSE_MARGIN_POINTS } = await import
 );
 
 const rule = (title) => console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
+// §2 charts this machine's live figure over time, and since KAN-267 a reading
+// is a discriminated union rather than a number. NaN — not 0 — is what an
+// unmeasured sample plots as: 0.00% in that column would read as a quiet disk,
+// which is the substitution this whole term exists to refuse.
+const measuredOrNaN = (reading) =>
+  reading.state === 'measured' ? reading.fullAvg10Percent : NaN;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const failures = [];
@@ -216,8 +247,8 @@ if (hasPsi) {
   verdict(
     liveFacts.stall !== null &&
       liveFacts.stall !== undefined &&
-      typeof liveFacts.stall.ioFullPercent === 'number' &&
-      typeof liveFacts.stall.memoryFullPercent === 'number' &&
+      liveFacts.stall.io?.state === 'measured' &&
+      liveFacts.stall.memory?.state === 'measured' &&
       liveWorst !== null,
     'the figure the gate divides arrives from this machine\'s own /proc/pressure through\n' +
       '    readMachineFacts() — not from anything this script wrote. That is the seam a\n' +
@@ -228,12 +259,13 @@ if (hasPsi) {
   );
 } else {
   verdict(
-    liveFacts.stall?.ioFullPercent === null && liveFacts.stall?.memoryFullPercent === null,
-    'no PSI on this machine and the reader says so with nulls rather than zeroes — the\n' +
-      '    term is inert, which the derivation states in words. Sections 2 and 6 cannot run.',
-    'no /proc/pressure, but the reader did not return nulls: ' +
+    liveFacts.stall?.io?.state === 'absent' && liveFacts.stall?.memory?.state === 'absent',
+    'no PSI on this machine and the reader says `absent` rather than a zero — the term is\n' +
+      '    inert, which the derivation states in words. Sections 2 and 6 cannot run.',
+    'no /proc/pressure, but the reader did not report both files absent: ' +
       `${JSON.stringify(liveFacts.stall)}. A missing instrument reading as 0 would look like a ` +
-      'healthy machine forever.'
+      'healthy machine forever, and one reading `unreadable` here would send somebody ' +
+      'hunting a fault on a machine whose kernel simply has no PSI.'
   );
 }
 
@@ -268,11 +300,11 @@ if (!hasPsi) {
     const dTot = prev ? t.total - prev.total : 0;
     const row = {
       label,
-      ioFull: readPressureFull('/proc/pressure/io'),
+      ioFull: measuredOrNaN(readPressureFull('/proc/pressure/io')),
       ioSome: Number(
         fs.readFileSync('/proc/pressure/io', 'utf8').match(/some avg10=([\d.]+)/)?.[1] ?? NaN
       ),
-      memFull: readPressureFull('/proc/pressure/memory'),
+      memFull: measuredOrNaN(readPressureFull('/proc/pressure/memory')),
       iowaitPct: prev && dTot > 0 ? (100 * (t.iowait - prev.iowait)) / dTot : null
     };
     samples.push(row);
@@ -442,7 +474,8 @@ const FIXTURES = {
     io: 'some avg10=49.87 avg60=41.80 avg300=36.16 total=5050091292\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n',
     memory: 'some avg10=1.00 avg60=1.00 avg300=1.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n'
   },
-  // Truncated mid-write, which is what a read of a proc file can catch.
+  // Truncated mid-write, which is what a read of a proc file can catch. Both
+  // files are THERE, so since KAN-267 this is `unreadable` and not `absent`.
   malformed: { io: 'some avg10=71.44 avg60=64.02 avg3', memory: '' },
   // One file readable, the other not: a partial instrument must still answer
   // from the half it has rather than give up or invent the other half.
@@ -465,37 +498,109 @@ const absentDir = path.join(tmp, 'psi-absent');
 fs.mkdirSync(absentDir, { recursive: true });
 parsed.absent = readStallFacts(absentDir);
 
+// KAN-267's fixture: both paths EXIST and neither can be read. Made as
+// directories rather than by chmod, deliberately — `chmod 000` is not unreadable
+// to root, and half this fleet's CI runs in containers as uid 0, so an EACCES
+// fixture would quietly become a readable-file fixture on exactly the hosts
+// nobody watches. A directory gives EISDIR to every uid there is.
+const unreadableDir = path.join(tmp, 'psi-unreadable');
+fs.mkdirSync(path.join(unreadableDir, 'io'), { recursive: true });
+fs.mkdirSync(path.join(unreadableDir, 'memory'), { recursive: true });
+parsed.unreadable = readStallFacts(unreadableDir);
+
+// The mixed case, which is the one a single word has to resolve: no `io` file
+// at all, and a `memory` that is there and will not answer.
+const mixedDir = path.join(tmp, 'psi-mixed');
+fs.mkdirSync(path.join(mixedDir, 'memory'), { recursive: true });
+parsed.mixed = readStallFacts(mixedDir);
+
+// EACCES as well, where the host can supply it. Not load-bearing — the EISDIR
+// fixtures above carry the section — but it is the errno the real complaint
+// (a restricted container) actually produces, and a `chmod` that silently did
+// nothing must not be read as a passing case.
+const accessDir = path.join(tmp, 'psi-eacces');
+fs.mkdirSync(accessDir, { recursive: true });
+for (const f of ['io', 'memory']) {
+  fs.writeFileSync(path.join(accessDir, f), FIXTURES.healthy.io);
+  fs.chmodSync(path.join(accessDir, f), 0o000);
+}
+let eaccesWorks = false;
+try {
+  fs.readFileSync(path.join(accessDir, 'io'), 'utf8');
+} catch (e) {
+  eaccesWorks = e?.code === 'EACCES';
+}
+parsed.eacces = readStallFacts(accessDir);
+
+const R = (s, pct) => (s === 'measured' ? { state: s, fullAvg10Percent: pct } : s);
+// `expected` compares `state` only for the two non-measured cases: the detail
+// string is prose for a human and pinning it here would make this section fail
+// on a reworded sentence, which is not a defect. What the section DOES pin is
+// that a detail is present and non-empty — an `unreadable` with nothing to say
+// sends the reader nowhere.
 const parseExpect = [
-  ['stalled', { ioFullPercent: 34.1, memoryFullPercent: 0.31 }, { percent: 34.1, source: 'io' }],
-  ['thrashing', { ioFullPercent: 1.88, memoryFullPercent: 52.6 }, { percent: 52.6, source: 'memory' }],
-  ['healthy', { ioFullPercent: 0.01, memoryFullPercent: 0 }, { percent: 0.01, source: 'io' }],
-  ['cpuShaped', { ioFullPercent: 0, memoryFullPercent: 0 }, { percent: 0, source: 'io' }],
-  ['malformed', { ioFullPercent: null, memoryFullPercent: null }, null],
-  ['ioOnly', { ioFullPercent: 34.1, memoryFullPercent: null }, { percent: 34.1, source: 'io' }],
-  ['absent', { ioFullPercent: null, memoryFullPercent: null }, null]
+  ['stalled', ['measured', 34.1], ['measured', 0.31], { percent: 34.1, source: 'io' }, 'measured'],
+  ['thrashing', ['measured', 1.88], ['measured', 52.6], { percent: 52.6, source: 'memory' }, 'measured'],
+  ['healthy', ['measured', 0.01], ['measured', 0], { percent: 0.01, source: 'io' }, 'measured'],
+  ['cpuShaped', ['measured', 0], ['measured', 0], { percent: 0, source: 'io' }, 'measured'],
+  ['malformed', ['unreadable'], ['unreadable'], null, 'unreadable'],
+  ['ioOnly', ['measured', 34.1], ['absent'], { percent: 34.1, source: 'io' }, 'measured'],
+  ['absent', ['absent'], ['absent'], null, 'absent'],
+  ['unreadable', ['unreadable'], ['unreadable'], null, 'unreadable'],
+  ['mixed', ['absent'], ['unreadable'], null, 'unreadable'],
+  ...(eaccesWorks ? [['eacces', ['unreadable'], ['unreadable'], null, 'unreadable']] : [])
 ];
 const parseProblems = [];
-for (const [name, facts, worst] of parseExpect) {
+for (const [name, ioWant, memWant, worst, instrumentWant] of parseExpect) {
   const got = parsed[name];
   const gotWorst = worstStall(got);
+  const gotInstrument = stallInstrument(got);
   console.log(
-    `  ${name.padEnd(11)} ${JSON.stringify(got).padEnd(56)} worst ${JSON.stringify(gotWorst)}`
+    `  ${name.padEnd(11)} io=${describePressureReading('io', got.io).padEnd(34)} ` +
+      `memory=${describePressureReading('memory', got.memory).padEnd(34)} ` +
+      `instrument=${gotInstrument}`
   );
-  if (JSON.stringify(got) !== JSON.stringify(facts)) {
-    parseProblems.push(`${name}: parsed ${JSON.stringify(got)}, expected ${JSON.stringify(facts)}`);
+  for (const [label, reading, want] of [['io', got.io, ioWant], ['memory', got.memory, memWant]]) {
+    if (reading.state !== want[0]) {
+      parseProblems.push(`${name}.${label}: state ${reading.state}, expected ${want[0]}`);
+    } else if (want[0] === 'measured' && reading.fullAvg10Percent !== want[1]) {
+      parseProblems.push(
+        `${name}.${label}: ${reading.fullAvg10Percent}, expected ${want[1]}`
+      );
+    } else if (want[0] !== 'measured' && !(reading.detail?.length > 0)) {
+      parseProblems.push(`${name}.${label}: ${want[0]} with no detail saying what happened`);
+    } else if (want[0] !== 'measured' && 'fullAvg10Percent' in reading) {
+      parseProblems.push(
+        `${name}.${label}: ${want[0]} carrying a figure (${reading.fullAvg10Percent}) — an ` +
+        'unmeasured reading must have no percentage on it at all'
+      );
+    }
   }
   if (JSON.stringify(gotWorst) !== JSON.stringify(worst)) {
     parseProblems.push(
       `${name}: worstStall ${JSON.stringify(gotWorst)}, expected ${JSON.stringify(worst)}`
     );
   }
+  if (gotInstrument !== instrumentWant) {
+    parseProblems.push(`${name}: stallInstrument ${gotInstrument}, expected ${instrumentWant}`);
+  }
+}
+if (!eaccesWorks) {
+  console.log(
+    '\n  (the EACCES arm did not run: this process can read a 0o000 file, which is what\n' +
+      '   running as root looks like. The EISDIR fixtures above cover the same distinction\n' +
+      '   and do not depend on the uid, so the section still ran.)'
+  );
 }
 verdict(
   parseProblems.length === 0,
   'the real parser reads real file text: `full avg10` off both files, the worse of the\n' +
-    '    two, and null — never 0 — for every way the instrument can be missing. The\n' +
-    '    malformed and absent cases matter most: a half-read file scoring 0 would read as\n' +
-    '    a permanently healthy machine.',
+    '    two, and — never 0 — a reading that carries no percentage at all for every way the\n' +
+    '    instrument can fail to answer. And since KAN-267 it tells the two of those apart:\n' +
+    '    `absent` is a kernel without PSI, `unreadable` is a file that is there and would\n' +
+    '    not answer, each carrying a detail saying which. `mixed` is the case that needs\n' +
+    '    the one-word verdict: an absent io beside an unreadable memory is `unreadable`,\n' +
+    '    because that is the half somebody has to go and look at.',
   `the parser is wrong: ${parseProblems.join('; ')}`
 );
 
@@ -519,6 +624,10 @@ const IO_STALLED = roomy(parsed.stalled);
 const SWAP_THRASHING = roomy(parsed.thrashing);
 const HEALTHY = roomy(parsed.healthy);
 const NO_PSI = roomy(parsed.absent);
+// KAN-267: present and unreadable. Every counting term says there is room, the
+// stall term cannot answer, and the machine must be admitted — with the
+// derivation saying which kind of "cannot answer" this is.
+const UNREADABLE = roomy(parsed.unreadable);
 
 /**
  * The battery, factored out so section 7 can run the identical checks against a
@@ -556,8 +665,9 @@ function gateBattery(compute) {
   const swap = compute(SWAP_THRASHING, 0, opts);
   if (!swap.atCapacity || swap.headroomBoundBy !== 'stall') {
     problems.push(
-      `a machine thrashing on swap (memory full ${swap.stall?.memoryFullPercent}%, io only ` +
-      `${swap.stall?.ioFullPercent}%) admitted ${swap.headroom} (bound by ${swap.headroomBoundBy})`
+      `a machine thrashing on swap (${describePressureReading('memory', swap.stall.memory)}, ` +
+      `${describePressureReading('io', swap.stall.io)}) admitted ${swap.headroom} ` +
+      `(bound by ${swap.headroomBoundBy})`
     );
   } else if (swap.stallSource !== 'memory') {
     problems.push(`swap thrash was blamed on ${swap.stallSource}, not memory`);
@@ -572,7 +682,7 @@ function gateBattery(compute) {
   const ok = compute(HEALTHY, 0, opts);
   if (ok.atCapacity || ok.stalled || ok.headroom < 1) {
     problems.push(
-      `a healthy machine (io ${ok.stall?.ioFullPercent}% full) was refused: headroom ` +
+      `a healthy machine (${describePressureReading('io', ok.stall.io)}) was refused: headroom ` +
       `${ok.headroom}, bound by ${ok.headroomBoundBy}`
     );
   }
@@ -584,12 +694,66 @@ function gateBattery(compute) {
   const blind = compute(NO_PSI, 0, opts);
   if (blind.stallPercent !== null) {
     problems.push(`a machine with no PSI reported stallPercent ${blind.stallPercent}, not null`);
+  } else if (blind.stallInstrument !== 'absent') {
+    problems.push(
+      `a machine with no /proc/pressure reported stallInstrument ${blind.stallInstrument}, ` +
+      'not absent — it would send somebody hunting a fault on a healthy kernel'
+    );
   } else if (blind.stalled || blind.atCapacity) {
     problems.push('a machine with no PSI was refused — a missing instrument must refuse nothing');
   } else if (!/no \/proc\/pressure on this machine/.test(describeCapacity(blind))) {
     problems.push('the derivation does not disclose that the stall term is inert');
   } else if (!/bounds a machine thrashing|bounded by nothing|nothing here bounds/.test(describeCapacity(blind))) {
     problems.push('the derivation does not say what is left unprotected when PSI is absent');
+  }
+
+  // (f) KAN-267: /proc/pressure present and unreadable. Same admission decision
+  // as (d) — an instrument that did not answer refuses nothing, and refusing
+  // here would wedge the fleet on a permissions problem — and a DIFFERENT
+  // sentence, because "your kernel has no PSI" is false about this machine.
+  const mute = compute(UNREADABLE, 0, opts);
+  const muteSaid = describeCapacity(mute);
+  if (mute.stallPercent !== null) {
+    problems.push(
+      `an unreadable /proc/pressure produced stallPercent ${mute.stallPercent} — a figure ` +
+      'nobody measured'
+    );
+  }
+  // NOT an else-if chain, unlike (a)-(e) above, and the reason is section 7's
+  // second mutant. That mutant leaves the admission decision correct and breaks
+  // only the account given of it, so it trips the `stallInstrument` check —
+  // and on a chain that would short-circuit the derivation check behind it,
+  // leaving the assertion that actually matters here never once exercised by
+  // anything. A check no mutant reaches is a check nobody has watched fail.
+  if (mute.stallInstrument !== 'unreadable') {
+    problems.push(
+      `a present-but-unreadable /proc/pressure reported stallInstrument ` +
+      `${mute.stallInstrument}, not unreadable`
+    );
+  }
+  if (mute.stalled || mute.atCapacity) {
+    problems.push(
+      'an unreadable /proc/pressure refused an activation. That is the decision KAN-267 ' +
+      'recorded against: the read fetches nothing from the block layer, so an unreadable ' +
+      'file is not evidence of the saturation this term measures, and refusing on it would ' +
+      'wedge the whole fleet on a permissions problem'
+    );
+  }
+  if (/no \/proc\/pressure on this machine/.test(muteSaid)) {
+    problems.push(
+      'the derivation told a machine that HAS /proc/pressure that it has none — the KAN-267 ' +
+      'defect exactly: a reader is sent to check CONFIG_PSI for what is a permission, a ' +
+      'container namespace or a truncated read'
+    );
+  }
+  if (!/COULD NOT BE READ/.test(muteSaid)) {
+    problems.push('the derivation does not say the pressure files could not be read');
+  }
+  if (!/nothing here bounds|bounded by nothing/.test(muteSaid)) {
+    problems.push(
+      'the derivation does not say what is left unprotected while the instrument is mute — ' +
+      'it is the same hole as an absent one and must be named as loudly'
+    );
   }
 
   // (e) The tie rule: a stalled machine whose board is ALSO full must still say
@@ -606,7 +770,7 @@ function gateBattery(compute) {
     );
   }
 
-  return { problems, io, swap, ok, blind, full };
+  return { problems, io, swap, ok, blind, mute, full };
 }
 
 const battery = gateBattery(computeCapacity);
@@ -623,12 +787,19 @@ console.log(
 );
 console.log('\n(e) the same stalled machine with the board full:\n');
 console.log(`  ${capacityHeadline(battery.full)}`);
+console.log('\n(f) /proc/pressure present and unreadable — KAN-267:\n');
+console.log(`  ${summarizeCapacity(battery.mute)}`);
+console.log(
+  `  ${describeCapacity(battery.mute).split('\n').find((l) => l.startsWith('io/memory stall:'))}`
+);
 verdict(
   battery.problems.length === 0,
   'a stalled machine is refused with room to spare on every other term; swap thrash is\n' +
     '    caught and named as memory rather than as I/O; a healthy machine is not refused;\n' +
     '    a machine with no instrument is admitted and the derivation says what that leaves\n' +
-    '    unprotected; and the count still wins the tie.',
+    '    unprotected; the count still wins the tie; and (KAN-267) a machine whose pressure\n' +
+    '    files are present and unreadable is admitted on the same reasoning but told apart\n' +
+    '    from one whose kernel has no PSI, which is a different thing to go and do.',
   `the gate is wrong: ${battery.problems.join('; ')}`
 );
 
@@ -986,6 +1157,45 @@ verdict(
     '    to nothing.',
   'section 4\'s battery passed a capacity model with no stall veto at all — it cannot ' +
     'detect the failure this script exists to detect, and its green means nothing.'
+);
+
+// KAN-267's own red drive, and it is the SECOND mutant rather than a variation
+// on the first: `noVeto` above breaks the gate's decision, and this one leaves
+// every decision correct and breaks only what the machine is TOLD. Both are
+// silent from outside, which is the whole reason each needs its own arm.
+//
+// This mutant is what `main` did before this ticket. `main` has no
+// `stallInstrument` at all and prints the no-CONFIG_PSI sentence for both ways
+// of having no figure, so pinning the field to 'absent' reproduces its exact
+// output — an unreadable /proc/pressure reported as a kernel that never had
+// one. If section 4 still passes against that, section 4 has not tested the
+// distinction and this ticket shipped nothing.
+function collapsedInstrument(machine, running, opts) {
+  return { ...computeCapacity(machine, running, opts), stallInstrument: 'absent' };
+}
+const collapsed = gateBattery(collapsedInstrument);
+const collapsedSaid = describeCapacity(collapsedInstrument(UNREADABLE, 0, { measured: null }));
+console.log(
+  '\n  with the two kinds of absence collapsed back into one — which is what main does —\n' +
+  '  a machine whose /proc/pressure is present and unreadable is told:\n\n' +
+  `    ${collapsedSaid.split('\n').find((l) => l.startsWith('io/memory stall:'))}\n\n` +
+  `  section 4's battery reports ${collapsed.problems.length} problem(s) against it:\n` +
+  collapsed.problems.map((p) => `    - ${p}`).join('\n')
+);
+verdict(
+  collapsed.problems.length > 0 &&
+      // BOTH, not either: the wrong one-word verdict AND the wrong sentence
+    // printed off it. Accepting either alone would let this arm go green on a
+    // mutant that got the sentence right, which is the half an operator reads.
+    collapsed.problems.some((p) => /stallInstrument/.test(p)) &&
+    collapsed.problems.some((p) => /HAS \/proc\/pressure that it has none/.test(p)),
+  'the battery also rejects a model that makes the RIGHT admission decision and gives the\n' +
+    '    WRONG account of why — an unreadable pressure file reported as a kernel without\n' +
+    '    PSI. That failure changes no number and refuses nothing, so nothing but this arm\n' +
+    '    could catch it, and it is exactly what main shipped.',
+  'section 4\'s battery passed a model that reports a present-but-unreadable /proc/pressure ' +
+    'as an absent one. It cannot tell the two apart, so KAN-267\'s distinction is untested ' +
+    'and its green means nothing.'
 );
 
 fs.rmSync(tmp, { recursive: true, force: true });

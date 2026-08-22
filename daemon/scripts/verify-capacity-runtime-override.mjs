@@ -141,7 +141,7 @@ const ROOMY = {
   load1: 0,
   busyCores: 0,
   busyWindowSeconds: 10,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 
 const writeRaw = (body) => fs.writeFileSync(CAPACITY_OVERRIDE_PATH, body);

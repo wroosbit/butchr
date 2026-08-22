@@ -560,7 +560,7 @@ const CPU_FACTS = {
   availableBytes: Math.round(12 * GIB),
   load1: 0.15,
   busyWindowSeconds: 5,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 
 const byCpu = {};

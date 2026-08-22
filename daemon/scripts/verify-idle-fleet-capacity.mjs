@@ -422,7 +422,7 @@ const idleMachine = {
   load1: 0.4,
   busyCores: 0.3,
   busyWindowSeconds: 5,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 
 const staleCost = liveMeasurement(now - 20 * MINUTE, 'stale');

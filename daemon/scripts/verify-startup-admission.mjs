@@ -244,7 +244,7 @@ const BOOT_MACHINE = {
   load1: 0.3,
   busyCores: 0.3,
   busyWindowSeconds: 5,
-  stall: { ioFullPercent: 0, memoryFullPercent: 0 }
+  stall: { io: { state: 'measured', fullAvg10Percent: 0 }, memory: { state: 'measured', fullAvg10Percent: 0 } }
 };
 
 // The cost figure the daemon actually had at the moment of the incident: a
